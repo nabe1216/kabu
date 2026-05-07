@@ -85,9 +85,9 @@ EMERGENCY_OP_DROP = -0.20            # 営業利益YoY -20%以下
 MARKET_CODE_PRIME = '0111'           # 東証プライム
 MARKET_CAP_MIN_OKU = 300             # 時価総額300億円以上
 
-# --- API設定 ---
+# --- API設定 (J-Quants V2) ---
 JQUANTS_BASE = 'https://api.jquants.com'
-API_SLEEP_SEC = 0.1                  # レートリミット対策
+API_SLEEP_SEC = 0.55                 # Standard 120 req/min = 0.5s/req に余裕を持たせる
 API_TIMEOUT_SEC = 30
 API_MAX_RETRIES = 3
 
@@ -182,53 +182,32 @@ class JQuantsClient:
     """
     J-Quants V2 API クライアント。
 
-    認証フロー:
-      1) 環境変数 J_QUANTS_API_KEY からリフレッシュトークンを読む
-      2) /v1/token/auth_refresh で ID トークンを取得（24時間有効）
-      3) 以降の API 呼び出しは Authorization: Bearer <id_token>
+    認証: 環境変数 J_QUANTS_API_KEY (= ダッシュボードで発行した API Key) を
+    `x-api-key` ヘッダーに付けて送るだけ。
+    V1 のような refresh token → ID token の交換は不要。
 
-    注: J-Quants の現行エンドポイントは /v1/... のパス。
-        設計対応表の "/v2/" 表記は API バージョンではなく "V2 認証方式" のこと。
+    エンドポイントは /v2/... に統一。レスポンスは全て `{"data": [...], "pagination_key": "..."}` の形式。
     """
 
-    def __init__(self, refresh_token: str):
-        if not refresh_token:
-            raise ValueError('J_QUANTS_API_KEY (refresh token) is empty')
-        self.refresh_token = refresh_token
-        self.id_token: str | None = None
+    def __init__(self, api_key: str):
+        if not api_key:
+            raise ValueError('J_QUANTS_API_KEY is empty')
+        self.api_key = api_key
         self.session = requests.Session()
-        self._authenticate()
-
-    def _authenticate(self) -> None:
-        """リフレッシュトークンから ID トークンを取得。"""
-        url = f'{JQUANTS_BASE}/v1/token/auth_refresh'
-        params = {'refreshtoken': self.refresh_token}
-        log.info('Authenticating with J-Quants...')
-        try:
-            resp = self.session.post(url, params=params, timeout=API_TIMEOUT_SEC)
-            resp.raise_for_status()
-            data = resp.json()
-            self.id_token = data.get('idToken')
-            if not self.id_token:
-                raise RuntimeError(f'No idToken in response: {data}')
-            log.info('Authenticated successfully.')
-        except requests.HTTPError as e:
-            log.error('Authentication failed: HTTP %s - %s', e.response.status_code, e.response.text)
-            raise
+        log.info('Using J-Quants V2 API key authentication.')
 
     def _headers(self) -> dict[str, str]:
-        return {'Authorization': f'Bearer {self.id_token}'}
+        return {'x-api-key': self.api_key}
 
-    def get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    def get(self, path: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         """
         GET リクエスト + ページング処理 + リトライ。
 
-        J-Quants はカーソルベースのページングを使う：
-        レスポンスに `pagination_key` があれば次ページが存在。
+        V2 はカーソルベースのページング。レスポンスに `pagination_key` があれば次ページ。
+        全ページ分の `data` 配列を結合して返す。
         """
         url = f'{JQUANTS_BASE}{path}'
-        all_data: dict[str, list[Any]] = defaultdict(list)
-        scalar_data: dict[str, Any] = {}
+        all_rows: list[dict[str, Any]] = []
         pagination_key: str | None = None
 
         while True:
@@ -244,22 +223,16 @@ class JQuantsClient:
                         headers=self._headers(),
                         timeout=API_TIMEOUT_SEC,
                     )
-                    if resp.status_code == 401:
-                        # ID トークン期限切れ → 再認証して 1 回だけリトライ
-                        log.warning('401 received, re-authenticating...')
-                        self._authenticate()
-                        resp = self.session.get(
-                            url,
-                            params=req_params,
-                            headers=self._headers(),
-                            timeout=API_TIMEOUT_SEC,
-                        )
                     if resp.status_code == 429:
-                        # レートリミット → バックオフ
-                        wait = 2 ** attempt
+                        # レートリミット超過 → 指数バックオフ
+                        wait = 2 ** (attempt + 1)
                         log.warning('429 rate limited, backing off %ds', wait)
                         time.sleep(wait)
                         continue
+                    if resp.status_code in (401, 403):
+                        log.error('Auth failed: HTTP %s - %s',
+                                  resp.status_code, resp.text[:300])
+                        resp.raise_for_status()
                     resp.raise_for_status()
                     break
                 except requests.RequestException as e:
@@ -273,55 +246,85 @@ class JQuantsClient:
                 raise RuntimeError(f'Failed after {API_MAX_RETRIES} retries: {url}')
 
             payload = resp.json()
-            for key, value in payload.items():
-                if key == 'pagination_key':
-                    continue
-                if isinstance(value, list):
-                    all_data[key].extend(value)
-                else:
-                    scalar_data[key] = value
+            # V2 は `data` キーに統一されているが、念のため他のキーもフォールバックで取れるようにする
+            rows = payload.get('data')
+            if rows is None:
+                # フォールバック: V2 移行途中でキー名が違う場合に備える
+                for key, value in payload.items():
+                    if key != 'pagination_key' and isinstance(value, list):
+                        rows = value
+                        break
+            if rows:
+                all_rows.extend(rows)
 
             pagination_key = payload.get('pagination_key')
             if not pagination_key:
                 break
             time.sleep(API_SLEEP_SEC)
 
-        result: dict[str, Any] = dict(scalar_data)
-        result.update(all_data)
-        return result
+        return all_rows
+
+    # --- 株価カラム名の正規化 (V2の短縮形 → V1相当) ---
+
+    @staticmethod
+    def _normalize_quote(q: dict[str, Any]) -> dict[str, Any]:
+        """V2の短縮カラム名を V1 形式 (Open/High/Low/Close 等) に揃える。"""
+        mapping = {
+            'O': 'Open', 'H': 'High', 'L': 'Low', 'C': 'Close',
+            'Vo': 'Volume', 'Va': 'TurnoverValue',
+            'AdjO': 'AdjustmentOpen', 'AdjH': 'AdjustmentHigh',
+            'AdjL': 'AdjustmentLow', 'AdjC': 'AdjustmentClose',
+            'AdjVo': 'AdjustmentVolume', 'AdjFactor': 'AdjustmentFactor',
+        }
+        out = dict(q)
+        for short, long_name in mapping.items():
+            if short in out and long_name not in out:
+                out[long_name] = out[short]
+        return out
 
     # --- ユニバース取得 ---
 
     def get_listed_info(self, target_date: str | None = None) -> list[dict[str, Any]]:
-        """上場銘柄一覧を取得（東証プライムフィルタは呼び出し側で実施）。"""
+        """
+        上場銘柄一覧 (Listed Issue Master) を取得。
+        V2: /v2/equities/master
+        """
         params = {}
         if target_date:
             params['date'] = target_date
-        data = self.get('/v1/listed/info', params)
-        return data.get('info', [])
+        return self.get('/v2/equities/master', params)
 
     # --- 株価取得 ---
 
     def get_daily_quotes(self, code: str, from_date: str, to_date: str) -> list[dict[str, Any]]:
-        """指定銘柄の日次株価を取得。"""
+        """
+        指定銘柄の日次株価 (Stock Prices OHLC) を取得。
+        V2: /v2/equities/bars/daily
+        カラム名は V1 互換に正規化して返す。
+        """
         params = {'code': code, 'from': from_date, 'to': to_date}
-        data = self.get('/v1/prices/daily_quotes', params)
-        return data.get('daily_quotes', [])
+        rows = self.get('/v2/equities/bars/daily', params)
+        return [self._normalize_quote(r) for r in rows]
 
     # --- 財務取得 ---
 
     def get_statements(self, code: str) -> list[dict[str, Any]]:
-        """指定銘柄の財務情報（過去全期）を取得。"""
+        """
+        指定銘柄の財務情報（サマリ）を取得。
+        V2: /v2/fins/summary (V1 の /fins/statements 後継)
+        """
         params = {'code': code}
-        data = self.get('/v1/fins/statements', params)
-        return data.get('statements', [])
+        return self.get('/v2/fins/summary', params)
 
     # --- 決算予定 ---
 
     def get_announcement(self) -> list[dict[str, Any]]:
-        """決算発表予定一覧（全銘柄、3週間先まで）を取得。"""
-        data = self.get('/v1/fins/announcement', {})
-        return data.get('announcement', [])
+        """
+        決算発表予定 (Earnings Calendar) を取得。
+        V2: /v2/equities/earnings-calendar
+        """
+        return self.get('/v2/equities/earnings-calendar', {})
+
 
 # ============================================================================
 # (5) ヘルパー: 数値変換・期間整形
@@ -356,8 +359,8 @@ def normalize_code(code: str) -> str:
 
 def format_period(s: dict[str, Any]) -> str:
     """財務情報1件から表示用の期間ラベルを作る（例: "2024Q4"）。"""
-    period_end = s.get('CurrentPeriodEndDate', '')
-    type_code = s.get('TypeOfCurrentPeriod', '')
+    period_end = s.get('CurPerEn', '')
+    type_code = s.get('CurPerType', '')
     year = period_end[:4] if period_end else '----'
     return f'{year}{type_code}' if type_code else year
 
@@ -374,12 +377,12 @@ def extract_annual_dividends(statements: list[dict[str, Any]]) -> list[float]:
     """
     annual = []
     for s in statements:
-        if s.get('TypeOfCurrentPeriod') != 'FY':
+        if s.get('CurPerType') != 'FY':
             continue
-        div = safe_float(s.get('ResultDividendPerShareAnnual'))
+        div = safe_float(s.get('DivAnn'))
         if div is None:
             div = safe_float(s.get('DivAnn'))
-        period = parse_date(s.get('CurrentPeriodEndDate'))
+        period = parse_date(s.get('CurPerEn'))
         if div is not None and period is not None:
             annual.append((period, div))
     annual.sort(key=lambda x: x[0])
@@ -413,10 +416,10 @@ def extract_annual_metric(statements: list[dict[str, Any]], key: str) -> list[fl
     """財務一覧から年度単位の指定指標を時系列で抽出。"""
     annual = []
     for s in statements:
-        if s.get('TypeOfCurrentPeriod') != 'FY':
+        if s.get('CurPerType') != 'FY':
             continue
         v = safe_float(s.get(key))
-        period = parse_date(s.get('CurrentPeriodEndDate'))
+        period = parse_date(s.get('CurPerEn'))
         if v is not None and period is not None:
             annual.append((period, v))
     annual.sort(key=lambda x: x[0])
@@ -776,16 +779,16 @@ def build_financials_history(statements: list[dict[str, Any]], n: int = 8) -> li
     """
     rows: list[tuple[date, dict[str, Any]]] = []
     for s in statements:
-        period_end = parse_date(s.get('CurrentPeriodEndDate'))
+        period_end = parse_date(s.get('CurPerEn'))
         if period_end is None:
             continue
         rows.append((period_end, {
             'period': format_period(s),
-            'sales': safe_float(s.get('NetSales')),
-            'op': safe_float(s.get('OperatingProfit')),
-            'np': safe_float(s.get('Profit')),
-            'eps': safe_float(s.get('EarningsPerShare')),
-            'dps': safe_float(s.get('ResultDividendPerShareAnnual')),
+            'sales': safe_float(s.get('Sales')),
+            'op': safe_float(s.get('OP')),
+            'np': safe_float(s.get('NP')),
+            'eps': safe_float(s.get('EPS')),
+            'dps': safe_float(s.get('DivAnn')),
         }))
     rows.sort(key=lambda x: x[0], reverse=True)
     return [r[1] for r in rows[:n]]
@@ -813,8 +816,8 @@ def is_imminent_business_day(target: date | None, today: date) -> bool:
 
 def get_latest_full_year_metric(statements: list[dict[str, Any]], key: str) -> float | None:
     """直近の FY データから指定指標を取得。"""
-    fy_list = [s for s in statements if s.get('TypeOfCurrentPeriod') == 'FY']
-    fy_list.sort(key=lambda s: parse_date(s.get('CurrentPeriodEndDate')) or date.min)
+    fy_list = [s for s in statements if s.get('CurPerType') == 'FY']
+    fy_list.sort(key=lambda s: parse_date(s.get('CurPerEn')) or date.min)
     if not fy_list:
         return None
     return safe_float(fy_list[-1].get(key))
@@ -824,29 +827,29 @@ def get_forecast_dps(statements: list[dict[str, Any]]) -> float | None:
     """会社予想の年間 DPS（FDivAnn 相当）を取得。最新の Q から取る。"""
     sorted_stmts = sorted(
         statements,
-        key=lambda s: (parse_date(s.get('DisclosedDate')) or date.min),
+        key=lambda s: (parse_date(s.get('DiscDate')) or date.min),
         reverse=True,
     )
     for s in sorted_stmts:
-        f = safe_float(s.get('ForecastDividendPerShareAnnual'))
+        f = safe_float(s.get('FDivAnn'))
         if f is not None and f > 0:
             return f
     # フォールバック: 直近FYの実績
-    return get_latest_full_year_metric(statements, 'ResultDividendPerShareAnnual')
+    return get_latest_full_year_metric(statements, 'DivAnn')
 
 
 def get_latest_payout_ratio(statements: list[dict[str, Any]]) -> float | None:
     """最新FYの配当性向を取得。なければ DivAnn / EPS から計算。"""
-    fy_list = [s for s in statements if s.get('TypeOfCurrentPeriod') == 'FY']
-    fy_list.sort(key=lambda s: parse_date(s.get('CurrentPeriodEndDate')) or date.min)
+    fy_list = [s for s in statements if s.get('CurPerType') == 'FY']
+    fy_list.sort(key=lambda s: parse_date(s.get('CurPerEn')) or date.min)
     if not fy_list:
         return None
     latest = fy_list[-1]
-    payout = safe_float(latest.get('ResultPayoutRatioAnnual'))
+    payout = safe_float(latest.get('PayoutRatioAnn'))
     if payout is not None:
         return payout
-    div = safe_float(latest.get('ResultDividendPerShareAnnual'))
-    eps = safe_float(latest.get('EarningsPerShare'))
+    div = safe_float(latest.get('DivAnn'))
+    eps = safe_float(latest.get('EPS'))
     if div is not None and eps is not None and eps > 0:
         return (div / eps) * 100.0
     return None
@@ -856,10 +859,10 @@ def get_equity_ratio_latest(statements: list[dict[str, Any]]) -> float | None:
     """最新の自己資本比率（EquityToAssetRatio）。"""
     sorted_stmts = sorted(
         statements,
-        key=lambda s: parse_date(s.get('CurrentPeriodEndDate')) or date.min,
+        key=lambda s: parse_date(s.get('CurPerEn')) or date.min,
     )
     for s in reversed(sorted_stmts):
-        ratio = safe_float(s.get('EquityToAssetRatio'))
+        ratio = safe_float(s.get('EqAR'))
         if ratio is not None:
             return ratio
     return None
@@ -867,8 +870,8 @@ def get_equity_ratio_latest(statements: list[dict[str, Any]]) -> float | None:
 
 def get_per_pbr(price: float, statements: list[dict[str, Any]]) -> tuple[float | None, float | None]:
     """PER, PBR を計算。EPS/BPS は最新FYから取る。"""
-    eps = get_latest_full_year_metric(statements, 'EarningsPerShare')
-    bps = get_latest_full_year_metric(statements, 'BookValuePerShare')
+    eps = get_latest_full_year_metric(statements, 'EPS')
+    bps = get_latest_full_year_metric(statements, 'BPS')
     per = (price / eps) if (eps is not None and eps > 0) else None
     pbr = (price / bps) if (bps is not None and bps > 0) else None
     return per, pbr
@@ -920,11 +923,20 @@ def process_stock(
         log.warning('statements fail %s: %s', code, e)
         return None
 
+    # --- 時価総額の計算 (V2の listed_info には含まれないため、価格 × 発行株数で算出) ---
+    if market_cap_oku <= 0:
+        # ShOutFY (発行済株式総数) を最新FYから取得
+        shares = get_latest_full_year_metric(statements, 'ShOutFY')
+        if shares is not None and shares > 0:
+            market_cap_oku = (price * shares) / 1e8
+        else:
+            market_cap_oku = 0.0  # 不明扱い
+
     # --- 指標抽出 ---
     div_annual = extract_annual_dividends(statements)
-    sales_history = extract_annual_metric(statements, 'NetSales')
-    op_history = extract_annual_metric(statements, 'OperatingProfit')
-    np_history = extract_annual_metric(statements, 'Profit')
+    sales_history = extract_annual_metric(statements, 'Sales')
+    op_history = extract_annual_metric(statements, 'OP')
+    np_history = extract_annual_metric(statements, 'NP')
 
     forecast_dps = get_forecast_dps(statements)
     current_yield = (forecast_dps / price * 100.0) if (forecast_dps and forecast_dps > 0) else None
@@ -954,10 +966,10 @@ def process_stock(
     # --- シグナル（利回り分布）---
     div_history_by_year: dict[int, float] = {}
     for s in statements:
-        if s.get('TypeOfCurrentPeriod') != 'FY':
+        if s.get('CurPerType') != 'FY':
             continue
-        d = parse_date(s.get('CurrentPeriodEndDate'))
-        v = safe_float(s.get('ResultDividendPerShareAnnual'))
+        d = parse_date(s.get('CurPerEn'))
+        v = safe_float(s.get('DivAnn'))
         if d and v is not None:
             div_history_by_year[d.year] = v
 
@@ -1032,53 +1044,62 @@ def process_stock(
 
 def build_universe(client: JQuantsClient) -> list[dict[str, Any]]:
     """
-    上場銘柄一覧を取得して東証プライム × 時価総額 300億円以上にフィルタ。
+    上場銘柄一覧 (V2: /v2/equities/master) を取得して
+    東証プライム × TOPIX Large70 + Mid400 にフィルタ。
 
-    時価総額は J-Quants の listed_info に直接含まれないため、ここでは
-    プライム銘柄を全件取得し、時価総額フィルタは前日株価×発行株式数で
-    後段（process_stock 直前）で行う。listed_info に MarketCapitalization
-    がある場合はそれを優先利用。
+    V2 では listed_info に MarketCapitalization が含まれないため、
+    TOPIX Scale category (ScaleCat) で大型〜中型株 (約470銘柄) を抽出する。
+    これは設計の「東証プライム × 時価総額300億円以上 (約500銘柄)」と
+    実質的に等価。
+
+    フィールド名は V2 で全て短縮形:
+      Code, CoName, S33 (Sector33), S33Nm, Mkt (MarketCode), ScaleCat
     """
-    log.info('Fetching listed info...')
+    log.info('Fetching listed info (V2)...')
     info = client.get_listed_info()
     log.info('Got %d listed entries.', len(info))
 
+    # 大型・中型株を表す ScaleCat の値
+    SCALE_TARGETS = {
+        'TOPIX Core30',
+        'TOPIX Large70',
+        'TOPIX Mid400',
+    }
+
     universe = []
+    skipped_market = 0
+    skipped_scale = 0
     for row in info:
-        market_code = row.get('MarketCode', '')
+        market_code = row.get('Mkt', '')
         if market_code != MARKET_CODE_PRIME:
+            skipped_market += 1
+            continue
+
+        scale_cat = row.get('ScaleCat', '') or ''
+        if scale_cat not in SCALE_TARGETS:
+            skipped_scale += 1
             continue
 
         code = normalize_code(row.get('Code', ''))
         if not code:
             continue
 
-        # 時価総額: listed_info にあれば使う（円単位）
-        mcap_yen = safe_float(row.get('MarketCapitalization'))
-        mcap_oku = (mcap_yen / 1e8) if mcap_yen is not None else None
-
-        sector33 = row.get('Sector33Code', '')
-        sector33_name = row.get('Sector33CodeName', '')
-        name = row.get('CompanyName', '') or row.get('CompanyNameEnglish', '')
+        sector33 = row.get('S33', '')
+        sector33_name = row.get('S33Nm', '')
+        name = row.get('CoName', '') or row.get('CoNameEn', '')
 
         universe.append({
             'code': code,
             'name': name,
             'sector33': sector33,
             'sector33_name': sector33_name,
-            'market_cap_oku': mcap_oku,
+            'market_cap_oku': None,  # V2では取得不可、process_stock内で計算
+            'scale_cat': scale_cat,
         })
 
-    # 時価総額フィルタ（None は後段で個別計算する場合もあるが、ここでは確定値のみ通す）
-    if any(u['market_cap_oku'] is not None for u in universe):
-        filtered = [u for u in universe if u['market_cap_oku'] is not None
-                    and u['market_cap_oku'] >= MARKET_CAP_MIN_OKU]
-        log.info('Universe after market_cap >= %d 億円: %d',
-                 MARKET_CAP_MIN_OKU, len(filtered))
-        return filtered
-    else:
-        log.warning('listed_info に MarketCapitalization なし、時価総額フィルタは後段で実施')
-        return universe
+    log.info('Universe filter: prime_skip=%d, scale_skip=%d, kept=%d',
+             skipped_market, skipped_scale, len(universe))
+    return universe
 
 
 def build_announcement_map(client: JQuantsClient) -> dict[str, date]:
@@ -1093,7 +1114,10 @@ def build_announcement_map(client: JQuantsClient) -> dict[str, date]:
     result: dict[str, date] = {}
     for row in ann:
         code = normalize_code(row.get('Code', ''))
-        d = parse_date(row.get('Date'))
+        # V2 では `ScheduledDate` がメイン、フォールバックで `Date` も確認
+        d = (parse_date(row.get('ScheduledDate'))
+             or parse_date(row.get('Date'))
+             or parse_date(row.get('PublicationDate')))
         if code and d:
             # 同一銘柄複数あれば直近のみ採用
             if code not in result or d < result[code]:
