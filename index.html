@@ -1,0 +1,2505 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DIVIDEND HEIST / TAKE YOUR HEART</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Bungee&family=Bungee+Shade&family=Reggae+One&family=RocknRoll+One&family=Shippori+Mincho:wght@500;700;800&family=Noto+Sans+JP:wght@400;500;700;900&family=JetBrains+Mono:wght@400;500;700&family=Permanent+Marker&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
+<style>
+:root {
+  --p5-red: #E60012;
+  --p5-red-deep: #B30009;
+  --p5-red-bright: #FF1A2E;
+  --p5-red-soft: rgba(230,0,18,0.12);
+  --p5-black: #0A0A0A;
+  --p5-cream: #FAF8F0;
+  --bg: #FAF8F0;
+  --bg-card: #FFFFFF;
+  --bg-cream: #FFFCF2;
+  --text: #0A0A0A;
+  --text-mute: #6B655A;
+  --text-faint: #A8A293;
+  --buy: var(--p5-red);
+  --buy-soft: rgba(230,0,18,0.12);
+  --sell: #2962FF;
+  --sell-soft: rgba(41,98,255,0.12);
+  --box: #1A8A3F;
+  --box-soft: rgba(26,138,63,0.12);
+  --border-soft: #B8B099;
+}
+*{-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;box-sizing:border-box;}
+html,body{background:var(--bg);color:var(--text);font-family:'Noto Sans JP',sans-serif;font-weight:700;overflow-x:hidden;}
+body{background:radial-gradient(ellipse 700px 400px at 90% 10%,rgba(230,0,18,0.13),transparent 60%),radial-gradient(ellipse 500px 300px at 10% 90%,rgba(230,0,18,0.08),transparent 60%),var(--bg);background-attachment:fixed;min-height:100vh;}
+body::before{content:'';position:fixed;inset:0;background-image:repeating-linear-gradient(-45deg,transparent 0,transparent 32px,rgba(230,0,18,0.04) 32px,rgba(230,0,18,0.04) 36px);pointer-events:none;z-index:1;}
+body::after{content:'';position:fixed;inset:0;background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' /%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.5'/%3E%3C/svg%3E");opacity:0.05;pointer-events:none;z-index:1;}
+main,header,footer{position:relative;z-index:2;}
+.bungee{font-family:'Bungee',sans-serif;}
+.bungee-shade{font-family:'Bungee Shade',sans-serif;}
+.reggae{font-family:'Reggae One',cursive;}
+.rocknroll{font-family:'RocknRoll One',sans-serif;}
+.bebas{font-family:'Bebas Neue',sans-serif;letter-spacing:0.04em;}
+.mincho{font-family:'Shippori Mincho',serif;font-weight:700;}
+.marker{font-family:'Permanent Marker',cursive;}
+.mono{font-family:'JetBrains Mono',monospace;font-variant-numeric:tabular-nums;}
+.tnum{font-variant-numeric:tabular-nums;}
+.calling-strip{background:var(--p5-black);color:var(--p5-red);padding:6px 0;overflow:hidden;position:relative;border-bottom:4px solid var(--p5-red);}
+.calling-inner{display:flex;gap:32px;white-space:nowrap;font-family:'Bungee',sans-serif;font-size:12px;letter-spacing:0.2em;animation:scroll 30s linear infinite;}
+@keyframes scroll{from{transform:translateX(0);}to{transform:translateX(-50%);}}
+.calling-inner span::after{content:'♠';margin-left:32px;color:var(--p5-cream);}
+.topbar{background:var(--bg-cream);border-bottom:6px solid var(--p5-red);position:sticky;top:0;z-index:50;box-shadow:0 4px 0 var(--p5-red-deep),0 8px 0 var(--p5-black),0 12px 24px rgba(230,0,18,0.15);}
+.topbar-deco{position:absolute;width:14px;height:14px;z-index:3;}
+.deco-1{top:6px;left:28%;background:var(--p5-red);transform:rotate(45deg);border:2px solid var(--p5-black);}
+.deco-2{top:6px;left:55%;background:var(--p5-black);border-radius:50%;border:2px solid var(--p5-red);}
+.deco-3{top:8px;left:78%;background:var(--p5-cream);border:2px solid var(--p5-black);transform:rotate(45deg);}
+.mask-logo{width:60px;height:50px;flex-shrink:0;filter:drop-shadow(3px 3px 0 var(--p5-black));transition:transform 220ms;}
+.mask-logo:hover{transform:rotate(-5deg) scale(1.08);}
+.brand-title{font-family:'Bungee',sans-serif;font-size:32px;letter-spacing:-0.01em;color:var(--p5-black);line-height:1;text-shadow:3px 3px 0 var(--p5-red),6px 6px 0 var(--p5-cream),9px 9px 0 var(--p5-black);transform:rotate(-1.5deg);display:inline-block;}
+.brand-title em{font-style:normal;color:var(--p5-red);text-shadow:3px 3px 0 var(--p5-black),6px 6px 0 var(--p5-cream);}
+.brand-sub{font-family:'Permanent Marker',cursive;font-size:13px;margin-top:8px;letter-spacing:0.05em;display:inline-block;background:var(--p5-red);color:var(--p5-cream);padding:3px 12px;transform:rotate(-1deg);box-shadow:2px 2px 0 var(--p5-black);clip-path:polygon(8px 0,100% 0,calc(100% - 8px) 100%,0 100%);}
+.live-status{display:inline-flex;align-items:center;gap:8px;padding:8px 16px;background:var(--p5-black);color:var(--p5-cream);border:3px solid var(--p5-red);font-family:'Bungee',sans-serif;font-size:13px;letter-spacing:0.15em;position:relative;box-shadow:4px 4px 0 var(--p5-red);transform:rotate(-2deg);}
+.live-dot{width:10px;height:10px;background:var(--p5-red-bright);border-radius:50%;box-shadow:0 0 12px var(--p5-red-bright);animation:livePulse 1s ease-in-out infinite;}
+@keyframes livePulse{0%,100%{opacity:1;transform:scale(1);}50%{opacity:0.4;transform:scale(0.7);}}
+.top-stat{text-align:center;padding:8px 14px;background:var(--bg-card);border:3px solid var(--p5-black);position:relative;min-width:70px;box-shadow:4px 4px 0 var(--p5-black);transition:all 200ms;clip-path:polygon(0 0,calc(100% - 12px) 0,100% 12px,100% 100%,12px 100%,0 calc(100% - 12px));}
+.top-stat:hover{transform:translate(-2px,-2px);box-shadow:6px 6px 0 var(--p5-red);}
+.top-stat::before{content:'';position:absolute;top:0;left:0;right:0;height:4px;background:var(--stat-color,var(--p5-red));}
+.top-stat .lbl{font-family:'Bungee',sans-serif;font-size:10px;letter-spacing:0.08em;line-height:1;}
+.top-stat .num{font-family:'Bungee',sans-serif;font-size:32px;line-height:0.9;margin-top:4px;text-shadow:2px 2px 0 rgba(0,0,0,0.1);}
+.tab-strip{display:flex;gap:8px;padding:8px 0 12px;flex-wrap:wrap;}
+.tab-btn{position:relative;background:var(--bg-card);border:3px solid var(--p5-black);padding:10px 22px;font-family:'Bungee',sans-serif;font-size:13px;letter-spacing:0.05em;color:var(--p5-black);cursor:pointer;transition:all 200ms;display:flex;align-items:center;gap:8px;box-shadow:4px 4px 0 var(--p5-black);clip-path:polygon(8px 0,100% 0,calc(100% - 8px) 100%,0 100%);}
+.tab-btn:nth-child(1){transform:rotate(-1deg);}
+.tab-btn:nth-child(2){transform:rotate(1deg);}
+.tab-btn:nth-child(3){transform:rotate(-0.5deg);}
+.tab-btn:nth-child(4){transform:rotate(0.8deg);}
+.tab-btn::before{content:'';position:absolute;top:4px;left:12px;width:6px;height:6px;background:var(--p5-red);}
+.tab-btn:hover{background:var(--p5-red-soft);transform:rotate(0) translate(-2px,-2px);box-shadow:6px 6px 0 var(--p5-red);}
+.tab-btn.active{background:var(--p5-red);color:var(--p5-cream);font-size:14px;transform:rotate(-2deg) scale(1.05);box-shadow:5px 5px 0 var(--p5-black);}
+.tab-btn.active::before{background:var(--p5-cream);animation:blink 1.2s steps(2) infinite;}
+@keyframes blink{50%{opacity:0;}}
+.tab-btn .jp{font-family:'RocknRoll One',sans-serif;font-size:10px;opacity:0.85;}
+.tab-btn .badge{font-family:'Bungee',sans-serif;font-size:12px;background:var(--p5-cream);color:var(--p5-red);padding:1px 7px;border:2px solid var(--p5-black);box-shadow:1px 1px 0 var(--p5-black);}
+.tab-btn.active .badge{background:var(--p5-black);color:var(--p5-red);}
+</style>
+<style>
+.heist-card{background:var(--bg-card);border:3px solid var(--p5-black);position:relative;transition:all 220ms;box-shadow:5px 5px 0 var(--p5-black);}
+.heist-card::before{content:'';position:absolute;top:0;left:0;width:0;height:0;border-style:solid;border-width:18px 18px 0 0;border-color:var(--p5-red) transparent transparent transparent;}
+.heist-card:hover{transform:translate(-3px,-3px) rotate(-0.4deg);box-shadow:8px 8px 0 var(--p5-red);}
+.hero-metric{background:var(--bg-card);border:4px solid var(--p5-black);padding:32px 24px;position:relative;overflow:hidden;transition:all 280ms;box-shadow:6px 6px 0 var(--m-color,var(--p5-red)),6px 6px 0 4px var(--p5-black);clip-path:polygon(0 0,calc(100% - 24px) 0,100% 24px,100% 100%,24px 100%,0 calc(100% - 24px));}
+.hero-metric:hover{transform:translate(-3px,-3px) rotate(-1deg) scale(1.02);box-shadow:9px 9px 0 var(--m-color,var(--p5-red)),9px 9px 0 4px var(--p5-black);}
+.hero-metric::before{content:'';position:absolute;inset:0;background-image:repeating-linear-gradient(-45deg,transparent 0,transparent 14px,rgba(230,0,18,0.04) 14px,rgba(230,0,18,0.04) 16px);pointer-events:none;}
+.hero-metric::after{content:'';position:absolute;top:-40px;right:-40px;width:100px;height:100px;background:var(--m-color,var(--p5-red));transform:rotate(45deg);opacity:0.2;}
+.hero-metric .channel{position:absolute;top:12px;right:16px;font-family:'Bungee',sans-serif;font-size:11px;letter-spacing:0.15em;color:var(--p5-cream);background:var(--m-color,var(--p5-red));padding:3px 8px;border:2px solid var(--p5-black);z-index:3;transform:rotate(3deg);box-shadow:2px 2px 0 var(--p5-black);}
+.hero-metric .channel::before{content:'♠';margin-right:4px;animation:blink 1.5s steps(2) infinite;}
+.hero-metric .label-en{font-family:'Bungee Shade',sans-serif;font-size:44px;letter-spacing:0.02em;color:var(--m-color,var(--p5-red));line-height:1;position:relative;z-index:2;transform:rotate(-2deg);display:inline-block;}
+.hero-metric .label-jp{font-family:'RocknRoll One',sans-serif;font-size:16px;letter-spacing:0.5em;color:var(--p5-cream);margin-top:8px;margin-bottom:16px;position:relative;z-index:2;background:var(--p5-black);padding:4px 12px;display:inline-block;border:2px solid var(--p5-red);box-shadow:3px 3px 0 var(--p5-red);transform:rotate(-1deg);}
+.hero-metric .value{font-family:'Bungee Shade',sans-serif;font-size:96px;line-height:0.85;color:var(--m-color,var(--p5-black));letter-spacing:-0.02em;position:relative;z-index:2;}
+.hero-metric .desc{margin-top:16px;font-family:'Shippori Mincho',serif;font-weight:700;font-size:13px;color:var(--text);line-height:1.6;position:relative;z-index:2;padding:8px 12px;background:var(--bg-cream);border-left:4px solid var(--m-color,var(--p5-red));border-bottom:2px solid var(--p5-black);}
+.hero-metric .meta-tag{margin-top:16px;display:inline-block;background:var(--m-color,var(--p5-red));color:var(--p5-cream);padding:5px 12px;font-family:'Bungee',sans-serif;font-size:11px;letter-spacing:0.1em;position:relative;z-index:2;border:2px solid var(--p5-black);box-shadow:3px 3px 0 var(--p5-black);transform:rotate(-1deg);}
+.speech-bubble{position:absolute;background:var(--p5-red);color:var(--p5-cream);padding:4px 10px;font-family:'Bungee',sans-serif;font-size:11px;letter-spacing:0.1em;border:2px solid var(--p5-black);box-shadow:2px 2px 0 var(--p5-black);z-index:5;clip-path:polygon(8px 0,100% 0,calc(100% - 8px) 100%,0 100%);}
+.pill{display:inline-flex;align-items:center;font-family:'Bungee',sans-serif;font-size:11px;letter-spacing:0.06em;padding:4px 12px;text-transform:uppercase;border:2px solid var(--p5-black);position:relative;clip-path:polygon(6px 0,100% 0,calc(100% - 6px) 100%,0 100%);}
+.pill-buy{background:var(--buy);color:white;box-shadow:2px 2px 0 var(--p5-black);}
+.pill-sell{background:var(--sell);color:white;box-shadow:2px 2px 0 var(--p5-black);}
+.pill-neutral{background:var(--bg-card);color:var(--text-mute);}
+.pill-core{background:var(--p5-red);color:white;box-shadow:2px 2px 0 var(--p5-black);}
+.pill-core-prog{background:var(--p5-red);color:white;box-shadow:2px 2px 0 var(--p5-black);}
+.pill-core-doe{background:var(--p5-red-deep);color:white;box-shadow:2px 2px 0 var(--p5-black);}
+.pill-swing{background:var(--bg-card);color:var(--text);}
+.pill-excluded{background:#3a3a3a;color:#cfcfcf;border-color:#1a1a1a;box-shadow:2px 2px 0 var(--p5-black);}
+.pill-box{background:var(--box);color:white;box-shadow:2px 2px 0 var(--p5-black);}
+.pill-pass{background:white;color:var(--buy);border-color:var(--buy);border-width:2.5px;font-weight:900;}
+.pill-fail{background:white;color:var(--sell);border-color:var(--sell);border-width:2.5px;font-weight:900;}
+.pill-emergency{background:#000;color:#FF1A2E;border-color:#FF1A2E;box-shadow:2px 2px 0 var(--p5-red);animation:flicker 1.5s ease-in-out infinite;}
+.emergency-banner{background:#000;color:var(--p5-red-bright);padding:10px 16px;border:3px solid var(--p5-red-bright);box-shadow:4px 4px 0 var(--p5-red);font-family:'Bungee',sans-serif;font-size:12px;letter-spacing:0.12em;margin:8px 0 4px 0;display:flex;align-items:center;gap:10px;}
+.emergency-banner::before{content:'⚠';font-size:20px;color:var(--p5-red-bright);}
+.earnings-mark{display:inline-flex;align-items:center;gap:4px;background:#FFC107;color:var(--p5-black);padding:2px 8px;border:2px solid var(--p5-black);font-family:'Bungee',sans-serif;font-size:10px;letter-spacing:0.1em;box-shadow:2px 2px 0 var(--p5-black);transform:rotate(-2deg);}
+.stock-card.is-emergency{border-color:var(--p5-red-bright);box-shadow:4px 4px 0 var(--p5-red-bright),4px 4px 0 6px var(--p5-black);}
+.stock-card.is-emergency::before{background:var(--p5-red-bright);}
+.modal-tabs{display:flex;gap:6px;margin-bottom:16px;flex-wrap:wrap;}
+.modal-tab{background:var(--bg-cream);border:3px solid var(--p5-black);font-family:'Bungee',sans-serif;font-size:12px;letter-spacing:0.1em;padding:8px 18px;cursor:pointer;color:var(--text);transition:all 200ms;clip-path:polygon(8px 0,100% 0,calc(100% - 8px) 100%,0 100%);}
+.modal-tab:hover{background:var(--p5-red-soft);}
+.modal-tab.active{background:var(--p5-red);color:white;box-shadow:3px 3px 0 var(--p5-black);transform:translate(-2px,-2px);}
+.ext-link-btn{display:inline-flex;align-items:center;gap:8px;background:var(--bg-cream);border:3px solid var(--p5-black);padding:12px 20px;font-family:'Bungee',sans-serif;font-size:13px;letter-spacing:0.08em;color:var(--text);box-shadow:4px 4px 0 var(--p5-black);transition:all 200ms;text-decoration:none;clip-path:polygon(10px 0,100% 0,calc(100% - 10px) 100%,0 100%);}
+.ext-link-btn:hover{background:var(--p5-red);color:white;transform:translate(-3px,-3px) rotate(-1deg);box-shadow:7px 7px 0 var(--p5-black);}
+.ext-link-btn .ext-icon{font-size:18px;}
+.filter-bar{background:var(--bg-card);border:4px solid var(--p5-black);padding:14px 18px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;position:relative;box-shadow:6px 6px 0 var(--p5-red),6px 6px 0 4px var(--p5-black);}
+.filter-bar::before{content:'PICK YOUR TARGET';position:absolute;top:-14px;left:16px;background:var(--p5-red);color:var(--p5-cream);font-family:'Bungee',sans-serif;font-size:11px;letter-spacing:0.15em;padding:3px 12px;border:2px solid var(--p5-black);box-shadow:2px 2px 0 var(--p5-black);transform:rotate(-2deg);clip-path:polygon(6px 0,100% 0,calc(100% - 6px) 100%,0 100%);}
+.filter-tag{font-family:'Bungee',sans-serif;font-size:12px;letter-spacing:0.1em;background:var(--p5-red);color:var(--p5-cream);padding:6px 14px;margin-right:4px;border:2px solid var(--p5-black);box-shadow:2px 2px 0 var(--p5-black);clip-path:polygon(8px 0,100% 0,calc(100% - 8px) 100%,0 100%);}
+.input-base{background:var(--bg-card);border:2px solid var(--p5-black);color:var(--text);font-family:'Noto Sans JP',sans-serif;font-weight:700;font-size:12px;transition:all 150ms;}
+.input-base:focus{outline:none;background:rgba(230,0,18,0.05);border-color:var(--p5-red);box-shadow:3px 3px 0 var(--p5-red);}
+.input-base::placeholder{color:var(--text-faint);font-weight:500;}
+select.input-base{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%230A0A0A' stroke-width='3'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 6px center;padding-right:24px !important;}
+.section-h{display:flex;align-items:center;gap:16px;margin-bottom:28px;position:relative;padding:16px 24px 16px 56px;background:var(--p5-red);color:var(--p5-cream);box-shadow:6px 6px 0 var(--p5-black);border:3px solid var(--p5-black);clip-path:polygon(0 0,calc(100% - 24px) 0,100% 50%,calc(100% - 24px) 100%,0 100%,12px 50%);}
+.section-h::before{content:'♠';position:absolute;left:18px;top:50%;transform:translateY(-50%);font-size:32px;color:var(--p5-cream);}
+.section-h .num{font-family:'Bungee Shade',sans-serif;font-size:44px;line-height:0.9;color:var(--p5-cream);}
+.section-h h2{font-family:'Bungee',sans-serif;font-size:26px;color:var(--p5-cream);letter-spacing:-0.01em;}
+.section-h .sub{font-family:'Permanent Marker',cursive;font-size:14px;color:var(--p5-cream);}
+.section-h .meta{margin-left:auto;margin-right:32px;font-family:'JetBrains Mono',monospace;font-weight:700;font-size:11px;letter-spacing:0.15em;background:var(--p5-black);color:var(--p5-cream);padding:4px 10px;border:2px solid var(--p5-cream);transform:rotate(2deg);}
+.stock-card{background:var(--bg-card);border:3px solid var(--p5-black);margin-bottom:12px;cursor:pointer;position:relative;transition:all 220ms;box-shadow:4px 4px 0 var(--p5-black);}
+.stock-card::before{content:'';position:absolute;left:0;top:0;bottom:0;width:8px;background:var(--border-soft);transition:background 200ms;}
+.stock-card.has-buy::before{background:var(--buy);}
+.stock-card.has-sell::before{background:var(--sell);}
+.stock-card.is-fav::after{content:'★';position:absolute;top:-14px;right:16px;font-size:32px;color:var(--p5-red);text-shadow:-2px -2px 0 var(--p5-black),2px -2px 0 var(--p5-black),-2px 2px 0 var(--p5-black),2px 2px 0 var(--p5-black);z-index:3;transform:rotate(15deg);}
+.stock-card:hover{transform:translate(-3px,-3px) rotate(-0.3deg);box-shadow:7px 7px 0 var(--p5-black),7px 7px 0 5px var(--p5-red);background:var(--bg-cream);}
+.stock-card.has-buy.no-fav::after{content:'STEAL!';position:absolute;top:-12px;left:50px;font-family:'Bungee',sans-serif;font-size:10px;background:var(--p5-red);color:white;padding:2px 8px;border:2px solid var(--p5-black);box-shadow:2px 2px 0 var(--p5-black);transform:rotate(-8deg);z-index:2;clip-path:polygon(6px 0,100% 0,calc(100% - 6px) 100%,0 100%);}
+.stock-card.has-sell.no-fav::after{content:'BAIL!';position:absolute;top:-12px;left:50px;font-family:'Bungee',sans-serif;font-size:10px;background:var(--sell);color:white;padding:2px 8px;border:2px solid var(--p5-black);box-shadow:2px 2px 0 var(--p5-black);transform:rotate(-8deg);z-index:2;clip-path:polygon(6px 0,100% 0,calc(100% - 6px) 100%,0 100%);}
+.yield-bar-wrap{display:flex;align-items:center;gap:8px;font-family:'Bungee',sans-serif;font-size:11px;}
+.yield-bar{position:relative;flex:1;height:10px;background:var(--bg-cream);border:2px solid var(--p5-black);}
+.yield-bar-track{position:absolute;inset:0;background:linear-gradient(90deg,var(--sell) 0%,var(--bg-cream) 50%,var(--p5-red) 100%);opacity:0.35;}
+.yield-marker{position:absolute;top:-4px;bottom:-4px;width:4px;background:var(--p5-black);z-index:2;}
+.yield-marker::after{content:'▼';position:absolute;top:-16px;left:50%;transform:translateX(-50%);color:var(--p5-red);font-size:10px;text-shadow:1px 1px 0 var(--p5-black);}
+.btn-primary{background:var(--p5-red);color:var(--p5-cream);font-family:'Bungee',sans-serif;font-size:14px;letter-spacing:0.1em;padding:12px 28px;border:3px solid var(--p5-black);cursor:pointer;transition:all 200ms;box-shadow:5px 5px 0 var(--p5-black);transform:rotate(-1deg);clip-path:polygon(8px 0,100% 0,calc(100% - 8px) 100%,0 100%);}
+.btn-primary:hover{transform:rotate(-2deg) translate(-2px,-2px);box-shadow:7px 7px 0 var(--p5-black);background:var(--p5-red-bright);}
+.btn-icon{background:none;border:none;color:var(--text-mute);cursor:pointer;padding:4px;transition:all 150ms;}
+.btn-icon:hover{color:var(--p5-red);transform:scale(1.2) rotate(15deg);}
+.btn-icon.active{color:var(--p5-red);}
+.modal-backdrop{background:rgba(230,0,18,0.15);backdrop-filter:blur(6px);}
+.mini-stat .lbl{font-family:'Bungee',sans-serif;font-size:11px;letter-spacing:0.1em;color:var(--p5-red);}
+.mini-stat .num{font-family:'Bungee',sans-serif;font-size:26px;line-height:1;color:var(--p5-black);margin-top:4px;}
+@keyframes heistOn{from{opacity:0;transform:scale(0.92) rotate(-3deg);filter:blur(2px);}to{opacity:1;transform:scale(1) rotate(0);filter:blur(0);}}
+.heist-on{animation:heistOn 400ms cubic-bezier(0.4,0,0.2,1) both;}
+@keyframes flicker{0%,100%{opacity:1;}48%,52%{opacity:1;}50%{opacity:0.85;}}
+.flicker{animation:flicker 4s ease-in-out infinite;}
+@keyframes wobble{0%,100%{transform:rotate(-1deg);}50%{transform:rotate(1deg);}}
+.wobble{animation:wobble 6s ease-in-out infinite;}
+@keyframes bounce-in{0%{transform:scale(0.6) rotate(-15deg);opacity:0;}60%{transform:scale(1.1) rotate(8deg);}100%{transform:scale(1) rotate(-2deg);opacity:1;}}
+.bounce-in{animation:bounce-in 600ms cubic-bezier(0.4,0,0.2,1) both;}
+::-webkit-scrollbar{width:14px;height:14px;}
+::-webkit-scrollbar-track{background:var(--bg-cream);border-left:2px solid var(--p5-black);}
+::-webkit-scrollbar-thumb{background:var(--p5-red);border:2px solid var(--p5-black);}
+::-webkit-scrollbar-thumb:hover{background:var(--p5-red-bright);}
+.heist-footer{margin-top:100px;padding:40px 0;border-top:6px solid var(--p5-red);text-align:center;background:var(--bg-cream);position:relative;box-shadow:0 -4px 0 var(--p5-red-deep),0 -8px 0 var(--p5-black);}
+.heist-footer::before{content:'';position:absolute;top:0;left:0;right:0;height:4px;background:repeating-linear-gradient(90deg,var(--p5-red) 0 30px,var(--p5-black) 30px 50px,var(--p5-cream) 50px 70px);}
+@media (max-width:768px){.hide-mobile{display:none !important;}.hero-metric .value{font-size:64px;}.hero-metric .label-en{font-size:32px;}.section-h h2{font-size:20px;}.brand-title{font-size:24px;}}
+</style>
+</head>
+<body>
+<div class="calling-strip">
+<div class="calling-inner">
+<span>TAKE YOUR HEART</span><span>HIGH YIELD HEIST</span><span>THE PHANTOM THIEVES</span><span>真実を奪取せよ</span><span>DIVIDEND HEIST</span><span>I'M THE ONE</span>
+<span>TAKE YOUR HEART</span><span>HIGH YIELD HEIST</span><span>THE PHANTOM THIEVES</span><span>真実を奪取せよ</span><span>DIVIDEND HEIST</span><span>I'M THE ONE</span>
+</div></div>
+
+<header class="topbar">
+<div class="topbar-deco deco-1"></div>
+<div class="topbar-deco deco-2"></div>
+<div class="topbar-deco deco-3"></div>
+<div class="max-w-[1500px] mx-auto px-6 py-5 flex items-center justify-between gap-6 flex-wrap">
+<div class="flex items-center gap-5">
+<div class="mask-logo wobble">
+<svg viewBox="0 0 60 50" fill="none" xmlns="http://www.w3.org/2000/svg">
+<path d="M30 10 Q12 10 8 22 Q6 30 12 36 Q18 40 24 36 L26 32 Q28 30 30 30 Q32 30 34 32 L36 36 Q42 40 48 36 Q54 30 52 22 Q48 10 30 10 Z" fill="#E60012" stroke="#0A0A0A" stroke-width="2.5"/>
+<ellipse cx="20" cy="26" rx="6" ry="5" fill="#0A0A0A"/>
+<ellipse cx="40" cy="26" rx="6" ry="5" fill="#0A0A0A"/>
+<circle cx="22" cy="24" r="1.5" fill="#FAF8F0"/>
+<circle cx="42" cy="24" r="1.5" fill="#FAF8F0"/>
+<path d="M28 30 L30 36 L32 30 Z" fill="#0A0A0A"/>
+<path d="M52 6 L54 10 L58 11 L54 13 L52 17 L50 13 L46 11 L50 10 Z" fill="#FAF8F0" stroke="#0A0A0A" stroke-width="1"/>
+</svg>
+</div>
+<div>
+<div class="brand-title flicker">DIVIDEND <em>HEIST</em></div>
+<div class="brand-sub">★ TAKE YOUR HEART ★</div>
+</div>
+</div>
+<div class="live-status hide-mobile">
+<span class="live-dot"></span><span>ON THE RUN</span>
+<span style="color:var(--p5-cream);font-weight:900;" id="lastUpdate">—</span>
+</div>
+<div class="flex items-end gap-3">
+<div class="top-stat" style="--stat-color:var(--buy);"><div class="lbl" style="color:var(--buy);">BUY</div><div class="num" style="color:var(--buy);" id="buyCount">0</div></div>
+<div class="top-stat" style="--stat-color:var(--sell);"><div class="lbl" style="color:var(--sell);">SELL</div><div class="num" style="color:var(--sell);" id="sellCount">0</div></div>
+<div class="top-stat" style="--stat-color:var(--box);"><div class="lbl" style="color:var(--box);">BOX</div><div class="num" style="color:var(--box);" id="boxCount">0</div></div>
+</div>
+</div>
+<div class="max-w-[1500px] mx-auto px-6">
+<div class="tab-strip">
+<button class="tab-btn active" data-tab="signals">SIGNALS <span class="jp">本日</span><span class="badge" id="tabSignalsCount">0</span></button>
+<button class="tab-btn" data-tab="all">ALL <span class="jp">全銘柄</span></button>
+<button class="tab-btn" data-tab="portfolio">PORTFOLIO <span class="jp">保有</span></button>
+<button class="tab-btn" data-tab="watchlist">WATCH <span class="jp">監視</span></button>
+</div>
+</div>
+</header>
+
+<main class="max-w-[1500px] mx-auto px-6 py-12">
+
+<div class="filter-bar mb-16">
+<span class="filter-tag">FILTER</span>
+<select class="input-base px-3 py-2" id="filterBucket">
+<option value="">バケット : すべて</option><option value="コア">コア</option><option value="スイング">スイング</option><option value="対象外">対象外</option>
+</select>
+<select class="input-base px-3 py-2" id="filterSignal">
+<option value="">シグナル : すべて</option><option value="BUY">買い</option><option value="SELL">売り</option><option value="NEUTRAL">中立</option>
+</select>
+<select class="input-base px-3 py-2" id="filterSector"><option value="">業種 : すべて</option></select>
+<label class="flex items-center gap-2 text-xs cursor-pointer px-2 py-1.5"><input type="checkbox" id="filterBox" class="accent-[var(--p5-red)]"><span>ボックス</span></label>
+<label class="flex items-center gap-2 text-xs cursor-pointer px-2 py-1.5"><input type="checkbox" id="filterPass" checked class="accent-[var(--p5-red)]"><span>SCREEN PASS</span></label>
+<label class="flex items-center gap-2 text-xs cursor-pointer px-2 py-1.5"><input type="checkbox" id="filterShowExcluded" class="accent-[var(--p5-red)]"><span>対象外を表示</span></label>
+<div class="flex-1"></div>
+<input type="text" id="searchBox" placeholder="コード / 銘柄名" class="input-base px-3 py-2 w-44">
+<select class="input-base px-3 py-2" id="sortKey">
+<option value="signal">SORT : シグナル</option><option value="yield">SORT : 利回り</option><option value="market_cap">SORT : 時価総額</option><option value="per_pbr">SORT : PER×PBR</option>
+</select>
+</div>
+
+<section id="tab-signals" class="tab-panel">
+<div class="grid grid-cols-1 md:grid-cols-3 gap-8 mb-16 mt-4">
+<div class="hero-metric bounce-in" style="--m-color:var(--buy);animation-delay:0ms;">
+<div class="channel">CARD-01</div>
+<div class="speech-bubble" style="top:-10px;left:24px;">STEAL!</div>
+<div class="label-en">BUY!</div>
+<div class="label-jp">奪 取</div>
+<div class="value" id="heroBuy">0</div>
+<div class="desc">安値圏のお告げ。<br>真実を奪取せよ!</div>
+<div class="meta-tag">YIELD ≥ 5Y Q75</div>
+</div>
+<div class="hero-metric bounce-in" style="--m-color:var(--sell);animation-delay:80ms;">
+<div class="channel">CARD-02</div>
+<div class="speech-bubble" style="top:-10px;left:24px;background:var(--sell);color:white;">CASH!</div>
+<div class="label-en">SELL!</div>
+<div class="label-jp">撤 退</div>
+<div class="value" id="heroSell">0</div>
+<div class="desc">高値圏到達。<br>スイングは華麗に撤退。</div>
+<div class="meta-tag">YIELD ≤ 5Y Q25</div>
+</div>
+<div class="hero-metric bounce-in" style="--m-color:var(--box);animation-delay:160ms;">
+<div class="channel">CARD-03</div>
+<div class="speech-bubble" style="top:-10px;left:24px;background:var(--box);color:white;">SWING!</div>
+<div class="label-en">BOX!</div>
+<div class="label-jp">挟 撃</div>
+<div class="value" id="heroBox">0</div>
+<div class="desc">レンジ確定の合図。<br>うねりで仕留めろ。</div>
+<div class="meta-tag">ADX < 22 / TOUCHES ≥ 2</div>
+</div>
+</div>
+<div class="section-h">
+<span class="num">01</span>
+<h2>本日の獲物</h2>
+<span class="sub">— Today's Heist —</span>
+<div class="meta" id="signalDateMeta">— TOKYO</div>
+</div>
+<div id="signalList"></div>
+</section>
+
+<section id="tab-all" class="tab-panel hidden">
+<div class="section-h"><span class="num">02</span><h2>全銘柄</h2><span class="sub">— All Targets —</span><div class="meta" id="allCountMeta">—</div></div>
+<div id="allList"></div>
+</section>
+
+<section id="tab-portfolio" class="tab-panel hidden">
+<div class="section-h"><span class="num">03</span><h2>保有銘柄</h2><span class="sub">— Stolen Treasures —</span><div class="meta">SAVED LOCALLY</div></div>
+<div class="grid grid-cols-2 md:grid-cols-4 gap-5 mb-10">
+<div class="heist-card p-5 mini-stat"><div class="lbl">PRINCIPAL ★ 元本</div><div class="num" id="pfTotal">¥0</div></div>
+<div class="heist-card p-5 mini-stat"><div class="lbl">VALUE ★ 評価額</div><div class="num" id="pfValue">¥0</div></div>
+<div class="heist-card p-5 mini-stat"><div class="lbl">P / L ★ 損益</div><div class="num" id="pfPL">—</div></div>
+<div class="heist-card p-5 mini-stat" style="background:var(--p5-red);border-color:var(--p5-black);"><div class="lbl" style="color:var(--p5-cream);">DIVIDEND ★★★</div><div class="num" style="color:var(--p5-cream);" id="pfDividend">¥0</div></div>
+</div>
+<div class="heist-card p-6 mb-8">
+<h3 class="bungee text-xl mb-4" style="color:var(--p5-black);">ADD HOLDING! <span class="reggae text-xs ml-2" style="color:var(--p5-red);">／ 保有銘柄を追加</span></h3>
+<div class="grid grid-cols-1 md:grid-cols-5 gap-3">
+<input id="pfCode" type="text" placeholder="銘柄コード" class="input-base px-3 py-2.5">
+<input id="pfShares" type="number" placeholder="株数" class="input-base px-3 py-2.5">
+<input id="pfCost" type="number" placeholder="取得単価" class="input-base px-3 py-2.5">
+<input id="pfDate" type="date" class="input-base px-3 py-2.5">
+<button id="pfAddBtn" class="btn-primary">ADD →</button>
+</div>
+</div>
+<div id="pfList"></div>
+</section>
+
+<section id="tab-watchlist" class="tab-panel hidden">
+<div class="section-h"><span class="num">04</span><h2>監視中</h2><span class="sub">— Marked Targets —</span><div class="meta">★ FAVORITED</div></div>
+<div id="watchList"></div>
+</section>
+
+</main>
+
+<div id="modal" class="fixed inset-0 z-50 modal-backdrop items-center justify-center p-4" style="display:none;">
+<div class="heist-card max-w-5xl w-full max-h-[92vh] overflow-y-auto" style="border-width:4px;">
+<div class="sticky top-0 z-10 px-6 py-5 flex items-start justify-between gap-4" style="background:var(--p5-red);border-bottom:4px solid var(--p5-black);">
+<div>
+<div class="flex items-baseline gap-3 flex-wrap">
+<span class="bungee text-2xl" id="mCode" style="color:var(--p5-cream);"></span>
+<h2 class="bungee text-2xl" id="mName" style="color:var(--p5-cream);"></h2>
+<span class="pill" id="mBucket"></span>
+<span class="pill" id="mSignal"></span>
+<span class="pill pill-box hidden" id="mBoxPill">BOX!</span>
+<span class="pill pill-emergency hidden" id="mEmergencyPill">⚠ EXIT!</span>
+<span class="earnings-mark hidden" id="mEarningsMark">📊 明日決算</span>
+</div>
+<div class="text-xs mt-2 mono" style="color:var(--p5-cream);" id="mSector"></div>
+</div>
+<button id="mClose" class="btn-icon" style="color:var(--p5-cream);">
+<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M18 6L6 18M6 6l12 12"/></svg>
+</button>
+</div>
+<div class="p-6">
+<!-- 緊急シグナルバナー -->
+<div id="mEmergencyBanner" class="emergency-banner" style="display:none;"></div>
+
+<!-- タブ切替 -->
+<div class="modal-tabs">
+<button class="modal-tab active" data-mtab="metrics">METRICS <span class="reggae text-[10px] ml-1">／ 指標</span></button>
+<button class="modal-tab" data-mtab="financials">FINANCIALS <span class="reggae text-[10px] ml-1">／ 業績推移</span></button>
+<button class="modal-tab" data-mtab="links">EXTERNAL <span class="reggae text-[10px] ml-1">／ 外部リンク</span></button>
+</div>
+
+<!-- METRICS パネル (既存内容) -->
+<div id="mPanelMetrics" class="modal-panel">
+<div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+<div class="heist-card p-4 mini-stat"><div class="lbl">PRICE ★ 現在値</div><div class="num" id="mPrice">—</div><div class="text-[10px] mono mt-1" style="color:var(--text-mute);">DPS <span id="mDPS">—</span></div></div>
+<div class="heist-card p-4 mini-stat" style="border-color:var(--p5-red);"><div class="lbl">YIELD ★ 利回り</div><div class="num" style="color:var(--p5-red);"><span id="mYield">—</span><span class="text-base">%</span></div><div class="text-[10px] mono mt-1" style="color:var(--text-mute);">5Y Med <span id="mMedYield">—</span>%</div></div>
+<div class="heist-card p-4 mini-stat"><div class="lbl">PER × PBR</div><div class="num" id="mGraham">—</div><div class="text-[10px] mono mt-1" style="color:var(--text-mute);">PER <span id="mPER">—</span> · PBR <span id="mPBR">—</span></div></div>
+<div class="heist-card p-4 mini-stat"><div class="lbl">PAYOUT ★ 配当性向</div><div class="num"><span id="mPayout">—</span><span class="text-base">%</span></div><div class="text-[10px] mono mt-1" style="color:var(--text-mute);">自己資本 <span id="mEquity">—</span>%</div></div>
+</div>
+<div class="heist-card p-5 mb-4">
+<div class="flex items-center justify-between mb-3">
+<h3 class="bungee text-base" style="color:var(--p5-black);">5Y YIELD! <span class="reggae text-[11px] ml-2" style="color:var(--p5-red);">／ 配当利回り分布</span></h3>
+<div class="text-[10px] mono flex gap-3" style="color:var(--text-mute);"><span><span style="color:var(--sell);">●</span> SELL</span><span><span style="color:var(--p5-black);">●</span> NOW</span><span><span style="color:var(--p5-red);">●</span> BUY</span></div>
+</div>
+<div id="mYieldChart" style="height:220px;"></div>
+</div>
+<div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+<div class="heist-card p-5"><h3 class="bungee text-base mb-3" style="color:var(--p5-black);">SCREENING! <span class="reggae text-[11px] ml-2" style="color:var(--p5-red);">／ 8条件判定</span></h3><div id="mScreening"></div></div>
+<div class="heist-card p-5"><h3 class="bungee text-base mb-3" style="color:var(--p5-black);">BOX! <span class="reggae text-[11px] ml-2" style="color:var(--p5-red);">／ ボックス分析</span></h3><div id="mBoxAnalysis"></div></div>
+</div>
+</div>
+
+<!-- FINANCIALS パネル (新規) -->
+<div id="mPanelFinancials" class="modal-panel" style="display:none;">
+<div class="heist-card p-5 mb-4">
+<div class="flex items-center justify-between mb-3 flex-wrap gap-2">
+<h3 class="bungee text-base" style="color:var(--p5-black);">REVENUE & PROFIT <span class="reggae text-[11px] ml-2" style="color:var(--p5-red);">／ 売上・利益推移</span></h3>
+<div class="text-[10px] mono flex gap-3" style="color:var(--text-mute);"><span><span style="color:#E60012;">●</span> 売上</span><span><span style="color:#FFA500;">●</span> 営業利益</span><span><span style="color:#2962FF;">●</span> 純利益</span></div>
+</div>
+<div id="mFinChartProfit" style="height:280px;"></div>
+</div>
+<div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+<div class="heist-card p-5"><h3 class="bungee text-base mb-3" style="color:var(--p5-black);">EPS / DPS <span class="reggae text-[11px] ml-2" style="color:var(--p5-red);">／ 1株あたり</span></h3><div id="mFinChartEps" style="height:240px;"></div></div>
+<div class="heist-card p-5"><h3 class="bungee text-base mb-3" style="color:var(--p5-black);">EARNINGS! <span class="reggae text-[11px] ml-2" style="color:var(--p5-red);">／ 決算情報</span></h3><div id="mEarningsInfo"></div></div>
+</div>
+</div>
+
+<!-- EXTERNAL LINKS パネル (新規) -->
+<div id="mPanelLinks" class="modal-panel" style="display:none;">
+<div class="heist-card p-6">
+<h3 class="bungee text-base mb-4" style="color:var(--p5-black);">EXTERNAL LINKS <span class="reggae text-[11px] ml-2" style="color:var(--p5-red);">／ 外部サイト一覧</span></h3>
+<div id="mExtLinks" class="flex flex-wrap gap-3 mb-6"></div>
+<div class="mincho text-xs" style="color:var(--text-mute);line-height:1.7;">
+本ツールが取得していない最新情報や詳細は、以下の外部サイトで確認してください。<br>
+TDnet では適時開示資料、みんかぶでは投資家コメント、IRBANK では財務指標の長期推移を見られます。
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+
+<footer class="heist-footer">
+<div class="bungee-shade text-4xl flicker" style="color:var(--p5-black);">DIVIDEND <span style="color:var(--p5-red);">HEIST</span></div>
+<div class="marker text-base mt-3" style="color:var(--p5-red);">★ TAKE YOUR HEART ★ 真実を奪取せよ ★</div>
+<div class="mono text-[10px] mt-4" style="color:var(--text-mute);letter-spacing:0.3em;">POWERED BY J-QUANTS · THE PHANTOM THIEVES OF DIVIDEND</div>
+</footer>
+<script>
+const DUMMY_DATA = {
+  "generated_at": "2026-05-06T19:30:00+09:00",
+  "universe_count": 487,
+  "processed_count": 17,
+  "stocks": [
+    {
+      "code": "8058",
+      "name": "三菱商事",
+      "sector": "卸売業",
+      "sector33_code": "0000",
+      "market_cap_oku": 198000,
+      "price": 2900,
+      "bucket": "コア",
+      "core_type": "progressive",
+      "screening_pass": true,
+      "signal": "NEUTRAL",
+      "is_box": false,
+      "emergency_exit": false,
+      "earnings_imminent": true,
+      "next_earnings_date": "2026-05-08",
+      "forecast_dps": 100,
+      "current_yield": 3.45,
+      "yield_q25": 2.8,
+      "yield_median": 3.6,
+      "yield_q75": 4.5,
+      "per": 11.2,
+      "pbr": 1.42,
+      "per_pbr": 15.9,
+      "payout_ratio": 30.1,
+      "equity_ratio": 0.385,
+      "screening": {
+        "dividend": true,
+        "revenue": true,
+        "op_profit": true,
+        "net_profit": true,
+        "payout": true,
+        "equity": null,
+        "valuation": true,
+        "min_yield": true
+      },
+      "box": null,
+      "financials_history": [
+        {
+          "period": "2024Q4",
+          "sales": 12000000.0,
+          "op": 1200000.0,
+          "np": 880000.0,
+          "eps": 280.0,
+          "dps": 80.0
+        },
+        {
+          "period": "2024Q3",
+          "sales": 12600000.0,
+          "op": 1260000.0,
+          "np": 924000.0,
+          "eps": 294.0,
+          "dps": 84.0
+        },
+        {
+          "period": "2024Q2",
+          "sales": 13200000.0,
+          "op": 1320000.0,
+          "np": 968000.0,
+          "eps": 308.0,
+          "dps": 88.0
+        },
+        {
+          "period": "2024Q1",
+          "sales": 13800000.0,
+          "op": 1380000.0,
+          "np": 1012000.0,
+          "eps": 322.0,
+          "dps": 92.0
+        },
+        {
+          "period": "2023Q4",
+          "sales": 14400000.0,
+          "op": 1440000.0,
+          "np": 1056000.0,
+          "eps": 336.0,
+          "dps": 96.0
+        },
+        {
+          "period": "2023Q3",
+          "sales": 15000000.0,
+          "op": 1500000.0,
+          "np": 1100000.0,
+          "eps": 350.0,
+          "dps": 100.0
+        }
+      ],
+      "links": {
+        "minkabu": "https://minkabu.jp/stock/8058",
+        "irbank": "https://irbank.net/8058/",
+        "tdnet": "https://www.release.tdnet.info/inbs/I_main_00.html"
+      }
+    },
+    {
+      "code": "9433",
+      "name": "KDDI",
+      "sector": "情報・通信業",
+      "sector33_code": "0000",
+      "market_cap_oku": 113000,
+      "price": 2990,
+      "bucket": "コア",
+      "core_type": "progressive",
+      "screening_pass": true,
+      "signal": "BUY",
+      "is_box": true,
+      "emergency_exit": false,
+      "earnings_imminent": false,
+      "next_earnings_date": null,
+      "forecast_dps": 145,
+      "current_yield": 4.85,
+      "yield_q25": 3.65,
+      "yield_median": 4.2,
+      "yield_q75": 4.75,
+      "per": 13.8,
+      "pbr": 1.62,
+      "per_pbr": 22.4,
+      "payout_ratio": 42.5,
+      "equity_ratio": 0.562,
+      "screening": {
+        "dividend": true,
+        "revenue": true,
+        "op_profit": true,
+        "net_profit": true,
+        "payout": true,
+        "equity": true,
+        "valuation": true,
+        "min_yield": true
+      },
+      "box": {
+        "adx": 18.2,
+        "width_pct": 11.5,
+        "upper": 3120,
+        "lower": 2820,
+        "upper_touches": 3,
+        "lower_touches": 4,
+        "atr_ratio": 1.85
+      },
+      "financials_history": [
+        {
+          "period": "2024Q4",
+          "sales": 4640000.0,
+          "op": 864000.0,
+          "np": 536000.0,
+          "eps": 236.0,
+          "dps": 116.0
+        },
+        {
+          "period": "2024Q3",
+          "sales": 4872000.0,
+          "op": 907200.0,
+          "np": 562800.0,
+          "eps": 247.8,
+          "dps": 121.8
+        },
+        {
+          "period": "2024Q2",
+          "sales": 5104000.0,
+          "op": 950400.0,
+          "np": 589600.0,
+          "eps": 259.6,
+          "dps": 127.6
+        },
+        {
+          "period": "2024Q1",
+          "sales": 5336000.0,
+          "op": 993600.0,
+          "np": 616400.0,
+          "eps": 271.4,
+          "dps": 133.4
+        },
+        {
+          "period": "2023Q4",
+          "sales": 5568000.0,
+          "op": 1036800.0,
+          "np": 643200.0,
+          "eps": 283.2,
+          "dps": 139.2
+        },
+        {
+          "period": "2023Q3",
+          "sales": 5800000.0,
+          "op": 1080000.0,
+          "np": 670000.0,
+          "eps": 295.0,
+          "dps": 145.0
+        }
+      ],
+      "links": {
+        "minkabu": "https://minkabu.jp/stock/9433",
+        "irbank": "https://irbank.net/9433/",
+        "tdnet": "https://www.release.tdnet.info/inbs/I_main_00.html"
+      }
+    },
+    {
+      "code": "9432",
+      "name": "日本電信電話",
+      "sector": "情報・通信業",
+      "sector33_code": "0000",
+      "market_cap_oku": 145000,
+      "price": 132,
+      "bucket": "スイング",
+      "core_type": null,
+      "screening_pass": true,
+      "signal": "BUY",
+      "is_box": true,
+      "emergency_exit": false,
+      "earnings_imminent": false,
+      "next_earnings_date": null,
+      "forecast_dps": 5.2,
+      "current_yield": 3.95,
+      "yield_q25": 2.95,
+      "yield_median": 3.4,
+      "yield_q75": 3.85,
+      "per": 12.1,
+      "pbr": 1.38,
+      "per_pbr": 16.7,
+      "payout_ratio": 41.2,
+      "equity_ratio": 0.338,
+      "screening": {
+        "dividend": true,
+        "revenue": true,
+        "op_profit": true,
+        "net_profit": true,
+        "payout": true,
+        "equity": true,
+        "valuation": true,
+        "min_yield": true
+      },
+      "box": {
+        "adx": 19.5,
+        "width_pct": 9.2,
+        "upper": 138,
+        "lower": 126,
+        "upper_touches": 2,
+        "lower_touches": 3,
+        "atr_ratio": 1.62
+      },
+      "financials_history": [
+        {
+          "period": "2024Q4",
+          "sales": 10800000.0,
+          "op": 1480000.0,
+          "np": 976000.0,
+          "eps": 9.2,
+          "dps": 4.2
+        },
+        {
+          "period": "2024Q3",
+          "sales": 11340000.0,
+          "op": 1554000.0,
+          "np": 1024800.0,
+          "eps": 9.7,
+          "dps": 4.4
+        },
+        {
+          "period": "2024Q2",
+          "sales": 11880000.0,
+          "op": 1628000.0,
+          "np": 1073600.0,
+          "eps": 10.1,
+          "dps": 4.6
+        },
+        {
+          "period": "2024Q1",
+          "sales": 12420000.0,
+          "op": 1702000.0,
+          "np": 1122400.0,
+          "eps": 10.6,
+          "dps": 4.8
+        },
+        {
+          "period": "2023Q4",
+          "sales": 12960000.0,
+          "op": 1776000.0,
+          "np": 1171200.0,
+          "eps": 11.0,
+          "dps": 5.0
+        },
+        {
+          "period": "2023Q3",
+          "sales": 13500000.0,
+          "op": 1850000.0,
+          "np": 1220000.0,
+          "eps": 11.5,
+          "dps": 5.2
+        }
+      ],
+      "links": {
+        "minkabu": "https://minkabu.jp/stock/9432",
+        "irbank": "https://irbank.net/9432/",
+        "tdnet": "https://www.release.tdnet.info/inbs/I_main_00.html"
+      }
+    },
+    {
+      "code": "8306",
+      "name": "三菱UFJ FG",
+      "sector": "銀行業",
+      "sector33_code": "0000",
+      "market_cap_oku": 305000,
+      "price": 1875,
+      "bucket": "コア",
+      "core_type": "progressive",
+      "screening_pass": true,
+      "signal": "NEUTRAL",
+      "is_box": false,
+      "emergency_exit": false,
+      "earnings_imminent": false,
+      "next_earnings_date": null,
+      "forecast_dps": 60,
+      "current_yield": 3.2,
+      "yield_q25": 2.8,
+      "yield_median": 3.5,
+      "yield_q75": 4.2,
+      "per": 11.5,
+      "pbr": 0.98,
+      "per_pbr": 11.3,
+      "payout_ratio": 38.5,
+      "equity_ratio": null,
+      "screening": {
+        "dividend": true,
+        "revenue": true,
+        "op_profit": true,
+        "net_profit": true,
+        "payout": true,
+        "equity": null,
+        "valuation": true,
+        "min_yield": true
+      },
+      "box": null,
+      "financials_history": [
+        {
+          "period": "2024Q4",
+          "sales": 5760000.0,
+          "op": 1200000.0,
+          "np": 1040000.0,
+          "eps": 132.0,
+          "dps": 48.0
+        },
+        {
+          "period": "2024Q3",
+          "sales": 6048000.0,
+          "op": 1260000.0,
+          "np": 1092000.0,
+          "eps": 138.6,
+          "dps": 50.4
+        },
+        {
+          "period": "2024Q2",
+          "sales": 6336000.0,
+          "op": 1320000.0,
+          "np": 1144000.0,
+          "eps": 145.2,
+          "dps": 52.8
+        },
+        {
+          "period": "2024Q1",
+          "sales": 6624000.0,
+          "op": 1380000.0,
+          "np": 1196000.0,
+          "eps": 151.8,
+          "dps": 55.2
+        },
+        {
+          "period": "2023Q4",
+          "sales": 6912000.0,
+          "op": 1440000.0,
+          "np": 1248000.0,
+          "eps": 158.4,
+          "dps": 57.6
+        },
+        {
+          "period": "2023Q3",
+          "sales": 7200000.0,
+          "op": 1500000.0,
+          "np": 1300000.0,
+          "eps": 165.0,
+          "dps": 60.0
+        }
+      ],
+      "links": {
+        "minkabu": "https://minkabu.jp/stock/8306",
+        "irbank": "https://irbank.net/8306/",
+        "tdnet": "https://www.release.tdnet.info/inbs/I_main_00.html"
+      }
+    },
+    {
+      "code": "1605",
+      "name": "INPEX",
+      "sector": "鉱業",
+      "sector33_code": "0000",
+      "market_cap_oku": 27500,
+      "price": 1738,
+      "bucket": "コア",
+      "core_type": "progressive",
+      "screening_pass": true,
+      "signal": "BUY",
+      "is_box": true,
+      "emergency_exit": false,
+      "earnings_imminent": false,
+      "next_earnings_date": null,
+      "forecast_dps": 86,
+      "current_yield": 4.95,
+      "yield_q25": 3.1,
+      "yield_median": 4.2,
+      "yield_q75": 4.85,
+      "per": 7.8,
+      "pbr": 0.62,
+      "per_pbr": 4.8,
+      "payout_ratio": 30.5,
+      "equity_ratio": 0.621,
+      "screening": {
+        "dividend": true,
+        "revenue": true,
+        "op_profit": true,
+        "net_profit": true,
+        "payout": true,
+        "equity": true,
+        "valuation": true,
+        "min_yield": true
+      },
+      "box": {
+        "adx": 16.8,
+        "width_pct": 13.2,
+        "upper": 1820,
+        "lower": 1610,
+        "upper_touches": 3,
+        "lower_touches": 3,
+        "atr_ratio": 2.15
+      },
+      "financials_history": [
+        {
+          "period": "2024Q4",
+          "sales": 2000000.0,
+          "op": 680000.0,
+          "np": 368000.0,
+          "eps": 176.0,
+          "dps": 68.8
+        },
+        {
+          "period": "2024Q3",
+          "sales": 2100000.0,
+          "op": 714000.0,
+          "np": 386400.0,
+          "eps": 184.8,
+          "dps": 72.2
+        },
+        {
+          "period": "2024Q2",
+          "sales": 2200000.0,
+          "op": 748000.0,
+          "np": 404800.0,
+          "eps": 193.6,
+          "dps": 75.7
+        },
+        {
+          "period": "2024Q1",
+          "sales": 2300000.0,
+          "op": 782000.0,
+          "np": 423200.0,
+          "eps": 202.4,
+          "dps": 79.1
+        },
+        {
+          "period": "2023Q4",
+          "sales": 2400000.0,
+          "op": 816000.0,
+          "np": 441600.0,
+          "eps": 211.2,
+          "dps": 82.6
+        },
+        {
+          "period": "2023Q3",
+          "sales": 2500000.0,
+          "op": 850000.0,
+          "np": 460000.0,
+          "eps": 220.0,
+          "dps": 86.0
+        }
+      ],
+      "links": {
+        "minkabu": "https://minkabu.jp/stock/1605",
+        "irbank": "https://irbank.net/1605/",
+        "tdnet": "https://www.release.tdnet.info/inbs/I_main_00.html"
+      }
+    },
+    {
+      "code": "4502",
+      "name": "武田薬品工業",
+      "sector": "医薬品",
+      "sector33_code": "0000",
+      "market_cap_oku": 67000,
+      "price": 4243,
+      "bucket": "コア",
+      "core_type": "progressive",
+      "screening_pass": true,
+      "signal": "BUY",
+      "is_box": false,
+      "emergency_exit": false,
+      "earnings_imminent": false,
+      "next_earnings_date": null,
+      "forecast_dps": 196,
+      "current_yield": 4.62,
+      "yield_q25": 3.4,
+      "yield_median": 4.1,
+      "yield_q75": 4.55,
+      "per": 18.5,
+      "pbr": 1.05,
+      "per_pbr": 19.4,
+      "payout_ratio": 48.2,
+      "equity_ratio": 0.528,
+      "screening": {
+        "dividend": true,
+        "revenue": true,
+        "op_profit": true,
+        "net_profit": true,
+        "payout": true,
+        "equity": true,
+        "valuation": true,
+        "min_yield": true
+      },
+      "box": null,
+      "financials_history": [
+        {
+          "period": "2024Q4",
+          "sales": 3360000.0,
+          "op": 304000.0,
+          "np": 176000.0,
+          "eps": 184.0,
+          "dps": 156.8
+        },
+        {
+          "period": "2024Q3",
+          "sales": 3528000.0,
+          "op": 319200.0,
+          "np": 184800.0,
+          "eps": 193.2,
+          "dps": 164.6
+        },
+        {
+          "period": "2024Q2",
+          "sales": 3696000.0,
+          "op": 334400.0,
+          "np": 193600.0,
+          "eps": 202.4,
+          "dps": 172.5
+        },
+        {
+          "period": "2024Q1",
+          "sales": 3864000.0,
+          "op": 349600.0,
+          "np": 202400.0,
+          "eps": 211.6,
+          "dps": 180.3
+        },
+        {
+          "period": "2023Q4",
+          "sales": 4032000.0,
+          "op": 364800.0,
+          "np": 211200.0,
+          "eps": 220.8,
+          "dps": 188.2
+        },
+        {
+          "period": "2023Q3",
+          "sales": 4200000.0,
+          "op": 380000.0,
+          "np": 220000.0,
+          "eps": 230.0,
+          "dps": 196.0
+        }
+      ],
+      "links": {
+        "minkabu": "https://minkabu.jp/stock/4502",
+        "irbank": "https://irbank.net/4502/",
+        "tdnet": "https://www.release.tdnet.info/inbs/I_main_00.html"
+      }
+    },
+    {
+      "code": "5108",
+      "name": "ブリヂストン",
+      "sector": "ゴム製品",
+      "sector33_code": "0000",
+      "market_cap_oku": 38500,
+      "price": 4980,
+      "bucket": "コア",
+      "core_type": "progressive",
+      "screening_pass": true,
+      "signal": "BUY",
+      "is_box": true,
+      "emergency_exit": false,
+      "earnings_imminent": false,
+      "next_earnings_date": null,
+      "forecast_dps": 215,
+      "current_yield": 4.32,
+      "yield_q25": 2.8,
+      "yield_median": 3.6,
+      "yield_q75": 4.2,
+      "per": 11.5,
+      "pbr": 1.32,
+      "per_pbr": 15.2,
+      "payout_ratio": 42.5,
+      "equity_ratio": 0.645,
+      "screening": {
+        "dividend": true,
+        "revenue": true,
+        "op_profit": true,
+        "net_profit": true,
+        "payout": true,
+        "equity": true,
+        "valuation": true,
+        "min_yield": true
+      },
+      "box": {
+        "adx": 17.2,
+        "width_pct": 12.8,
+        "upper": 5180,
+        "lower": 4790,
+        "upper_touches": 3,
+        "lower_touches": 2,
+        "atr_ratio": 1.95
+      },
+      "financials_history": [
+        {
+          "period": "2024Q4",
+          "sales": 3520000.0,
+          "op": 464000.0,
+          "np": 304000.0,
+          "eps": 345.6,
+          "dps": 172.0
+        },
+        {
+          "period": "2024Q3",
+          "sales": 3696000.0,
+          "op": 487200.0,
+          "np": 319200.0,
+          "eps": 362.9,
+          "dps": 180.6
+        },
+        {
+          "period": "2024Q2",
+          "sales": 3872000.0,
+          "op": 510400.0,
+          "np": 334400.0,
+          "eps": 380.2,
+          "dps": 189.2
+        },
+        {
+          "period": "2024Q1",
+          "sales": 4048000.0,
+          "op": 533600.0,
+          "np": 349600.0,
+          "eps": 397.4,
+          "dps": 197.8
+        },
+        {
+          "period": "2023Q4",
+          "sales": 4224000.0,
+          "op": 556800.0,
+          "np": 364800.0,
+          "eps": 414.7,
+          "dps": 206.4
+        },
+        {
+          "period": "2023Q3",
+          "sales": 4400000.0,
+          "op": 580000.0,
+          "np": 380000.0,
+          "eps": 432.0,
+          "dps": 215.0
+        }
+      ],
+      "links": {
+        "minkabu": "https://minkabu.jp/stock/5108",
+        "irbank": "https://irbank.net/5108/",
+        "tdnet": "https://www.release.tdnet.info/inbs/I_main_00.html"
+      }
+    },
+    {
+      "code": "8316",
+      "name": "三井住友FG",
+      "sector": "銀行業",
+      "sector33_code": "0000",
+      "market_cap_oku": 145000,
+      "price": 8434,
+      "bucket": "コア",
+      "core_type": "progressive",
+      "screening_pass": true,
+      "signal": "BUY",
+      "is_box": false,
+      "emergency_exit": false,
+      "earnings_imminent": false,
+      "next_earnings_date": null,
+      "forecast_dps": 350,
+      "current_yield": 4.15,
+      "yield_q25": 3.2,
+      "yield_median": 3.85,
+      "yield_q75": 4.1,
+      "per": 10.8,
+      "pbr": 0.95,
+      "per_pbr": 10.3,
+      "payout_ratio": 38.2,
+      "equity_ratio": null,
+      "screening": {
+        "dividend": true,
+        "revenue": true,
+        "op_profit": true,
+        "net_profit": true,
+        "payout": true,
+        "equity": null,
+        "valuation": true,
+        "min_yield": true
+      },
+      "box": null,
+      "financials_history": [
+        {
+          "period": "2024Q4",
+          "sales": 5440000.0,
+          "op": 880000.0,
+          "np": 736000.0,
+          "eps": 624.0,
+          "dps": 280.0
+        },
+        {
+          "period": "2024Q3",
+          "sales": 5712000.0,
+          "op": 924000.0,
+          "np": 772800.0,
+          "eps": 655.2,
+          "dps": 294.0
+        },
+        {
+          "period": "2024Q2",
+          "sales": 5984000.0,
+          "op": 968000.0,
+          "np": 809600.0,
+          "eps": 686.4,
+          "dps": 308.0
+        },
+        {
+          "period": "2024Q1",
+          "sales": 6256000.0,
+          "op": 1012000.0,
+          "np": 846400.0,
+          "eps": 717.6,
+          "dps": 322.0
+        },
+        {
+          "period": "2023Q4",
+          "sales": 6528000.0,
+          "op": 1056000.0,
+          "np": 883200.0,
+          "eps": 748.8,
+          "dps": 336.0
+        },
+        {
+          "period": "2023Q3",
+          "sales": 6800000.0,
+          "op": 1100000.0,
+          "np": 920000.0,
+          "eps": 780.0,
+          "dps": 350.0
+        }
+      ],
+      "links": {
+        "minkabu": "https://minkabu.jp/stock/8316",
+        "irbank": "https://irbank.net/8316/",
+        "tdnet": "https://www.release.tdnet.info/inbs/I_main_00.html"
+      }
+    },
+    {
+      "code": "2502",
+      "name": "アサヒGHD",
+      "sector": "食料品",
+      "sector33_code": "0000",
+      "market_cap_oku": 32000,
+      "price": 4520,
+      "bucket": "コア",
+      "core_type": "doe",
+      "screening_pass": true,
+      "signal": "NEUTRAL",
+      "is_box": false,
+      "emergency_exit": false,
+      "earnings_imminent": false,
+      "next_earnings_date": null,
+      "forecast_dps": 138,
+      "current_yield": 3.05,
+      "yield_q25": 2.5,
+      "yield_median": 3.1,
+      "yield_q75": 3.65,
+      "per": 18.5,
+      "pbr": 1.78,
+      "per_pbr": 32.9,
+      "payout_ratio": 42.5,
+      "equity_ratio": 0.485,
+      "screening": {
+        "dividend": true,
+        "revenue": true,
+        "op_profit": true,
+        "net_profit": true,
+        "payout": true,
+        "equity": true,
+        "valuation": false,
+        "min_yield": true
+      },
+      "box": null,
+      "financials_history": [
+        {
+          "period": "2024Q4",
+          "sales": 2240000.0,
+          "op": 224000.0,
+          "np": 144000.0,
+          "eps": 196.0,
+          "dps": 110.4
+        },
+        {
+          "period": "2024Q3",
+          "sales": 2352000.0,
+          "op": 235200.0,
+          "np": 151200.0,
+          "eps": 205.8,
+          "dps": 115.9
+        },
+        {
+          "period": "2024Q2",
+          "sales": 2464000.0,
+          "op": 246400.0,
+          "np": 158400.0,
+          "eps": 215.6,
+          "dps": 121.4
+        },
+        {
+          "period": "2024Q1",
+          "sales": 2576000.0,
+          "op": 257600.0,
+          "np": 165600.0,
+          "eps": 225.4,
+          "dps": 127.0
+        },
+        {
+          "period": "2023Q4",
+          "sales": 2688000.0,
+          "op": 268800.0,
+          "np": 172800.0,
+          "eps": 235.2,
+          "dps": 132.5
+        },
+        {
+          "period": "2023Q3",
+          "sales": 2800000.0,
+          "op": 280000.0,
+          "np": 180000.0,
+          "eps": 245.0,
+          "dps": 138.0
+        }
+      ],
+      "links": {
+        "minkabu": "https://minkabu.jp/stock/2502",
+        "irbank": "https://irbank.net/2502/",
+        "tdnet": "https://www.release.tdnet.info/inbs/I_main_00.html"
+      }
+    },
+    {
+      "code": "7203",
+      "name": "トヨタ自動車",
+      "sector": "輸送用機器",
+      "sector33_code": "0000",
+      "market_cap_oku": 415000,
+      "price": 2700,
+      "bucket": "コア",
+      "core_type": "progressive",
+      "screening_pass": true,
+      "signal": "BUY",
+      "is_box": false,
+      "emergency_exit": false,
+      "earnings_imminent": false,
+      "next_earnings_date": null,
+      "forecast_dps": 95,
+      "current_yield": 3.52,
+      "yield_q25": 2.4,
+      "yield_median": 2.95,
+      "yield_q75": 3.45,
+      "per": 9.5,
+      "pbr": 1.32,
+      "per_pbr": 12.5,
+      "payout_ratio": 28.5,
+      "equity_ratio": 0.385,
+      "screening": {
+        "dividend": true,
+        "revenue": true,
+        "op_profit": true,
+        "net_profit": true,
+        "payout": true,
+        "equity": false,
+        "valuation": true,
+        "min_yield": true
+      },
+      "box": null,
+      "financials_history": [
+        {
+          "period": "2024Q4",
+          "sales": 36000000.0,
+          "op": 4400000.0,
+          "np": 3920000.0,
+          "eps": 228.0,
+          "dps": 76.0
+        },
+        {
+          "period": "2024Q3",
+          "sales": 37800000.0,
+          "op": 4620000.0,
+          "np": 4116000.0,
+          "eps": 239.4,
+          "dps": 79.8
+        },
+        {
+          "period": "2024Q2",
+          "sales": 39600000.0,
+          "op": 4840000.0,
+          "np": 4312000.0,
+          "eps": 250.8,
+          "dps": 83.6
+        },
+        {
+          "period": "2024Q1",
+          "sales": 41400000.0,
+          "op": 5060000.0,
+          "np": 4508000.0,
+          "eps": 262.2,
+          "dps": 87.4
+        },
+        {
+          "period": "2023Q4",
+          "sales": 43200000.0,
+          "op": 5280000.0,
+          "np": 4704000.0,
+          "eps": 273.6,
+          "dps": 91.2
+        },
+        {
+          "period": "2023Q3",
+          "sales": 45000000.0,
+          "op": 5500000.0,
+          "np": 4900000.0,
+          "eps": 285.0,
+          "dps": 95.0
+        }
+      ],
+      "links": {
+        "minkabu": "https://minkabu.jp/stock/7203",
+        "irbank": "https://irbank.net/7203/",
+        "tdnet": "https://www.release.tdnet.info/inbs/I_main_00.html"
+      }
+    },
+    {
+      "code": "9101",
+      "name": "日本郵船",
+      "sector": "海運業",
+      "sector33_code": "0000",
+      "market_cap_oku": 23800,
+      "price": 4395,
+      "bucket": "スイング",
+      "core_type": null,
+      "screening_pass": true,
+      "signal": "NEUTRAL",
+      "is_box": true,
+      "emergency_exit": false,
+      "earnings_imminent": true,
+      "next_earnings_date": "2026-05-08",
+      "forecast_dps": 200,
+      "current_yield": 4.55,
+      "yield_q25": 3.2,
+      "yield_median": 5.6,
+      "yield_q75": 8.5,
+      "per": 6.8,
+      "pbr": 0.85,
+      "per_pbr": 5.8,
+      "payout_ratio": 32.5,
+      "equity_ratio": 0.585,
+      "screening": {
+        "dividend": true,
+        "revenue": true,
+        "op_profit": true,
+        "net_profit": true,
+        "payout": true,
+        "equity": true,
+        "valuation": true,
+        "min_yield": true
+      },
+      "box": {
+        "adx": 21.5,
+        "width_pct": 11.8,
+        "upper": 4580,
+        "lower": 4140,
+        "upper_touches": 2,
+        "lower_touches": 3,
+        "atr_ratio": 2.05
+      },
+      "financials_history": [
+        {
+          "period": "2024Q4",
+          "sales": 1920000.0,
+          "op": 464000.0,
+          "np": 336000.0,
+          "eps": 516.0,
+          "dps": 160.0
+        },
+        {
+          "period": "2024Q3",
+          "sales": 2016000.0,
+          "op": 487200.0,
+          "np": 352800.0,
+          "eps": 541.8,
+          "dps": 168.0
+        },
+        {
+          "period": "2024Q2",
+          "sales": 2112000.0,
+          "op": 510400.0,
+          "np": 369600.0,
+          "eps": 567.6,
+          "dps": 176.0
+        },
+        {
+          "period": "2024Q1",
+          "sales": 2208000.0,
+          "op": 533600.0,
+          "np": 386400.0,
+          "eps": 593.4,
+          "dps": 184.0
+        },
+        {
+          "period": "2023Q4",
+          "sales": 2304000.0,
+          "op": 556800.0,
+          "np": 403200.0,
+          "eps": 619.2,
+          "dps": 192.0
+        },
+        {
+          "period": "2023Q3",
+          "sales": 2400000.0,
+          "op": 580000.0,
+          "np": 420000.0,
+          "eps": 645.0,
+          "dps": 200.0
+        }
+      ],
+      "links": {
+        "minkabu": "https://minkabu.jp/stock/9101",
+        "irbank": "https://irbank.net/9101/",
+        "tdnet": "https://www.release.tdnet.info/inbs/I_main_00.html"
+      }
+    },
+    {
+      "code": "1928",
+      "name": "積水ハウス",
+      "sector": "建設業",
+      "sector33_code": "0000",
+      "market_cap_oku": 23000,
+      "price": 3375,
+      "bucket": "スイング",
+      "core_type": null,
+      "screening_pass": true,
+      "signal": "BUY",
+      "is_box": false,
+      "emergency_exit": false,
+      "earnings_imminent": false,
+      "next_earnings_date": null,
+      "forecast_dps": 130,
+      "current_yield": 3.85,
+      "yield_q25": 3.1,
+      "yield_median": 3.55,
+      "yield_q75": 3.8,
+      "per": 12.5,
+      "pbr": 1.32,
+      "per_pbr": 16.5,
+      "payout_ratio": 41.2,
+      "equity_ratio": 0.565,
+      "screening": {
+        "dividend": true,
+        "revenue": true,
+        "op_profit": true,
+        "net_profit": true,
+        "payout": true,
+        "equity": true,
+        "valuation": true,
+        "min_yield": true
+      },
+      "box": null,
+      "financials_history": [
+        {
+          "period": "2024Q4",
+          "sales": 2640000.0,
+          "op": 256000.0,
+          "np": 176000.0,
+          "eps": 216.0,
+          "dps": 104.0
+        },
+        {
+          "period": "2024Q3",
+          "sales": 2772000.0,
+          "op": 268800.0,
+          "np": 184800.0,
+          "eps": 226.8,
+          "dps": 109.2
+        },
+        {
+          "period": "2024Q2",
+          "sales": 2904000.0,
+          "op": 281600.0,
+          "np": 193600.0,
+          "eps": 237.6,
+          "dps": 114.4
+        },
+        {
+          "period": "2024Q1",
+          "sales": 3036000.0,
+          "op": 294400.0,
+          "np": 202400.0,
+          "eps": 248.4,
+          "dps": 119.6
+        },
+        {
+          "period": "2023Q4",
+          "sales": 3168000.0,
+          "op": 307200.0,
+          "np": 211200.0,
+          "eps": 259.2,
+          "dps": 124.8
+        },
+        {
+          "period": "2023Q3",
+          "sales": 3300000.0,
+          "op": 320000.0,
+          "np": 220000.0,
+          "eps": 270.0,
+          "dps": 130.0
+        }
+      ],
+      "links": {
+        "minkabu": "https://minkabu.jp/stock/1928",
+        "irbank": "https://irbank.net/1928/",
+        "tdnet": "https://www.release.tdnet.info/inbs/I_main_00.html"
+      }
+    },
+    {
+      "code": "6178",
+      "name": "日本郵政",
+      "sector": "サービス業",
+      "sector33_code": "0000",
+      "market_cap_oku": 56000,
+      "price": 1237,
+      "bucket": "スイング",
+      "core_type": null,
+      "screening_pass": true,
+      "signal": "BUY",
+      "is_box": false,
+      "emergency_exit": false,
+      "earnings_imminent": false,
+      "next_earnings_date": null,
+      "forecast_dps": 60,
+      "current_yield": 4.85,
+      "yield_q25": 4.1,
+      "yield_median": 4.55,
+      "yield_q75": 4.8,
+      "per": 12.5,
+      "pbr": 0.42,
+      "per_pbr": 5.3,
+      "payout_ratio": 50.0,
+      "equity_ratio": null,
+      "screening": {
+        "dividend": true,
+        "revenue": true,
+        "op_profit": true,
+        "net_profit": true,
+        "payout": true,
+        "equity": null,
+        "valuation": true,
+        "min_yield": true
+      },
+      "box": null,
+      "financials_history": [
+        {
+          "period": "2024Q4",
+          "sales": 9200000.0,
+          "op": 576000.0,
+          "np": 336000.0,
+          "eps": 79.2,
+          "dps": 48.0
+        },
+        {
+          "period": "2024Q3",
+          "sales": 9660000.0,
+          "op": 604800.0,
+          "np": 352800.0,
+          "eps": 83.2,
+          "dps": 50.4
+        },
+        {
+          "period": "2024Q2",
+          "sales": 10120000.0,
+          "op": 633600.0,
+          "np": 369600.0,
+          "eps": 87.1,
+          "dps": 52.8
+        },
+        {
+          "period": "2024Q1",
+          "sales": 10580000.0,
+          "op": 662400.0,
+          "np": 386400.0,
+          "eps": 91.1,
+          "dps": 55.2
+        },
+        {
+          "period": "2023Q4",
+          "sales": 11040000.0,
+          "op": 691200.0,
+          "np": 403200.0,
+          "eps": 95.0,
+          "dps": 57.6
+        },
+        {
+          "period": "2023Q3",
+          "sales": 11500000.0,
+          "op": 720000.0,
+          "np": 420000.0,
+          "eps": 99.0,
+          "dps": 60.0
+        }
+      ],
+      "links": {
+        "minkabu": "https://minkabu.jp/stock/6178",
+        "irbank": "https://irbank.net/6178/",
+        "tdnet": "https://www.release.tdnet.info/inbs/I_main_00.html"
+      }
+    },
+    {
+      "code": "7267",
+      "name": "本田技研工業",
+      "sector": "輸送用機器",
+      "sector33_code": "0000",
+      "market_cap_oku": 78000,
+      "price": 1505,
+      "bucket": "スイング",
+      "core_type": null,
+      "screening_pass": true,
+      "signal": "BUY",
+      "is_box": true,
+      "emergency_exit": false,
+      "earnings_imminent": false,
+      "next_earnings_date": null,
+      "forecast_dps": 70,
+      "current_yield": 4.65,
+      "yield_q25": 3.2,
+      "yield_median": 4.1,
+      "yield_q75": 4.35,
+      "per": 7.5,
+      "pbr": 0.65,
+      "per_pbr": 4.9,
+      "payout_ratio": 30.5,
+      "equity_ratio": 0.425,
+      "screening": {
+        "dividend": true,
+        "revenue": true,
+        "op_profit": true,
+        "net_profit": true,
+        "payout": true,
+        "equity": true,
+        "valuation": true,
+        "min_yield": true
+      },
+      "box": {
+        "adx": 18.8,
+        "width_pct": 11.5,
+        "upper": 1565,
+        "lower": 1402,
+        "upper_touches": 3,
+        "lower_touches": 2,
+        "atr_ratio": 2.05
+      },
+      "financials_history": [
+        {
+          "period": "2024Q4",
+          "sales": 16640000.0,
+          "op": 1104000.0,
+          "np": 832000.0,
+          "eps": 160.0,
+          "dps": 56.0
+        },
+        {
+          "period": "2024Q3",
+          "sales": 17472000.0,
+          "op": 1159200.0,
+          "np": 873600.0,
+          "eps": 168.0,
+          "dps": 58.8
+        },
+        {
+          "period": "2024Q2",
+          "sales": 18304000.0,
+          "op": 1214400.0,
+          "np": 915200.0,
+          "eps": 176.0,
+          "dps": 61.6
+        },
+        {
+          "period": "2024Q1",
+          "sales": 19136000.0,
+          "op": 1269600.0,
+          "np": 956800.0,
+          "eps": 184.0,
+          "dps": 64.4
+        },
+        {
+          "period": "2023Q4",
+          "sales": 19968000.0,
+          "op": 1324800.0,
+          "np": 998400.0,
+          "eps": 192.0,
+          "dps": 67.2
+        },
+        {
+          "period": "2023Q3",
+          "sales": 20800000.0,
+          "op": 1380000.0,
+          "np": 1040000.0,
+          "eps": 200.0,
+          "dps": 70.0
+        }
+      ],
+      "links": {
+        "minkabu": "https://minkabu.jp/stock/7267",
+        "irbank": "https://irbank.net/7267/",
+        "tdnet": "https://www.release.tdnet.info/inbs/I_main_00.html"
+      }
+    },
+    {
+      "code": "4503",
+      "name": "アステラス製薬",
+      "sector": "医薬品",
+      "sector33_code": "0000",
+      "market_cap_oku": 28500,
+      "price": 1546,
+      "bucket": "対象外",
+      "core_type": null,
+      "screening_pass": false,
+      "signal": "SELL",
+      "is_box": false,
+      "emergency_exit": true,
+      "earnings_imminent": false,
+      "next_earnings_date": null,
+      "forecast_dps": 75,
+      "current_yield": 4.85,
+      "yield_q25": 2.8,
+      "yield_median": 3.5,
+      "yield_q75": 4.1,
+      "per": 99.0,
+      "pbr": 1.85,
+      "per_pbr": 99.0,
+      "payout_ratio": 120.5,
+      "equity_ratio": 0.485,
+      "screening": {
+        "dividend": true,
+        "revenue": false,
+        "op_profit": false,
+        "net_profit": false,
+        "payout": false,
+        "equity": true,
+        "valuation": false,
+        "min_yield": true
+      },
+      "box": null,
+      "financials_history": [
+        {
+          "period": "2024Q4",
+          "sales": 1200000.0,
+          "op": 64000.0,
+          "np": 24000.0,
+          "eps": 11.6,
+          "dps": 60.0
+        },
+        {
+          "period": "2024Q3",
+          "sales": 1260000.0,
+          "op": 67200.0,
+          "np": 25200.0,
+          "eps": 12.2,
+          "dps": 63.0
+        },
+        {
+          "period": "2024Q2",
+          "sales": 1320000.0,
+          "op": 70400.0,
+          "np": 26400.0,
+          "eps": 12.8,
+          "dps": 66.0
+        },
+        {
+          "period": "2024Q1",
+          "sales": 1380000.0,
+          "op": 73600.0,
+          "np": 27600.0,
+          "eps": 13.3,
+          "dps": 69.0
+        },
+        {
+          "period": "2023Q4",
+          "sales": 1440000.0,
+          "op": 76800.0,
+          "np": 28800.0,
+          "eps": 13.9,
+          "dps": 72.0
+        },
+        {
+          "period": "2023Q3",
+          "sales": 1500000.0,
+          "op": 80000.0,
+          "np": 30000.0,
+          "eps": 14.5,
+          "dps": 75.0
+        }
+      ],
+      "links": {
+        "minkabu": "https://minkabu.jp/stock/4503",
+        "irbank": "https://irbank.net/4503/",
+        "tdnet": "https://www.release.tdnet.info/inbs/I_main_00.html"
+      }
+    },
+    {
+      "code": "9434",
+      "name": "ソフトバンク",
+      "sector": "情報・通信業",
+      "sector33_code": "0000",
+      "market_cap_oku": 95000,
+      "price": 1932,
+      "bucket": "対象外",
+      "core_type": null,
+      "screening_pass": false,
+      "signal": "NEUTRAL",
+      "is_box": false,
+      "emergency_exit": false,
+      "earnings_imminent": false,
+      "next_earnings_date": null,
+      "forecast_dps": 86,
+      "current_yield": 4.45,
+      "yield_q25": 4.1,
+      "yield_median": 4.85,
+      "yield_q75": 5.55,
+      "per": 16.2,
+      "pbr": 4.85,
+      "per_pbr": 78.6,
+      "payout_ratio": 80.5,
+      "equity_ratio": 0.225,
+      "screening": {
+        "dividend": true,
+        "revenue": true,
+        "op_profit": true,
+        "net_profit": true,
+        "payout": false,
+        "equity": false,
+        "valuation": false,
+        "min_yield": true
+      },
+      "box": null,
+      "financials_history": [
+        {
+          "period": "2024Q4",
+          "sales": 4880000.0,
+          "op": 864000.0,
+          "np": 424000.0,
+          "eps": 96.0,
+          "dps": 68.8
+        },
+        {
+          "period": "2024Q3",
+          "sales": 5124000.0,
+          "op": 907200.0,
+          "np": 445200.0,
+          "eps": 100.8,
+          "dps": 72.2
+        },
+        {
+          "period": "2024Q2",
+          "sales": 5368000.0,
+          "op": 950400.0,
+          "np": 466400.0,
+          "eps": 105.6,
+          "dps": 75.7
+        },
+        {
+          "period": "2024Q1",
+          "sales": 5612000.0,
+          "op": 993600.0,
+          "np": 487600.0,
+          "eps": 110.4,
+          "dps": 79.1
+        },
+        {
+          "period": "2023Q4",
+          "sales": 5856000.0,
+          "op": 1036800.0,
+          "np": 508800.0,
+          "eps": 115.2,
+          "dps": 82.6
+        },
+        {
+          "period": "2023Q3",
+          "sales": 6100000.0,
+          "op": 1080000.0,
+          "np": 530000.0,
+          "eps": 120.0,
+          "dps": 86.0
+        }
+      ],
+      "links": {
+        "minkabu": "https://minkabu.jp/stock/9434",
+        "irbank": "https://irbank.net/9434/",
+        "tdnet": "https://www.release.tdnet.info/inbs/I_main_00.html"
+      }
+    },
+    {
+      "code": "2914",
+      "name": "日本たばこ産業",
+      "sector": "食料品",
+      "sector33_code": "0000",
+      "market_cap_oku": 89000,
+      "price": 4610,
+      "bucket": "対象外",
+      "core_type": null,
+      "screening_pass": false,
+      "signal": "SELL",
+      "is_box": false,
+      "emergency_exit": false,
+      "earnings_imminent": false,
+      "next_earnings_date": null,
+      "forecast_dps": 194,
+      "current_yield": 4.21,
+      "yield_q25": 4.55,
+      "yield_median": 5.8,
+      "yield_q75": 7.1,
+      "per": 14.2,
+      "pbr": 1.85,
+      "per_pbr": 26.3,
+      "payout_ratio": 75.5,
+      "equity_ratio": 0.508,
+      "screening": {
+        "dividend": true,
+        "revenue": true,
+        "op_profit": true,
+        "net_profit": true,
+        "payout": false,
+        "equity": true,
+        "valuation": false,
+        "min_yield": true
+      },
+      "box": null,
+      "financials_history": [
+        {
+          "period": "2024Q4",
+          "sales": 2320000.0,
+          "op": 552000.0,
+          "np": 344000.0,
+          "eps": 192.0,
+          "dps": 155.2
+        },
+        {
+          "period": "2024Q3",
+          "sales": 2436000.0,
+          "op": 579600.0,
+          "np": 361200.0,
+          "eps": 201.6,
+          "dps": 163.0
+        },
+        {
+          "period": "2024Q2",
+          "sales": 2552000.0,
+          "op": 607200.0,
+          "np": 378400.0,
+          "eps": 211.2,
+          "dps": 170.7
+        },
+        {
+          "period": "2024Q1",
+          "sales": 2668000.0,
+          "op": 634800.0,
+          "np": 395600.0,
+          "eps": 220.8,
+          "dps": 178.5
+        },
+        {
+          "period": "2023Q4",
+          "sales": 2784000.0,
+          "op": 662400.0,
+          "np": 412800.0,
+          "eps": 230.4,
+          "dps": 186.2
+        },
+        {
+          "period": "2023Q3",
+          "sales": 2900000.0,
+          "op": 690000.0,
+          "np": 430000.0,
+          "eps": 240.0,
+          "dps": 194.0
+        }
+      ],
+      "links": {
+        "minkabu": "https://minkabu.jp/stock/2914",
+        "irbank": "https://irbank.net/2914/",
+        "tdnet": "https://www.release.tdnet.info/inbs/I_main_00.html"
+      }
+    }
+  ]
+};
+</script>
+<script>
+const STATE = {
+  data: null, activeTab: 'signals', activeMTab: 'metrics',
+  filters: { bucket: '', signal: '', sector: '', box: false, pass: true, search: '', showExcluded: false },
+  sort: 'signal',
+  watchlist: JSON.parse(localStorage.getItem('div_watchlist') || '[]'),
+  portfolio: JSON.parse(localStorage.getItem('div_portfolio') || '[]'),
+};
+const fmt = {
+  yen: (n) => n == null ? '—' : '¥' + Math.round(n).toLocaleString(),
+  num: (n, d = 2) => n == null ? '—' : Number(n).toFixed(d),
+  oku: (n) => n == null ? '—' : (n >= 10000 ? (n / 10000).toFixed(1) + '兆' : Math.round(n).toLocaleString() + '億'),
+  date: (s) => { if (!s) return '—'; const d = new Date(s); return isNaN(d) ? s : d.toLocaleDateString('ja-JP').replace(/\//g, '.'); },
+};
+const sigLabel = (s) => ({ BUY: 'BUY!', SELL: 'SELL!', NEUTRAL: '—' }[s] || '—');
+const sigPill = (s) => ({ BUY: 'pill-buy', SELL: 'pill-sell', NEUTRAL: 'pill-neutral' }[s] || 'pill-neutral');
+const bucketPill = (s) => {
+  if (s.bucket === '対象外') return 'pill-excluded';
+  if (s.bucket === 'コア' && s.core_type === 'progressive') return 'pill-core-prog';
+  if (s.bucket === 'コア' && s.core_type === 'doe') return 'pill-core-doe';
+  if (s.bucket === 'コア') return 'pill-core';
+  return 'pill-swing';
+};
+const bucketLabel = (s) => {
+  if (s.bucket === '対象外') return '対象外';
+  if (s.bucket === 'コア' && s.core_type === 'progressive') return 'コア・累進';
+  if (s.bucket === 'コア' && s.core_type === 'doe') return 'コア・DOE';
+  return s.bucket;
+};
+
+async function loadData() {
+  try {
+    const res = await fetch('data/results.json', { cache: 'no-cache' });
+    if (!res.ok) throw new Error('NO_DATA');
+    return await res.json();
+  } catch { return DUMMY_DATA; }
+}
+
+function init() {
+  loadData().then(data => {
+    STATE.data = data;
+    const dt = new Date(data.generated_at);
+    document.getElementById('lastUpdate').textContent = dt.toLocaleString('ja-JP', { hour12: false }).replace(/\//g, '.');
+    document.getElementById('signalDateMeta').textContent = dt.toLocaleDateString('ja-JP').replace(/\//g, '.') + ' · TOKYO';
+    populateSectorFilter(); updateStats(); renderActiveTab();
+  });
+}
+
+function populateSectorFilter() {
+  const sectors = [...new Set(STATE.data.stocks.map(s => s.sector))].filter(Boolean).sort();
+  const sel = document.getElementById('filterSector');
+  sectors.forEach(s => { const opt = document.createElement('option'); opt.value = s; opt.textContent = s; sel.appendChild(opt); });
+}
+
+function updateStats() {
+  const stocks = STATE.data.stocks;
+  const buy = stocks.filter(s => s.signal === 'BUY' && s.screening_pass).length;
+  const sell = stocks.filter(s => s.signal === 'SELL' && s.screening_pass).length;
+  const box = stocks.filter(s => s.is_box && s.screening_pass).length;
+  document.getElementById('buyCount').textContent = buy;
+  document.getElementById('sellCount').textContent = sell;
+  document.getElementById('boxCount').textContent = box;
+  document.getElementById('heroBuy').textContent = buy;
+  document.getElementById('heroSell').textContent = sell;
+  document.getElementById('heroBox').textContent = box;
+  document.getElementById('tabSignalsCount').textContent = buy + sell;
+}
+
+function applyFilters(stocks) {
+  const f = STATE.filters;
+  return stocks.filter(s => {
+    // 対象外: 「対象外を表示」OFFかつバケット指定が「対象外」でない場合は除外
+    if (s.bucket === '対象外' && !f.showExcluded && f.bucket !== '対象外') return false;
+    if (f.bucket && s.bucket !== f.bucket) return false;
+    if (f.signal && s.signal !== f.signal) return false;
+    if (f.sector && s.sector !== f.sector) return false;
+    if (f.box && !s.is_box) return false;
+    if (f.pass && !s.screening_pass) return false;
+    if (f.search) {
+      const q = f.search.toLowerCase();
+      if (!s.code.includes(q) && !s.name.toLowerCase().includes(q)) return false;
+    }
+    return true;
+  });
+}
+
+function applySort(stocks) {
+  const map = {
+    signal: (a, b) => { const order = { BUY: 0, SELL: 1, NEUTRAL: 2 }; return order[a.signal] - order[b.signal] || (b.current_yield || 0) - (a.current_yield || 0); },
+    yield: (a, b) => (b.current_yield || 0) - (a.current_yield || 0),
+    market_cap: (a, b) => (b.market_cap_oku || 0) - (a.market_cap_oku || 0),
+    per_pbr: (a, b) => (a.per_pbr || 999) - (b.per_pbr || 999),
+  };
+  return [...stocks].sort(map[STATE.sort]);
+}
+
+function stockCard(s, index) {
+  const isFav = STATE.watchlist.includes(s.code);
+  let yieldMarkerLeft = 50;
+  if (s.current_yield != null && s.yield_q25 != null && s.yield_q75 != null) {
+    const min = Math.min(s.yield_q25, s.current_yield) * 0.85;
+    const max = Math.max(s.yield_q75, s.current_yield) * 1.15;
+    const range = (max - min) || 1;
+    yieldMarkerLeft = Math.max(2, Math.min(98, ((s.current_yield - min) / range) * 100));
+  }
+  const sigClass = s.signal === 'BUY' ? 'has-buy' : s.signal === 'SELL' ? 'has-sell' : '';
+  const noFavClass = !isFav ? 'no-fav' : '';
+  const emergencyClass = s.emergency_exit ? 'is-emergency' : '';
+  const emergencyBanner = s.emergency_exit
+    ? `<div class="emergency-banner">EMERGENCY EXIT! ／ 緊急撤退シグナル発生</div>`
+    : '';
+  const earningsMark = s.earnings_imminent
+    ? `<span class="earnings-mark" title="${fmt.date(s.next_earnings_date)} 決算発表">📊 明日決算</span>`
+    : '';
+  return `
+    <div class="stock-card heist-on ${isFav ? 'is-fav' : ''} ${sigClass} ${noFavClass} ${emergencyClass}" data-code="${s.code}" style="animation-delay: ${Math.min(index * 30, 600)}ms;">
+      ${emergencyBanner}
+      <div class="px-5 py-3 flex items-center gap-4 flex-wrap md:flex-nowrap">
+        <div class="min-w-[200px] flex-shrink-0 ml-2">
+          <div class="flex items-center gap-2 mb-1 flex-wrap">
+            <span class="bungee text-base" style="color:var(--p5-black);">${s.code}</span>
+            <span class="pill ${bucketPill(s)}">${bucketLabel(s)}</span>
+            ${earningsMark}
+          </div>
+          <div class="mincho text-sm" style="color:var(--text);">${s.name}</div>
+          <div class="mono text-[10px] mt-0.5" style="color:var(--text-mute);">${s.sector || ''}</div>
+        </div>
+        <div class="flex flex-col gap-1 items-start flex-shrink-0">
+          <span class="pill ${sigPill(s.signal)}">${sigLabel(s.signal)}</span>
+          ${s.is_box ? '<span class="pill pill-box">BOX!</span>' : ''}
+        </div>
+        <div class="flex-1 min-w-[200px]">
+          <div class="flex items-baseline justify-between mb-1">
+            <span class="bungee text-[10px]" style="color:var(--p5-red);letter-spacing:0.1em;">YIELD 5Y</span>
+            <div><span class="bungee text-2xl tnum" style="color:var(--p5-black);">${fmt.num(s.current_yield)}</span><span class="text-xs" style="color:var(--text-mute);">%</span></div>
+          </div>
+          <div class="yield-bar-wrap">
+            <span style="color:var(--sell);width:32px;text-align:right;">${fmt.num(s.yield_q25)}</span>
+            <div class="yield-bar"><div class="yield-bar-track"></div><div class="yield-marker" style="left:${yieldMarkerLeft}%;"></div></div>
+            <span style="color:var(--p5-red);width:32px;">${fmt.num(s.yield_q75)}</span>
+          </div>
+        </div>
+        <div class="text-right flex-shrink-0 flex gap-4">
+          <div><div class="bungee text-[10px]" style="color:var(--p5-red);">PER × PBR</div><div class="mono tnum text-sm mt-1" style="color:${s.per_pbr && s.per_pbr <= 22.5 ? 'var(--text)' : 'var(--sell)'};">${fmt.num(s.per_pbr, 1)}</div></div>
+          <div><div class="bungee text-[10px]" style="color:var(--p5-red);">時価</div><div class="mono tnum text-sm mt-1" style="color:var(--text);">${fmt.oku(s.market_cap_oku)}</div></div>
+          <div class="self-center">${s.screening_pass ? '<span class="pill pill-pass">PASS</span>' : '<span class="pill pill-fail">FAIL</span>'}</div>
+        </div>
+        <div class="flex items-center gap-1 flex-shrink-0">
+          <button class="btn-icon ${isFav ? 'active' : ''}" onclick="event.stopPropagation();toggleWatch('${s.code}')">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="${isFav ? 'currentColor' : 'none'}" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+          </button>
+          <span class="btn-icon" style="color:var(--p5-black);"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M9 18l6-6-6-6"/></svg></span>
+        </div>
+      </div>
+    </div>`;
+}
+
+function renderActiveTab() {
+  document.querySelectorAll('.tab-panel').forEach(el => el.classList.add('hidden'));
+  document.getElementById('tab-' + STATE.activeTab).classList.remove('hidden');
+  const stocks = STATE.data.stocks;
+  if (STATE.activeTab === 'signals') {
+    const filtered = applySort(applyFilters(stocks.filter(s => ['BUY', 'SELL'].includes(s.signal) && s.screening_pass)));
+    document.getElementById('signalList').innerHTML = filtered.length ? filtered.map((s, i) => stockCard(s, i)).join('') : '<div class="heist-card p-12 text-center"><div class="bungee text-2xl" style="color:var(--p5-black);">NO SIGNALS!</div><div class="reggae text-sm mt-2" style="color:var(--p5-red);">本日のシグナル発生なし</div></div>';
+  } else if (STATE.activeTab === 'all') {
+    const filtered = applySort(applyFilters(stocks));
+    document.getElementById('allCountMeta').textContent = `${filtered.length} STOCKS`;
+    document.getElementById('allList').innerHTML = filtered.length ? filtered.map((s, i) => stockCard(s, i)).join('') : '<div class="heist-card p-12 text-center"><div class="bungee text-2xl" style="color:var(--p5-black);">NO RESULTS!</div></div>';
+  } else if (STATE.activeTab === 'portfolio') {
+    renderPortfolio();
+  } else if (STATE.activeTab === 'watchlist') {
+    const watchStocks = applySort(stocks.filter(s => STATE.watchlist.includes(s.code)));
+    document.getElementById('watchList').innerHTML = watchStocks.length ? watchStocks.map((s, i) => stockCard(s, i)).join('') : '<div class="heist-card p-12 text-center"><div class="bungee text-2xl" style="color:var(--p5-black);">★ EMPTY!</div><div class="reggae text-sm mt-2" style="color:var(--p5-red);">★ボタンでウォッチに追加</div></div>';
+  }
+  document.querySelectorAll('.stock-card').forEach(el => { el.addEventListener('click', () => openDetail(el.dataset.code)); });
+}
+
+function renderPortfolio() {
+  let total = 0, value = 0, dividend = 0;
+  const rows = STATE.portfolio.map(p => {
+    const s = STATE.data.stocks.find(x => x.code === p.code);
+    if (!s) return '';
+    const cost = p.shares * p.cost_basis;
+    const val = p.shares * (s.price || p.cost_basis);
+    const pl = val - cost;
+    const div = p.shares * (s.forecast_dps || 0);
+    const yoc = (s.forecast_dps || 0) / p.cost_basis * 100;
+    total += cost; value += val; dividend += div;
+    return `<div class="stock-card"><div class="px-5 py-3 flex items-center gap-4 flex-wrap ml-2">
+      <div class="min-w-[180px]"><div class="bungee text-base" style="color:var(--p5-black);">${p.code}</div><div class="mincho text-sm" style="color:var(--text);">${s.name}</div></div>
+      <div class="flex-1 grid grid-cols-2 md:grid-cols-5 gap-3">
+        <div><div class="bungee text-[10px]" style="color:var(--p5-red);">SHARES</div><div class="mono tnum text-sm mt-1">${p.shares.toLocaleString()}</div></div>
+        <div><div class="bungee text-[10px]" style="color:var(--p5-red);">COST</div><div class="mono tnum text-sm mt-1">${fmt.yen(p.cost_basis)}</div></div>
+        <div><div class="bungee text-[10px]" style="color:var(--p5-red);">PRICE</div><div class="mono tnum text-sm mt-1">${fmt.yen(s.price)}</div></div>
+        <div><div class="bungee text-[10px]" style="color:var(--p5-red);">P / L</div><div class="mono tnum text-sm mt-1" style="color:${pl >= 0 ? 'var(--buy)' : 'var(--sell)'};">${pl >= 0 ? '+' : ''}${fmt.yen(pl)}</div></div>
+        <div><div class="bungee text-[10px]" style="color:var(--p5-red);">YoC ★</div><div class="mono tnum text-sm mt-1" style="color:var(--p5-red);">${fmt.num(yoc, 2)}%</div></div>
+      </div>
+      <button class="btn-icon" onclick="event.stopPropagation();removeFromPortfolio('${p.code}','${p.purchased_at}')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6h14z"/></svg></button>
+    </div></div>`;
+  }).join('');
+  document.getElementById('pfTotal').textContent = fmt.yen(total);
+  document.getElementById('pfValue').textContent = fmt.yen(value);
+  const pl = value - total;
+  document.getElementById('pfPL').innerHTML = `<span style="color:${pl >= 0 ? 'var(--buy)' : 'var(--sell)'};">${pl >= 0 ? '+' : ''}${fmt.yen(pl)}</span>`;
+  document.getElementById('pfDividend').textContent = fmt.yen(dividend);
+  document.getElementById('pfList').innerHTML = rows || '<div class="heist-card p-12 text-center"><div class="bungee text-2xl" style="color:var(--p5-black);">NO HOLDINGS!</div></div>';
+}
+
+function addToPortfolio() {
+  const code = document.getElementById('pfCode').value.trim();
+  const shares = parseInt(document.getElementById('pfShares').value);
+  const cost = parseFloat(document.getElementById('pfCost').value);
+  const date = document.getElementById('pfDate').value || new Date().toISOString().slice(0, 10);
+  if (!code || !shares || !cost) { alert('全項目を入力してください'); return; }
+  STATE.portfolio.push({ code, shares, cost_basis: cost, purchased_at: date });
+  localStorage.setItem('div_portfolio', JSON.stringify(STATE.portfolio));
+  ['pfCode', 'pfShares', 'pfCost', 'pfDate'].forEach(id => document.getElementById(id).value = '');
+  renderPortfolio();
+}
+
+function removeFromPortfolio(code, date) {
+  STATE.portfolio = STATE.portfolio.filter(p => !(p.code === code && p.purchased_at === date));
+  localStorage.setItem('div_portfolio', JSON.stringify(STATE.portfolio));
+  renderPortfolio();
+}
+
+function toggleWatch(code) {
+  if (STATE.watchlist.includes(code)) STATE.watchlist = STATE.watchlist.filter(c => c !== code);
+  else STATE.watchlist.push(code);
+  localStorage.setItem('div_watchlist', JSON.stringify(STATE.watchlist));
+  renderActiveTab();
+}
+
+function openDetail(code) {
+  const s = STATE.data.stocks.find(x => x.code === code);
+  if (!s) return;
+  document.getElementById('mCode').textContent = s.code;
+  document.getElementById('mName').textContent = s.name;
+  document.getElementById('mSector').textContent = `${s.sector || ''} · 時価総額 ${fmt.oku(s.market_cap_oku)}円`;
+  const bEl = document.getElementById('mBucket'); bEl.textContent = bucketLabel(s); bEl.className = `pill ${bucketPill(s)}`;
+  const sEl = document.getElementById('mSignal'); sEl.textContent = sigLabel(s.signal); sEl.className = `pill ${sigPill(s.signal)}`;
+  const boxEl = document.getElementById('mBoxPill');
+  if (s.is_box) boxEl.classList.remove('hidden'); else boxEl.classList.add('hidden');
+  const emEl = document.getElementById('mEmergencyPill');
+  if (s.emergency_exit) emEl.classList.remove('hidden'); else emEl.classList.add('hidden');
+  const earnEl = document.getElementById('mEarningsMark');
+  if (s.earnings_imminent) { earnEl.classList.remove('hidden'); earnEl.textContent = `📊 ${fmt.date(s.next_earnings_date)} 決算`; }
+  else earnEl.classList.add('hidden');
+  // 緊急バナー
+  const bannerEl = document.getElementById('mEmergencyBanner');
+  if (s.emergency_exit) { bannerEl.style.display = 'flex'; bannerEl.textContent = 'EMERGENCY EXIT! ／ 緊急撤退シグナル発生 — 即時全量売却を検討してください'; }
+  else bannerEl.style.display = 'none';
+  document.getElementById('mPrice').textContent = fmt.yen(s.price);
+  document.getElementById('mDPS').textContent = fmt.num(s.forecast_dps, 2) + '円';
+  document.getElementById('mYield').textContent = fmt.num(s.current_yield, 2);
+  document.getElementById('mMedYield').textContent = fmt.num(s.yield_median, 2);
+  document.getElementById('mGraham').textContent = fmt.num(s.per_pbr, 2);
+  document.getElementById('mPER').textContent = fmt.num(s.per, 1);
+  document.getElementById('mPBR').textContent = fmt.num(s.pbr, 2);
+  document.getElementById('mPayout').textContent = fmt.num(s.payout_ratio, 1);
+  document.getElementById('mEquity').textContent = s.equity_ratio == null ? '—' : fmt.num(s.equity_ratio * 100, 1);
+  drawYieldChart(s); drawScreening(s); drawBox(s);
+  drawFinancials(s); drawEarningsInfo(s); drawExternalLinks(s);
+  switchModalTab('metrics');
+  document.getElementById('modal').style.display = 'flex';
+}
+
+function switchModalTab(tab) {
+  STATE.activeMTab = tab;
+  document.querySelectorAll('.modal-tab').forEach(b => b.classList.toggle('active', b.dataset.mtab === tab));
+  document.getElementById('mPanelMetrics').style.display = tab === 'metrics' ? 'block' : 'none';
+  document.getElementById('mPanelFinancials').style.display = tab === 'financials' ? 'block' : 'none';
+  document.getElementById('mPanelLinks').style.display = tab === 'links' ? 'block' : 'none';
+  // Plotlyチャートはdisplay復帰時にresizeが必要
+  if (tab === 'financials') {
+    setTimeout(() => {
+      const c1 = document.getElementById('mFinChartProfit');
+      const c2 = document.getElementById('mFinChartEps');
+      if (c1 && c1._fullLayout) Plotly.Plots.resize(c1);
+      if (c2 && c2._fullLayout) Plotly.Plots.resize(c2);
+    }, 50);
+  }
+}
+
+function drawFinancials(s) {
+  const profitEl = document.getElementById('mFinChartProfit');
+  const epsEl = document.getElementById('mFinChartEps');
+  const hist = s.financials_history || [];
+  if (!hist.length) {
+    profitEl.innerHTML = '<div class="bungee text-center pt-20" style="color:var(--p5-black);">NO DATA!</div>';
+    epsEl.innerHTML = '<div class="bungee text-center pt-20" style="color:var(--p5-black);">NO DATA!</div>';
+    return;
+  }
+  // 古い順に並べ直す
+  const ordered = [...hist].reverse();
+  const periods = ordered.map(h => h.period);
+  const sales = ordered.map(h => h.sales);
+  const op = ordered.map(h => h.op);
+  const np = ordered.map(h => h.np);
+  const eps = ordered.map(h => h.eps);
+  const dps = ordered.map(h => h.dps);
+
+  const commonLayout = {
+    paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)',
+    margin: { l: 60, r: 30, t: 20, b: 50 },
+    font: { family: 'JetBrains Mono', size: 10, color: '#6B655A' },
+    xaxis: { gridcolor: 'rgba(0,0,0,0.06)', zeroline: false },
+    yaxis: { gridcolor: 'rgba(0,0,0,0.06)', zeroline: false },
+    showlegend: false,
+  };
+
+  // Sales (line) + OP / NP (bars)
+  const traceSales = { x: periods, y: sales, type: 'scatter', mode: 'lines+markers',
+    name: '売上', line: { color: '#E60012', width: 4 }, marker: { size: 8, color: '#E60012' }, yaxis: 'y2' };
+  const traceOp = { x: periods, y: op, type: 'bar', name: '営業利益', marker: { color: '#FFA500', line: { color: '#0A0A0A', width: 1.5 } } };
+  const traceNp = { x: periods, y: np, type: 'bar', name: '純利益', marker: { color: '#2962FF', line: { color: '#0A0A0A', width: 1.5 } } };
+  Plotly.newPlot(profitEl, [traceOp, traceNp, traceSales], {
+    ...commonLayout,
+    barmode: 'group',
+    xaxis: { ...commonLayout.xaxis },
+    yaxis: { ...commonLayout.yaxis, title: { text: '営業利益 / 純利益', font: { size: 10 } } },
+    yaxis2: { overlaying: 'y', side: 'right', title: { text: '売上', font: { size: 10, color: '#E60012' } }, gridcolor: 'rgba(0,0,0,0.0)', tickfont: { color: '#E60012' } },
+  }, { displayModeBar: false, responsive: true });
+
+  const traceEps = { x: periods, y: eps, type: 'scatter', mode: 'lines+markers',
+    name: 'EPS', line: { color: '#0A0A0A', width: 3 }, marker: { size: 9, color: '#0A0A0A' } };
+  const traceDps = { x: periods, y: dps, type: 'scatter', mode: 'lines+markers',
+    name: 'DPS', line: { color: '#E60012', width: 3, dash: 'dash' }, marker: { size: 9, color: '#E60012' } };
+  Plotly.newPlot(epsEl, [traceEps, traceDps], {
+    ...commonLayout,
+    yaxis: { ...commonLayout.yaxis, title: { text: '円 / 株', font: { size: 10 } } },
+    annotations: [
+      { x: 0.0, xref: 'paper', y: 1.05, yref: 'paper', text: '<b style="color:#0A0A0A;">● EPS</b>　<b style="color:#E60012;">- - DPS</b>', showarrow: false, font: { size: 11, family: 'Bungee' } }
+    ],
+  }, { displayModeBar: false, responsive: true });
+}
+
+function drawEarningsInfo(s) {
+  const el = document.getElementById('mEarningsInfo');
+  const next = s.next_earnings_date;
+  const imminent = s.earnings_imminent;
+  let html = '';
+  if (next) {
+    html += `<div class="flex justify-between items-center py-2 mb-2" style="border-bottom:2px dashed var(--p5-red);"><span class="bungee text-xs" style="color:var(--p5-red);">NEXT EARNINGS</span><span class="mono tnum text-base" style="color:var(--p5-black);font-weight:900;">${fmt.date(next)}</span></div>`;
+    if (imminent) {
+      html += `<div class="earnings-mark" style="margin-top:8px;">📊 翌営業日に決算予定</div>`;
+    }
+  } else {
+    html += `<div class="reggae text-sm py-4" style="color:var(--text-mute);">決算予定日の情報なし</div>`;
+  }
+  // 直近期の財務サマリ
+  const hist = s.financials_history || [];
+  if (hist.length) {
+    const latest = hist[0];
+    html += `
+      <div class="mt-4 pt-3" style="border-top:3px solid var(--p5-red);">
+        <div class="bungee text-[11px] mb-2" style="color:var(--p5-red);">LATEST: ${latest.period || '—'}</div>
+        <div class="grid grid-cols-2 gap-2 mono text-xs">
+          <div style="color:var(--text-mute);">売上: <span style="color:var(--text);font-weight:900;">${fmt.num(latest.sales, 0)}</span></div>
+          <div style="color:var(--text-mute);">営業利益: <span style="color:var(--text);font-weight:900;">${fmt.num(latest.op, 0)}</span></div>
+          <div style="color:var(--text-mute);">純利益: <span style="color:var(--text);font-weight:900;">${fmt.num(latest.np, 0)}</span></div>
+          <div style="color:var(--text-mute);">EPS: <span style="color:var(--text);font-weight:900;">${fmt.num(latest.eps, 1)}</span></div>
+        </div>
+      </div>`;
+  }
+  el.innerHTML = html;
+}
+
+function drawExternalLinks(s) {
+  const el = document.getElementById('mExtLinks');
+  const links = s.links || {};
+  const items = [
+    { key: 'tdnet', label: 'TDnet 適時開示', icon: '📋', url: links.tdnet || 'https://www.release.tdnet.info/inbs/I_main_00.html' },
+    { key: 'minkabu', label: 'みんかぶ', icon: '💬', url: links.minkabu || `https://minkabu.jp/stock/${s.code}` },
+    { key: 'irbank', label: 'IRBANK 財務指標', icon: '📊', url: links.irbank || `https://irbank.net/${s.code}/` },
+  ];
+  el.innerHTML = items.map(i => `<a href="${i.url}" target="_blank" rel="noopener noreferrer" class="ext-link-btn"><span class="ext-icon">${i.icon}</span> ${i.label}</a>`).join('');
+}
+
+function drawYieldChart(s) {
+  if (s.current_yield == null) { document.getElementById('mYieldChart').innerHTML = '<div class="bungee text-center pt-20" style="color:var(--p5-black);">NO DATA!</div>'; return; }
+  const min = Math.min(s.yield_q25 || 0, s.current_yield) * 0.7 - 0.5;
+  const max = Math.max(s.yield_q75 || 0, s.current_yield) * 1.3 + 0.5;
+  const med = s.yield_median || s.current_yield;
+  const xs = [], ys = [];
+  for (let x = min; x <= max; x += (max - min) / 100) {
+    xs.push(x);
+    const t = (x - min) / (max - min);
+    const peak = (med - min) / (max - min);
+    ys.push(Math.exp(-Math.pow(t - peak, 2) / (2 * 0.04)));
+  }
+  const trace = { x: xs, y: ys, fill: 'tozeroy', type: 'scatter', mode: 'none', fillcolor: 'rgba(230,0,18,0.3)', line: { color: 'rgba(230,0,18,0.6)', width: 3 }, hoverinfo: 'skip' };
+  const layout = {
+    paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)',
+    margin: { l: 30, r: 10, t: 24, b: 36 },
+    font: { family: 'JetBrains Mono', size: 10, color: '#6B655A' },
+    xaxis: { gridcolor: 'rgba(0,0,0,0.06)', zeroline: false, title: { text: 'YIELD (%)', font: { size: 10 } } },
+    yaxis: { showticklabels: false, gridcolor: 'rgba(0,0,0,0.06)', zeroline: false, range: [0, 1.35] },
+    shapes: [
+      { type: 'line', x0: s.yield_q25, x1: s.yield_q25, y0: 0, y1: 1.0, line: { color: '#2962FF', width: 3, dash: 'dash' } },
+      { type: 'line', x0: s.yield_q75, x1: s.yield_q75, y0: 0, y1: 1.0, line: { color: '#E60012', width: 3, dash: 'dash' } },
+      { type: 'line', x0: s.current_yield, x1: s.current_yield, y0: 0, y1: 1.18, line: { color: '#0A0A0A', width: 4 } },
+    ],
+    annotations: [
+      { x: s.yield_q25, y: 1.05, text: `Q25 ${fmt.num(s.yield_q25)}`, showarrow: false, font: { color: '#2962FF', size: 11, family: 'Bungee' } },
+      { x: s.yield_q75, y: 1.05, text: `Q75 ${fmt.num(s.yield_q75)}`, showarrow: false, font: { color: '#E60012', size: 11, family: 'Bungee' } },
+      { x: s.current_yield, y: 1.25, text: `★ NOW ${fmt.num(s.current_yield)}%`, showarrow: false, font: { color: '#0A0A0A', size: 13, family: 'Bungee' } },
+    ],
+  };
+  Plotly.newPlot('mYieldChart', [trace], layout, { displayModeBar: false, responsive: true });
+}
+
+function drawScreening(s) {
+  const items = [
+    { label: '減配経験 (10期)', en: 'NO CUT', key: 'dividend' },
+    { label: '売上安定性', en: 'REVENUE', key: 'revenue' },
+    { label: '営業利益', en: 'OP. PROFIT', key: 'op_profit' },
+    { label: '純利益', en: 'NET PROFIT', key: 'net_profit' },
+    { label: '配当性向 ≤ 50%', en: 'PAYOUT', key: 'payout' },
+    { label: '自己資本 ≥ 50%', en: 'EQUITY', key: 'equity' },
+    { label: 'PER × PBR ≤ 22.5', en: 'GRAHAM', key: 'valuation' },
+    { label: '最低利回り ≥ 3.0%', en: 'MIN YIELD', key: 'min_yield' },
+  ];
+  const html = items.map(item => {
+    const v = s.screening?.[item.key];
+    const icon = v === true ? '<span class="bungee-shade text-2xl" style="color:var(--buy);">✓</span>'
+      : v === false ? '<span class="bungee-shade text-2xl" style="color:var(--sell);">✕</span>'
+        : '<span class="bungee text-2xl" style="color:var(--text-mute);">—</span>';
+    return `<div class="flex justify-between items-center py-2" style="border-bottom:2px dashed var(--p5-red);"><div><div class="mincho text-xs" style="color:var(--text);">${item.label}</div><div class="bungee text-[9px]" style="color:var(--p5-red);letter-spacing:0.1em;">${item.en}</div></div>${icon}</div>`;
+  }).join('');
+  document.getElementById('mScreening').innerHTML = html;
+}
+
+function drawBox(s) {
+  if (!s.is_box || !s.box) { document.getElementById('mBoxAnalysis').innerHTML = '<div class="reggae text-center py-8" style="color:var(--text-mute);">Not in box pattern</div>'; return; }
+  const b = s.box;
+  document.getElementById('mBoxAnalysis').innerHTML = `
+    <div class="space-y-2 mono text-xs">
+      <div class="flex justify-between" style="border-bottom:2px dashed var(--p5-red);padding-bottom:6px;"><span style="color:var(--p5-red);font-family:'Bungee';">ADX(14)</span><span class="tnum" style="color:var(--text);">${fmt.num(b.adx, 1)} <span style="color:var(--buy);font-size:10px;">< 22</span></span></div>
+      <div class="flex justify-between" style="border-bottom:2px dashed var(--p5-red);padding-bottom:6px;"><span style="color:var(--p5-red);font-family:'Bungee';">WIDTH</span><span class="tnum" style="color:var(--text);">${fmt.num(b.width_pct, 1)}%</span></div>
+      <div class="flex justify-between" style="border-bottom:2px dashed var(--p5-red);padding-bottom:6px;"><span style="color:var(--p5-red);font-family:'Bungee';">UPPER / LOWER</span><span class="tnum" style="color:var(--text);">${fmt.yen(b.upper)} / ${fmt.yen(b.lower)}</span></div>
+      <div class="flex justify-between" style="border-bottom:2px dashed var(--p5-red);padding-bottom:6px;"><span style="color:var(--p5-red);font-family:'Bungee';">TOUCHES</span><span class="tnum" style="color:var(--text);">↑${b.upper_touches} ↓${b.lower_touches}</span></div>
+      <div class="flex justify-between" style="border-bottom:2px dashed var(--p5-red);padding-bottom:6px;"><span style="color:var(--p5-red);font-family:'Bungee';">ATR/CLOSE</span><span class="tnum" style="color:var(--text);">${fmt.num(b.atr_ratio, 2)}%</span></div>
+    </div>
+    <div class="mt-4 pt-3 marker text-sm" style="border-top:3px solid var(--p5-red);color:var(--text);">Range: ${fmt.yen(b.lower)} 〜 ${fmt.yen(b.upper)}<br>うねりで仕留めろ!</div>`;
+}
+
+function closeDetail() { document.getElementById('modal').style.display = 'none'; }
+
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    STATE.activeTab = btn.dataset.tab;
+    renderActiveTab();
+  });
+});
+['filterBucket', 'filterSignal', 'filterSector'].forEach(id => {
+  document.getElementById(id).addEventListener('change', e => {
+    STATE.filters[id.replace('filter', '').toLowerCase()] = e.target.value;
+    renderActiveTab();
+  });
+});
+document.getElementById('filterBox').addEventListener('change', e => { STATE.filters.box = e.target.checked; renderActiveTab(); });
+document.getElementById('filterPass').addEventListener('change', e => { STATE.filters.pass = e.target.checked; renderActiveTab(); });
+document.getElementById('filterShowExcluded').addEventListener('change', e => { STATE.filters.showExcluded = e.target.checked; renderActiveTab(); });
+document.getElementById('searchBox').addEventListener('input', e => { STATE.filters.search = e.target.value; renderActiveTab(); });
+document.getElementById('sortKey').addEventListener('change', e => { STATE.sort = e.target.value; renderActiveTab(); });
+document.getElementById('mClose').addEventListener('click', closeDetail);
+document.getElementById('modal').addEventListener('click', e => { if (e.target.id === 'modal') closeDetail(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeDetail(); });
+document.getElementById('pfAddBtn').addEventListener('click', addToPortfolio);
+document.querySelectorAll('.modal-tab').forEach(btn => {
+  btn.addEventListener('click', () => switchModalTab(btn.dataset.mtab));
+});
+init();
+</script>
+</body>
+</html>

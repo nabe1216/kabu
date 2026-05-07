@@ -1,0 +1,4 @@
+# DIVIDEND HEIST - generate.py の依存パッケージ
+# Python 3.10+ 必須（type hint の `X | None` 構文を使用）
+
+requests>=2.31.0
