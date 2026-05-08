@@ -884,19 +884,29 @@ def get_forecast_dps(statements: list[dict[str, Any]]) -> float | None:
 
 
 def get_latest_payout_ratio(statements: list[dict[str, Any]]) -> float | None:
-    """最新FYの配当性向を取得。なければ DivAnn / EPS から計算。"""
+    """
+    最新FYの配当性向 (%) を取得。
+
+    V2 API の PayoutRatioAnn は小数形式 (0.51 = 51%) のことがあり、
+    また文書ごとに単位が混在する場合があるため、まずは DivAnn / EPS から
+    自前で計算する方式を優先する。それで取れなかった場合のみ、
+    API の PayoutRatioAnn を使い、必要に応じて 100倍 して % に揃える。
+    """
     fy_list = [s for s in statements if s.get('CurPerType') in ('FY', '4Q')]
     fy_list.sort(key=lambda s: parse_date(s.get('CurPerEn')) or date.min)
     if not fy_list:
         return None
     latest = fy_list[-1]
-    payout = safe_float(latest.get('PayoutRatioAnn'))
-    if payout is not None:
-        return payout
+    # 第1優先: DivAnn / EPS から計算 (単位明確 = % で返す)
     div = safe_float(latest.get('DivAnn'))
     eps = safe_float(latest.get('EPS'))
     if div is not None and eps is not None and eps > 0:
         return (div / eps) * 100.0
+    # 第2優先: API field を使う (heuristic で単位を正規化)
+    payout_raw = safe_float(latest.get('PayoutRatioAnn'))
+    if payout_raw is not None:
+        # decimal 形式 (< 3) は %% に換算
+        return payout_raw * 100.0 if payout_raw < 3 else payout_raw
     return None
 
 
