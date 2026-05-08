@@ -9,6 +9,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Bungee&family=Bungee+Shade&family=Reggae+One&family=RocknRoll+One&family=Shippori+Mincho:wght@500;700;800&family=Noto+Sans+JP:wght@400;500;700;900&family=JetBrains+Mono:wght@400;500;700&family=Permanent+Marker&display=swap" rel="stylesheet">
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
+<script src="https://s3.tradingview.com/tv.js"></script>
 <style>
 :root {
   --p5-red: #E60012;
@@ -344,23 +345,40 @@ select.input-base{appearance:none;background-image:url("data:image/svg+xml,%3Csv
 <div class="modal-tabs">
 <button class="modal-tab active" data-mtab="metrics">METRICS <span class="reggae text-[10px] ml-1">／ 指標</span></button>
 <button class="modal-tab" data-mtab="financials">FINANCIALS <span class="reggae text-[10px] ml-1">／ 業績推移</span></button>
+<button class="modal-tab" data-mtab="peers">PEERS <span class="reggae text-[10px] ml-1">／ 同業他社</span></button>
+<button class="modal-tab" data-mtab="chart">CHART <span class="reggae text-[10px] ml-1">／ チャート</span></button>
 <button class="modal-tab" data-mtab="links">EXTERNAL <span class="reggae text-[10px] ml-1">／ 外部リンク</span></button>
 </div>
 
 <!-- METRICS パネル (既存内容) -->
 <div id="mPanelMetrics" class="modal-panel">
-<div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+<div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
 <div class="heist-card p-4 mini-stat"><div class="lbl">PRICE ★ 現在値</div><div class="num" id="mPrice">—</div><div class="text-[10px] mono mt-1" style="color:var(--text-mute);">DPS <span id="mDPS">—</span></div></div>
 <div class="heist-card p-4 mini-stat" style="border-color:var(--p5-red);"><div class="lbl">YIELD ★ 利回り</div><div class="num" style="color:var(--p5-red);"><span id="mYield">—</span><span class="text-base">%</span></div><div class="text-[10px] mono mt-1" style="color:var(--text-mute);">5Y Med <span id="mMedYield">—</span>%</div></div>
 <div class="heist-card p-4 mini-stat"><div class="lbl">PER × PBR</div><div class="num" id="mGraham">—</div><div class="text-[10px] mono mt-1" style="color:var(--text-mute);">PER <span id="mPER">—</span> · PBR <span id="mPBR">—</span></div></div>
 <div class="heist-card p-4 mini-stat"><div class="lbl">PAYOUT ★ 配当性向</div><div class="num"><span id="mPayout">—</span><span class="text-base">%</span></div><div class="text-[10px] mono mt-1" style="color:var(--text-mute);">自己資本 <span id="mEquity">—</span>%</div></div>
 </div>
-<div class="heist-card p-5 mb-4">
+<div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+<div class="heist-card p-4 mini-stat"><div class="lbl">ROE ★ 自己資本利益率</div><div class="num"><span id="mROE">—</span><span class="text-base">%</span></div><div class="text-[10px] mono mt-1" style="color:var(--text-mute);">直近FY基準</div></div>
+<div class="heist-card p-4 mini-stat"><div class="lbl">SALES ★ 売上</div><div class="num mono" id="mSalesOku">—</div><div class="text-[10px] mono mt-1" style="color:var(--text-mute);">億円</div></div>
+<div class="heist-card p-4 mini-stat"><div class="lbl">OP ★ 営業利益</div><div class="num mono" id="mOpOku">—</div><div class="text-[10px] mono mt-1" style="color:var(--text-mute);">億円</div></div>
+<div class="heist-card p-4 mini-stat"><div class="lbl">NP ★ 純利益</div><div class="num mono" id="mNpOku">—</div><div class="text-[10px] mono mt-1" style="color:var(--text-mute);">億円</div></div>
+</div>
+<div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+<div class="heist-card p-5">
 <div class="flex items-center justify-between mb-3">
-<h3 class="bungee text-base" style="color:var(--p5-black);">5Y YIELD! <span class="reggae text-[11px] ml-2" style="color:var(--p5-red);">／ 配当利回り分布</span></h3>
+<h3 class="bungee text-base" style="color:var(--p5-black);">5Y YIELD TIMELINE <span class="reggae text-[11px] ml-2" style="color:var(--p5-red);">／ 利回り推移</span></h3>
+<div class="text-[10px] mono flex gap-3" style="color:var(--text-mute);"><span><span style="color:var(--sell);">- -</span> Q25</span><span><span style="color:var(--p5-red);">- -</span> Q75</span></div>
+</div>
+<div id="mYieldChart" style="height:240px;"></div>
+</div>
+<div class="heist-card p-5">
+<div class="flex items-center justify-between mb-3">
+<h3 class="bungee text-base" style="color:var(--p5-black);">YIELD DIST <span class="reggae text-[11px] ml-2" style="color:var(--p5-red);">／ 利回り分布</span></h3>
 <div class="text-[10px] mono flex gap-3" style="color:var(--text-mute);"><span><span style="color:var(--sell);">●</span> SELL</span><span><span style="color:var(--p5-black);">●</span> NOW</span><span><span style="color:var(--p5-red);">●</span> BUY</span></div>
 </div>
-<div id="mYieldChart" style="height:220px;"></div>
+<div id="mYieldDistChart" style="height:240px;"></div>
+</div>
 </div>
 <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
 <div class="heist-card p-5"><h3 class="bungee text-base mb-3" style="color:var(--p5-black);">SCREENING! <span class="reggae text-[11px] ml-2" style="color:var(--p5-red);">／ 8条件判定</span></h3><div id="mScreening"></div></div>
@@ -380,6 +398,36 @@ select.input-base{appearance:none;background-image:url("data:image/svg+xml,%3Csv
 <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
 <div class="heist-card p-5"><h3 class="bungee text-base mb-3" style="color:var(--p5-black);">EPS / DPS <span class="reggae text-[11px] ml-2" style="color:var(--p5-red);">／ 1株あたり</span></h3><div id="mFinChartEps" style="height:240px;"></div></div>
 <div class="heist-card p-5"><h3 class="bungee text-base mb-3" style="color:var(--p5-black);">EARNINGS! <span class="reggae text-[11px] ml-2" style="color:var(--p5-red);">／ 決算情報</span></h3><div id="mEarningsInfo"></div></div>
+</div>
+</div>
+
+<!-- PEERS パネル (新規 - 同業他社比較) -->
+<div id="mPanelPeers" class="modal-panel" style="display:none;">
+<div class="heist-card p-5 mb-4">
+<div class="flex items-center justify-between mb-3 flex-wrap gap-2">
+<h3 class="bungee text-base" style="color:var(--p5-black);">PEERS! <span class="reggae text-[11px] ml-2" style="color:var(--p5-red);">／ 同業他社比較</span></h3>
+<div class="text-[10px] mono" style="color:var(--text-mute);" id="mPeersMeta">—</div>
+</div>
+<div id="mPeersTable" class="overflow-x-auto"></div>
+<div class="mincho text-xs mt-3" style="color:var(--text-mute);line-height:1.7;">
+※ 同じ33業種コードに属する銘柄のうち、本ツールのユニバース内で時価総額上位5社を表示。<br>
+※ 当該銘柄は赤色でハイライトされます。
+</div>
+</div>
+</div>
+
+<!-- CHART パネル (新規 - TradingView 埋め込み) -->
+<div id="mPanelChart" class="modal-panel" style="display:none;">
+<div class="heist-card p-3 mb-3">
+<div class="flex items-center justify-between mb-2 flex-wrap gap-2 px-2">
+<h3 class="bungee text-base" style="color:var(--p5-black);">CHART! <span class="reggae text-[11px] ml-2" style="color:var(--p5-red);">／ テクニカル分析</span></h3>
+<div class="text-[10px] mono" style="color:var(--text-mute);">Powered by TradingView</div>
+</div>
+<div id="mChartContainer" style="height:560px;width:100%;background:var(--bg-cream);border:2px solid var(--p5-black);"></div>
+</div>
+<div class="mincho text-xs px-2" style="color:var(--text-mute);line-height:1.7;">
+※ 価格は15分ディレイ。RSI/MACD/移動平均などの指標は左下のアイコンから追加可能。<br>
+※ チャート内をクリック&ドラッグで時間軸の操作、右下の歯車アイコンで設定変更ができます。
 </div>
 </div>
 
@@ -2027,6 +2075,7 @@ const DUMMY_DATA = {
 <script>
 const STATE = {
   data: null, activeTab: 'signals', activeMTab: 'metrics',
+  currentDetailCode: null,
   filters: { bucket: '', signal: '', sector: '', box: false, pass: true, search: '', showExcluded: false },
   sort: 'signal',
   watchlist: JSON.parse(localStorage.getItem('div_watchlist') || '[]'),
@@ -2260,6 +2309,7 @@ function toggleWatch(code) {
 function openDetail(code) {
   const s = STATE.data.stocks.find(x => x.code === code);
   if (!s) return;
+  STATE.currentDetailCode = code;  // CHARTタブで使用
   document.getElementById('mCode').textContent = s.code;
   document.getElementById('mName').textContent = s.name;
   document.getElementById('mSector').textContent = `${s.sector || ''} · 時価総額 ${fmt.oku(s.market_cap_oku)}円`;
@@ -2285,8 +2335,15 @@ function openDetail(code) {
   document.getElementById('mPBR').textContent = fmt.num(s.pbr, 2);
   document.getElementById('mPayout').textContent = fmt.num(s.payout_ratio, 1);
   document.getElementById('mEquity').textContent = s.equity_ratio == null ? '—' : fmt.num(s.equity_ratio * 100, 1);
-  drawYieldChart(s); drawScreening(s); drawBox(s);
+  // ROE と 直近FY 業績
+  document.getElementById('mROE').textContent = fmt.num(s.roe, 2);
+  document.getElementById('mSalesOku').textContent = s.latest_sales_oku == null ? '—' : Number(s.latest_sales_oku).toLocaleString();
+  document.getElementById('mOpOku').textContent = s.latest_op_oku == null ? '—' : Number(s.latest_op_oku).toLocaleString();
+  document.getElementById('mNpOku').textContent = s.latest_np_oku == null ? '—' : Number(s.latest_np_oku).toLocaleString();
+  // 描画
+  drawYieldChart(s); drawYieldDistChart(s); drawScreening(s); drawBox(s);
   drawFinancials(s); drawEarningsInfo(s); drawExternalLinks(s);
+  drawPeers(s);
   switchModalTab('metrics');
   document.getElementById('modal').style.display = 'flex';
 }
@@ -2296,15 +2353,20 @@ function switchModalTab(tab) {
   document.querySelectorAll('.modal-tab').forEach(b => b.classList.toggle('active', b.dataset.mtab === tab));
   document.getElementById('mPanelMetrics').style.display = tab === 'metrics' ? 'block' : 'none';
   document.getElementById('mPanelFinancials').style.display = tab === 'financials' ? 'block' : 'none';
+  document.getElementById('mPanelPeers').style.display = tab === 'peers' ? 'block' : 'none';
+  document.getElementById('mPanelChart').style.display = tab === 'chart' ? 'block' : 'none';
   document.getElementById('mPanelLinks').style.display = tab === 'links' ? 'block' : 'none';
   // Plotlyチャートはdisplay復帰時にresizeが必要
-  if (tab === 'financials') {
-    setTimeout(() => {
-      const c1 = document.getElementById('mFinChartProfit');
-      const c2 = document.getElementById('mFinChartEps');
-      if (c1 && c1._fullLayout) Plotly.Plots.resize(c1);
-      if (c2 && c2._fullLayout) Plotly.Plots.resize(c2);
-    }, 50);
+  setTimeout(() => {
+    const ids = ['mYieldChart', 'mYieldDistChart', 'mFinChartProfit', 'mFinChartEps'];
+    ids.forEach(id => {
+      const el = document.getElementById(id);
+      if (el && el._fullLayout) Plotly.Plots.resize(el);
+    });
+  }, 50);
+  // CHARTタブ: TradingView ウィジェット遅延ロード
+  if (tab === 'chart' && STATE.currentDetailCode) {
+    drawTradingViewChart(STATE.currentDetailCode);
   }
 }
 
@@ -2404,7 +2466,58 @@ function drawExternalLinks(s) {
 }
 
 function drawYieldChart(s) {
-  if (s.current_yield == null) { document.getElementById('mYieldChart').innerHTML = '<div class="bungee text-center pt-20" style="color:var(--p5-black);">NO DATA!</div>'; return; }
+  // 時系列利回りグラフ (バフェコ風)
+  const el = document.getElementById('mYieldChart');
+  const history = s.yield_history || [];
+  if (!history.length) {
+    el.innerHTML = '<div class="bungee text-center pt-20" style="color:var(--p5-black);">NO HISTORY!</div>';
+    return;
+  }
+  const dates = history.map(h => h.date);
+  const yields = history.map(h => h.yield);
+  const trace = {
+    x: dates, y: yields, type: 'scatter', mode: 'lines',
+    name: '利回り推移',
+    line: { color: '#E60012', width: 2.5, shape: 'spline' },
+    fill: 'tozeroy', fillcolor: 'rgba(230,0,18,0.08)',
+    hovertemplate: '<b>%{x|%Y-%m}</b><br>利回り: %{y:.2f}%<extra></extra>',
+  };
+  const shapes = [];
+  const annotations = [];
+  if (s.yield_q25 != null) {
+    shapes.push({ type: 'line', xref: 'paper', x0: 0, x1: 1, y0: s.yield_q25, y1: s.yield_q25, line: { color: '#2962FF', width: 1.5, dash: 'dash' } });
+    annotations.push({ xref: 'paper', x: 0.01, y: s.yield_q25, text: `Q25 ${fmt.num(s.yield_q25)}%`, showarrow: false, font: { color: '#2962FF', size: 10, family: 'Bungee' }, xanchor: 'left', yanchor: 'bottom' });
+  }
+  if (s.yield_q75 != null) {
+    shapes.push({ type: 'line', xref: 'paper', x0: 0, x1: 1, y0: s.yield_q75, y1: s.yield_q75, line: { color: '#E60012', width: 1.5, dash: 'dash' } });
+    annotations.push({ xref: 'paper', x: 0.01, y: s.yield_q75, text: `Q75 ${fmt.num(s.yield_q75)}%`, showarrow: false, font: { color: '#E60012', size: 10, family: 'Bungee' }, xanchor: 'left', yanchor: 'bottom' });
+  }
+  if (s.current_yield != null && dates.length > 0) {
+    annotations.push({
+      x: dates[dates.length - 1], y: s.current_yield,
+      text: `★ NOW ${fmt.num(s.current_yield)}%`,
+      showarrow: true, arrowhead: 2, ax: -40, ay: -30,
+      font: { color: '#0A0A0A', size: 11, family: 'Bungee' },
+      bgcolor: '#FAF8F0', bordercolor: '#0A0A0A', borderwidth: 1.5,
+    });
+  }
+  const layout = {
+    paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)',
+    margin: { l: 45, r: 20, t: 20, b: 40 },
+    font: { family: 'JetBrains Mono', size: 10, color: '#6B655A' },
+    xaxis: { gridcolor: 'rgba(0,0,0,0.06)', zeroline: false, type: 'date' },
+    yaxis: { gridcolor: 'rgba(0,0,0,0.06)', zeroline: false, ticksuffix: '%', title: { text: 'YIELD', font: { size: 10 } } },
+    shapes: shapes,
+    annotations: annotations,
+    showlegend: false,
+  };
+  Plotly.newPlot(el, [trace], layout, { displayModeBar: false, responsive: true });
+}
+
+function drawYieldDistChart(s) {
+  // 従来の分布図 (右側に小さく)
+  const el = document.getElementById('mYieldDistChart');
+  if (s.current_yield == null) { el.innerHTML = '<div class="bungee text-center pt-20" style="color:var(--p5-black);">NO DATA!</div>'; return; }
   const min = Math.min(s.yield_q25 || 0, s.current_yield) * 0.7 - 0.5;
   const max = Math.max(s.yield_q75 || 0, s.current_yield) * 1.3 + 0.5;
   const med = s.yield_median || s.current_yield;
@@ -2415,7 +2528,7 @@ function drawYieldChart(s) {
     const peak = (med - min) / (max - min);
     ys.push(Math.exp(-Math.pow(t - peak, 2) / (2 * 0.04)));
   }
-  const trace = { x: xs, y: ys, fill: 'tozeroy', type: 'scatter', mode: 'none', fillcolor: 'rgba(230,0,18,0.3)', line: { color: 'rgba(230,0,18,0.6)', width: 3 }, hoverinfo: 'skip' };
+  const trace = { x: xs, y: ys, fill: 'tozeroy', type: 'scatter', mode: 'none', fillcolor: 'rgba(230,0,18,0.3)', hoverinfo: 'skip' };
   const layout = {
     paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)',
     margin: { l: 30, r: 10, t: 24, b: 36 },
@@ -2433,7 +2546,99 @@ function drawYieldChart(s) {
       { x: s.current_yield, y: 1.25, text: `★ NOW ${fmt.num(s.current_yield)}%`, showarrow: false, font: { color: '#0A0A0A', size: 13, family: 'Bungee' } },
     ],
   };
-  Plotly.newPlot('mYieldChart', [trace], layout, { displayModeBar: false, responsive: true });
+  Plotly.newPlot(el, [trace], layout, { displayModeBar: false, responsive: true });
+}
+
+function drawPeers(s) {
+  // 同業他社比較 (同じS33業種コードで時価総額順 top 5)
+  const el = document.getElementById('mPeersTable');
+  const metaEl = document.getElementById('mPeersMeta');
+  const targetSector = s.sector33_code;
+  if (!targetSector) {
+    el.innerHTML = '<div class="reggae text-sm py-8 text-center" style="color:var(--text-mute);">業種コードがありません</div>';
+    metaEl.textContent = '—';
+    return;
+  }
+  const peers = STATE.data.stocks
+    .filter(x => x.sector33_code === targetSector)
+    .sort((a, b) => (b.market_cap_oku || 0) - (a.market_cap_oku || 0))
+    .slice(0, 6);
+  // 当該銘柄を必ず含める
+  if (!peers.find(p => p.code === s.code)) peers.push(s);
+  // 時価総額順に再ソート
+  peers.sort((a, b) => (b.market_cap_oku || 0) - (a.market_cap_oku || 0));
+
+  metaEl.textContent = `${s.sector || ''} · ${peers.length} STOCKS`;
+
+  const cols = [
+    { lbl: 'CODE', get: p => p.code },
+    { lbl: '企業名', get: p => p.name },
+    { lbl: '時価総額', get: p => fmt.oku(p.market_cap_oku) },
+    { lbl: 'PER', get: p => fmt.num(p.per, 1) },
+    { lbl: 'PBR', get: p => fmt.num(p.pbr, 2) },
+    { lbl: '利回り', get: p => p.current_yield != null ? fmt.num(p.current_yield, 2) + '%' : '—' },
+    { lbl: '配当性向', get: p => p.payout_ratio != null ? fmt.num(p.payout_ratio, 1) + '%' : '—' },
+    { lbl: 'ROE', get: p => p.roe != null ? fmt.num(p.roe, 2) + '%' : '—' },
+    { lbl: '自資本比', get: p => p.equity_ratio != null ? fmt.num(p.equity_ratio * 100, 1) + '%' : '—' },
+    { lbl: '売上(億)', get: p => p.latest_sales_oku != null ? Number(p.latest_sales_oku).toLocaleString() : '—' },
+    { lbl: '営利(億)', get: p => p.latest_op_oku != null ? Number(p.latest_op_oku).toLocaleString() : '—' },
+    { lbl: '純利(億)', get: p => p.latest_np_oku != null ? Number(p.latest_np_oku).toLocaleString() : '—' },
+  ];
+
+  let html = '<table class="w-full text-xs" style="border-collapse:collapse;">';
+  html += '<thead><tr style="background:var(--p5-black);color:var(--p5-cream);">';
+  cols.forEach(c => { html += `<th class="bungee px-2 py-2 text-left" style="font-size:10px;letter-spacing:0.05em;">${c.lbl}</th>`; });
+  html += '</tr></thead><tbody>';
+  peers.forEach((p, i) => {
+    const isTarget = p.code === s.code;
+    const rowStyle = isTarget
+      ? 'background:var(--p5-red);color:white;font-weight:900;'
+      : (i % 2 === 0 ? 'background:var(--bg-cream);' : 'background:var(--bg-card);');
+    html += `<tr style="${rowStyle}border-bottom:2px solid var(--p5-black);">`;
+    cols.forEach((c, j) => {
+      const align = j < 2 ? 'text-left' : 'text-right';
+      html += `<td class="${j === 0 ? 'bungee' : (j === 1 ? 'mincho' : 'mono tnum')} px-2 py-2 ${align}">${c.get(p)}</td>`;
+    });
+    html += '</tr>';
+  });
+  html += '</tbody></table>';
+  el.innerHTML = html;
+}
+
+function drawTradingViewChart(code) {
+  const containerId = 'mChartContainer';
+  const el = document.getElementById(containerId);
+  if (!el) return;
+  // 二重ロード防止: 既に表示済みのコードと同じならスキップ
+  if (el.dataset.loadedCode === code) return;
+  el.dataset.loadedCode = code;
+  el.innerHTML = '';  // クリア
+  if (typeof TradingView === 'undefined') {
+    el.innerHTML = '<div class="bungee text-center pt-20" style="color:var(--p5-black);">TradingView LOADING...</div>';
+    setTimeout(() => drawTradingViewChart(code), 1000);
+    return;
+  }
+  // J-Quants の銘柄コード4桁を TradingView の TSE:XXXX に変換
+  new TradingView.widget({
+    autosize: true,
+    symbol: `TSE:${code}`,
+    interval: 'D',
+    timezone: 'Asia/Tokyo',
+    theme: 'light',
+    style: '1',  // candle
+    locale: 'ja',
+    toolbar_bg: '#FAF8F0',
+    enable_publishing: false,
+    hide_side_toolbar: false,
+    allow_symbol_change: true,
+    container_id: containerId,
+    studies: [
+      'MASimple@tv-basicstudies',  // 単純移動平均
+      'Volume@tv-basicstudies',
+    ],
+    withdateranges: true,
+    save_image: false,
+  });
 }
 
 function drawScreening(s) {
