@@ -377,7 +377,7 @@ def extract_annual_dividends(statements: list[dict[str, Any]]) -> list[float]:
     """
     annual = []
     for s in statements:
-        if s.get('CurPerType') != 'FY':
+        if s.get('CurPerType') not in ('FY', '4Q'):
             continue
         div = safe_float(s.get('DivAnn'))
         if div is None:
@@ -416,7 +416,7 @@ def extract_annual_metric(statements: list[dict[str, Any]], key: str) -> list[fl
     """財務一覧から年度単位の指定指標を時系列で抽出。"""
     annual = []
     for s in statements:
-        if s.get('CurPerType') != 'FY':
+        if s.get('CurPerType') not in ('FY', '4Q'):
             continue
         v = safe_float(s.get(key))
         period = parse_date(s.get('CurPerEn'))
@@ -518,13 +518,13 @@ def quantile(sorted_values: list[float], q: float) -> float:
 def calculate_yield_distribution(
     quotes: list[dict[str, Any]],
     div_history_by_year: dict[int, float],
-) -> dict[str, float]:
+) -> dict[str, Any]:
     """
-    過去5年の月次配当利回りから Q25 / median / Q75 を計算。
+    過去5年の月次配当利回りから Q25 / median / Q75 を計算 + 時系列データを返す。
 
     各月末時点の利回り = 期中DPS実績 / 月末終値
     """
-    monthly: dict[str, float] = {}  # 'YYYY-MM' → 月末終値
+    monthly: dict[str, tuple[date, float]] = {}  # 'YYYY-MM' → (月末日付, 月末終値)
     for q in quotes:
         d = parse_date(q.get('Date'))
         close = safe_float(q.get('Close'))
@@ -537,22 +537,34 @@ def calculate_yield_distribution(
             monthly[ym] = (d, close)
 
     yields: list[float] = []
-    for ym, (d, close) in monthly.items():
+    history: list[dict[str, Any]] = []  # 時系列データ
+    for ym, (d, close) in sorted(monthly.items()):
         dps = div_history_by_year.get(d.year)
         if dps is None or dps <= 0:
             continue
         y = (dps / close) * 100.0
         yields.append(y)
+        history.append({
+            'date': d.isoformat(),
+            'yield': round(y, 3),
+            'price': round(close, 2),
+            'dps': round(dps, 2),
+        })
 
     if len(yields) < 12:
-        return {'q25': float('nan'), 'median': float('nan'), 'q75': float('nan'), 'n': len(yields)}
+        return {
+            'q25': float('nan'), 'median': float('nan'), 'q75': float('nan'),
+            'n': len(yields),
+            'history': history,
+        }
 
-    yields.sort()
+    yields_sorted = sorted(yields)
     return {
-        'q25': quantile(yields, 0.25),
-        'median': quantile(yields, 0.50),
-        'q75': quantile(yields, 0.75),
-        'n': len(yields),
+        'q25': quantile(yields_sorted, 0.25),
+        'median': quantile(yields_sorted, 0.50),
+        'q75': quantile(yields_sorted, 0.75),
+        'n': len(yields_sorted),
+        'history': history,
     }
 
 
@@ -782,13 +794,20 @@ def build_financials_history(statements: list[dict[str, Any]], n: int = 8) -> li
         period_end = parse_date(s.get('CurPerEn'))
         if period_end is None:
             continue
+        np_val = safe_float(s.get('NP'))
+        eq_val = safe_float(s.get('Eq'))
+        roe_val = None
+        if np_val is not None and eq_val is not None and eq_val > 0:
+            roe_val = (np_val / eq_val) * 100.0
         rows.append((period_end, {
             'period': format_period(s),
             'sales': safe_float(s.get('Sales')),
             'op': safe_float(s.get('OP')),
-            'np': safe_float(s.get('NP')),
+            'np': np_val,
             'eps': safe_float(s.get('EPS')),
             'dps': safe_float(s.get('DivAnn')),
+            'eq': eq_val,
+            'roe': roe_val,
         }))
     rows.sort(key=lambda x: x[0], reverse=True)
     return [r[1] for r in rows[:n]]
@@ -816,7 +835,7 @@ def is_imminent_business_day(target: date | None, today: date) -> bool:
 
 def get_latest_full_year_metric(statements: list[dict[str, Any]], key: str) -> float | None:
     """直近の FY データから指定指標を取得。"""
-    fy_list = [s for s in statements if s.get('CurPerType') == 'FY']
+    fy_list = [s for s in statements if s.get('CurPerType') in ('FY', '4Q')]
     fy_list.sort(key=lambda s: parse_date(s.get('CurPerEn')) or date.min)
     if not fy_list:
         return None
@@ -824,23 +843,49 @@ def get_latest_full_year_metric(statements: list[dict[str, Any]], key: str) -> f
 
 
 def get_forecast_dps(statements: list[dict[str, Any]]) -> float | None:
-    """会社予想の年間 DPS（FDivAnn 相当）を取得。最新の Q から取る。"""
+    """
+    今期 (現在進行中の会計年度) の予想 DPS を取得。
+
+    J-Quants V2 では disclosure の種類によって FDivAnn の意味が変わるため、
+    丁寧に分岐する:
+      - CurPerType == 'FY' (期末決算)
+        その年の DivAnn は確定し、来期の予想は NxFDivAnn に入る。
+        → NxFDivAnn (翌期予想) = 「今期 (新年度) の予想」として採用
+      - CurPerType in ('1Q', '2Q', '3Q') (四半期決算)
+        FDivAnn が今期 (現在の会計年度) の予想を表す。
+        → FDivAnn を採用
+
+    最新 disclosure から順に走査し、最初に見つかった有効値を返す。
+    全部空ならフォールバックで直近 FY の実績 DivAnn を返す。
+    """
     sorted_stmts = sorted(
         statements,
         key=lambda s: (parse_date(s.get('DiscDate')) or date.min),
         reverse=True,
     )
     for s in sorted_stmts:
-        f = safe_float(s.get('FDivAnn'))
+        per_type = s.get('CurPerType', '')
+        if per_type in ('FY', '4Q'):
+            # 期末決算 → 翌期予想がカレント年の予想
+            f = safe_float(s.get('NxFDivAnn'))
+        else:
+            # 四半期決算 → 当期予想
+            f = safe_float(s.get('FDivAnn'))
         if f is not None and f > 0:
             return f
-    # フォールバック: 直近FYの実績
+    # フォールバック1: どの disclosure でも上記が取れなかったら、何でもいいので FDivAnn / NxFDivAnn を取る
+    for s in sorted_stmts:
+        for key in ('FDivAnn', 'NxFDivAnn'):
+            f = safe_float(s.get(key))
+            if f is not None and f > 0:
+                return f
+    # フォールバック2: 直近FYの実績
     return get_latest_full_year_metric(statements, 'DivAnn')
 
 
 def get_latest_payout_ratio(statements: list[dict[str, Any]]) -> float | None:
     """最新FYの配当性向を取得。なければ DivAnn / EPS から計算。"""
-    fy_list = [s for s in statements if s.get('CurPerType') == 'FY']
+    fy_list = [s for s in statements if s.get('CurPerType') in ('FY', '4Q')]
     fy_list.sort(key=lambda s: parse_date(s.get('CurPerEn')) or date.min)
     if not fy_list:
         return None
@@ -966,7 +1011,7 @@ def process_stock(
     # --- シグナル（利回り分布）---
     div_history_by_year: dict[int, float] = {}
     for s in statements:
-        if s.get('CurPerType') != 'FY':
+        if s.get('CurPerType') not in ('FY', '4Q'):
             continue
         d = parse_date(s.get('CurPerEn'))
         v = safe_float(s.get('DivAnn'))
@@ -988,6 +1033,17 @@ def process_stock(
 
     # --- 財務推移 ---
     financials_history = build_financials_history(statements, n=8)
+
+    # --- ROE 計算: 直近FYの ROE = NP / Eq * 100 ---
+    latest_np = get_latest_full_year_metric(statements, 'NP')
+    latest_eq = get_latest_full_year_metric(statements, 'Eq')
+    roe = None
+    if latest_np is not None and latest_eq is not None and latest_eq > 0:
+        roe = (latest_np / latest_eq) * 100.0
+
+    # --- 直近FY の主要指標を top-level convenience として ---
+    latest_sales = get_latest_full_year_metric(statements, 'Sales')
+    latest_op = get_latest_full_year_metric(statements, 'OP')
 
     # --- JSON 組み立て ---
     return {
@@ -1014,12 +1070,18 @@ def process_stock(
         'yield_median': round(yield_dist['median'], 2) if not math.isnan(yield_dist['median']) else None,
         'yield_q75': round(yield_dist['q75'], 2) if not math.isnan(yield_dist['q75']) else None,
         'yield_sample_n': yield_dist['n'],
+        'yield_history': yield_dist.get('history', []),
 
         'per': round(per, 2) if per is not None else None,
         'pbr': round(pbr, 2) if pbr is not None else None,
         'per_pbr': round(per_pbr, 2) if per_pbr is not None else None,
         'payout_ratio': round(payout, 2) if payout is not None else None,
         'equity_ratio': round(equity_ratio, 4) if equity_ratio is not None else None,
+        'roe': round(roe, 2) if roe is not None else None,
+
+        'latest_sales_oku': round(latest_sales / 1e8) if latest_sales is not None else None,
+        'latest_op_oku': round(latest_op / 1e8) if latest_op is not None else None,
+        'latest_np_oku': round(latest_np / 1e8) if latest_np is not None else None,
 
         'screening': s_results,
         'screening_meta': {
