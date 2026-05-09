@@ -2144,13 +2144,15 @@ function updateStats() {
 function applyFilters(stocks) {
   const f = STATE.filters;
   return stocks.filter(s => {
+    const isCore = s.core_type === 'progressive' || s.core_type === 'doe';
     // 対象外: 「対象外を表示」OFFかつバケット指定が「対象外」でない場合は除外
     if (s.bucket === '対象外' && !f.showExcluded && f.bucket !== '対象外') return false;
     if (f.bucket && s.bucket !== f.bucket) return false;
     if (f.signal && s.signal !== f.signal) return false;
     if (f.sector && s.sector !== f.sector) return false;
     if (f.box && !s.is_box) return false;
-    if (f.pass && !s.screening_pass) return false;
+    // SCREEN PASS フィルタ: コア・累進/DOE銘柄は適用しない (常に表示)
+    if (f.pass && !s.screening_pass && !isCore) return false;
     if (f.search) {
       const q = f.search.toLowerCase();
       if (!s.code.includes(q) && !s.name.toLowerCase().includes(q)) return false;
@@ -2198,7 +2200,7 @@ function stockCard(s, index) {
             ${earningsMark}
           </div>
           <div class="mincho text-sm" style="color:var(--text);">${s.name}</div>
-          <div class="mono text-[10px] mt-0.5" style="color:var(--text-mute);">${s.sector || ''}</div>
+          <div class="mono text-[10px] mt-0.5" style="color:var(--text-mute);">${s.sector || ''}${s.fiscal_month ? ` · ${s.fiscal_month}月決算` : ''}${s.interim_month && s.fiscal_month ? ` (権利月 ${s.fiscal_month}月/${s.interim_month}月)` : ''}</div>
         </div>
         <div class="flex flex-col gap-1 items-start flex-shrink-0">
           <span class="pill ${sigPill(s.signal)}">${sigLabel(s.signal)}</span>
@@ -2218,7 +2220,7 @@ function stockCard(s, index) {
         <div class="text-right flex-shrink-0 flex gap-4">
           <div><div class="bungee text-[10px]" style="color:var(--p5-red);">PER × PBR</div><div class="mono tnum text-sm mt-1" style="color:${s.per_pbr && s.per_pbr <= 22.5 ? 'var(--text)' : 'var(--sell)'};">${fmt.num(s.per_pbr, 1)}</div></div>
           <div><div class="bungee text-[10px]" style="color:var(--p5-red);">時価</div><div class="mono tnum text-sm mt-1" style="color:var(--text);">${fmt.oku(s.market_cap_oku)}</div></div>
-          <div class="self-center">${s.screening_pass ? '<span class="pill pill-pass">PASS</span>' : '<span class="pill pill-fail">FAIL</span>'}</div>
+          <div class="self-center">${s.screening_pass ? '<span class="pill pill-pass" title="8つのスクリーニング条件すべてに合格&#10;・減配経験ゼロ(10期、累進/DOE免除)&#10;・売上/営利/純利の安定性&#10;・配当性向 ≤ 50%&#10;・自己資本比率 ≥ 50%(金融/不動産免除)&#10;・PER × PBR ≤ 22.5(グレアム指数)&#10;・最低利回り ≥ 3.0%(累進/DOE免除)">PASS</span>' : '<span class="pill pill-fail" title="1つ以上のスクリーニング条件に不合格。詳細はモーダルのMETRICSタブのSCREENINGセクションを参照">FAIL</span>'}</div>
         </div>
         <div class="flex items-center gap-1 flex-shrink-0">
           <button class="btn-icon ${isFav ? 'active' : ''}" onclick="event.stopPropagation();toggleWatch('${s.code}')">
@@ -2312,7 +2314,8 @@ function openDetail(code) {
   STATE.currentDetailCode = code;  // CHARTタブで使用
   document.getElementById('mCode').textContent = s.code;
   document.getElementById('mName').textContent = s.name;
-  document.getElementById('mSector').textContent = `${s.sector || ''} · 時価総額 ${fmt.oku(s.market_cap_oku)}円`;
+  const fiscalInfo = s.fiscal_month ? ` · ${s.fiscal_month}月決算 (権利月: ${s.fiscal_month}月末/${s.interim_month}月末)` : '';
+  document.getElementById('mSector').textContent = `${s.sector || ''} · 時価総額 ${fmt.oku(s.market_cap_oku)}円${fiscalInfo}`;
   const bEl = document.getElementById('mBucket'); bEl.textContent = bucketLabel(s); bEl.className = `pill ${bucketPill(s)}`;
   const sEl = document.getElementById('mSignal'); sEl.textContent = sigLabel(s.signal); sEl.className = `pill ${sigPill(s.signal)}`;
   const boxEl = document.getElementById('mBoxPill');
