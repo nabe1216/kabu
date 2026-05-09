@@ -373,22 +373,31 @@ def format_period(s: dict[str, Any]) -> str:
 # (6) スクリーニング: 配当履歴
 # ============================================================================
 
-def extract_annual_dividends(statements: list[dict[str, Any]]) -> list[float]:
+def extract_annual_dividends(
+    statements: list[dict[str, Any]],
+    quotes_sorted: list[dict[str, Any]] | None = None,
+) -> list[float]:
     """
     財務一覧から年度単位の DPS（DivAnn 実績）を時系列で抽出。
 
-    決算期種別 'FY' の DivAnn を採用し、古い順に並べる。
+    quotes_sorted を渡すと、分割調整して連続性を保つ。
+    例: 1:5分割があった場合、過去の DivAnn (分割前=高い値) を 0.2倍して現在ベースに揃える。
+    これにより減配判定の誤動作 (分割を減配と誤認) を防ぐ。
+
+    決算期種別 'FY' / '4Q' の DivAnn を採用し、古い順に並べる。
     """
     annual = []
     for s in statements:
         if s.get('CurPerType') not in ('FY', '4Q'):
             continue
         div = safe_float(s.get('DivAnn'))
-        if div is None:
-            div = safe_float(s.get('DivAnn'))
         period = parse_date(s.get('CurPerEn'))
-        if div is not None and period is not None:
-            annual.append((period, div))
+        if div is None or period is None:
+            continue
+        # 分割調整
+        disc_date = parse_date(s.get('DiscDate')) or period
+        adj = cumulative_adj_factor_after(quotes_sorted, disc_date) if quotes_sorted else 1.0
+        annual.append((period, div * adj))
     annual.sort(key=lambda x: x[0])
     return [d for _, d in annual]
 
@@ -528,10 +537,11 @@ def calculate_yield_distribution(
 
     各月末時点の利回り = 期中DPS実績 / 月末終値
     """
-    monthly: dict[str, tuple[date, float]] = {}  # 'YYYY-MM' → (月末日付, 月末終値)
+    monthly: dict[str, tuple[date, float]] = {}  # 'YYYY-MM' → (月末日付, 月末調整済終値)
     for q in quotes:
         d = parse_date(q.get('Date'))
-        close = safe_float(q.get('Close'))
+        # 株価は AdjustmentClose (分割調整済) を優先使用、なければ Close (素値)
+        close = safe_float(q.get('AdjustmentClose')) or safe_float(q.get('Close'))
         if d is None or close is None or close <= 0:
             continue
         ym = f'{d.year}-{d.month:02d}'
@@ -797,9 +807,16 @@ def classify_bucket(code: str, screening_pass: bool) -> tuple[str, str | None]:
 # (13) 財務推移 / 決算予定 / その他の整形
 # ============================================================================
 
-def build_financials_history(statements: list[dict[str, Any]], n: int = 8) -> list[dict[str, Any]]:
+def build_financials_history(
+    statements: list[dict[str, Any]],
+    n: int = 8,
+    quotes_sorted: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     """
     直近 n 期分の財務サマリを抽出（FY/Q1/Q2/Q3 含む全期）。
+
+    quotes_sorted を渡すと、1株あたり値 (EPS, DPS) を分割調整して連続性を保つ。
+    Sales/OP/NP/Eq は総額系なので調整不要。
 
     Returns:
         新しい順 → 古い順、最大 n 件
@@ -809,20 +826,27 @@ def build_financials_history(statements: list[dict[str, Any]], n: int = 8) -> li
         period_end = parse_date(s.get('CurPerEn'))
         if period_end is None:
             continue
+        disc_date = parse_date(s.get('DiscDate')) or period_end
+        adj = cumulative_adj_factor_after(quotes_sorted, disc_date) if quotes_sorted else 1.0
+
         np_val = safe_float(s.get('NP'))
         eq_val = safe_float(s.get('Eq'))
+        eps_raw = safe_float(s.get('EPS'))
+        dps_raw = safe_float(s.get('DivAnn'))
+        eps_val = eps_raw * adj if eps_raw is not None else None
+        dps_val = dps_raw * adj if dps_raw is not None else None
         roe_val = None
         if np_val is not None and eq_val is not None and eq_val > 0:
             roe_val = (np_val / eq_val) * 100.0
         rows.append((period_end, {
             'period': format_period(s),
-            'sales': safe_float(s.get('Sales')),
-            'op': safe_float(s.get('OP')),
-            'np': np_val,
-            'eps': safe_float(s.get('EPS')),
-            'dps': safe_float(s.get('DivAnn')),
-            'eq': eq_val,
-            'roe': roe_val,
+            'sales': safe_float(s.get('Sales')),  # 総額: 調整不要
+            'op': safe_float(s.get('OP')),         # 総額: 調整不要
+            'np': np_val,                           # 総額: 調整不要
+            'eps': eps_val,                         # 1株: 分割調整済
+            'dps': dps_val,                         # 1株: 分割調整済
+            'eq': eq_val,                           # 総額: 調整不要
+            'roe': roe_val,                         # 比率: 不変
         }))
     rows.sort(key=lambda x: x[0], reverse=True)
     return [r[1] for r in rows[:n]]
@@ -855,12 +879,45 @@ def _sorted_fy_statements(statements: list[dict[str, Any]]) -> list[dict[str, An
     return fy_list
 
 
+def cumulative_adj_factor_after(
+    quotes: list[dict[str, Any]] | None,
+    since_date: date | None,
+) -> float:
+    """
+    since_date より後に発生した株式分割の累積調整係数を返す。
+
+    J-Quants V2 の AdjustmentFactor は分割日のレコードに記録される。
+    例: 1株を5株に分割した日のレコード → AdjustmentFactor = 0.2
+        1株を3株に分割した日のレコード → AdjustmentFactor = 1/3 ≈ 0.333
+        分割なしの日のレコード         → AdjustmentFactor = 1.0
+
+    用途:
+      - 1株あたりの値 (DPS, EPS, BPS) を分割後ベースに換算:
+          new_value = old_value × cumulative_factor
+      - 発行株式数 (総数) を分割後ベースに換算:
+          new_shares = old_shares / cumulative_factor
+
+    quotes が None / 空 / since_date が None なら 1.0 を返す。
+    """
+    if not since_date or not quotes:
+        return 1.0
+    factor = 1.0
+    for q in quotes:
+        d = parse_date(q.get('Date'))
+        if d is None or d <= since_date:
+            continue
+        adj = safe_float(q.get('AdjustmentFactor'))
+        if adj is not None and adj > 0 and abs(adj - 1.0) > 1e-6:
+            factor *= adj
+    return factor
+
+
 def get_latest_full_year_metric(statements: list[dict[str, Any]], key: str) -> float | None:
     """
-    直近 FY 系 disclosure から指定指標を取得する。
+    直近 FY 系 disclosure から指定指標を取得する (分割調整なし)。
 
-    最新 FY エントリに値が無ければ、データ欠損とみなして1つ前の FY を参照、
-    という具合に新しい順に走査して最初に見つかった非 None 値を返す。
+    最新 FY エントリに値が無ければ、データ欠損とみなして1つ前の FY を参照。
+    分割調整が必要な場合は ..._with_date 版を使ってください。
     """
     for s in _sorted_fy_statements(statements):
         v = safe_float(s.get(key))
@@ -869,19 +926,27 @@ def get_latest_full_year_metric(statements: list[dict[str, Any]], key: str) -> f
     return None
 
 
-def get_forecast_dps(statements: list[dict[str, Any]]) -> float | None:
+def get_latest_full_year_metric_with_date(
+    statements: list[dict[str, Any]], key: str,
+) -> tuple[float | None, date | None]:
     """
-    今期 (現在進行中の会計年度) の予想 DPS を取得。
+    直近 FY から (value, disclosure_date) を返す。disclosure_date は分割調整に使う。
+    """
+    for s in _sorted_fy_statements(statements):
+        v = safe_float(s.get(key))
+        if v is not None:
+            d = parse_date(s.get('DiscDate')) or parse_date(s.get('CurPerEn'))
+            return v, d
+    return None, None
 
-    J-Quants V2 では disclosure 種類で FDivAnn の意味が変わるため分岐:
-      - CurPerType == 'FY' / '4Q' (期末決算)
-        DivAnn が確定し、来期の予想は NxFDivAnn に入る。
-        → NxFDivAnn (翌期予想) = 新年度の今期予想
-      - CurPerType in ('1Q', '2Q', '3Q') (四半期決算)
-        FDivAnn が今期 (現在の会計年度) の予想を表す。
 
-    DiscDate が空の disclosure があるとソートが崩れるため、
-    プライマリは CurPerEn (期間末) でソートする。
+
+def get_forecast_dps_with_date(
+    statements: list[dict[str, Any]],
+) -> tuple[float | None, date | None]:
+    """
+    今期予想 DPS と、その値を取得した disclosure_date のタプルを返す。
+    分割調整に必要なため disclosure_date を一緒に返す。
     """
     sorted_stmts = sorted(
         statements,
@@ -900,15 +965,24 @@ def get_forecast_dps(statements: list[dict[str, Any]]) -> float | None:
         else:
             f = safe_float(s.get('FDivAnn'))
         if f is not None and f > 0:
-            return f
+            d = parse_date(s.get('DiscDate')) or parse_date(s.get('CurPerEn'))
+            return f, d
     # Pass 2: 何でもいいので FDivAnn / NxFDivAnn から拾う
     for s in sorted_stmts:
         for key in ('FDivAnn', 'NxFDivAnn'):
             f = safe_float(s.get(key))
             if f is not None and f > 0:
-                return f
-    # Pass 3: 直近FYの実績
-    return get_latest_full_year_metric(statements, 'DivAnn')
+                d = parse_date(s.get('DiscDate')) or parse_date(s.get('CurPerEn'))
+                return f, d
+    # Pass 3: 直近FYの実績 + その日付
+    fb_v, fb_d = get_latest_full_year_metric_with_date(statements, 'DivAnn')
+    return fb_v, fb_d
+
+
+def get_forecast_dps(statements: list[dict[str, Any]]) -> float | None:
+    """互換のため (value のみ) を返すラッパー。分割調整は呼び出し側で別途行う。"""
+    v, _d = get_forecast_dps_with_date(statements)
+    return v
 
 
 def get_latest_payout_ratio(statements: list[dict[str, Any]]) -> float | None:
@@ -1026,36 +1100,82 @@ def process_stock(
         log.warning('statements fail %s: %s', code, e)
         return None
 
+    # --- 株価データを日付昇順ソート (分割調整係数の計算で使う) ---
+    quotes_sorted = sorted(quotes, key=lambda q: parse_date(q.get('Date')) or date.min)
+
     # --- 時価総額の計算 (V2の listed_info には含まれないため、価格 × 発行株数で算出) ---
     if market_cap_oku <= 0:
-        # NP は後で extract_annual_metric で取るが、shares 計算用に先に取得
+        # 株式数は分割調整が必要 (1:5分割なら、過去FYの shares × 5 = 現在の shares)
         latest_np_for_shares = get_latest_full_year_metric(statements, 'NP')
-        shares = get_shares_outstanding(statements, latest_np_for_shares)
-        if shares is not None and shares > 0:
+        shares_raw, shares_date = (None, None)
+        for s in _sorted_fy_statements(statements):
+            v = safe_float(s.get('ShOutFY'))
+            if v is not None and v > 0:
+                shares_raw = v
+                shares_date = parse_date(s.get('DiscDate')) or parse_date(s.get('CurPerEn'))
+                break
+        if shares_raw is None:
+            # NP / EPS から逆算 (EPS は分割調整が必要)
+            shares_raw = get_shares_outstanding(statements, latest_np_for_shares)
+            # この場合 shares_date は EPS の disclosure 日、ただし既に NP/EPS で打ち消し合うため
+            # 結果は分割調整済みと等価。以下では shares_date=None として扱う (係数=1)
+            shares_date = None
+        if shares_raw is not None and shares_raw > 0:
+            # 分割があれば総株式数は増える (1:5分割なら × 5、つまり factor で割る)
+            adj_shares = cumulative_adj_factor_after(quotes_sorted, shares_date)
+            shares = shares_raw / adj_shares if adj_shares > 0 else shares_raw
             market_cap_oku = (price * shares) / 1e8
         else:
             market_cap_oku = 0.0  # 不明扱い
 
-    # --- 指標抽出 ---
-    div_annual = extract_annual_dividends(statements)
-    sales_history = extract_annual_metric(statements, 'Sales')
-    op_history = extract_annual_metric(statements, 'OP')
-    np_history = extract_annual_metric(statements, 'NP')
+    # --- 指標抽出 (extract系は分割調整済) ---
+    div_annual = extract_annual_dividends(statements, quotes_sorted=quotes_sorted)
+    sales_history = extract_annual_metric(statements, 'Sales')   # 総額: 調整不要
+    op_history = extract_annual_metric(statements, 'OP')          # 総額: 調整不要
+    np_history = extract_annual_metric(statements, 'NP')          # 総額: 調整不要
 
-    forecast_dps = get_forecast_dps(statements)
+    # --- DPS forecast: 分割調整 ---
+    forecast_dps_raw, forecast_dps_date = get_forecast_dps_with_date(statements)
+    forecast_dps_adj = cumulative_adj_factor_after(quotes_sorted, forecast_dps_date)
+    forecast_dps = (forecast_dps_raw * forecast_dps_adj) if forecast_dps_raw is not None else None
     current_yield = (forecast_dps / price * 100.0) if (forecast_dps and forecast_dps > 0) else None
-    # 異常検知ログ: 利回り > 15% は明らかに異常 (株式分割調整漏れ等の疑い)
+
+    # 異常検知ログ
     if current_yield is not None and current_yield > 15.0:
-        latest_div = get_latest_full_year_metric(statements, 'DivAnn')
         log.warning(
-            'ANOMALY %s %s: yield=%.2f%% (DPS=%s, latest DivAnn=%s, price=%s) - '
-            '株式分割調整漏れの可能性',
-            code, name, current_yield, forecast_dps, latest_div, price,
+            'ANOMALY %s %s: yield=%.2f%% (DPS_raw=%s adj=%.3f → %.2f, price=%s, disc_date=%s)',
+            code, name, current_yield, forecast_dps_raw, forecast_dps_adj,
+            forecast_dps or 0, price, forecast_dps_date,
         )
-    payout = get_latest_payout_ratio(statements)
-    equity_ratio = get_equity_ratio_latest(statements)
-    per, pbr = get_per_pbr(price, statements)
+
+    # --- EPS, BPS: 分割調整 ---
+    eps_raw, eps_date = get_latest_full_year_metric_with_date(statements, 'EPS')
+    bps_raw, bps_date = get_latest_full_year_metric_with_date(statements, 'BPS')
+    eps_adj = cumulative_adj_factor_after(quotes_sorted, eps_date)
+    bps_adj = cumulative_adj_factor_after(quotes_sorted, bps_date)
+    eps = (eps_raw * eps_adj) if eps_raw is not None else None
+    bps = (bps_raw * bps_adj) if bps_raw is not None else None
+    per = (price / eps) if (eps is not None and eps > 0) else None
+    pbr = (price / bps) if (bps is not None and bps > 0) else None
     per_pbr = (per * pbr) if (per is not None and pbr is not None) else None
+
+    # --- 配当性向: 分割調整した DPS と EPS から計算 (両方とも分割調整済み) ---
+    # ただし DivAnn (実績) と forecast_dps は別の disclosure 由来の場合があるので慎重に
+    # 直近FYの DivAnn / EPS で計算する (両方とも同じ disclosure からとれば調整不要だが、念のため別々に取得)
+    div_actual_raw, div_actual_date = get_latest_full_year_metric_with_date(statements, 'DivAnn')
+    if div_actual_raw is not None and eps_raw is not None and eps_raw > 0:
+        # 同じ FY disclosure 内で計算する (分割調整は両方とも同じ係数なので相殺)
+        # → 直接 raw 値で計算 OK
+        # ただし div_actual_raw と eps_raw が異なる FY から来ている場合に備えて、
+        # それぞれ調整してから割り算する
+        div_adj = cumulative_adj_factor_after(quotes_sorted, div_actual_date)
+        div_for_payout = div_actual_raw * div_adj
+        eps_for_payout = eps  # already adjusted
+        payout = (div_for_payout / eps_for_payout) * 100.0 if eps_for_payout > 0 else None
+    else:
+        payout = None
+
+    equity_ratio = get_equity_ratio_latest(statements)
 
     # --- スクリーニング ---
     div_judgment, div_periods_used = check_dividend_history(div_annual, code)
@@ -1076,14 +1196,18 @@ def process_stock(
     bucket, core_type = classify_bucket(code, screening_pass)
 
     # --- シグナル（利回り分布）---
+    # --- ヒストリカル DPS: 分割調整して連続性を保つ ---
+    # 古い disclosure の DPS は分割係数で割引 (1:5分割があれば × 0.2 で現在の規模に揃える)
     div_history_by_year: dict[int, float] = {}
     for s in statements:
         if s.get('CurPerType') not in ('FY', '4Q'):
             continue
         d = parse_date(s.get('CurPerEn'))
         v = safe_float(s.get('DivAnn'))
+        disc_d = parse_date(s.get('DiscDate')) or d
         if d and v is not None:
-            div_history_by_year[d.year] = v
+            adj = cumulative_adj_factor_after(quotes_sorted, disc_d)
+            div_history_by_year[d.year] = v * adj
 
     yield_dist = calculate_yield_distribution(quotes, div_history_by_year)
     signal = determine_signal(current_yield, yield_dist)
@@ -1098,8 +1222,8 @@ def process_stock(
     next_earnings = announcement_map.get(code)
     earnings_imminent = is_imminent_business_day(next_earnings, today)
 
-    # --- 財務推移 ---
-    financials_history = build_financials_history(statements, n=8)
+    # --- 財務推移 (1株あたり値は分割調整済) ---
+    financials_history = build_financials_history(statements, n=8, quotes_sorted=quotes_sorted)
 
     # --- ROE 計算: 直近FYの ROE = NP / Eq * 100 ---
     latest_np = get_latest_full_year_metric(statements, 'NP')
@@ -1111,6 +1235,21 @@ def process_stock(
     # --- 直近FY の主要指標を top-level convenience として ---
     latest_sales = get_latest_full_year_metric(statements, 'Sales')
     latest_op = get_latest_full_year_metric(statements, 'OP')
+
+    # --- JSON 組み立て ---
+    # --- 決算月 (CurPerEn の月から推定) ---
+    # 直近FYのCurPerEn を見て、その月を「期末月」とする
+    # 例: CurPerEn=2025-03-31 → fiscal_month=3 (3月期決算)
+    fiscal_month: int | None = None
+    for s in _sorted_fy_statements(statements):
+        per_end = parse_date(s.get('CurPerEn'))
+        if per_end is not None:
+            fiscal_month = per_end.month
+            break
+    # 配当権利確定月: 期末配当=決算月、中間配当=決算月の6ヶ月前
+    interim_month: int | None = None
+    if fiscal_month is not None:
+        interim_month = ((fiscal_month - 6 - 1) % 12) + 1  # -6ヶ月して1-12に正規化
 
     # --- JSON 組み立て ---
     return {
@@ -1130,6 +1269,9 @@ def process_stock(
         'emergency_reasons': reasons,
         'earnings_imminent': earnings_imminent,
         'next_earnings_date': next_earnings.isoformat() if next_earnings else None,
+
+        'fiscal_month': fiscal_month,
+        'interim_month': interim_month,
 
         'forecast_dps': round(forecast_dps, 2) if forecast_dps is not None else None,
         'current_yield': round(current_yield, 2) if current_yield is not None else None,
