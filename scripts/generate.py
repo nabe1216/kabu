@@ -157,9 +157,13 @@ PROGRESSIVE_DECLARED: set[str] = {
 PROGRESSIVE_DIVIDEND_LIST: set[str] = NIKKEI_PROGRESSIVE_30 | PROGRESSIVE_DECLARED
 
 # DOE採用銘柄
+# DOE (Dividend on Equity) = 自己資本配当率を一定以上に維持する株主還元方針
+# DOE採用銘柄はスクリーニングをバイパスして常に「コア・DOE」として扱う
 DOE_LIST: set[str] = {
     '2502',  # アサヒグループホールディングス
     '7011',  # 三菱重工業（DOE採用）
+    '8595',  # ジャフコグループ (DOE 8%)
+    '6770',  # アルプスアルパイン (DOE)
 }
 
 # 「減配ゼロ判定 + 最低利回り」免除リスト
@@ -765,17 +769,28 @@ def classify_bucket(code: str, screening_pass: bool) -> tuple[str, str | None]:
     """
     バケット判定。
 
+    重要な設計判断:
+      累進配当宣言銘柄 / DOE採用銘柄は、その株主還元方針自体が
+      投資判断の根拠になるため、スクリーニング結果に関わらず常に「コア」に
+      分類する。スクリーニング結果は別途 screening_pass フラグで保持されるので、
+      UI 側で「コアだが財務スクリーニングは FAIL」のような表示が可能。
+
+      これにより、業績変動の大きい VC (ジャフコG等) や周期性の強い業界の
+      DOE 銘柄も、追跡対象から外れない。
+
     Returns:
         (bucket, core_type)
         bucket  : 'コア' / 'スイング' / '対象外'
         core_type: 'progressive' / 'doe' / None
     """
-    if not screening_pass:
-        return ('対象外', None)
+    # 累進・DOE銘柄: 常にコア (screening_pass を問わない)
     if code in PROGRESSIVE_DIVIDEND_LIST:
         return ('コア', 'progressive')
     if code in DOE_LIST:
         return ('コア', 'doe')
+    # 上記以外: スクリーニング結果でスイング or 対象外
+    if not screening_pass:
+        return ('対象外', None)
     return ('スイング', None)
 
 # ============================================================================
@@ -833,90 +848,102 @@ def is_imminent_business_day(target: date | None, today: date) -> bool:
     return target == next_bday
 
 
-def get_latest_full_year_metric(statements: list[dict[str, Any]], key: str) -> float | None:
-    """直近の FY データから指定指標を取得。"""
+def _sorted_fy_statements(statements: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """FY/4Q の disclosure を CurPerEn 降順 (新しい順) に返す。"""
     fy_list = [s for s in statements if s.get('CurPerType') in ('FY', '4Q')]
-    fy_list.sort(key=lambda s: parse_date(s.get('CurPerEn')) or date.min)
-    if not fy_list:
-        return None
-    return safe_float(fy_list[-1].get(key))
+    fy_list.sort(key=lambda s: parse_date(s.get('CurPerEn')) or date.min, reverse=True)
+    return fy_list
+
+
+def get_latest_full_year_metric(statements: list[dict[str, Any]], key: str) -> float | None:
+    """
+    直近 FY 系 disclosure から指定指標を取得する。
+
+    最新 FY エントリに値が無ければ、データ欠損とみなして1つ前の FY を参照、
+    という具合に新しい順に走査して最初に見つかった非 None 値を返す。
+    """
+    for s in _sorted_fy_statements(statements):
+        v = safe_float(s.get(key))
+        if v is not None:
+            return v
+    return None
 
 
 def get_forecast_dps(statements: list[dict[str, Any]]) -> float | None:
     """
     今期 (現在進行中の会計年度) の予想 DPS を取得。
 
-    J-Quants V2 では disclosure の種類によって FDivAnn の意味が変わるため、
-    丁寧に分岐する:
-      - CurPerType == 'FY' (期末決算)
-        その年の DivAnn は確定し、来期の予想は NxFDivAnn に入る。
-        → NxFDivAnn (翌期予想) = 「今期 (新年度) の予想」として採用
+    J-Quants V2 では disclosure 種類で FDivAnn の意味が変わるため分岐:
+      - CurPerType == 'FY' / '4Q' (期末決算)
+        DivAnn が確定し、来期の予想は NxFDivAnn に入る。
+        → NxFDivAnn (翌期予想) = 新年度の今期予想
       - CurPerType in ('1Q', '2Q', '3Q') (四半期決算)
         FDivAnn が今期 (現在の会計年度) の予想を表す。
-        → FDivAnn を採用
 
-    最新 disclosure から順に走査し、最初に見つかった有効値を返す。
-    全部空ならフォールバックで直近 FY の実績 DivAnn を返す。
+    DiscDate が空の disclosure があるとソートが崩れるため、
+    プライマリは CurPerEn (期間末) でソートする。
     """
     sorted_stmts = sorted(
         statements,
-        key=lambda s: (parse_date(s.get('DiscDate')) or date.min),
+        key=lambda s: (
+            parse_date(s.get('CurPerEn'))
+            or parse_date(s.get('DiscDate'))
+            or date.min
+        ),
         reverse=True,
     )
+    # Pass 1: 種類に応じて NxFDivAnn / FDivAnn を選ぶ
     for s in sorted_stmts:
         per_type = s.get('CurPerType', '')
         if per_type in ('FY', '4Q'):
-            # 期末決算 → 翌期予想がカレント年の予想
             f = safe_float(s.get('NxFDivAnn'))
         else:
-            # 四半期決算 → 当期予想
             f = safe_float(s.get('FDivAnn'))
         if f is not None and f > 0:
             return f
-    # フォールバック1: どの disclosure でも上記が取れなかったら、何でもいいので FDivAnn / NxFDivAnn を取る
+    # Pass 2: 何でもいいので FDivAnn / NxFDivAnn から拾う
     for s in sorted_stmts:
         for key in ('FDivAnn', 'NxFDivAnn'):
             f = safe_float(s.get(key))
             if f is not None and f > 0:
                 return f
-    # フォールバック2: 直近FYの実績
+    # Pass 3: 直近FYの実績
     return get_latest_full_year_metric(statements, 'DivAnn')
 
 
 def get_latest_payout_ratio(statements: list[dict[str, Any]]) -> float | None:
     """
-    最新FYの配当性向 (%) を取得。
+    配当性向 (%) を直近 FY から計算する。
 
-    V2 API の PayoutRatioAnn は小数形式 (0.51 = 51%) のことがあり、
-    また文書ごとに単位が混在する場合があるため、まずは DivAnn / EPS から
-    自前で計算する方式を優先する。それで取れなかった場合のみ、
-    API の PayoutRatioAnn を使い、必要に応じて 100倍 して % に揃える。
+    最新 FY に DivAnn / EPS があればそれで計算 (透明・単位明確)。
+    無ければ前の FY に遡る。それでも無ければ API の PayoutRatioAnn で
+    フォールバック (decimal 検出して %% に正規化)。
     """
-    fy_list = [s for s in statements if s.get('CurPerType') in ('FY', '4Q')]
-    fy_list.sort(key=lambda s: parse_date(s.get('CurPerEn')) or date.min)
-    if not fy_list:
-        return None
-    latest = fy_list[-1]
-    # 第1優先: DivAnn / EPS から計算 (単位明確 = % で返す)
-    div = safe_float(latest.get('DivAnn'))
-    eps = safe_float(latest.get('EPS'))
-    if div is not None and eps is not None and eps > 0:
-        return (div / eps) * 100.0
-    # 第2優先: API field を使う (heuristic で単位を正規化)
-    payout_raw = safe_float(latest.get('PayoutRatioAnn'))
-    if payout_raw is not None:
-        # decimal 形式 (< 3) は %% に換算
-        return payout_raw * 100.0 if payout_raw < 3 else payout_raw
+    for fy in _sorted_fy_statements(statements):
+        div = safe_float(fy.get('DivAnn'))
+        eps = safe_float(fy.get('EPS'))
+        if div is not None and eps is not None and eps > 0:
+            return (div / eps) * 100.0
+    # フォールバック: API field
+    for fy in _sorted_fy_statements(statements):
+        payout_raw = safe_float(fy.get('PayoutRatioAnn'))
+        if payout_raw is not None:
+            return payout_raw * 100.0 if payout_raw < 3 else payout_raw
     return None
 
 
 def get_equity_ratio_latest(statements: list[dict[str, Any]]) -> float | None:
-    """最新の自己資本比率（EquityToAssetRatio）。"""
+    """
+    最新の自己資本比率 (EqAR, decimal形式 0.5 = 50%)。
+
+    FY/4Q だけでなく四半期 disclosure も含めて、最も新しい有効値を返す。
+    """
     sorted_stmts = sorted(
         statements,
         key=lambda s: parse_date(s.get('CurPerEn')) or date.min,
+        reverse=True,
     )
-    for s in reversed(sorted_stmts):
+    for s in sorted_stmts:
         ratio = safe_float(s.get('EqAR'))
         if ratio is not None:
             return ratio
@@ -924,12 +951,33 @@ def get_equity_ratio_latest(statements: list[dict[str, Any]]) -> float | None:
 
 
 def get_per_pbr(price: float, statements: list[dict[str, Any]]) -> tuple[float | None, float | None]:
-    """PER, PBR を計算。EPS/BPS は最新FYから取る。"""
+    """PER, PBR を計算。EPS/BPS は新しい FY から順に取得 (フォールバック付き)。"""
     eps = get_latest_full_year_metric(statements, 'EPS')
     bps = get_latest_full_year_metric(statements, 'BPS')
     per = (price / eps) if (eps is not None and eps > 0) else None
     pbr = (price / bps) if (bps is not None and bps > 0) else None
     return per, pbr
+
+
+def get_shares_outstanding(statements: list[dict[str, Any]], np_value: float | None) -> float | None:
+    """
+    発行済株式数を推定する。
+
+    優先順位:
+    1. ShOutFY (フィールド明示)
+    2. NumIssShFY などの代替フィールド名 (V2 で異なる場合に備える)
+    3. NP / EPS から逆算 (両方とも揃っていれば)
+    """
+    # 候補フィールド名 (V2 仕様書で確認できる正式名は ShOutFY だが、念のため別名も試す)
+    for key in ('ShOutFY', 'NumIssShFY', 'NumberOfIssuedAndOutstandingSharesAtTheEndOfFiscalYearIncludingTreasuryStock'):
+        v = get_latest_full_year_metric(statements, key)
+        if v is not None and v > 0:
+            return v
+    # 最後の手段: NP / EPS から逆算 (どちらも 直近FY から取得)
+    eps = get_latest_full_year_metric(statements, 'EPS')
+    if np_value is not None and np_value > 0 and eps is not None and eps > 0:
+        return np_value / eps
+    return None
 
 
 # ============================================================================
@@ -980,8 +1028,9 @@ def process_stock(
 
     # --- 時価総額の計算 (V2の listed_info には含まれないため、価格 × 発行株数で算出) ---
     if market_cap_oku <= 0:
-        # ShOutFY (発行済株式総数) を最新FYから取得
-        shares = get_latest_full_year_metric(statements, 'ShOutFY')
+        # NP は後で extract_annual_metric で取るが、shares 計算用に先に取得
+        latest_np_for_shares = get_latest_full_year_metric(statements, 'NP')
+        shares = get_shares_outstanding(statements, latest_np_for_shares)
         if shares is not None and shares > 0:
             market_cap_oku = (price * shares) / 1e8
         else:
@@ -995,6 +1044,14 @@ def process_stock(
 
     forecast_dps = get_forecast_dps(statements)
     current_yield = (forecast_dps / price * 100.0) if (forecast_dps and forecast_dps > 0) else None
+    # 異常検知ログ: 利回り > 15% は明らかに異常 (株式分割調整漏れ等の疑い)
+    if current_yield is not None and current_yield > 15.0:
+        latest_div = get_latest_full_year_metric(statements, 'DivAnn')
+        log.warning(
+            'ANOMALY %s %s: yield=%.2f%% (DPS=%s, latest DivAnn=%s, price=%s) - '
+            '株式分割調整漏れの可能性',
+            code, name, current_yield, forecast_dps, latest_div, price,
+        )
     payout = get_latest_payout_ratio(statements)
     equity_ratio = get_equity_ratio_latest(statements)
     per, pbr = get_per_pbr(price, statements)
