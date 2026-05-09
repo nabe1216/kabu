@@ -25,7 +25,7 @@ on:
         required: false
         default: '2025-12-31'
       periods:
-        description: 'multi-period のカスタム期間 (空欄ならデフォルト 2020-2022, 2022-2024, 2024-2026)'
+        description: 'multi-period のカスタム期間 (空欄ならデフォルト)'
         required: false
         default: ''
       capital:
@@ -40,7 +40,7 @@ on:
 jobs:
   backtest:
     runs-on: ubuntu-latest
-    timeout-minutes: 180  # 複数期間モードは長め
+    timeout-minutes: 180
 
     steps:
       - name: Checkout
