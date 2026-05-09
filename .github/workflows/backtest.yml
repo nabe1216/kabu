@@ -1,1 +1,104 @@
+name: Backtest
 
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: '実行モード'
+        required: true
+        type: choice
+        options:
+          - 'multi-period (3期間で全戦略比較・おすすめ)'
+          - 'compare (1期間で全戦略比較)'
+          - 'B (ボックス × 利回り)'
+          - 'A (利回り単純順)'
+          - 'C (Q75乖離率順)'
+          - 'D (多要素スコア)'
+          - 'E (利回り × ROE)'
+        default: 'multi-period (3期間で全戦略比較・おすすめ)'
+      start_date:
+        description: '開始日 (YYYY-MM-DD) — multi-period では無視される'
+        required: false
+        default: '2024-01-01'
+      end_date:
+        description: '終了日 (YYYY-MM-DD) — multi-period では無視される'
+        required: false
+        default: '2025-12-31'
+      periods:
+        description: 'multi-period のカスタム期間 (空欄ならデフォルト 2020-2022, 2022-2024, 2024-2026)'
+        required: false
+        default: ''
+      capital:
+        description: '初期資金（円）'
+        required: true
+        default: '10000000'
+      positions:
+        description: '最大保有銘柄数'
+        required: true
+        default: '20'
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180  # 複数期間モードは長め
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install -r scripts/requirements.txt
+
+      - name: Run backtest
+        env:
+          J_QUANTS_API_KEY: ${{ secrets.J_QUANTS_API_KEY }}
+        run: |
+          cd scripts
+          MODE="${{ github.event.inputs.mode }}"
+          STRATEGY=$(echo "$MODE" | awk '{print $1}')
+          PERIODS_ARG=""
+          if [ -n "${{ github.event.inputs.periods }}" ]; then
+            PERIODS_ARG="--periods ${{ github.event.inputs.periods }}"
+          fi
+
+          if [ "$STRATEGY" = "multi-period" ]; then
+            python3 backtest.py --multi-period \
+              --capital ${{ github.event.inputs.capital }} \
+              --positions ${{ github.event.inputs.positions }} \
+              $PERIODS_ARG
+          elif [ "$STRATEGY" = "compare" ]; then
+            python3 backtest.py --compare \
+              --start ${{ github.event.inputs.start_date }} \
+              --end ${{ github.event.inputs.end_date }} \
+              --capital ${{ github.event.inputs.capital }} \
+              --positions ${{ github.event.inputs.positions }}
+          else
+            python3 backtest.py --strategy "$STRATEGY" \
+              --start ${{ github.event.inputs.start_date }} \
+              --end ${{ github.event.inputs.end_date }} \
+              --capital ${{ github.event.inputs.capital }} \
+              --positions ${{ github.event.inputs.positions }}
+          fi
+
+      - name: Commit results
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          git add data/backtest/
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: backtest ${{ github.event.inputs.mode }} ($(date -u +'%Y-%m-%dT%H:%M:%SZ'))"
+            git push
+          fi
+
+      - name: Upload as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: backtest-results
+          path: data/backtest/
+          retention-days: 30
