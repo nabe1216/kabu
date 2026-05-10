@@ -223,7 +223,13 @@ def fetch_stock_history(
         except Exception:
             pass
 
-    from_date = (backtest_start - timedelta(days=5 * 365 + 30)).isoformat()
+    # J-Quants Standard プランは過去10年分のデータが取得可能。
+    # 5年遡って Q25/Q75 を計算したいが、10年制限を超えないよう安全マージン込みで調整。
+    today = date.today()
+    safe_earliest = today - timedelta(days=int(9.5 * 365))  # 9.5年前 (6ヶ月の安全マージン)
+    desired_from = backtest_start - timedelta(days=5 * 365 + 30)
+    from_date_obj = max(desired_from, safe_earliest)
+    from_date = from_date_obj.isoformat()
     to_date = backtest_end.isoformat()
 
     try:
