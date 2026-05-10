@@ -954,6 +954,164 @@ def fetch_all_data(args) -> tuple[dict[str, dict], date, date]:
     return stock_data, start, end
 
 
+def run_strategies_parallel(
+    stock_data: dict[str, dict],
+    start: date,
+    end: date,
+    initial_capital: float,
+    max_positions: int,
+    strategy_ids: list[str],
+) -> dict[str, tuple['Portfolio', dict]]:
+    """
+    複数戦略を並列実行 (screening 結果を共有して大幅高速化)。
+
+    各リバランス日で screening を1回だけ実行し、5戦略で結果を共有する。
+    戦略間の差は「BUY 候補の並び順 (スコア関数)」のみ。
+    SELL 条件と screening は全戦略で同一。
+
+    Returns: {strategy_id: (Portfolio, metrics)}
+    """
+    rebalance_dates = get_monthly_first_dates(start, end)
+    portfolios = {sid: Portfolio(initial_capital, max_positions) for sid in strategy_ids}
+    paid_dividends_seens = {sid: set() for sid in strategy_ids}
+
+    log.info('Running %d strategies in parallel for %d rebalance dates...',
+             len(strategy_ids), len(rebalance_dates))
+
+    for ri, rdate in enumerate(rebalance_dates):
+        # ---- 1. 価格取得 (全戦略共通、1回だけ) ----
+        prices_today: dict[str, float] = {}
+        for code, sd in stock_data.items():
+            quotes_filtered = filter_quotes_at_or_before(sd['quotes_sorted'], rdate)
+            p = get_last_trading_close_at_or_before(quotes_filtered, rdate)
+            if p:
+                prices_today[code] = p[1]
+
+        # ---- 2. screening (全戦略共通、1回だけ) ----
+        screening_cache: dict[str, tuple[bool, dict]] = {}
+        for code, sd in stock_data.items():
+            stmts_filt = filter_statements_disclosed_before(sd['statements'], rdate)
+            quotes_filt = filter_quotes_at_or_before(sd['quotes_sorted'], rdate)
+            screening_cache[code] = screen_stock_at(
+                code, sd['sector33'], stmts_filt, quotes_filt, rdate,
+            )
+
+        # ---- 3. 各戦略について BUY/SELL 判定 ----
+        for sid in strategy_ids:
+            portfolio = portfolios[sid]
+            score_fn = STRATEGIES[sid]['score_fn']
+            paid_dividends_seen = paid_dividends_seens[sid]
+
+            # 配当処理
+            for code in list(portfolio.positions.keys()):
+                sd = stock_data.get(code)
+                if not sd:
+                    continue
+                stmts_filt = filter_statements_disclosed_before(sd['statements'], rdate)
+                for s in stmts_filt:
+                    if s.get('CurPerType') not in ('FY', '4Q'):
+                        continue
+                    per_end = parse_date(s.get('CurPerEn'))
+                    if per_end is None:
+                        continue
+                    key = (code, per_end.year)
+                    if key in paid_dividends_seen:
+                        continue
+                    pos = portfolio.positions[code]
+                    if pos.open_date <= per_end:
+                        div = safe_float(s.get('DivAnn'))
+                        if div is None or div <= 0:
+                            paid_dividends_seen.add(key)
+                            continue
+                        disc_d = parse_date(s.get('DiscDate')) or per_end
+                        adj = cumulative_adj_factor_after(sd['quotes_sorted'], disc_d)
+                        portfolio.receive_dividends({code: div * adj}, rdate)
+                    paid_dividends_seen.add(key)
+
+            # SELL 判定 (キャッシュされた screening_cache を使用)
+            sells = []
+            for code, pos in list(portfolio.positions.items()):
+                _, info = screening_cache.get(code, (False, {}))
+                cur_y = info.get('current_yield')
+                q25 = info.get('q25')
+                if cur_y is not None and q25 is not None and cur_y <= q25:
+                    sells.append((code, 'YIELD_Q25'))
+                    continue
+                div_h = info.get('div_history', [])
+                if len(div_h) >= 2 and div_h[-2] > 0:
+                    if (div_h[-1] - div_h[-2]) / div_h[-2] < -0.10:
+                        sells.append((code, 'DPS_CUT'))
+
+            for code, reason in sells:
+                price = prices_today.get(code)
+                if price:
+                    portfolio.sell(code, price, rdate, reason)
+
+            # BUY 候補発掘 (キャッシュ + 戦略別スコア)
+            buy_candidates = []
+            for code, sd in stock_data.items():
+                if code in portfolio.positions:
+                    continue
+                passes, info = screening_cache.get(code, (False, {}))
+                cur_y = info.get('current_yield')
+                q75 = info.get('q75')
+                if not passes or cur_y is None or q75 is None or cur_y < q75:
+                    continue
+                score = score_fn(info)
+                buy_candidates.append({
+                    'code': code,
+                    'name': sd['name'],
+                    'yield': cur_y,
+                    'q75': q75,
+                    'score': score,
+                })
+
+            buy_candidates.sort(key=lambda x: -x['score'])
+
+            slots_available = portfolio.max_positions - len(portfolio.positions)
+            target_per_pos = portfolio.position_size_yen()
+            for cand in buy_candidates[:slots_available]:
+                if portfolio.cash < target_per_pos * 0.5:
+                    break
+                price = prices_today.get(cand['code'])
+                if not price:
+                    continue
+                portfolio.buy(cand['code'], cand['name'], price, rdate, target_per_pos)
+
+            # equity_curve 記録
+            total = portfolio.total_value(prices_today)
+            portfolio.equity_curve.append({
+                'date': rdate.isoformat(),
+                'value': round(total, 0),
+                'cash': round(portfolio.cash, 0),
+                'positions': len(portfolio.positions),
+                'cumulative_dividends': round(portfolio.dividends_received_total, 0),
+            })
+
+        # 進捗ログ (12ヶ月ごと)
+        if ri % 12 == 0:
+            avg_value = sum(p.total_value(prices_today) for p in portfolios.values()) / len(portfolios)
+            log.info('  [%s] %d/%d - Avg portfolio: %s',
+                     rdate.isoformat(), ri + 1, len(rebalance_dates),
+                     f'{int(avg_value):,}')
+
+    # 各戦略の最終 metrics 計算
+    results = {}
+    for sid in strategy_ids:
+        portfolio = portfolios[sid]
+        final_prices: dict[str, float] = {}
+        for code, sd in stock_data.items():
+            if code in portfolio.positions:
+                quotes_filtered = filter_quotes_at_or_before(sd['quotes_sorted'], end)
+                p = get_last_trading_close_at_or_before(quotes_filtered, end)
+                if p:
+                    final_prices[code] = p[1]
+        metrics = compute_metrics(portfolio.equity_curve, initial_capital, portfolio, final_prices)
+        results[sid] = (portfolio, metrics)
+
+    return results
+
+
 def run_strategy(
     stock_data: dict[str, dict],
     start: date,
@@ -1154,15 +1312,15 @@ def run_compare(args) -> int:
     log.info('=== STRATEGY COMPARISON ===')
     log.info('Period: %s ~ %s', start, end)
 
-    all_results = {}
-    for strategy_id in STRATEGIES.keys():
-        portfolio, metrics = run_strategy(
-            stock_data, start, end, initial_capital, max_positions, strategy_id,
-        )
-        all_results[strategy_id] = {
-            'portfolio': portfolio,
-            'metrics': metrics,
-        }
+    # 全戦略を並列実行 (screening 結果共有で5倍高速化)
+    parallel_results = run_strategies_parallel(
+        stock_data, start, end, initial_capital, max_positions,
+        list(STRATEGIES.keys()),
+    )
+    all_results = {
+        sid: {'portfolio': p, 'metrics': m}
+        for sid, (p, m) in parallel_results.items()
+    }
 
     # 比較サマリー作成
     comparison_rows = []
@@ -1275,17 +1433,19 @@ def run_multi_period(args) -> int:
         log.info('  PERIOD %d/%d: %s', pi + 1, len(periods), period_label)
         log.info('========================================')
 
-        for strategy_id in STRATEGIES.keys():
-            try:
-                _portfolio, metrics = run_strategy(
-                    stock_data, p_start, p_end,
-                    initial_capital, max_positions, strategy_id,
-                )
-                all_results[(period_label, strategy_id)] = metrics
-            except Exception as e:
-                log.error('Period %s, Strategy %s failed: %s',
-                          period_label, strategy_id, e)
-                all_results[(period_label, strategy_id)] = {}
+        # 全戦略を並列実行 (screening 結果共有で5倍高速化)
+        try:
+            parallel_results = run_strategies_parallel(
+                stock_data, p_start, p_end,
+                initial_capital, max_positions,
+                list(STRATEGIES.keys()),
+            )
+            for sid, (_p, metrics) in parallel_results.items():
+                all_results[(period_label, sid)] = metrics
+        except Exception as e:
+            log.error('Period %s failed: %s', period_label, e)
+            for sid in STRATEGIES.keys():
+                all_results[(period_label, sid)] = {}
 
     # ---- 詳細CSV: 期間別 × 戦略別の全指標 ----
     detailed_rows = []
