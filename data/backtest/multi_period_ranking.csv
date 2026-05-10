@@ -1,0 +1,6 @@
+﻿strategy_id,strategy_name,description,cagr_2020-2022,cagr_2022-2024,cagr_2024-2026,avg_cagr,min_cagr,max_cagr,std_cagr,consistency_score,avg_sharpe,avg_max_dd,avg_dividend_yield
+A,利回り単純順,yield高い順,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+B,ボックス × 利回り,yield × (0.5 + 0.5 × box信頼度),0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+C,Q75乖離率順,(yield - Q75) / Q75,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+D,多要素スコア,0.4y + 0.2ROE + 0.2eq + 0.2box,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
+E,利回り × ROE,yield × ROE / 10,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0
