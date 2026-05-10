@@ -45,6 +45,7 @@ import json
 import time
 import csv
 import math
+import bisect
 import logging
 import argparse
 from pathlib import Path
@@ -255,13 +256,50 @@ def fetch_stock_history(
 
 
 def filter_statements_disclosed_before(statements: list[dict], target: date) -> list[dict]:
+    """
+    target以前に開示された disclosure のみを返す (線形スキャン版・互換性維持)。
+
+    多数のリバランス日で繰り返し呼ばれる場合は、_fast 版を使うこと。
+    """
     return [s for s in statements
             if (parse_date(s.get('DiscDate')) or date.min) <= target]
 
 
 def filter_quotes_at_or_before(quotes_sorted: list[dict], target: date) -> list[dict]:
+    """
+    target以前の価格データのみを返す (線形スキャン版・互換性維持)。
+
+    多数のリバランス日で繰り返し呼ばれる場合は、_fast 版を使うこと。
+    """
     return [q for q in quotes_sorted
             if (parse_date(q.get('Date')) or date.min) <= target]
+
+
+def filter_quotes_at_or_before_fast(
+    quotes_sorted: list[dict],
+    quote_dates: list[date],
+    target: date,
+) -> list[dict]:
+    """
+    bisect で O(log N) フィルタ。
+
+    quotes_sorted: Date 昇順ソート済み
+    quote_dates: 事前パース済みの date リスト (quotes_sorted と同じ順)
+    """
+    idx = bisect.bisect_right(quote_dates, target)
+    return quotes_sorted[:idx]
+
+
+def filter_statements_disclosed_before_fast(
+    statements_sorted: list[dict],
+    disc_dates: list[date],
+    target: date,
+) -> list[dict]:
+    """
+    bisect で O(log N) フィルタ (DiscDate ソート済み版)。
+    """
+    idx = bisect.bisect_right(disc_dates, target)
+    return statements_sorted[:idx]
 
 
 def compute_forecast_dps_at(
@@ -943,11 +981,25 @@ def fetch_all_data(args) -> tuple[dict[str, dict], date, date]:
             force_refresh=args.no_cache,
         )
         if quotes and statements:
+            quotes_sorted = sorted(quotes, key=lambda q: parse_date(q.get('Date')) or date.min)
+            quote_dates = [parse_date(q.get('Date')) or date.min for q in quotes_sorted]
+            # statements を DiscDate でソート (フィルタ高速化のため)
+            statements_sorted = sorted(
+                statements,
+                key=lambda s: parse_date(s.get('DiscDate')) or date.min,
+            )
+            statement_disc_dates = [
+                parse_date(s.get('DiscDate')) or date.min
+                for s in statements_sorted
+            ]
             stock_data[u['code']] = {
                 'name': u['name'],
                 'sector33': u['sector33'],
-                'quotes_sorted': sorted(quotes, key=lambda q: parse_date(q.get('Date')) or date.min),
-                'statements': statements,
+                'quotes_sorted': quotes_sorted,
+                'quote_dates': quote_dates,
+                'statements': statements,  # 互換性維持 (CurPerEnでソートされてる)
+                'statements_sorted': statements_sorted,  # DiscDate ソート版
+                'statement_disc_dates': statement_disc_dates,
             }
 
     log.info('Loaded data for %d/%d stocks', len(stock_data), len(universe))
@@ -982,7 +1034,7 @@ def run_strategies_parallel(
         # ---- 1. 価格取得 (全戦略共通、1回だけ) ----
         prices_today: dict[str, float] = {}
         for code, sd in stock_data.items():
-            quotes_filtered = filter_quotes_at_or_before(sd['quotes_sorted'], rdate)
+            quotes_filtered = filter_quotes_at_or_before_fast(sd['quotes_sorted'], sd['quote_dates'], rdate)
             p = get_last_trading_close_at_or_before(quotes_filtered, rdate)
             if p:
                 prices_today[code] = p[1]
@@ -990,8 +1042,8 @@ def run_strategies_parallel(
         # ---- 2. screening (全戦略共通、1回だけ) ----
         screening_cache: dict[str, tuple[bool, dict]] = {}
         for code, sd in stock_data.items():
-            stmts_filt = filter_statements_disclosed_before(sd['statements'], rdate)
-            quotes_filt = filter_quotes_at_or_before(sd['quotes_sorted'], rdate)
+            stmts_filt = filter_statements_disclosed_before_fast(sd['statements_sorted'], sd['statement_disc_dates'], rdate)
+            quotes_filt = filter_quotes_at_or_before_fast(sd['quotes_sorted'], sd['quote_dates'], rdate)
             screening_cache[code] = screen_stock_at(
                 code, sd['sector33'], stmts_filt, quotes_filt, rdate,
             )
@@ -1007,7 +1059,7 @@ def run_strategies_parallel(
                 sd = stock_data.get(code)
                 if not sd:
                     continue
-                stmts_filt = filter_statements_disclosed_before(sd['statements'], rdate)
+                stmts_filt = filter_statements_disclosed_before_fast(sd['statements_sorted'], sd['statement_disc_dates'], rdate)
                 for s in stmts_filt:
                     if s.get('CurPerType') not in ('FY', '4Q'):
                         continue
@@ -1102,7 +1154,7 @@ def run_strategies_parallel(
         final_prices: dict[str, float] = {}
         for code, sd in stock_data.items():
             if code in portfolio.positions:
-                quotes_filtered = filter_quotes_at_or_before(sd['quotes_sorted'], end)
+                quotes_filtered = filter_quotes_at_or_before_fast(sd['quotes_sorted'], sd['quote_dates'], end)
                 p = get_last_trading_close_at_or_before(quotes_filtered, end)
                 if p:
                     final_prices[code] = p[1]
@@ -1138,7 +1190,7 @@ def run_strategy(
         # 1. 価格取得
         prices_today: dict[str, float] = {}
         for code, sd in stock_data.items():
-            quotes_filtered = filter_quotes_at_or_before(sd['quotes_sorted'], rdate)
+            quotes_filtered = filter_quotes_at_or_before_fast(sd['quotes_sorted'], sd['quote_dates'], rdate)
             p = get_last_trading_close_at_or_before(quotes_filtered, rdate)
             if p:
                 prices_today[code] = p[1]
@@ -1148,7 +1200,7 @@ def run_strategy(
             sd = stock_data.get(code)
             if not sd:
                 continue
-            stmts_filt = filter_statements_disclosed_before(sd['statements'], rdate)
+            stmts_filt = filter_statements_disclosed_before_fast(sd['statements_sorted'], sd['statement_disc_dates'], rdate)
             for s in stmts_filt:
                 if s.get('CurPerType') not in ('FY', '4Q'):
                     continue
@@ -1176,8 +1228,8 @@ def run_strategy(
             sd = stock_data.get(code)
             if not sd:
                 continue
-            stmts_filt = filter_statements_disclosed_before(sd['statements'], rdate)
-            quotes_filt = filter_quotes_at_or_before(sd['quotes_sorted'], rdate)
+            stmts_filt = filter_statements_disclosed_before_fast(sd['statements_sorted'], sd['statement_disc_dates'], rdate)
+            quotes_filt = filter_quotes_at_or_before_fast(sd['quotes_sorted'], sd['quote_dates'], rdate)
             _, info = screen_stock_at(code, sd['sector33'], stmts_filt, quotes_filt, rdate)
             cur_y = info.get('current_yield')
             q25 = info.get('q25')
@@ -1199,8 +1251,8 @@ def run_strategy(
         for code, sd in stock_data.items():
             if code in portfolio.positions:
                 continue
-            stmts_filt = filter_statements_disclosed_before(sd['statements'], rdate)
-            quotes_filt = filter_quotes_at_or_before(sd['quotes_sorted'], rdate)
+            stmts_filt = filter_statements_disclosed_before_fast(sd['statements_sorted'], sd['statement_disc_dates'], rdate)
+            quotes_filt = filter_quotes_at_or_before_fast(sd['quotes_sorted'], sd['quote_dates'], rdate)
             passes, info = screen_stock_at(code, sd['sector33'], stmts_filt, quotes_filt, rdate)
             cur_y = info.get('current_yield')
             q75 = info.get('q75')
@@ -1255,7 +1307,7 @@ def run_strategy(
     final_prices: dict[str, float] = {}
     for code, sd in stock_data.items():
         if code in portfolio.positions:
-            quotes_filtered = filter_quotes_at_or_before(sd['quotes_sorted'], end)
+            quotes_filtered = filter_quotes_at_or_before_fast(sd['quotes_sorted'], sd['quote_dates'], end)
             p = get_last_trading_close_at_or_before(quotes_filtered, end)
             if p:
                 final_prices[code] = p[1]
