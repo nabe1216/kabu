@@ -195,6 +195,7 @@ def fetch_universe(client: JQuantsClient, force_refresh: bool = False) -> list[d
             'name': row.get('CoName', ''),
             'sector33': row.get('S33', ''),
             'sector33_name': row.get('S33Nm', ''),
+            'scale_cat': row.get('ScaleCat', ''),  # TOPIX Core30/Large70/Mid400
         })
     cache_file.parent.mkdir(parents=True, exist_ok=True)
     cache_file.write_text(json.dumps(universe, ensure_ascii=False, indent=2))
@@ -676,16 +677,113 @@ def screen_stock_at(
 # ============================================================================
 
 
-class Position:
-    __slots__ = ('code', 'name', 'qty', 'cost_basis', 'open_date', 'cost_total')
+def is_progressive_or_doe(code: str) -> bool:
+    """累進配当 or DOE 採用銘柄か"""
+    return code in PROGRESSIVE_DIVIDEND_LIST or code in DOE_LIST
 
-    def __init__(self, code: str, name: str, qty: float, price: float, open_date: date):
+
+def compute_industry_leaders(stock_data: dict[str, dict], target_date: date) -> set[str]:
+    """
+    target_date時点での「業界首位級」銘柄コードのセットを返す。
+
+    定義:
+      - 同じ33業種コード内で、時価総額 TOP3
+      - または TOPIX Core30 銘柄
+
+    時価総額 = target_date時点の価格 × 直近FYのShOutFY (or NP/EPS逆算)
+    """
+    leaders: set[str] = set()
+
+    # 1. TOPIX Core30 銘柄を全部追加
+    for code, sd in stock_data.items():
+        if sd.get('scale_cat') == 'TOPIX Core30':
+            leaders.add(code)
+
+    # 2. 同業種33コード内で時価総額 TOP3
+    # 各銘柄の時価総額を計算
+    market_caps: dict[str, float] = {}  # code → market_cap_yen
+    sector_groups: dict[str, list[tuple[str, float]]] = {}  # sector33 → [(code, mcap)]
+
+    for code, sd in stock_data.items():
+        sector33 = sd.get('sector33', '')
+        if not sector33:
+            continue
+        # 価格取得
+        quotes_filtered = filter_quotes_at_or_before_fast(
+            sd['quotes_sorted'], sd['quote_dates'], target_date,
+        )
+        price_pair = get_last_trading_close_at_or_before(quotes_filtered, target_date)
+        if not price_pair:
+            continue
+        price = price_pair[1]
+
+        # 発行株式数を取得
+        stmts_filt = filter_statements_disclosed_before_fast(
+            sd['statements_sorted'], sd['statement_disc_dates'], target_date,
+        )
+        shares = None
+        # FY/4Q から ShOutFY を取得
+        fy_list = [s for s in stmts_filt if s.get('CurPerType') in ('FY', '4Q')]
+        fy_list.sort(key=lambda s: parse_date(s.get('CurPerEn')) or date.min, reverse=True)
+        for s in fy_list:
+            v = safe_float(s.get('ShOutFY'))
+            if v is not None and v > 0:
+                shares = v
+                disc_d = parse_date(s.get('DiscDate')) or parse_date(s.get('CurPerEn'))
+                # 分割調整
+                adj = cumulative_adj_factor_after(sd['quotes_sorted'], disc_d)
+                if adj > 0:
+                    shares = shares / adj
+                break
+        if shares is None or shares <= 0:
+            continue
+
+        mcap = price * shares
+        market_caps[code] = mcap
+        sector_groups.setdefault(sector33, []).append((code, mcap))
+
+    # 各業種で時価総額順 TOP3
+    for sector33, members in sector_groups.items():
+        members.sort(key=lambda x: -x[1])
+        for code, _ in members[:3]:
+            leaders.add(code)
+
+    return leaders
+
+
+def classify_tier(
+    code: str,
+    industry_leaders: set[str],
+) -> tuple[str, float]:
+    """
+    銘柄を Tier に分類し、(tier, weight) を返す。
+
+    Tier S: 累進/DOE銘柄 AND 業界首位級 → 重み 4.0
+    Tier A: 累進/DOE銘柄 OR 業界首位級   → 重み 2.0
+    Tier B: スクリーニングPASSのみ         → 重み 1.0
+    """
+    is_qual = is_progressive_or_doe(code)
+    is_leader = code in industry_leaders
+
+    if is_qual and is_leader:
+        return ('S', 4.0)
+    elif is_qual or is_leader:
+        return ('A', 2.0)
+    else:
+        return ('B', 1.0)
+
+
+class Position:
+    __slots__ = ('code', 'name', 'qty', 'cost_basis', 'open_date', 'cost_total', 'tier')
+
+    def __init__(self, code: str, name: str, qty: float, price: float, open_date: date, tier: str = 'B'):
         self.code = code
         self.name = name
         self.qty = qty                    # 株数
         self.cost_basis = price           # 1株あたり買値（取得単価）
         self.open_date = open_date
         self.cost_total = qty * price     # 取得総額
+        self.tier = tier                  # 'S' / 'A' / 'B'
 
     def market_value(self, price: float) -> float:
         return self.qty * price
@@ -711,7 +809,7 @@ class Portfolio:
         """1ポジションあたりの目標金額"""
         return self.initial_capital / self.max_positions
 
-    def buy(self, code: str, name: str, price: float, dt: date, target_yen: float) -> bool:
+    def buy(self, code: str, name: str, price: float, dt: date, target_yen: float, tier: str = 'B') -> bool:
         if price <= 0 or target_yen <= 0:
             return False
         gross = target_yen / (1 + Config.BUY_COMMISSION)  # 手数料込みでtarget_yen 使う想定
@@ -735,12 +833,12 @@ class Portfolio:
             old.cost_basis = new_basis
             old.cost_total = new_cost_total
         else:
-            self.positions[code] = Position(code, name, qty, price, dt)
+            self.positions[code] = Position(code, name, qty, price, dt, tier=tier)
         self.trades.append({
             'date': dt.isoformat(),
             'code': code,
             'name': name,
-            'action': 'BUY',
+            'action': f'BUY [{tier}]',
             'price': round(price, 2),
             'qty': qty,
             'value': round(cost, 0),
@@ -995,6 +1093,7 @@ def fetch_all_data(args) -> tuple[dict[str, dict], date, date]:
             stock_data[u['code']] = {
                 'name': u['name'],
                 'sector33': u['sector33'],
+                'scale_cat': u.get('scale_cat', ''),
                 'quotes_sorted': quotes_sorted,
                 'quote_dates': quote_dates,
                 'statements': statements,  # 互換性維持 (CurPerEnでソートされてる)
@@ -1038,6 +1137,10 @@ def run_strategies_parallel(
             p = get_last_trading_close_at_or_before(quotes_filtered, rdate)
             if p:
                 prices_today[code] = p[1]
+
+        # ---- 1b. 業界首位級銘柄を計算 (全戦略共通、3ヶ月ごとに更新で十分) ----
+        if ri % 3 == 0:
+            industry_leaders = compute_industry_leaders(stock_data, rdate)
 
         # ---- 2. screening (全戦略共通、1回だけ) ----
         screening_cache: dict[str, tuple[bool, dict]] = {}
@@ -1099,7 +1202,7 @@ def run_strategies_parallel(
                 if price:
                     portfolio.sell(code, price, rdate, reason)
 
-            # BUY 候補発掘 (キャッシュ + 戦略別スコア)
+            # BUY 候補発掘 (キャッシュ + 戦略別スコア + Tier 判定)
             buy_candidates = []
             for code, sd in stock_data.items():
                 if code in portfolio.positions:
@@ -1110,25 +1213,54 @@ def run_strategies_parallel(
                 if not passes or cur_y is None or q75 is None or cur_y < q75:
                     continue
                 score = score_fn(info)
+                tier, weight = classify_tier(code, industry_leaders)
                 buy_candidates.append({
                     'code': code,
                     'name': sd['name'],
                     'yield': cur_y,
                     'q75': q75,
                     'score': score,
+                    'tier': tier,
+                    'weight': weight,
                 })
 
+            # スコア高い順
             buy_candidates.sort(key=lambda x: -x['score'])
 
             slots_available = portfolio.max_positions - len(portfolio.positions)
-            target_per_pos = portfolio.position_size_yen()
-            for cand in buy_candidates[:slots_available]:
-                if portfolio.cash < target_per_pos * 0.5:
-                    break
-                price = prices_today.get(cand['code'])
-                if not price:
-                    continue
-                portfolio.buy(cand['code'], cand['name'], price, rdate, target_per_pos)
+            # 候補がmax_positionsを超える場合はトップを取る
+            selected = buy_candidates[:slots_available] if slots_available > 0 else []
+
+            # 最低保有銘柄数 5 を守る (候補が5未満ならあるだけ買付)
+            min_positions = 5
+            if len(selected) + len(portfolio.positions) < min_positions and len(buy_candidates) > slots_available:
+                # 候補は十分にあるので、上位で min_positions まで埋める
+                selected = buy_candidates[:max(slots_available, min_positions - len(portfolio.positions))]
+
+            # Tier重み付けで配分計算
+            if selected:
+                total_weight = sum(c['weight'] for c in selected)
+                # 利用可能資金を「キャッシュの範囲内」で配分
+                # 1単位あたり = 利用可能資金 / 重み合計
+                # ただし全資金を使い切らないよう、安全マージンで95%まで使う
+                budget = portfolio.cash * 0.95
+                if total_weight > 0:
+                    unit_yen = budget / total_weight
+                else:
+                    unit_yen = portfolio.position_size_yen()
+
+                for cand in selected:
+                    if portfolio.cash < unit_yen * cand['weight'] * 0.5:
+                        # キャッシュ不足 - 最低でも目標の50%は確保したい
+                        break
+                    price = prices_today.get(cand['code'])
+                    if not price:
+                        continue
+                    target_for_this = unit_yen * cand['weight']
+                    portfolio.buy(
+                        cand['code'], cand['name'], price, rdate,
+                        target_for_this, tier=cand['tier'],
+                    )
 
             # equity_curve 記録
             total = portfolio.total_value(prices_today)
