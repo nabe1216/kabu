@@ -775,6 +775,70 @@ def check_emergency_exit(
 # (12) バケット分類
 # ============================================================================
 
+def is_progressive_or_doe(code: str) -> bool:
+    """累進配当 or DOE 採用銘柄か"""
+    return code in PROGRESSIVE_DIVIDEND_LIST or code in DOE_LIST
+
+
+def compute_industry_leaders(stocks: list[dict[str, Any]]) -> set[str]:
+    """
+    全銘柄プロセス後に呼ぶ。「業界首位級」銘柄コードのセットを返す。
+
+    定義:
+      - 同じ33業種コード内で、時価総額 TOP3
+      - または TOPIX Core30 銘柄 (bucket='TOPIX Core30' から判定)
+
+    引数:
+      stocks: process_stock の戻り値リスト (market_cap_oku, sector33_code, bucket を含む)
+    """
+    leaders: set[str] = set()
+
+    # 1. TOPIX Core30 銘柄を全部追加
+    for s in stocks:
+        if s.get('bucket') == 'TOPIX Core30':
+            leaders.add(s['code'])
+
+    # 2. 同業種33コード内で時価総額 TOP3
+    sector_groups: dict[str, list[tuple[str, float]]] = {}
+    for s in stocks:
+        sector33 = s.get('sector33_code', '')
+        mcap = s.get('market_cap_oku', 0) or 0
+        if not sector33 or mcap <= 0:
+            continue
+        sector_groups.setdefault(sector33, []).append((s['code'], mcap))
+
+    for sector33, members in sector_groups.items():
+        members.sort(key=lambda x: -x[1])
+        for code, _ in members[:3]:
+            leaders.add(code)
+
+    return leaders
+
+
+def classify_tier(
+    code: str,
+    industry_leaders: set[str],
+) -> tuple[str, float]:
+    """
+    銘柄を Tier に分類し、(tier, weight) を返す。
+
+    Tier S: 累進/DOE銘柄 AND 業界首位級 → 重み 4.0
+    Tier A: 累進/DOE銘柄 OR 業界首位級   → 重み 2.0
+    Tier B: スクリーニングPASSのみ         → 重み 1.0
+
+    注: 呼び出し側で「screening_pass=True」を前提とする。
+    """
+    is_qual = is_progressive_or_doe(code)
+    is_leader = code in industry_leaders
+
+    if is_qual and is_leader:
+        return ('S', 4.0)
+    elif is_qual or is_leader:
+        return ('A', 2.0)
+    else:
+        return ('B', 1.0)
+
+
 def classify_bucket(code: str, screening_pass: bool) -> tuple[str, str | None]:
     """
     バケット判定。
@@ -1457,6 +1521,29 @@ def main() -> int:
     for s in stocks:
         bucket_counts[s['bucket']] += 1
         signal_counts[s['signal']] += 1
+
+    # --- Tier 判定 (全銘柄プロセス後に一括計算) ---
+    log.info('Computing industry leaders...')
+    industry_leaders = compute_industry_leaders(stocks)
+    log.info('Industry leaders: %d stocks', len(industry_leaders))
+
+    tier_counts: dict[str, int] = defaultdict(int)
+    for s in stocks:
+        code = s['code']
+        is_qual = is_progressive_or_doe(code)
+        is_leader = code in industry_leaders
+        tier, weight = classify_tier(code, industry_leaders)
+        s['tier'] = tier
+        s['tier_weight'] = weight
+        s['is_industry_leader'] = is_leader
+        s['is_progressive_or_doe'] = is_qual
+        # screening_pass の中だけで Tier 集計 (実際にBUY候補となるもの)
+        if s.get('screening_pass'):
+            tier_counts[tier] += 1
+
+    log.info('=== Tier distribution (screening pass only) ===')
+    for t in ['S', 'A', 'B']:
+        log.info('  Tier %s: %d', t, tier_counts[t])
 
     log.info('=== Summary ===')
     log.info('Processed: %d / %d (failures=%d)', len(stocks), n_total, failures)
