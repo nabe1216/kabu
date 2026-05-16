@@ -2705,42 +2705,252 @@ function drawPeers(s) {
   el.innerHTML = html;
 }
 
+// チャート期間設定 (グローバル: タブ切替で永続)
+const CHART_PERIODS = {
+  '1M': { days: 22,  label: '1ヶ月' },
+  '3M': { days: 66,  label: '3ヶ月' },
+  '6M': { days: 132, label: '6ヶ月' },
+  '1Y': { days: 250, label: '1年' },
+};
+if (!STATE.chartPeriod) STATE.chartPeriod = '3M';  // デフォルト 3ヶ月
+
 function drawTradingViewChart(code) {
+  // 後方互換のため関数名は維持。実体は自前 SVG ローソク足チャート
   const containerId = 'mChartContainer';
   const el = document.getElementById(containerId);
   if (!el) return;
-  // 二重ロード防止
-  if (el.dataset.loadedCode === code) return;
+  if (el.dataset.loadedCode === code && el.dataset.loadedPeriod === STATE.chartPeriod) return;
   el.dataset.loadedCode = code;
+  el.dataset.loadedPeriod = STATE.chartPeriod;
 
-  // TradingView 公式 Advanced Chart Widget 埋め込み方式
-  // 参考: https://www.tradingview.com/widget-docs/widgets/charts/advanced-chart/
-  const widgetConfig = {
-    autosize: true,
-    symbol: `TSE:${code}`,
-    interval: 'D',
-    timezone: 'Asia/Tokyo',
-    theme: 'light',
-    style: '1',
-    locale: 'ja',
-    toolbar_bg: '#FAF8F0',
-    enable_publishing: false,
-    allow_symbol_change: true,
-    studies: ['MASimple@tv-basicstudies', 'Volume@tv-basicstudies'],
-    withdateranges: true,
-    save_image: false,
-    support_host: 'https://www.tradingview.com',
-  };
-  el.innerHTML = `
-    <div class="tradingview-widget-container" style="height:100%;width:100%;">
-      <div class="tradingview-widget-container__widget" style="height:100%;width:100%;"></div>
+  // データ取得
+  const stock = STATE.data.stocks.find(x => x.code === code);
+  const history = stock?.price_history || [];
+
+  if (!history.length) {
+    el.innerHTML = `
+      <div class="bungee text-center pt-20" style="color:var(--p5-black);">
+        NO DATA!
+      </div>
+      <div class="text-center mt-3 mono text-sm" style="color:var(--text-mute);">
+        価格データが未取得です。<br>
+        翌日の更新後に表示されます。
+      </div>
+      <div class="text-center mt-6">
+        <a href="https://minkabu.jp/stock/${code}/chart" target="_blank" rel="noopener"
+           class="pill" style="background:var(--p5-red);color:white;border-color:var(--p5-black);
+           box-shadow:2px 2px 0 var(--p5-black);text-decoration:none;padding:6px 16px;">
+          みんかぶでチャートを開く ↗
+        </a>
+      </div>`;
+    return;
+  }
+
+  // 期間に応じてデータを絞り込む
+  const periodCfg = CHART_PERIODS[STATE.chartPeriod] || CHART_PERIODS['3M'];
+  const filteredHistory = history.slice(-periodCfg.days);
+
+  el.innerHTML = renderCandleChart(filteredHistory, stock, code);
+}
+
+// チャート期間切替 (グローバル関数として公開)
+function setChartPeriod(period) {
+  STATE.chartPeriod = period;
+  const code = STATE.currentDetailCode;
+  if (code) {
+    // 強制再描画 (loadedPeriod チェックをスキップするため dataset をクリア)
+    const el = document.getElementById('mChartContainer');
+    if (el) el.dataset.loadedPeriod = '';
+    drawTradingViewChart(code);
+  }
+}
+window.setChartPeriod = setChartPeriod;
+
+// 自前ローソク足チャート (SVG)
+function renderCandleChart(history, stock, code) {
+  const W = 760;     // SVG 幅
+  const H = 420;     // SVG 高さ
+  const ML = 60;     // 左マージン（Y軸ラベル）
+  const MR = 20;     // 右マージン
+  const MT = 30;     // 上マージン
+  const MB = 100;    // 下マージン（出来高 + 日付ラベル）
+  const VolH = 60;   // 出来高エリア高さ
+  const VolGap = 10; // 出来高との隙間
+
+  const plotW = W - ML - MR;
+  const plotH = H - MT - MB;
+  const volTop = H - MB + VolGap;
+
+  // データ範囲
+  const highs = history.map(d => d.h);
+  const lows = history.map(d => d.l);
+  const vols = history.map(d => d.v);
+  let yMax = Math.max(...highs);
+  let yMin = Math.min(...lows);
+  const padding = (yMax - yMin) * 0.05;
+  yMax += padding;
+  yMin -= padding;
+  if (yMax === yMin) { yMax += 1; yMin -= 1; }
+  const yRange = yMax - yMin;
+  const vMax = Math.max(...vols, 1);
+
+  const n = history.length;
+  const candleW = Math.max(2, (plotW / n) * 0.7);
+  const stepX = plotW / n;
+
+  // 価格→Y座標変換
+  const px = (i) => ML + stepX * i + stepX / 2;
+  const py = (price) => MT + plotH - ((price - yMin) / yRange) * plotH;
+  const pvy = (v) => volTop + VolH - (v / vMax) * VolH;
+
+  // Y軸グリッド (5本)
+  let gridLines = '';
+  let yLabels = '';
+  for (let i = 0; i <= 5; i++) {
+    const y = MT + (plotH / 5) * i;
+    const val = yMax - (yRange / 5) * i;
+    gridLines += `<line x1="${ML}" y1="${y}" x2="${W - MR}" y2="${y}" stroke="#e0d8c0" stroke-width="0.5" stroke-dasharray="3 3"/>`;
+    yLabels += `<text x="${ML - 6}" y="${y + 3}" text-anchor="end" font-family="ui-monospace,monospace" font-size="10" fill="#888">${val.toFixed(0)}</text>`;
+  }
+
+  // X軸日付ラベル (期間に応じて4-6個)
+  let xLabels = '';
+  const numLabels = Math.min(6, Math.max(3, Math.floor(n / 22)));
+  const labelIndices = [];
+  for (let i = 0; i < numLabels; i++) {
+    labelIndices.push(Math.floor((n - 1) * i / (numLabels - 1)));
+  }
+  labelIndices.forEach(i => {
+    if (i < 0 || i >= n) return;
+    const d = history[i].d;
+    const short = d ? d.substring(5).replace('-', '/') : '';
+    xLabels += `<text x="${px(i)}" y="${H - MB + 14}" text-anchor="middle" font-family="ui-monospace,monospace" font-size="10" fill="#888">${short}</text>`;
+  });
+
+  // ローソク足
+  let candles = '';
+  history.forEach((d, i) => {
+    const x = px(i);
+    const isUp = d.c >= d.o;
+    const color = isUp ? '#16A34A' : '#DC2626';  // 緑/赤
+    const top = py(Math.max(d.o, d.c));
+    const bot = py(Math.min(d.o, d.c));
+    const high = py(d.h);
+    const low = py(d.l);
+    // ヒゲ
+    candles += `<line x1="${x}" y1="${high}" x2="${x}" y2="${low}" stroke="${color}" stroke-width="1"/>`;
+    // 本体
+    const body = Math.max(1, bot - top);
+    candles += `<rect x="${x - candleW / 2}" y="${top}" width="${candleW}" height="${body}" fill="${color}" stroke="${color}"/>`;
+  });
+
+  // 出来高バー
+  let volBars = '';
+  history.forEach((d, i) => {
+    const x = px(i);
+    const y = pvy(d.v);
+    const h = volTop + VolH - y;
+    const isUp = d.c >= d.o;
+    const color = isUp ? '#16A34A' : '#DC2626';
+    volBars += `<rect x="${x - candleW / 2}" y="${y}" width="${candleW}" height="${h}" fill="${color}" opacity="0.4"/>`;
+  });
+
+  // 出来高ラベル
+  const volLabel = `<text x="${ML}" y="${volTop - 4}" font-family="'Bungee',sans-serif" font-size="10" fill="#888">VOLUME</text>`;
+
+  // MA20 (単純移動平均) - 期間内に20日以上ある場合
+  let ma20Path = '';
+  if (n >= 20) {
+    const points = [];
+    for (let i = 19; i < n; i++) {
+      const avg = history.slice(i - 19, i + 1).reduce((s, x) => s + x.c, 0) / 20;
+      points.push(`${px(i)},${py(avg)}`);
+    }
+    ma20Path = `<polyline points="${points.join(' ')}" fill="none" stroke="#534AB7" stroke-width="1.5" opacity="0.8"/>`;
+  }
+
+  // MA60 (中期トレンド) - 期間内に60日以上ある場合
+  let ma60Path = '';
+  if (n >= 60) {
+    const points = [];
+    for (let i = 59; i < n; i++) {
+      const avg = history.slice(i - 59, i + 1).reduce((s, x) => s + x.c, 0) / 60;
+      points.push(`${px(i)},${py(avg)}`);
+    }
+    ma60Path = `<polyline points="${points.join(' ')}" fill="none" stroke="#E89B2E" stroke-width="1.5" opacity="0.7" stroke-dasharray="4 3"/>`;
+  }
+
+  // BOX 上下限ライン (該当時のみ)
+  let boxLines = '';
+  if (stock.box && stock.box.upper && stock.box.lower) {
+    const upY = py(stock.box.upper);
+    const loY = py(stock.box.lower);
+    if (upY >= MT && upY <= MT + plotH) {
+      boxLines += `<line x1="${ML}" y1="${upY}" x2="${W - MR}" y2="${upY}" stroke="#DC2626" stroke-width="0.8" stroke-dasharray="5 4" opacity="0.6"/>`;
+      boxLines += `<text x="${W - MR - 4}" y="${upY - 3}" text-anchor="end" font-family="'Bungee',sans-serif" font-size="9" fill="#DC2626">BOX上限 ${stock.box.upper}</text>`;
+    }
+    if (loY >= MT && loY <= MT + plotH) {
+      boxLines += `<line x1="${ML}" y1="${loY}" x2="${W - MR}" y2="${loY}" stroke="#16A34A" stroke-width="0.8" stroke-dasharray="5 4" opacity="0.6"/>`;
+      boxLines += `<text x="${W - MR - 4}" y="${loY + 11}" text-anchor="end" font-family="'Bungee',sans-serif" font-size="9" fill="#16A34A">BOX下限 ${stock.box.lower}</text>`;
+    }
+  }
+
+  // 最新値表示
+  const last = history[history.length - 1];
+  const lastColor = last.c >= last.o ? '#16A34A' : '#DC2626';
+  const chgPct = history.length >= 2 ? ((last.c - history[history.length - 2].c) / history[history.length - 2].c) * 100 : 0;
+  const chgSign = chgPct >= 0 ? '+' : '';
+  const periodCfg = CHART_PERIODS[STATE.chartPeriod] || CHART_PERIODS['3M'];
+  const titleLine = `
+    <text x="${ML}" y="20" font-family="'Bungee',sans-serif" font-size="14" fill="#1A1A1A">${stock.code} ${stock.name}</text>
+    <text x="${ML + 220}" y="20" font-family="ui-monospace,monospace" font-size="13" font-weight="bold" fill="${lastColor}">¥${last.c.toLocaleString()} (${chgSign}${chgPct.toFixed(2)}%)</text>
+    <text x="${W - MR}" y="20" text-anchor="end" font-family="ui-monospace,monospace" font-size="10" fill="#888">${history.length}日間 (${periodCfg.label})</text>
+  `;
+
+  // 期間切替ボタン
+  const periodButtons = Object.keys(CHART_PERIODS).map(p => {
+    const isActive = p === STATE.chartPeriod;
+    return `<button onclick="setChartPeriod('${p}')" class="period-btn ${isActive ? 'active' : ''}"
+      style="font-family:'Bungee',sans-serif;font-size:11px;padding:5px 12px;border:2px solid var(--p5-black);
+      background:${isActive ? 'var(--p5-red)' : 'white'};color:${isActive ? 'white' : 'var(--p5-black)'};
+      box-shadow:2px 2px 0 var(--p5-black);cursor:pointer;letter-spacing:0.05em;
+      ${isActive ? '' : 'transition:transform 0.1s ease;'}">
+      ${p}
+    </button>`;
+  }).join('');
+
+  return `
+    <div style="padding:12px;background:#FAF8F0;border-radius:8px;">
+      <div style="display:flex;gap:8px;margin-bottom:12px;align-items:center;flex-wrap:wrap;">
+        <span style="font-family:'Bungee',sans-serif;font-size:10px;color:#666;letter-spacing:0.1em;">PERIOD:</span>
+        ${periodButtons}
+      </div>
+      <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block;" xmlns="http://www.w3.org/2000/svg">
+        ${titleLine}
+        ${gridLines}
+        ${boxLines}
+        ${candles}
+        ${ma20Path}
+        ${ma60Path}
+        ${volLabel}
+        ${volBars}
+        ${yLabels}
+        ${xLabels}
+      </svg>
+      <div style="margin-top:8px;display:flex;justify-content:space-between;align-items:center;font-family:ui-monospace,monospace;font-size:11px;color:#666;flex-wrap:wrap;gap:8px;">
+        <div>
+          <span style="display:inline-block;width:10px;height:10px;background:#16A34A;margin-right:4px;"></span>陽線
+          <span style="display:inline-block;width:10px;height:10px;background:#DC2626;margin-right:4px;margin-left:8px;"></span>陰線
+          <span style="display:inline-block;width:12px;height:2px;background:#534AB7;margin-right:4px;margin-left:8px;vertical-align:middle;"></span>MA20
+          ${n >= 60 ? `<span style="display:inline-block;width:12px;height:2px;background:#E89B2E;margin-right:4px;margin-left:8px;vertical-align:middle;"></span>MA60` : ''}
+        </div>
+        <div>
+          <a href="https://minkabu.jp/stock/${stock.code}/chart" target="_blank" rel="noopener" style="color:#534AB7;text-decoration:none;">みんかぶで全期間チャート ↗</a>
+          ·
+          <a href="https://finance.yahoo.co.jp/quote/${stock.code}.T" target="_blank" rel="noopener" style="color:#534AB7;text-decoration:none;">Yahoo!ファイナンス ↗</a>
+        </div>
+      </div>
     </div>`;
-  const script = document.createElement('script');
-  script.type = 'text/javascript';
-  script.src = 'https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js';
-  script.async = true;
-  script.innerHTML = JSON.stringify(widgetConfig);
-  el.querySelector('.tradingview-widget-container').appendChild(script);
 }
 
 function drawScreening(s) {
