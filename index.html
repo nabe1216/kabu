@@ -2712,34 +2712,35 @@ function drawTradingViewChart(code) {
   // 二重ロード防止: 既に表示済みのコードと同じならスキップ
   if (el.dataset.loadedCode === code) return;
   el.dataset.loadedCode = code;
-  el.innerHTML = '';  // クリア
-  if (typeof TradingView === 'undefined') {
-    el.innerHTML = '<div class="bungee text-center pt-20" style="color:var(--p5-black);">TradingView LOADING...</div>';
-    setTimeout(() => drawTradingViewChart(code), 1000);
-    return;
-  }
-  // J-Quants の銘柄コード4桁を TradingView の TYO:XXXX に変換
-  // ※ TradingView の東証銘柄プレフィックスは TYO: (Tokyo)
-  new TradingView.widget({
-    autosize: true,
-    symbol: `TYO:${code}`,
-    interval: 'D',
-    timezone: 'Asia/Tokyo',
-    theme: 'light',
-    style: '1',  // candle
-    locale: 'ja',
-    toolbar_bg: '#FAF8F0',
-    enable_publishing: false,
-    hide_side_toolbar: false,
-    allow_symbol_change: true,
-    container_id: containerId,
-    studies: [
-      'MASimple@tv-basicstudies',  // 単純移動平均
-      'Volume@tv-basicstudies',
-    ],
-    withdateranges: true,
-    save_image: false,
-  });
+  // TradingView の iframe 埋め込み (日本株のサポート確実)
+  // 基本JSウィジェットは日本株が部分的にしか対応していないため、iframe方式を採用
+  const symbol = `TSE:${code}`;
+  const studies = encodeURIComponent('["MASimple@tv-basicstudies","Volume@tv-basicstudies"]');
+  const params = [
+    `frameElementId=tvchart_${code}`,
+    `symbol=${encodeURIComponent(symbol)}`,
+    `interval=D`,
+    `hidesidetoolbar=0`,
+    `symboledit=1`,
+    `saveimage=0`,
+    `toolbarbg=F1F3F6`,
+    `studies=${studies}`,
+    `theme=Light`,
+    `style=1`,
+    `timezone=Asia%2FTokyo`,
+    `withdateranges=1`,
+    `hideideas=1`,
+    `locale=ja`,
+  ].join('&');
+  el.innerHTML = `<iframe
+    src="https://s.tradingview.com/widgetembed/?${params}"
+    style="width: 100%; height: 100%; border: none; display: block;"
+    frameborder="0"
+    scrolling="no"
+    allowtransparency="true"
+    allowfullscreen
+    title="TradingView chart for ${code}"
+  ></iframe>`;
 }
 
 function drawScreening(s) {
