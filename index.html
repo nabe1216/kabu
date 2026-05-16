@@ -112,6 +112,16 @@ main,header,footer{position:relative;z-index:2;}
 .pill-box{background:var(--box);color:white;box-shadow:2px 2px 0 var(--p5-black);}
 .pill-pass{background:white;color:var(--buy);border-color:var(--buy);border-width:2.5px;font-weight:900;}
 .pill-fail{background:white;color:var(--sell);border-color:var(--sell);border-width:2.5px;font-weight:900;}
+.pill-tier-s{background:#FFD700;color:var(--p5-black);border-color:var(--p5-black);box-shadow:2px 2px 0 var(--p5-black);font-weight:900;}
+.pill-tier-a{background:#C0C0C0;color:var(--p5-black);border-color:var(--p5-black);box-shadow:2px 2px 0 var(--p5-black);font-weight:900;}
+.pill-tier-b{background:#CD7F32;color:white;border-color:var(--p5-black);box-shadow:2px 2px 0 var(--p5-black);}
+.tier-badge-small{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;font-family:'Bungee',sans-serif;font-size:11px;font-weight:900;border:2px solid var(--p5-black);}
+.tier-badge-small.tier-s{background:#FFD700;color:var(--p5-black);box-shadow:2px 2px 0 var(--p5-black);}
+.tier-badge-small.tier-a{background:#C0C0C0;color:var(--p5-black);box-shadow:2px 2px 0 var(--p5-black);}
+.tier-badge-small.tier-b{background:#CD7F32;color:white;box-shadow:2px 2px 0 var(--p5-black);}
+.allocation-text{font-family:'Bungee',sans-serif;font-size:10px;letter-spacing:0.05em;color:var(--p5-red);margin-top:2px;}
+.stock-card.tier-s{border-color:#FFD700;box-shadow:4px 4px 0 #FFD700,4px 4px 0 6px var(--p5-black);}
+.stock-card.tier-a{border-color:#C0C0C0;}
 .pill-emergency{background:#000;color:#FF1A2E;border-color:#FF1A2E;box-shadow:2px 2px 0 var(--p5-red);animation:flicker 1.5s ease-in-out infinite;}
 .emergency-banner{background:#000;color:var(--p5-red-bright);padding:10px 16px;border:3px solid var(--p5-red-bright);box-shadow:4px 4px 0 var(--p5-red);font-family:'Bungee',sans-serif;font-size:12px;letter-spacing:0.12em;margin:8px 0 4px 0;display:flex;align-items:center;gap:10px;}
 .emergency-banner::before{content:'⚠';font-size:20px;color:var(--p5-red-bright);}
@@ -213,6 +223,9 @@ select.input-base{appearance:none;background-image:url("data:image/svg+xml,%3Csv
 <div class="top-stat" style="--stat-color:var(--buy);"><div class="lbl" style="color:var(--buy);">BUY</div><div class="num" style="color:var(--buy);" id="buyCount">0</div></div>
 <div class="top-stat" style="--stat-color:var(--sell);"><div class="lbl" style="color:var(--sell);">SELL</div><div class="num" style="color:var(--sell);" id="sellCount">0</div></div>
 <div class="top-stat" style="--stat-color:var(--box);"><div class="lbl" style="color:var(--box);">BOX</div><div class="num" style="color:var(--box);" id="boxCount">0</div></div>
+<div class="top-stat" style="--stat-color:#FFD700;" title="Tier S: 累進/DOE銘柄 AND 業界首位級 (推奨重み 4倍)"><div class="lbl" style="color:#B8860B;">S</div><div class="num" style="color:#B8860B;" id="tierSCount">0</div></div>
+<div class="top-stat" style="--stat-color:#888;" title="Tier A: 累進/DOE銘柄 OR 業界首位級 (推奨重み 2倍)"><div class="lbl" style="color:#666;">A</div><div class="num" style="color:#666;" id="tierACount">0</div></div>
+<div class="top-stat" style="--stat-color:#CD7F32;" title="Tier B: スクリーニングPASSのみ (推奨重み 1倍)"><div class="lbl" style="color:#8B5A1F;">B</div><div class="num" style="color:#8B5A1F;" id="tierBCount">0</div></div>
 </div>
 </div>
 <div class="max-w-[1500px] mx-auto px-6">
@@ -242,7 +255,7 @@ select.input-base{appearance:none;background-image:url("data:image/svg+xml,%3Csv
 <div class="flex-1"></div>
 <input type="text" id="searchBox" placeholder="コード / 銘柄名" class="input-base px-3 py-2 w-44">
 <select class="input-base px-3 py-2" id="sortKey">
-<option value="signal">SORT : シグナル</option><option value="yield">SORT : 利回り</option><option value="market_cap">SORT : 時価総額</option><option value="per_pbr">SORT : PER×PBR</option>
+<option value="signal">SORT : シグナル</option><option value="tier">SORT : Tier (S→A→B)</option><option value="yield">SORT : 利回り</option><option value="market_cap">SORT : 時価総額</option><option value="per_pbr">SORT : PER×PBR</option>
 </select>
 </div>
 
@@ -327,6 +340,7 @@ select.input-base{appearance:none;background-image:url("data:image/svg+xml,%3Csv
 <h2 class="bungee text-2xl" id="mName" style="color:var(--p5-cream);"></h2>
 <span class="pill" id="mBucket"></span>
 <span class="pill" id="mSignal"></span>
+<span class="pill hidden" id="mTier"></span>
 <span class="pill pill-box hidden" id="mBoxPill">BOX!</span>
 <span class="pill pill-emergency hidden" id="mEmergencyPill">⚠ EXIT!</span>
 <span class="earnings-mark hidden" id="mEarningsMark">📊 明日決算</span>
@@ -2103,6 +2117,38 @@ const bucketLabel = (s) => {
   return s.bucket;
 };
 
+// Tier 関連ヘルパー (S=4倍, A=2倍, B=1倍)
+const tierPill = (t) => ({ S: 'pill-tier-s', A: 'pill-tier-a', B: 'pill-tier-b' }[t] || 'pill-tier-b');
+const tierLabel = (t) => ({
+  S: '🔥 S (4x)',
+  A: '⭐ A (2x)',
+  B: '🔹 B (1x)',
+}[t] || '—');
+const tierShortLabel = (t) => ({ S: 'S', A: 'A', B: 'B' }[t] || '?');
+const tierTooltip = (s) => {
+  const t = s.tier;
+  const lead = s.is_industry_leader ? '業界首位級' : '';
+  const qual = s.is_progressive_or_doe ? '累進/DOE銘柄' : '';
+  const tags = [qual, lead].filter(Boolean).join(' × ');
+  const w = s.tier_weight || 1;
+  if (t === 'S') return `Tier S (推奨重み ${w}倍): ${tags || '高品質銘柄'}`;
+  if (t === 'A') return `Tier A (推奨重み ${w}倍): ${tags || '質の高い銘柄'}`;
+  return `Tier B (推奨重み ${w}倍): 標準スクリーニングPASS`;
+};
+
+// 推奨ポジションサイズ計算 (Tier重み付け方式)
+// 利用可能資金 × 95% × (この銘柄の重み / 全BUY候補の重み合計)
+function computeRecommendedAllocation(s, allBuyCandidates) {
+  if (!allBuyCandidates || allBuyCandidates.length === 0) return null;
+  const totalWeight = allBuyCandidates.reduce((sum, c) => sum + (c.tier_weight || 1), 0);
+  if (totalWeight <= 0) return null;
+  const ratio = (s.tier_weight || 1) / totalWeight;
+  return {
+    ratio: ratio,
+    pct: ratio * 100,
+  };
+}
+
 async function loadData() {
   try {
     const res = await fetch('data/results.json', { cache: 'no-cache' });
@@ -2139,6 +2185,17 @@ function updateStats() {
   document.getElementById('heroSell').textContent = sell;
   document.getElementById('heroBox').textContent = box;
   document.getElementById('tabSignalsCount').textContent = buy + sell;
+  // Tier 集計 (BUYシグナル + screening_pass のみ対象)
+  const buys = stocks.filter(s => s.signal === 'BUY' && s.screening_pass);
+  const tS = buys.filter(s => s.tier === 'S').length;
+  const tA = buys.filter(s => s.tier === 'A').length;
+  const tB = buys.filter(s => s.tier === 'B').length;
+  const elS = document.getElementById('tierSCount');
+  const elA = document.getElementById('tierACount');
+  const elB = document.getElementById('tierBCount');
+  if (elS) elS.textContent = tS;
+  if (elA) elA.textContent = tA;
+  if (elB) elB.textContent = tB;
 }
 
 function applyFilters(stocks) {
@@ -2164,6 +2221,15 @@ function applyFilters(stocks) {
 function applySort(stocks) {
   const map = {
     signal: (a, b) => { const order = { BUY: 0, SELL: 1, NEUTRAL: 2 }; return order[a.signal] - order[b.signal] || (b.current_yield || 0) - (a.current_yield || 0); },
+    tier: (a, b) => {
+      const order = { S: 0, A: 1, B: 2 };
+      const aT = order[a.tier] !== undefined ? order[a.tier] : 3;
+      const bT = order[b.tier] !== undefined ? order[b.tier] : 3;
+      // BUYシグナル + screening_pass を優先
+      const aBuy = (a.signal === 'BUY' && a.screening_pass) ? 0 : 1;
+      const bBuy = (b.signal === 'BUY' && b.screening_pass) ? 0 : 1;
+      return aBuy - bBuy || aT - bT || (b.current_yield || 0) - (a.current_yield || 0);
+    },
     yield: (a, b) => (b.current_yield || 0) - (a.current_yield || 0),
     market_cap: (a, b) => (b.market_cap_oku || 0) - (a.market_cap_oku || 0),
     per_pbr: (a, b) => (a.per_pbr || 999) - (b.per_pbr || 999),
@@ -2171,7 +2237,7 @@ function applySort(stocks) {
   return [...stocks].sort(map[STATE.sort]);
 }
 
-function stockCard(s, index) {
+function stockCard(s, index, allBuyCandidates) {
   const isFav = STATE.watchlist.includes(s.code);
   let yieldMarkerLeft = 50;
   if (s.current_yield != null && s.yield_q25 != null && s.yield_q75 != null) {
@@ -2189,14 +2255,32 @@ function stockCard(s, index) {
   const earningsMark = s.earnings_imminent
     ? `<span class="earnings-mark" title="${fmt.date(s.next_earnings_date)} 決算発表">📊 明日決算</span>`
     : '';
+
+  // Tier バッジ (BUY シグナルかつ screening pass の銘柄のみ表示)
+  const showTier = s.tier && s.signal === 'BUY' && s.screening_pass;
+  const tierBadgeHtml = showTier
+    ? `<span class="tier-badge-small tier-${s.tier.toLowerCase()}" title="${tierTooltip(s)}">${s.tier}</span>`
+    : '';
+  const tierClass = showTier ? `tier-${s.tier.toLowerCase()}` : '';
+
+  // 推奨配分 (BUY 候補一覧があれば計算)
+  let allocationHtml = '';
+  if (showTier && allBuyCandidates) {
+    const alloc = computeRecommendedAllocation(s, allBuyCandidates);
+    if (alloc && alloc.pct >= 0.5) {
+      allocationHtml = `<div class="allocation-text" title="Tier重み付け方式の推奨投資割合 (S=4倍, A=2倍, B=1倍)">推奨 ${alloc.pct.toFixed(1)}%</div>`;
+    }
+  }
+
   return `
-    <div class="stock-card heist-on ${isFav ? 'is-fav' : ''} ${sigClass} ${noFavClass} ${emergencyClass}" data-code="${s.code}" style="animation-delay: ${Math.min(index * 30, 600)}ms;">
+    <div class="stock-card heist-on ${isFav ? 'is-fav' : ''} ${sigClass} ${noFavClass} ${emergencyClass} ${tierClass}" data-code="${s.code}" style="animation-delay: ${Math.min(index * 30, 600)}ms;">
       ${emergencyBanner}
       <div class="px-5 py-3 flex items-center gap-4 flex-wrap md:flex-nowrap">
         <div class="min-w-[200px] flex-shrink-0 ml-2">
           <div class="flex items-center gap-2 mb-1 flex-wrap">
             <span class="bungee text-base" style="color:var(--p5-black);">${s.code}</span>
             <span class="pill ${bucketPill(s)}">${bucketLabel(s)}</span>
+            ${tierBadgeHtml}
             ${earningsMark}
           </div>
           <div class="mincho text-sm" style="color:var(--text);">${s.name}</div>
@@ -2205,6 +2289,7 @@ function stockCard(s, index) {
         <div class="flex flex-col gap-1 items-start flex-shrink-0">
           <span class="pill ${sigPill(s.signal)}">${sigLabel(s.signal)}</span>
           ${s.is_box ? '<span class="pill pill-box">BOX!</span>' : ''}
+          ${allocationHtml}
         </div>
         <div class="flex-1 min-w-[200px]">
           <div class="flex items-baseline justify-between mb-1">
@@ -2236,18 +2321,20 @@ function renderActiveTab() {
   document.querySelectorAll('.tab-panel').forEach(el => el.classList.add('hidden'));
   document.getElementById('tab-' + STATE.activeTab).classList.remove('hidden');
   const stocks = STATE.data.stocks;
+  // BUY候補リスト (推奨配分%計算のため、フィルタ前の全体から作成)
+  const allBuyCandidates = stocks.filter(s => s.signal === 'BUY' && s.screening_pass && s.tier);
   if (STATE.activeTab === 'signals') {
     const filtered = applySort(applyFilters(stocks.filter(s => ['BUY', 'SELL'].includes(s.signal) && s.screening_pass)));
-    document.getElementById('signalList').innerHTML = filtered.length ? filtered.map((s, i) => stockCard(s, i)).join('') : '<div class="heist-card p-12 text-center"><div class="bungee text-2xl" style="color:var(--p5-black);">NO SIGNALS!</div><div class="reggae text-sm mt-2" style="color:var(--p5-red);">本日のシグナル発生なし</div></div>';
+    document.getElementById('signalList').innerHTML = filtered.length ? filtered.map((s, i) => stockCard(s, i, allBuyCandidates)).join('') : '<div class="heist-card p-12 text-center"><div class="bungee text-2xl" style="color:var(--p5-black);">NO SIGNALS!</div><div class="reggae text-sm mt-2" style="color:var(--p5-red);">本日のシグナル発生なし</div></div>';
   } else if (STATE.activeTab === 'all') {
     const filtered = applySort(applyFilters(stocks));
     document.getElementById('allCountMeta').textContent = `${filtered.length} STOCKS`;
-    document.getElementById('allList').innerHTML = filtered.length ? filtered.map((s, i) => stockCard(s, i)).join('') : '<div class="heist-card p-12 text-center"><div class="bungee text-2xl" style="color:var(--p5-black);">NO RESULTS!</div></div>';
+    document.getElementById('allList').innerHTML = filtered.length ? filtered.map((s, i) => stockCard(s, i, allBuyCandidates)).join('') : '<div class="heist-card p-12 text-center"><div class="bungee text-2xl" style="color:var(--p5-black);">NO RESULTS!</div></div>';
   } else if (STATE.activeTab === 'portfolio') {
     renderPortfolio();
   } else if (STATE.activeTab === 'watchlist') {
     const watchStocks = applySort(stocks.filter(s => STATE.watchlist.includes(s.code)));
-    document.getElementById('watchList').innerHTML = watchStocks.length ? watchStocks.map((s, i) => stockCard(s, i)).join('') : '<div class="heist-card p-12 text-center"><div class="bungee text-2xl" style="color:var(--p5-black);">★ EMPTY!</div><div class="reggae text-sm mt-2" style="color:var(--p5-red);">★ボタンでウォッチに追加</div></div>';
+    document.getElementById('watchList').innerHTML = watchStocks.length ? watchStocks.map((s, i) => stockCard(s, i, allBuyCandidates)).join('') : '<div class="heist-card p-12 text-center"><div class="bungee text-2xl" style="color:var(--p5-black);">★ EMPTY!</div><div class="reggae text-sm mt-2" style="color:var(--p5-red);">★ボタンでウォッチに追加</div></div>';
   }
   document.querySelectorAll('.stock-card').forEach(el => { el.addEventListener('click', () => openDetail(el.dataset.code)); });
 }
@@ -2318,6 +2405,16 @@ function openDetail(code) {
   document.getElementById('mSector').textContent = `${s.sector || ''} · 時価総額 ${fmt.oku(s.market_cap_oku)}円${fiscalInfo}`;
   const bEl = document.getElementById('mBucket'); bEl.textContent = bucketLabel(s); bEl.className = `pill ${bucketPill(s)}`;
   const sEl = document.getElementById('mSignal'); sEl.textContent = sigLabel(s.signal); sEl.className = `pill ${sigPill(s.signal)}`;
+  // Tier バッジ (BUY+screening_pass のみ表示)
+  const tEl = document.getElementById('mTier');
+  if (s.tier && s.signal === 'BUY' && s.screening_pass) {
+    tEl.textContent = tierLabel(s.tier);
+    tEl.className = `pill ${tierPill(s.tier)}`;
+    tEl.title = tierTooltip(s);
+    tEl.classList.remove('hidden');
+  } else {
+    tEl.classList.add('hidden');
+  }
   const boxEl = document.getElementById('mBoxPill');
   if (s.is_box) boxEl.classList.remove('hidden'); else boxEl.classList.add('hidden');
   const emEl = document.getElementById('mEmergencyPill');
