@@ -1365,6 +1365,21 @@ def process_stock(
 
         'financials_history': financials_history,
 
+        # 過去250日分（約1年）の株価履歴 (自前チャート用)
+        # ダッシュボードで 1M/3M/6M/1Y の切替に対応
+        'price_history': [
+            {
+                'd': q.get('Date'),
+                'c': round(safe_float(q.get('Close')) or 0, 2),
+                'o': round(safe_float(q.get('Open')) or 0, 2),
+                'h': round(safe_float(q.get('High')) or 0, 2),
+                'l': round(safe_float(q.get('Low')) or 0, 2),
+                'v': int(safe_float(q.get('Volume')) or 0),
+            }
+            for q in quotes_sorted[-250:]
+            if safe_float(q.get('Close')) and safe_float(q.get('Close')) > 0
+        ],
+
         'links': {
             'minkabu': f'https://minkabu.jp/stock/{code}',
             'irbank': f'https://irbank.net/{code}/',
