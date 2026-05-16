@@ -69,8 +69,8 @@ BOX_ADX_PERIOD = 14                  # ADX期間
 BOX_ADX_THRESHOLD = 22.0             # ADX < 22 でトレンドなし
 BOX_WIDTH_MIN = 0.08                 # 値幅 8%
 BOX_WIDTH_MAX = 0.20                 # 値幅 20%
-BOX_TOUCH_TOLERANCE = 0.01           # 上下限 ±1% 圏内
-BOX_TOUCH_MIN = 2                    # 上下それぞれ2回以上
+BOX_TOUCH_TOLERANCE = 0.02           # 上下限 ±2% 圏内
+BOX_TOUCH_MIN = 1                    # 上下それぞれ1回以上
 BOX_ATR_MIN = 0.015                  # ATR/終値 ≥ 1.5%
 
 # --- シグナル判定（利回り分布） ---
