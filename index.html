@@ -2718,10 +2718,11 @@ function drawTradingViewChart(code) {
     setTimeout(() => drawTradingViewChart(code), 1000);
     return;
   }
-  // J-Quants の銘柄コード4桁を TradingView の TSE:XXXX に変換
+  // J-Quants の銘柄コード4桁を TradingView の TYO:XXXX に変換
+  // ※ TradingView の東証銘柄プレフィックスは TYO: (Tokyo)
   new TradingView.widget({
     autosize: true,
-    symbol: `TSE:${code}`,
+    symbol: `TYO:${code}`,
     interval: 'D',
     timezone: 'Asia/Tokyo',
     theme: 'light',
