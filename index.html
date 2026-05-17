@@ -2925,18 +2925,23 @@ function renderCandleChart(history, stock, code) {
         <span style="font-family:'Bungee',sans-serif;font-size:10px;color:#666;letter-spacing:0.1em;">PERIOD:</span>
         ${periodButtons}
       </div>
-      <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block;" xmlns="http://www.w3.org/2000/svg">
-        ${titleLine}
-        ${gridLines}
-        ${boxLines}
-        ${candles}
-        ${ma20Path}
-        ${ma60Path}
-        ${volLabel}
-        ${volBars}
-        ${yLabels}
-        ${xLabels}
-      </svg>
+      <div style="aspect-ratio:${W}/${H};width:100%;max-width:100%;position:relative;">
+        <svg viewBox="0 0 ${W} ${H}"
+             preserveAspectRatio="xMidYMid meet"
+             style="width:100%;height:100%;display:block;pointer-events:none;shape-rendering:crispEdges;"
+             xmlns="http://www.w3.org/2000/svg">
+          ${titleLine}
+          ${gridLines}
+          ${boxLines}
+          ${candles}
+          ${ma20Path}
+          ${ma60Path}
+          ${volLabel}
+          ${volBars}
+          ${yLabels}
+          ${xLabels}
+        </svg>
+      </div>
       <div style="margin-top:8px;display:flex;justify-content:space-between;align-items:center;font-family:ui-monospace,monospace;font-size:11px;color:#666;flex-wrap:wrap;gap:8px;">
         <div>
           <span style="display:inline-block;width:10px;height:10px;background:#16A34A;margin-right:4px;"></span>陽線
