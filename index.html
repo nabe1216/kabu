@@ -2249,8 +2249,9 @@ function stockCard(s, index, allBuyCandidates) {
   const sigClass = s.signal === 'BUY' ? 'has-buy' : s.signal === 'SELL' ? 'has-sell' : '';
   const noFavClass = !isFav ? 'no-fav' : '';
   const emergencyClass = s.emergency_exit ? 'is-emergency' : '';
+  const emergencyReasons = (s.emergency_reasons || []).join(' / ');
   const emergencyBanner = s.emergency_exit
-    ? `<div class="emergency-banner">EMERGENCY EXIT! ／ 緊急撤退シグナル発生</div>`
+    ? `<div class="emergency-banner">EMERGENCY EXIT! ／ 緊急撤退シグナル発生${emergencyReasons ? ` <span style="opacity:0.95;font-size:11px;letter-spacing:0.05em;color:#FFD700;margin-left:8px;">[ ${emergencyReasons} ]</span>` : ''}</div>`
     : '';
   const earningsMark = s.earnings_imminent
     ? `<span class="earnings-mark" title="${fmt.date(s.next_earnings_date)} 決算発表">📊 明日決算</span>`
@@ -2424,7 +2425,14 @@ function openDetail(code) {
   else earnEl.classList.add('hidden');
   // 緊急バナー
   const bannerEl = document.getElementById('mEmergencyBanner');
-  if (s.emergency_exit) { bannerEl.style.display = 'flex'; bannerEl.textContent = 'EMERGENCY EXIT! ／ 緊急撤退シグナル発生 — 即時全量売却を検討してください'; }
+  if (s.emergency_exit) {
+    bannerEl.style.display = 'flex';
+    const reasons = (s.emergency_reasons || []).join(' / ');
+    const reasonsHtml = reasons
+      ? ` <span style="opacity:0.95;font-size:12px;letter-spacing:0.05em;color:#FFD700;margin-left:8px;">[ 理由: ${reasons} ]</span>`
+      : '';
+    bannerEl.innerHTML = `EMERGENCY EXIT! ／ 緊急撤退シグナル発生 — 即時全量売却を検討してください${reasonsHtml}`;
+  }
   else bannerEl.style.display = 'none';
   document.getElementById('mPrice').textContent = fmt.yen(s.price);
   document.getElementById('mDPS').textContent = fmt.num(s.forecast_dps, 2) + '円';
