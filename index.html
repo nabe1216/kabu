@@ -2651,6 +2651,7 @@ function renderFtDividends(dividends) {
 }
 
 
+function renderPortfolio() {
   let total = 0, value = 0, dividend = 0;
   const rows = STATE.portfolio.map(p => {
     const s = STATE.data.stocks.find(x => x.code === p.code);
