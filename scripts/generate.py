@@ -582,6 +582,86 @@ def calculate_yield_distribution(
     }
 
 
+def calculate_valuation_history(
+    quotes_sorted: list[dict[str, Any]],
+    statements: list[dict[str, Any]],
+    yield_history: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """
+    各月末時点での PER / PBR / グレアム指数を計算する。
+
+    yield_history のデータ点と同期。各月末で「その時点で公表済みの最新EPS/BPS」を引いて、
+    分割調整を行った上で PER = price/EPS, PBR = price/BPS を算出する。
+    """
+    if not yield_history or not statements:
+        return []
+
+    # 各 statement から (disc_date, eps_raw, bps_raw) のタイムラインを構築
+    fin_timeline: list[dict[str, Any]] = []
+    for s in statements:
+        d = parse_date(s.get('DiscDate')) or parse_date(s.get('CurPerEn'))
+        if d is None:
+            continue
+        eps_raw = safe_float(s.get('EPS'))
+        np_val = safe_float(s.get('NP'))
+        eq_val = safe_float(s.get('Eq'))
+        bps_raw = None
+        if eq_val is not None and np_val is not None and eps_raw is not None and eps_raw != 0:
+            shares_raw = np_val / eps_raw
+            if shares_raw and shares_raw > 0:
+                bps_raw = eq_val / shares_raw
+        if eps_raw is None and bps_raw is None:
+            continue
+        fin_timeline.append({
+            'date': d,
+            'eps_raw': eps_raw,
+            'bps_raw': bps_raw,
+        })
+    fin_timeline.sort(key=lambda x: x['date'])
+
+    if not fin_timeline:
+        return []
+
+    # 各月末時点で直近の財務データを引いて PER/PBR を計算
+    result: list[dict[str, Any]] = []
+    for h in yield_history:
+        try:
+            d = date.fromisoformat(h['date'])
+        except Exception:
+            continue
+        price = h.get('price')
+        if not price or price <= 0:
+            continue
+
+        # その日以前で最新の財務データを引く
+        latest = None
+        for ft in fin_timeline:
+            if ft['date'] <= d:
+                latest = ft
+            else:
+                break
+        if latest is None:
+            continue
+
+        # 分割調整: その時点から最新までの累積分割係数で調整
+        adj = cumulative_adj_factor_after(quotes_sorted, latest['date'])
+        eps_adj = latest['eps_raw'] * adj if latest['eps_raw'] is not None else None
+        bps_adj = latest['bps_raw'] * adj if latest['bps_raw'] is not None else None
+
+        per = price / eps_adj if eps_adj and eps_adj > 0 else None
+        pbr = price / bps_adj if bps_adj and bps_adj > 0 else None
+        gpi = per * pbr if (per is not None and pbr is not None) else None
+
+        result.append({
+            'date': h['date'],
+            'per': round(per, 2) if per is not None else None,
+            'pbr': round(pbr, 2) if pbr is not None else None,
+            'graham': round(gpi, 2) if gpi is not None else None,
+        })
+
+    return result
+
+
 def determine_signal(current_yield: float | None, dist: dict[str, float]) -> str:
     """BUY / SELL / NEUTRAL を判定。"""
     if current_yield is None or current_yield <= 0:
@@ -1289,6 +1369,11 @@ def process_stock(
     # --- 財務推移 (1株あたり値は分割調整済) ---
     financials_history = build_financials_history(statements, n=8, quotes_sorted=quotes_sorted)
 
+    # --- 月次 PER/PBR/グレアム指数 履歴 ---
+    valuation_history = calculate_valuation_history(
+        quotes_sorted, statements, yield_dist.get('history', [])
+    )
+
     # --- ROE 計算: 直近FYの ROE = NP / Eq * 100 ---
     latest_np = get_latest_full_year_metric(statements, 'NP')
     latest_eq = get_latest_full_year_metric(statements, 'Eq')
@@ -1364,6 +1449,7 @@ def process_stock(
         'box': box if box else None,
 
         'financials_history': financials_history,
+        'valuation_history': valuation_history,
 
         # 過去250日分（約1年）の株価履歴 (自前チャート用)
         # AdjustmentClose系を使用することで株式分割を考慮した連続的なチャートになる
@@ -1591,6 +1677,24 @@ def main() -> int:
         json.dump(payload, f, ensure_ascii=False, indent=2, default=str)
 
     log.info('Wrote %s (%d stocks)', OUTPUT_PATH, len(stocks))
+
+    # === ポートフォリオ自動売買シミュレーション ===
+    try:
+        from portfolio_engine import update_portfolio
+        log.info('Updating portfolio (forward test)...')
+        portfolio_state = update_portfolio(stocks)
+        total_return = portfolio_state['total_value'] - portfolio_state['initial_cash']
+        return_pct = total_return / portfolio_state['initial_cash'] * 100
+        log.info(
+            'Portfolio: total=¥%s, return=¥%s (%+.2f%%), holdings=%d',
+            f"{portfolio_state['total_value']:,}",
+            f"{total_return:+,}",
+            return_pct,
+            len(portfolio_state['holdings']),
+        )
+    except Exception as e:
+        log.error('Portfolio update failed: %s', e, exc_info=True)
+
     return 0
 
 
