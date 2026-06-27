@@ -35,6 +35,7 @@ jobs:
       - name: Run generate.py
         env:
           J_QUANTS_API_KEY: ${{ secrets.J_QUANTS_API_KEY }}
+          LINE_CHANNEL_TOKEN: ${{ secrets.LINE_CHANNEL_TOKEN }}
           TZ: Asia/Tokyo
         run: |
           python scripts/generate.py
@@ -43,7 +44,7 @@ jobs:
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-          git add data/results.json
+          git add data/results.json data/portfolio_state.json data/portfolio_history.json
           if git diff --staged --quiet; then
             echo "No changes to commit"
           else
