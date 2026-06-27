@@ -1,0 +1,61 @@
+{
+  "trades": [
+    {
+      "date": "2026-06-28",
+      "action": "BUY",
+      "code": "8801",
+      "name": "三井不動産",
+      "tier": "S",
+      "qty": 2700,
+      "price": 1451.5,
+      "amount": 3919050.0,
+      "reason": "BUY_SIGNAL"
+    },
+    {
+      "date": "2026-06-28",
+      "action": "BUY",
+      "code": "6902",
+      "name": "デンソー",
+      "tier": "A",
+      "qty": 1000,
+      "price": 1879.5,
+      "amount": 1879500.0,
+      "reason": "BUY_SIGNAL"
+    },
+    {
+      "date": "2026-06-28",
+      "action": "BUY",
+      "code": "8439",
+      "name": "東京センチュリー",
+      "tier": "A",
+      "qty": 700,
+      "price": 2519.0,
+      "amount": 1763300.0,
+      "reason": "BUY_SIGNAL"
+    },
+    {
+      "date": "2026-06-28",
+      "action": "BUY",
+      "code": "2502",
+      "name": "アサヒグループホールディングス",
+      "tier": "A",
+      "qty": 1200,
+      "price": 1551.0,
+      "amount": 1861200.0,
+      "reason": "BUY_SIGNAL"
+    }
+  ],
+  "daily_snapshots": [
+    {
+      "date": "2026-06-28",
+      "cash": 576950.0,
+      "holdings_value": 9490650.0,
+      "total_value": 10067600.0,
+      "unrealized_pl": 67600.0,
+      "realized_pl": 0,
+      "dividend_total": 0,
+      "holdings_count": 4
+    }
+  ],
+  "dividends": []
+}
