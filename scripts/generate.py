@@ -178,6 +178,16 @@ EQUITY_RATIO_EXEMPT_SECTORS: set[str] = {
     '8050',  # 不動産業
 }
 
+# 業種別の自己資本比率最低基準（緩和テーブル）
+# 業界特性で自己資本比率が低めになりがちな業種は閾値を緩める。
+# 33% を基準とすることで、累進配当銘柄の積水ハウス、大和ハウス、5大商社、商船三井 等を拾える。
+# それ以外の業種は EQUITY_RATIO_MIN (50%) を適用。
+EQUITY_RATIO_RELAXED_BY_SECTOR: dict[str, float] = {
+    '2050': 0.33,  # 建設業 (積水ハウス42.7%、大和ハウス34.4%、大林組40.0%、鹿島37.2%など)
+    '5100': 0.33,  # 海運業 (商船三井48.2%、船舶投資が重い業界特性)
+    '6050': 0.33,  # 卸売業 (5大商社、在庫保有で自己資本比率低めの傾向)
+}
+
 # ============================================================================
 # (4) J-Quants API クライアント
 # ============================================================================
@@ -485,11 +495,19 @@ def check_payout_ratio(payout: float | None) -> bool | None:
 
 
 def check_equity_ratio(equity_ratio: float | None, sector_code: str) -> bool | None:
+    """自己資本比率チェック
+
+    - 金融4業種＋不動産業: 完全免除
+    - 建設業・海運業・卸売業: 35%以上で許容（業界特性で低めになるため）
+    - その他: 50%以上が必要（デフォルト）
+    """
     if sector_code in EQUITY_RATIO_EXEMPT_SECTORS:
         return True  # 免除
     if equity_ratio is None:
         return None
-    return equity_ratio >= EQUITY_RATIO_MIN
+    # 業種別の緩和閾値があればそれを使う、なければデフォルト (50%)
+    threshold = EQUITY_RATIO_RELAXED_BY_SECTOR.get(sector_code, EQUITY_RATIO_MIN)
+    return equity_ratio >= threshold
 
 
 def check_valuation(per: float | None, pbr: float | None) -> bool | None:
