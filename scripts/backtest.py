@@ -115,6 +115,14 @@ class Config:
     # にする
 
 
+# === 業種分散ルール (グローバル設定、main() で上書き可能) ===
+# 0 = 業種分散なし (現状)
+# 0.40 = 同業種に総資産の最大40%まで
+# 0.30 = 同業種に総資産の最大30%まで
+# 0.25 = 同業種に総資産の最大25%まで
+SECTOR_CAP_RATIO = 0.0
+
+
 # ============================================================================
 # Utility: 日付ヘルパー
 # ============================================================================
@@ -987,7 +995,7 @@ def compute_metrics(
     div_yield_annual = ((1 + div_yield_total / 100) ** (1 / years) - 1) * 100
 
     # 取引回数
-    n_trades = sum(1 for t in portfolio.trades if t['action'] == 'BUY')
+    n_trades = sum(1 for t in portfolio.trades if t['action'].startswith('BUY'))
     n_sells = sum(1 for t in portfolio.trades if t['action'].startswith('SELL'))
     n_dividends = sum(1 for t in portfolio.trades if t['action'] == 'DIVIDEND')
 
@@ -1222,6 +1230,7 @@ def run_strategies_parallel(
                     'score': score,
                     'tier': tier,
                     'weight': weight,
+                    'sector33': sd.get('sector33', ''),
                 })
 
             # スコア高い順
@@ -1236,6 +1245,50 @@ def run_strategies_parallel(
             if len(selected) + len(portfolio.positions) < min_positions and len(buy_candidates) > slots_available:
                 # 候補は十分にあるので、上位で min_positions まで埋める
                 selected = buy_candidates[:max(slots_available, min_positions - len(portfolio.positions))]
+
+            # ---- 業種分散フィルタ (SECTOR_CAP_RATIO > 0 の場合のみ) ----
+            # 投下資金が業種全体で上限を超えないように制限。
+            # 既存保有銘柄の業種別資金を計算し、新規買付候補の中で
+            # 業種上限を超えるものをスキップする。
+            # ただし最低保有5銘柄ルールを優先 (保有数 < 5 なら緩和)。
+            if SECTOR_CAP_RATIO > 0 and len(portfolio.positions) >= min_positions:
+                # 総資産推定 (現金 + 保有評価額)
+                est_total = portfolio.cash + sum(
+                    pos.market_value(prices_today.get(c, pos.open_price))
+                    for c, pos in portfolio.positions.items()
+                )
+                sector_cap_yen = est_total * SECTOR_CAP_RATIO
+
+                # 既存保有の業種別資金
+                sector_invested: dict[str, float] = {}
+                for c, pos in portfolio.positions.items():
+                    sec = stock_data.get(c, {}).get('sector33', '')
+                    if sec:
+                        sector_invested[sec] = sector_invested.get(sec, 0) + pos.market_value(
+                            prices_today.get(c, pos.open_price)
+                        )
+
+                # 新規候補を業種上限でフィルタ
+                filtered_selected = []
+                # 1単位あたりの想定金額 (Tier重み付け配分の目安)
+                if selected:
+                    tmp_total_weight = sum(c['weight'] for c in selected)
+                    tmp_budget = portfolio.cash * 0.95
+                    tmp_unit_yen = tmp_budget / tmp_total_weight if tmp_total_weight > 0 else 0
+                else:
+                    tmp_unit_yen = 0
+
+                for cand in selected:
+                    sec = cand.get('sector33', '')
+                    if not sec:
+                        filtered_selected.append(cand)
+                        continue
+                    target_yen = tmp_unit_yen * cand['weight']
+                    if sector_invested.get(sec, 0) + target_yen <= sector_cap_yen:
+                        filtered_selected.append(cand)
+                        sector_invested[sec] = sector_invested.get(sec, 0) + target_yen
+                    # 業種上限超えはスキップ
+                selected = filtered_selected
 
             # Tier重み付けで配分計算
             if selected:
@@ -1767,6 +1820,97 @@ def run_multi_period(args) -> int:
     return 0
 
 
+def run_sector_cap_compare(args) -> int:
+    """業種分散ルールの 4 パターン比較 (戦略 B 固定)"""
+    global SECTOR_CAP_RATIO
+
+    patterns = [
+        ('P1_none', 0.0,  '業種分散なし (現状)'),
+        ('P2_40',   0.40, '業種上限 40%'),
+        ('P3_30',   0.30, '業種上限 30%'),
+        ('P4_25',   0.25, '業種上限 25%'),
+    ]
+
+    log.info('=== SECTOR CAP COMPARISON (戦略 B / multi-period) ===')
+    for tag, ratio, desc in patterns:
+        log.info('  %s: %s', tag, desc)
+
+    # 各パターンを順次実行
+    all_results: list[dict] = []
+    for tag, ratio, desc in patterns:
+        SECTOR_CAP_RATIO = ratio
+        log.info('')
+        log.info('==============================================================')
+        log.info('PATTERN [%s]: %s (cap=%.1f%%)', tag, desc, ratio * 100)
+        log.info('==============================================================')
+
+        # 出力先を切り替え (パターン別ディレクトリ)
+        original_output = Config.OUTPUT_DIR
+        Config.OUTPUT_DIR = original_output / f'sector_cap_{tag}'
+        Config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+        try:
+            # run_multi_period を呼ぶが、戦略は B 固定にする
+            # argsをコピーしつつ、strategy='B' で実行
+            args_pattern = argparse.Namespace(**vars(args))
+            run_multi_period(args_pattern)
+
+            # サマリーCSVを読み込んで集約 (multi_period_ranking.csv から戦略B行を抽出)
+            ranking_csv = Config.OUTPUT_DIR / 'multi_period_ranking.csv'
+            if ranking_csv.exists():
+                import csv as _csv
+                with ranking_csv.open('r', encoding='utf-8') as f:
+                    reader = _csv.DictReader(f)
+                    for row in reader:
+                        # strategy_id == 'B' 行のみ取得
+                        if row.get('strategy_id') == 'B':
+                            all_results.append({
+                                'pattern': tag,
+                                'description': desc,
+                                'sector_cap': f'{ratio * 100:.0f}%',
+                                'avg_cagr': row.get('avg_cagr', ''),
+                                'min_cagr': row.get('min_cagr', ''),
+                                'std_cagr': row.get('std_cagr', ''),
+                                'consistency_score': row.get('consistency_score', ''),
+                                'avg_max_dd': row.get('avg_max_dd', ''),
+                                'avg_sharpe': row.get('avg_sharpe', ''),
+                                'avg_dividend_yield': row.get('avg_dividend_yield', ''),
+                            })
+                            break
+        except Exception as e:
+            log.error('Pattern %s failed: %s', tag, e, exc_info=True)
+        finally:
+            Config.OUTPUT_DIR = original_output
+
+    # 結果サマリー出力
+    log.info('')
+    log.info('==============================================================')
+    log.info('              SECTOR CAP COMPARISON RESULTS')
+    log.info('==============================================================')
+    log.info('%-10s %-22s %12s %12s %12s %12s' % (
+        'Pattern', 'Description', 'Avg CAGR%', 'Min CAGR%', 'Avg DD%', 'Sharpe',
+    ))
+    log.info('-' * 90)
+    for r in all_results:
+        log.info('%-10s %-22s %12s %12s %12s %12s' % (
+            r['pattern'], r['description'],
+            r['avg_cagr'], r['min_cagr'], r['avg_max_dd'], r['avg_sharpe'],
+        ))
+    log.info('==============================================================')
+
+    # CSV書き出し
+    summary_csv = Config.OUTPUT_DIR / 'sector_cap_comparison.csv'
+    if all_results:
+        import csv as _csv
+        with summary_csv.open('w', encoding='utf-8', newline='') as f:
+            writer = _csv.DictWriter(f, fieldnames=list(all_results[0].keys()))
+            writer.writeheader()
+            writer.writerows(all_results)
+        log.info('Comparison summary saved to: %s', summary_csv)
+
+    return 0
+
+
 # ============================================================================
 # Entry point
 # ============================================================================
@@ -1819,9 +1963,27 @@ def main():
         '--periods', default='',
         help='--multi-period 用のカスタム期間 (例: "2021-01-01:2023-01-01,2023-01-01:2025-01-01")',
     )
+    parser.add_argument(
+        '--sector-cap', type=float, default=0.0,
+        help='業種分散の上限比率 (0=なし, 0.25=25%%, 0.30=30%%, 0.40=40%%)',
+    )
+    parser.add_argument(
+        '--sector-cap-compare', action='store_true',
+        help='業種分散ルールの 4 パターン比較を実行 (現状/40%%/30%%/25%%、戦略 B 固定)',
+    )
     args = parser.parse_args()
 
-    if args.multi_period:
+    # SECTOR_CAP_RATIO を CLI 引数で上書き
+    global SECTOR_CAP_RATIO
+    SECTOR_CAP_RATIO = args.sector_cap
+    if SECTOR_CAP_RATIO > 0:
+        log.info('Sector diversification: cap=%.1f%% of total assets', SECTOR_CAP_RATIO * 100)
+    else:
+        log.info('Sector diversification: DISABLED')
+
+    if args.sector_cap_compare:
+        return run_sector_cap_compare(args)
+    elif args.multi_period:
         return run_multi_period(args)
     elif args.compare:
         return run_compare(args)
