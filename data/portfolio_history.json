@@ -55,7 +55,27 @@
       "realized_pl": 0,
       "dividend_total": 0,
       "holdings_count": 4
+    },
+    {
+      "date": "2026-06-29",
+      "cash": 608150.0,
+      "holdings_value": 9626650.0,
+      "total_value": 10266000.0,
+      "unrealized_pl": 203600.0,
+      "realized_pl": 0,
+      "dividend_total": 31200,
+      "holdings_count": 4
     }
   ],
-  "dividends": []
+  "dividends": [
+    {
+      "date": "2026-06-29",
+      "code": "2502",
+      "name": "アサヒグループホールディングス",
+      "type": "interim",
+      "dps": 26.0,
+      "shares": 1200,
+      "amount": 31200
+    }
+  ]
 }
