@@ -1254,7 +1254,7 @@ def run_strategies_parallel(
             if SECTOR_CAP_RATIO > 0 and len(portfolio.positions) >= min_positions:
                 # 総資産推定 (現金 + 保有評価額)
                 est_total = portfolio.cash + sum(
-                    pos.market_value(prices_today.get(c, pos.open_price))
+                    pos.market_value(prices_today.get(c, pos.cost_basis))
                     for c, pos in portfolio.positions.items()
                 )
                 sector_cap_yen = est_total * SECTOR_CAP_RATIO
@@ -1265,7 +1265,7 @@ def run_strategies_parallel(
                     sec = stock_data.get(c, {}).get('sector33', '')
                     if sec:
                         sector_invested[sec] = sector_invested.get(sec, 0) + pos.market_value(
-                            prices_today.get(c, pos.open_price)
+                            prices_today.get(c, pos.cost_basis)
                         )
 
                 # 新規候補を業種上限でフィルタ
