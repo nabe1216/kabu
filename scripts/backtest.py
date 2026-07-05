@@ -122,6 +122,13 @@ class Config:
 # 0.25 = 同業種に総資産の最大25%まで
 SECTOR_CAP_RATIO = 0.0
 
+# === PER/PBR バリュー割安ルール (グローバル設定) ===
+# 'none'  = 現状 (利回りQ75のみで判定)
+# 'and'   = 利回りQ75 かつ PER・PBR両方が過去Q25以下 (厳格)
+# 'score' = 利回りQ75、バリュー割安ならスコア×1.3で買付優先
+VALUE_MODE = 'none'
+VALUE_SCORE_BOOST = 1.3  # 'score' モードでの倍率
+
 
 # ============================================================================
 # Utility: 日付ヘルパー
@@ -401,6 +408,80 @@ def compute_yield_dist_at(
     }
 
 
+def compute_valuation_dist_at(
+    statements: list[dict],
+    quotes_sorted: list[dict],
+    target_date: date,
+) -> dict[str, float] | None:
+    """
+    target以前の5年間の月次 PER / PBR 分布 (分割調整済)。
+    各月末で「その時点で公表済みの最新 EPS/BPS」から PER/PBR を計算し Q25/Q50/Q75 を返す。
+    """
+    five_years_ago = date(target_date.year - 5, target_date.month, 1)
+
+    fin_timeline: list[tuple[date, float | None, float | None]] = []
+    for s in statements:
+        if s.get('CurPerType') not in ('FY', '4Q'):
+            continue
+        disc_d = parse_date(s.get('DiscDate')) or parse_date(s.get('CurPerEn'))
+        if disc_d is None:
+            continue
+        eps_raw = safe_float(s.get('EPS'))
+        bps_raw = safe_float(s.get('BPS'))
+        if eps_raw is None and bps_raw is None:
+            continue
+        fin_timeline.append((disc_d, eps_raw, bps_raw))
+    fin_timeline.sort(key=lambda x: x[0])
+    if not fin_timeline:
+        return None
+
+    monthly: dict[str, tuple[date, float]] = {}
+    for q in quotes_sorted:
+        d = parse_date(q.get('Date'))
+        if d is None or d < five_years_ago or d > target_date:
+            continue
+        close = safe_float(q.get('AdjustmentClose')) or safe_float(q.get('Close'))
+        if close is None or close <= 0:
+            continue
+        ym = f'{d.year}-{d.month:02d}'
+        prev = monthly.get(ym)
+        if prev is None or d > prev[0]:
+            monthly[ym] = (d, close)
+
+    per_list: list[float] = []
+    pbr_list: list[float] = []
+    for _ym, (d, close) in monthly.items():
+        latest = None
+        for ft in fin_timeline:
+            if ft[0] <= d:
+                latest = ft
+            else:
+                break
+        if latest is None:
+            continue
+        _disc, eps_raw, bps_raw = latest
+        adj = cumulative_adj_factor_after(quotes_sorted, _disc)
+        eps_adj = eps_raw * adj if eps_raw is not None else None
+        bps_adj = bps_raw * adj if bps_raw is not None else None
+        if eps_adj and eps_adj > 0:
+            per_list.append(close / eps_adj)
+        if bps_adj and bps_adj > 0:
+            pbr_list.append(close / bps_adj)
+
+    result: dict[str, float] = {}
+    if len(per_list) >= 12:
+        per_list.sort()
+        result['per_q25'] = quantile(per_list, 0.25)
+        result['per_q50'] = quantile(per_list, 0.50)
+        result['per_q75'] = quantile(per_list, 0.75)
+    if len(pbr_list) >= 12:
+        pbr_list.sort()
+        result['pbr_q25'] = quantile(pbr_list, 0.25)
+        result['pbr_q50'] = quantile(pbr_list, 0.50)
+        result['pbr_q75'] = quantile(pbr_list, 0.75)
+    return result if result else None
+
+
 def get_latest_fy_metric_at(statements: list[dict], key: str) -> float | None:
     """target以前のdisclosure内で最新FYのキー値"""
     fy_list = [s for s in statements if s.get('CurPerType') in ('FY', '4Q')]
@@ -612,6 +693,24 @@ def screen_stock_at(
     pbr = (price / bps) if (bps is not None and bps > 0) else None
     info['per'] = per
     info['pbr'] = pbr
+
+    # PER/PBR 過去5年分布 → バリュー割安判定 (Q3=C: 両方が過去Q25以下)
+    val_dist = compute_valuation_dist_at(statements_filtered, quotes_sorted_filtered, target_date)
+    is_value_cheap = False
+    if val_dist:
+        info['per_q25'] = val_dist.get('per_q25')
+        info['pbr_q25'] = val_dist.get('pbr_q25')
+        per_cheap = (
+            per is not None and val_dist.get('per_q25') is not None
+            and per <= val_dist['per_q25']
+        )
+        pbr_cheap = (
+            pbr is not None and val_dist.get('pbr_q25') is not None
+            and pbr <= val_dist['pbr_q25']
+        )
+        # C: PER・PBR両方が過去Q25以下なら「バリュー割安」
+        is_value_cheap = per_cheap and pbr_cheap
+    info['is_value_cheap'] = is_value_cheap
 
     # 配当性向 (DPS / EPS から計算)
     div_actual = get_latest_fy_metric_at(statements_filtered, 'DivAnn')
@@ -1220,7 +1319,21 @@ def run_strategies_parallel(
                 q75 = info.get('q75')
                 if not passes or cur_y is None or q75 is None or cur_y < q75:
                     continue
+
+                is_value_cheap = info.get('is_value_cheap', False)
+
+                # VALUE_MODE によるフィルタ / スコア調整
+                if VALUE_MODE == 'and':
+                    # 厳格: バリュー割安でない銘柄は候補から除外
+                    if not is_value_cheap:
+                        continue
+
                 score = score_fn(info)
+
+                if VALUE_MODE == 'score' and is_value_cheap:
+                    # スコア加点: バリュー割安なら買付優先度UP
+                    score *= VALUE_SCORE_BOOST
+
                 tier, weight = classify_tier(code, industry_leaders)
                 buy_candidates.append({
                     'code': code,
@@ -1911,6 +2024,88 @@ def run_sector_cap_compare(args) -> int:
     return 0
 
 
+def run_value_compare(args) -> int:
+    """PER/PBR バリュー割安ルールの 3 パターン比較 (戦略 B 固定)"""
+    global VALUE_MODE
+
+    patterns = [
+        ('V1_none',  'none',  '現状 (利回りQ75のみ)'),
+        ('V2_and',   'and',   'AND厳格 (PER・PBR両方Q25以下)'),
+        ('V3_score', 'score', 'スコア加点 (割安なら×1.3)'),
+    ]
+
+    log.info('=== VALUE (PER/PBR) COMPARISON (戦略 B / multi-period) ===')
+    for tag, mode, desc in patterns:
+        log.info('  %s: %s', tag, desc)
+
+    all_results: list[dict] = []
+    for tag, mode, desc in patterns:
+        VALUE_MODE = mode
+        log.info('')
+        log.info('==============================================================')
+        log.info('PATTERN [%s]: %s (mode=%s)', tag, desc, mode)
+        log.info('==============================================================')
+
+        original_output = Config.OUTPUT_DIR
+        Config.OUTPUT_DIR = original_output / f'value_{tag}'
+        Config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+        try:
+            args_pattern = argparse.Namespace(**vars(args))
+            run_multi_period(args_pattern)
+
+            ranking_csv = Config.OUTPUT_DIR / 'multi_period_ranking.csv'
+            if ranking_csv.exists():
+                import csv as _csv
+                with ranking_csv.open('r', encoding='utf-8') as f:
+                    reader = _csv.DictReader(f)
+                    for row in reader:
+                        if row.get('strategy_id') == 'B':
+                            all_results.append({
+                                'pattern': tag,
+                                'description': desc,
+                                'value_mode': mode,
+                                'avg_cagr': row.get('avg_cagr', ''),
+                                'min_cagr': row.get('min_cagr', ''),
+                                'std_cagr': row.get('std_cagr', ''),
+                                'consistency_score': row.get('consistency_score', ''),
+                                'avg_max_dd': row.get('avg_max_dd', ''),
+                                'avg_sharpe': row.get('avg_sharpe', ''),
+                                'avg_dividend_yield': row.get('avg_dividend_yield', ''),
+                            })
+                            break
+        except Exception as e:
+            log.error('Pattern %s failed: %s', tag, e, exc_info=True)
+        finally:
+            Config.OUTPUT_DIR = original_output
+
+    log.info('')
+    log.info('==============================================================')
+    log.info('              VALUE (PER/PBR) COMPARISON RESULTS')
+    log.info('==============================================================')
+    log.info('%-10s %-32s %10s %10s %10s %10s' % (
+        'Pattern', 'Description', 'AvgCAGR%', 'MinCAGR%', 'AvgDD%', 'Sharpe',
+    ))
+    log.info('-' * 92)
+    for r in all_results:
+        log.info('%-10s %-32s %10s %10s %10s %10s' % (
+            r['pattern'], r['description'],
+            r['avg_cagr'], r['min_cagr'], r['avg_max_dd'], r['avg_sharpe'],
+        ))
+    log.info('==============================================================')
+
+    summary_csv = Config.OUTPUT_DIR / 'value_comparison.csv'
+    if all_results:
+        import csv as _csv
+        with summary_csv.open('w', encoding='utf-8', newline='') as f:
+            writer = _csv.DictWriter(f, fieldnames=list(all_results[0].keys()))
+            writer.writeheader()
+            writer.writerows(all_results)
+        log.info('Comparison summary saved to: %s', summary_csv)
+
+    return 0
+
+
 # ============================================================================
 # Entry point
 # ============================================================================
@@ -1971,17 +2166,31 @@ def main():
         '--sector-cap-compare', action='store_true',
         help='業種分散ルールの 4 パターン比較を実行 (現状/40%%/30%%/25%%、戦略 B 固定)',
     )
+    parser.add_argument(
+        '--value-mode', default='none', choices=['none', 'and', 'score'],
+        help='PER/PBRバリュー割安ルール (none=現状, and=厳格, score=加点)',
+    )
+    parser.add_argument(
+        '--value-compare', action='store_true',
+        help='PER/PBRバリュー割安の 3 パターン比較を実行 (現状/AND厳格/スコア加点、戦略 B 固定)',
+    )
     args = parser.parse_args()
 
     # SECTOR_CAP_RATIO を CLI 引数で上書き
-    global SECTOR_CAP_RATIO
+    global SECTOR_CAP_RATIO, VALUE_MODE
     SECTOR_CAP_RATIO = args.sector_cap
     if SECTOR_CAP_RATIO > 0:
         log.info('Sector diversification: cap=%.1f%% of total assets', SECTOR_CAP_RATIO * 100)
     else:
         log.info('Sector diversification: DISABLED')
 
-    if args.sector_cap_compare:
+    # VALUE_MODE を CLI 引数で上書き
+    VALUE_MODE = args.value_mode
+    log.info('Value (PER/PBR) mode: %s', VALUE_MODE)
+
+    if args.value_compare:
+        return run_value_compare(args)
+    elif args.sector_cap_compare:
         return run_sector_cap_compare(args)
     elif args.multi_period:
         return run_multi_period(args)
