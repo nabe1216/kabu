@@ -10,6 +10,7 @@ on:
         options:
           - 'multi-period (3期間で全戦略比較・おすすめ)'
           - 'sector-cap-compare (業種分散4パターン比較・戦略B固定)'
+          - 'value-compare (PER/PBRバリュー3パターン比較・戦略B固定)'
           - 'compare (1期間で全戦略比較)'
           - 'B (ボックス × 利回り)'
           - 'A (利回り単純順)'
@@ -72,7 +73,12 @@ jobs:
             PERIODS_ARG="--periods ${{ github.event.inputs.periods }}"
           fi
 
-          if [ "$STRATEGY" = "sector-cap-compare" ]; then
+          if [ "$STRATEGY" = "value-compare" ]; then
+            python3 backtest.py --value-compare \
+              --capital ${{ github.event.inputs.capital }} \
+              --positions ${{ github.event.inputs.positions }} \
+              $PERIODS_ARG
+          elif [ "$STRATEGY" = "sector-cap-compare" ]; then
             python3 backtest.py --sector-cap-compare \
               --capital ${{ github.event.inputs.capital }} \
               --positions ${{ github.event.inputs.positions }} \
