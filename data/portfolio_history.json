@@ -43,6 +43,33 @@
       "price": 1551.0,
       "amount": 1861200.0,
       "reason": "BUY_SIGNAL"
+    },
+    {
+      "date": "2026-07-08",
+      "action": "SELL",
+      "code": "2502",
+      "name": "アサヒグループホールディングス",
+      "tier": "A",
+      "qty": 1200,
+      "price": 1595.0,
+      "amount": 1914000.0,
+      "buy_price": 1551.0,
+      "buy_date": "2026-06-28",
+      "holding_days": 10,
+      "realized_pl": 52800.0,
+      "realized_pl_pct": 2.84,
+      "reason": "EMERGENCY_EXIT: 営業利益YoY-30.9%"
+    },
+    {
+      "date": "2026-07-08",
+      "action": "BUY",
+      "code": "1925",
+      "name": "大和ハウス工業",
+      "tier": "A",
+      "qty": 400,
+      "price": 4594.0,
+      "amount": 1837600.0,
+      "reason": "BUY_SIGNAL"
     }
   ],
   "daily_snapshots": [
@@ -143,6 +170,16 @@
       "total_value": 10576250.0,
       "unrealized_pl": 513850.0,
       "realized_pl": 0,
+      "dividend_total": 31200,
+      "holdings_count": 4
+    },
+    {
+      "date": "2026-07-08",
+      "cash": 684550.0,
+      "holdings_value": 9735650.0,
+      "total_value": 10451400.0,
+      "unrealized_pl": 336200.0,
+      "realized_pl": 52800.0,
       "dividend_total": 31200,
       "holdings_count": 4
     }

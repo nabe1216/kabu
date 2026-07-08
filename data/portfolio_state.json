@@ -1,7 +1,7 @@
 {
   "started_at": "2026-06-28",
   "initial_cash": 10000000,
-  "cash": 608150.0,
+  "cash": 684550.0,
   "holdings": [
     {
       "code": "8801",
@@ -10,10 +10,10 @@
       "qty": 2700,
       "buy_date": "2026-06-28",
       "buy_price": 1451.5,
-      "current_price": 1571.5,
-      "value": 4243050.0,
-      "unrealized_pl": 324000.0,
-      "unrealized_pl_pct": 8.27
+      "current_price": 1544.5,
+      "value": 4170150.0,
+      "unrealized_pl": 251100.0,
+      "unrealized_pl_pct": 6.41
     },
     {
       "code": "6902",
@@ -22,10 +22,10 @@
       "qty": 1000,
       "buy_date": "2026-06-28",
       "buy_price": 1879.5,
-      "current_price": 1985.0,
-      "value": 1985000.0,
-      "unrealized_pl": 105500.0,
-      "unrealized_pl_pct": 5.61
+      "current_price": 1945.0,
+      "value": 1945000.0,
+      "unrealized_pl": 65500.0,
+      "unrealized_pl_pct": 3.48
     },
     {
       "code": "8439",
@@ -34,28 +34,28 @@
       "qty": 700,
       "buy_date": "2026-06-28",
       "buy_price": 2519.0,
-      "current_price": 2537.5,
-      "value": 1776250.0,
-      "unrealized_pl": 12950.0,
-      "unrealized_pl_pct": 0.73
+      "current_price": 2575.0,
+      "value": 1802500.0,
+      "unrealized_pl": 39200.0,
+      "unrealized_pl_pct": 2.22
     },
     {
-      "code": "2502",
-      "name": "アサヒグループホールディングス",
+      "code": "1925",
+      "name": "大和ハウス工業",
       "tier": "A",
-      "qty": 1200,
-      "buy_date": "2026-06-28",
-      "buy_price": 1551.0,
-      "current_price": 1610.5,
-      "value": 1932600.0,
-      "unrealized_pl": 71400.0,
-      "unrealized_pl_pct": 3.84
+      "qty": 400,
+      "buy_date": "2026-07-08",
+      "buy_price": 4594.0,
+      "current_price": 4545.0,
+      "value": 1818000.0,
+      "unrealized_pl": -19600.0,
+      "unrealized_pl_pct": -1.07
     }
   ],
-  "total_value": 10576250.0,
-  "total_invested": 9423050.0,
-  "realized_pl": 0,
+  "total_value": 10451400.0,
+  "total_invested": 11260650.0,
+  "realized_pl": 52800.0,
   "dividend_received": 31200,
-  "last_updated": "2026-07-07",
-  "holdings_value": 9936900.0
+  "last_updated": "2026-07-08",
+  "holdings_value": 9735650.0
 }
