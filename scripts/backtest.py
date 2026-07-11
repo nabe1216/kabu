@@ -1736,10 +1736,13 @@ def run_compare(args) -> int:
     return 0
 
 
-def run_multi_period(args) -> int:
+def run_multi_period(args, preloaded_data=None) -> int:
     """
     複数期間 × 全戦略を比較。
     各期間で全戦略を実行し、安定的に強い戦略を発見する。
+
+    preloaded_data: 事前取得済みの (stock_data, earliest, latest) タプル。
+                    compare系で4回呼ぶ際、データ取得を1回に共通化するため。
 
     デフォルト期間 (--periods で上書き可能):
       2020-04-01 ~ 2022-04-01
@@ -1762,12 +1765,16 @@ def run_multi_period(args) -> int:
     earliest = min(p[0] for p in periods)
     latest = max(p[1] for p in periods)
 
-    # データを最広範囲で1度だけ取得 (全期間カバー)
-    args_fetch = argparse.Namespace(**vars(args))
-    args_fetch.start = earliest.isoformat()
-    args_fetch.end = latest.isoformat()
-    log.info('Fetching data for the widest range %s ~ %s', earliest, latest)
-    stock_data, _, _ = fetch_all_data(args_fetch)
+    # データ取得 (preloaded_data があれば再取得せず使い回す = compare系で高速化)
+    if preloaded_data is not None:
+        stock_data = preloaded_data
+        log.info('Reusing preloaded data (%d stocks) — skipping fetch', len(stock_data))
+    else:
+        args_fetch = argparse.Namespace(**vars(args))
+        args_fetch.start = earliest.isoformat()
+        args_fetch.end = latest.isoformat()
+        log.info('Fetching data for the widest range %s ~ %s', earliest, latest)
+        stock_data, _, _ = fetch_all_data(args_fetch)
 
     # 実行する戦略の決定 (ONLY_STRATEGY 指定時はその戦略のみ = compare系で高速化)
     if ONLY_STRATEGY and ONLY_STRATEGY in STRATEGIES:
@@ -1960,6 +1967,27 @@ def run_sector_cap_compare(args) -> int:
     for tag, ratio, desc in patterns:
         log.info('  %s: %s', tag, desc)
 
+    # データを1回だけ取得して全パターンで使い回す (4回取得 → 1回に短縮)
+    if args.periods:
+        _periods = []
+        for p_str in args.periods.split(','):
+            s, e = p_str.split(':')
+            _periods.append((date.fromisoformat(s.strip()), date.fromisoformat(e.strip())))
+    else:
+        _periods = [
+            (date(2020, 4, 1), date(2022, 4, 1)),
+            (date(2022, 4, 1), date(2024, 4, 1)),
+            (date(2024, 4, 1), date(2026, 4, 1)),
+        ]
+    _earliest = min(p[0] for p in _periods)
+    _latest = max(p[1] for p in _periods)
+    _args_fetch = argparse.Namespace(**vars(args))
+    _args_fetch.start = _earliest.isoformat()
+    _args_fetch.end = _latest.isoformat()
+    log.info('Fetching data ONCE for all patterns: %s ~ %s', _earliest, _latest)
+    shared_data, _, _ = fetch_all_data(_args_fetch)
+    log.info('Data loaded: %d stocks (will be reused for all 4 patterns)', len(shared_data))
+
     # 各パターンを順次実行
     all_results: list[dict] = []
     for tag, ratio, desc in patterns:
@@ -1975,10 +2003,9 @@ def run_sector_cap_compare(args) -> int:
         Config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
         try:
-            # run_multi_period を呼ぶが、戦略は B 固定にする
-            # argsをコピーしつつ、strategy='B' で実行
+            # 事前取得データを渡して再取得を回避
             args_pattern = argparse.Namespace(**vars(args))
-            run_multi_period(args_pattern)
+            run_multi_period(args_pattern, preloaded_data=shared_data)
 
             # サマリーCSVを読み込んで集約 (multi_period_ranking.csv から戦略B行を抽出)
             ranking_csv = Config.OUTPUT_DIR / 'multi_period_ranking.csv'
@@ -2051,6 +2078,27 @@ def run_value_compare(args) -> int:
     for tag, mode, desc in patterns:
         log.info('  %s: %s', tag, desc)
 
+    # データを1回だけ取得して全パターンで使い回す
+    if args.periods:
+        _periods = []
+        for p_str in args.periods.split(','):
+            s, e = p_str.split(':')
+            _periods.append((date.fromisoformat(s.strip()), date.fromisoformat(e.strip())))
+    else:
+        _periods = [
+            (date(2020, 4, 1), date(2022, 4, 1)),
+            (date(2022, 4, 1), date(2024, 4, 1)),
+            (date(2024, 4, 1), date(2026, 4, 1)),
+        ]
+    _earliest = min(p[0] for p in _periods)
+    _latest = max(p[1] for p in _periods)
+    _args_fetch = argparse.Namespace(**vars(args))
+    _args_fetch.start = _earliest.isoformat()
+    _args_fetch.end = _latest.isoformat()
+    log.info('Fetching data ONCE for all patterns: %s ~ %s', _earliest, _latest)
+    shared_data, _, _ = fetch_all_data(_args_fetch)
+    log.info('Data loaded: %d stocks (will be reused for all 3 patterns)', len(shared_data))
+
     all_results: list[dict] = []
     for tag, mode, desc in patterns:
         VALUE_MODE = mode
@@ -2065,7 +2113,7 @@ def run_value_compare(args) -> int:
 
         try:
             args_pattern = argparse.Namespace(**vars(args))
-            run_multi_period(args_pattern)
+            run_multi_period(args_pattern, preloaded_data=shared_data)
 
             ranking_csv = Config.OUTPUT_DIR / 'multi_period_ranking.csv'
             if ranking_csv.exists():
