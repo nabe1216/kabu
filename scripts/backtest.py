@@ -129,6 +129,11 @@ SECTOR_CAP_RATIO = 0.0
 VALUE_MODE = 'none'
 VALUE_SCORE_BOOST = 1.3  # 'score' モードでの倍率
 
+# === multi-period で回す戦略の限定 (グローバル設定) ===
+# None = 全5戦略 (通常の multi-period)
+# 'B'  = 戦略Bのみ (compare系で高速化。1/5の時間)
+ONLY_STRATEGY: str | None = None
+
 
 # ============================================================================
 # Utility: 日付ヘルパー
@@ -1764,9 +1769,15 @@ def run_multi_period(args) -> int:
     log.info('Fetching data for the widest range %s ~ %s', earliest, latest)
     stock_data, _, _ = fetch_all_data(args_fetch)
 
+    # 実行する戦略の決定 (ONLY_STRATEGY 指定時はその戦略のみ = compare系で高速化)
+    if ONLY_STRATEGY and ONLY_STRATEGY in STRATEGIES:
+        active_strategies = [ONLY_STRATEGY]
+    else:
+        active_strategies = list(STRATEGIES.keys())
+
     log.info('=== MULTI-PERIOD STRATEGY COMPARISON ===')
     log.info('%d periods × %d strategies = %d backtests',
-             len(periods), len(STRATEGIES), len(periods) * len(STRATEGIES))
+             len(periods), len(active_strategies), len(periods) * len(active_strategies))
 
     initial_capital = args.capital
     max_positions = args.positions
@@ -1788,19 +1799,19 @@ def run_multi_period(args) -> int:
             parallel_results = run_strategies_parallel(
                 stock_data, p_start, p_end,
                 initial_capital, max_positions,
-                list(STRATEGIES.keys()),
+                active_strategies,
             )
             for sid, (_p, metrics) in parallel_results.items():
                 all_results[(period_label, sid)] = metrics
         except Exception as e:
             log.error('Period %s failed: %s', period_label, e)
-            for sid in STRATEGIES.keys():
+            for sid in active_strategies:
                 all_results[(period_label, sid)] = {}
 
     # ---- 詳細CSV: 期間別 × 戦略別の全指標 ----
     detailed_rows = []
     for period_label in period_labels:
-        for strategy_id in STRATEGIES.keys():
+        for strategy_id in active_strategies:
             m = all_results.get((period_label, strategy_id), {})
             detailed_rows.append({
                 'period': period_label,
@@ -1822,7 +1833,7 @@ def run_multi_period(args) -> int:
 
     # ---- ランキング表 (戦略ごとの集約) ----
     ranking_rows = []
-    for strategy_id in STRATEGIES.keys():
+    for strategy_id in active_strategies:
         cagrs = []
         sharpes = []
         ddowns = []
@@ -1935,7 +1946,8 @@ def run_multi_period(args) -> int:
 
 def run_sector_cap_compare(args) -> int:
     """業種分散ルールの 4 パターン比較 (戦略 B 固定)"""
-    global SECTOR_CAP_RATIO
+    global SECTOR_CAP_RATIO, ONLY_STRATEGY
+    ONLY_STRATEGY = 'B'  # 戦略Bのみ実行して高速化 (1/5の時間)
 
     patterns = [
         ('P1_none', 0.0,  '業種分散なし (現状)'),
@@ -2026,7 +2038,8 @@ def run_sector_cap_compare(args) -> int:
 
 def run_value_compare(args) -> int:
     """PER/PBR バリュー割安ルールの 3 パターン比較 (戦略 B 固定)"""
-    global VALUE_MODE
+    global VALUE_MODE, ONLY_STRATEGY
+    ONLY_STRATEGY = 'B'  # 戦略Bのみ実行して高速化 (1/5の時間)
 
     patterns = [
         ('V1_none',  'none',  '現状 (利回りQ75のみ)'),
