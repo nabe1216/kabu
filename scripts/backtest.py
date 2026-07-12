@@ -700,7 +700,10 @@ def screen_stock_at(
     info['pbr'] = pbr
 
     # PER/PBR 過去5年分布 → バリュー割安判定 (Q3=C: 両方が過去Q25以下)
-    val_dist = compute_valuation_dist_at(statements_filtered, quotes_sorted_filtered, target_date)
+    # VALUE_MODE='none' のときはバリュー判定を一切使わないので、重い分布計算をスキップ (高速化)
+    val_dist = None
+    if VALUE_MODE != 'none':
+        val_dist = compute_valuation_dist_at(statements_filtered, quotes_sorted_filtered, target_date)
     is_value_cheap = False
     if val_dist:
         info['per_q25'] = val_dist.get('per_q25')
