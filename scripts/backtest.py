@@ -135,6 +135,28 @@ VALUE_SCORE_BOOST = 1.3  # 'score' モードでの倍率
 ONLY_STRATEGY: str | None = None
 
 
+# === 分布計算キャッシュ (修正B: 高速化) ===
+# compute_yield_dist_at / compute_valuation_dist_at は「過去5年の月次分布」を
+# 計算するが、月をまたいでもほぼ変わらない。毎リバランス日(25回)×490銘柄で
+# 再計算していたのがタイムアウトの主因。
+# 3ヶ月(四半期)粒度でキャッシュし、同一四半期内の再計算をスキップする。
+# キー: (code, year, quarter)。1銘柄あたり 25回 → 約8回に削減。
+_YIELD_DIST_CACHE: dict[tuple, dict | None] = {}
+_VAL_DIST_CACHE: dict[tuple, dict | None] = {}
+
+
+def _dist_cache_key(code: str, target_date: date) -> tuple:
+    """3ヶ月(四半期)粒度のキャッシュキー"""
+    quarter = (target_date.month - 1) // 3
+    return (code, target_date.year, quarter)
+
+
+def reset_dist_cache() -> None:
+    """期間(バックテスト)をまたぐ際にキャッシュをクリア"""
+    _YIELD_DIST_CACHE.clear()
+    _VAL_DIST_CACHE.clear()
+
+
 # ============================================================================
 # Utility: 日付ヘルパー
 # ============================================================================
@@ -676,8 +698,13 @@ def screen_stock_at(
     current_yield = forecast_dps / price * 100.0
     info['current_yield'] = current_yield
 
-    # 利回り分布
-    dist = compute_yield_dist_at(statements_filtered, quotes_sorted_filtered, target_date)
+    # 利回り分布 (四半期粒度でキャッシュ)
+    _yk = _dist_cache_key(code, target_date)
+    if _yk in _YIELD_DIST_CACHE:
+        dist = _YIELD_DIST_CACHE[_yk]
+    else:
+        dist = compute_yield_dist_at(statements_filtered, quotes_sorted_filtered, target_date)
+        _YIELD_DIST_CACHE[_yk] = dist
     if dist is None:
         return (False, info)
     info.update({'q25': dist['q25'], 'q50': dist['q50'], 'q75': dist['q75']})
@@ -703,7 +730,12 @@ def screen_stock_at(
     # VALUE_MODE='none' のときはバリュー判定を一切使わないので、重い分布計算をスキップ (高速化)
     val_dist = None
     if VALUE_MODE != 'none':
-        val_dist = compute_valuation_dist_at(statements_filtered, quotes_sorted_filtered, target_date)
+        _vk = _dist_cache_key(code, target_date)
+        if _vk in _VAL_DIST_CACHE:
+            val_dist = _VAL_DIST_CACHE[_vk]
+        else:
+            val_dist = compute_valuation_dist_at(statements_filtered, quotes_sorted_filtered, target_date)
+            _VAL_DIST_CACHE[_vk] = val_dist
     is_value_cheap = False
     if val_dist:
         info['per_q25'] = val_dist.get('per_q25')
@@ -1241,6 +1273,9 @@ def run_strategies_parallel(
     portfolios = {sid: Portfolio(initial_capital, max_positions) for sid in strategy_ids}
     paid_dividends_seens = {sid: set() for sid in strategy_ids}
 
+    # 分布キャッシュを期間開始時にクリア (前期間の値の混入を防ぐ)
+    reset_dist_cache()
+
     log.info('Running %d strategies in parallel for %d rebalance dates...',
              len(strategy_ids), len(rebalance_dates))
 
@@ -1491,6 +1526,9 @@ def run_strategy(
     rebalance_dates = get_monthly_first_dates(start, end)
     portfolio = Portfolio(initial_capital, max_positions)
     paid_dividends_seen: set[tuple[str, int]] = set()
+
+    # 分布キャッシュを期間開始時にクリア (前期間の値の混入を防ぐ)
+    reset_dist_cache()
 
     for ri, rdate in enumerate(rebalance_dates):
         # 1. 価格取得
