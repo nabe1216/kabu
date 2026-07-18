@@ -1,2 +1,2 @@
-﻿strategy_id,strategy_name,description,cagr_2020-2022,avg_cagr,min_cagr,max_cagr,std_cagr,consistency_score,avg_sharpe,avg_max_dd,avg_dividend_yield
-B,ボックス × 利回り,yield × (0.5 + 0.5 × box信頼度),8.7,8.7,8.7,8.7,0,17.4,0.499,17.93,3.0
+﻿strategy_id,strategy_name,description,cagr_2022-2024,avg_cagr,min_cagr,max_cagr,std_cagr,consistency_score,avg_sharpe,avg_max_dd,avg_dividend_yield
+B,ボックス × 利回り,yield × (0.5 + 0.5 × box信頼度),22.16,22.16,22.16,22.16,0,44.32,1.762,6.5,5.0
