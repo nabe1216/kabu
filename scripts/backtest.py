@@ -124,10 +124,19 @@ SECTOR_CAP_RATIO = 0.0
 
 # === PER/PBR バリュー割安ルール (グローバル設定) ===
 # 'none'  = 現状 (利回りQ75のみで判定)
-# 'and'   = 利回りQ75 かつ PER・PBR両方が過去Q25以下 (厳格)
+# 'and'   = 利回りQ75 かつ PER・PBR両方が過去水準以下 (厳格フィルタ)
 # 'score' = 利回りQ75、バリュー割安ならスコア×1.3で買付優先
 VALUE_MODE = 'none'
 VALUE_SCORE_BOOST = 1.3  # 'score' モードでの倍率
+
+# バリュー割安判定に使う過去分布の基準
+# 'q25' = 過去下位25% (厳しい・現状) / 'q50' = 過去中央値以下 (緩い・過去比割安)
+VALUE_QUANTILE = 'q25'
+
+# グレアム指数 (PER×PBR) をスクリーニング8条件でどう扱うか
+# 'strict' = ≤22.5 (現状) / 'loose' = ≤40 (異常値だけ弾く緩い床) / 'off' = 合否から外す
+GRAHAM_MODE = 'strict'
+GRAHAM_LOOSE_MAX = 40.0
 
 # === multi-period で回す戦略の限定 (グローバル設定) ===
 # None = 全5戦略 (通常の multi-period)
@@ -738,17 +747,20 @@ def screen_stock_at(
             _VAL_DIST_CACHE[_vk] = val_dist
     is_value_cheap = False
     if val_dist:
+        # VALUE_QUANTILE に応じて閾値を選ぶ ('q25'=下位25% / 'q50'=中央値)
+        per_key = 'per_' + VALUE_QUANTILE
+        pbr_key = 'pbr_' + VALUE_QUANTILE
         info['per_q25'] = val_dist.get('per_q25')
         info['pbr_q25'] = val_dist.get('pbr_q25')
         per_cheap = (
-            per is not None and val_dist.get('per_q25') is not None
-            and per <= val_dist['per_q25']
+            per is not None and val_dist.get(per_key) is not None
+            and per <= val_dist[per_key]
         )
         pbr_cheap = (
-            pbr is not None and val_dist.get('pbr_q25') is not None
-            and pbr <= val_dist['pbr_q25']
+            pbr is not None and val_dist.get(pbr_key) is not None
+            and pbr <= val_dist[pbr_key]
         )
-        # C: PER・PBR両方が過去Q25以下なら「バリュー割安」
+        # PER・PBR両方が過去水準 (Q25 or Q50) 以下なら「バリュー割安」
         is_value_cheap = per_cheap and pbr_cheap
     info['is_value_cheap'] = is_value_cheap
 
@@ -808,7 +820,16 @@ def screen_stock_at(
     c4 = check_stability(np_history)                       # 純利安定性
     c5 = check_payout_ratio(payout)                        # 配当性向 ≤50%
     c6 = check_equity_ratio(equity_ratio, sector33)        # 自己資本比率 ≥50%
-    c7 = check_valuation(per, pbr)                         # PER × PBR ≤22.5
+    # c7: グレアム指数 (PER×PBR) — GRAHAM_MODE で strict/loose/off を切替
+    if GRAHAM_MODE == 'off':
+        c7 = True                                          # 合否から外す
+    elif GRAHAM_MODE == 'loose':
+        c7 = (
+            per is not None and pbr is not None and per > 0 and pbr > 0
+            and (per * pbr) <= GRAHAM_LOOSE_MAX            # ≤40 (異常値だけ弾く)
+        )
+    else:
+        c7 = check_valuation(per, pbr)                     # PER × PBR ≤22.5 (現状)
     c8 = check_min_yield(current_yield, code)              # 最低利回り ≥3%
 
     checks = [c1, c2, c3, c4, c5, c6, c7, c8]
@@ -2106,17 +2127,19 @@ def run_sector_cap_compare(args) -> int:
 
 def run_value_compare(args) -> int:
     """PER/PBR バリュー割安ルールの 3 パターン比較 (戦略 B 固定)"""
-    global VALUE_MODE, ONLY_STRATEGY
+    global VALUE_MODE, ONLY_STRATEGY, GRAHAM_MODE, VALUE_QUANTILE
     ONLY_STRATEGY = 'B'  # 戦略Bのみ実行して高速化 (1/5の時間)
 
+    # (tag, value_mode, graham_mode, quantile, desc)
     patterns = [
-        ('V1_none',  'none',  '現状 (利回りQ75のみ)'),
-        ('V2_and',   'and',   'AND厳格 (PER・PBR両方Q25以下)'),
-        ('V3_score', 'score', 'スコア加点 (割安なら×1.3)'),
+        ('B1_current',    'none',  'strict', 'q25', '現行 (グレアム22.5+利回りQ75のみ)'),
+        ('B2_g40',        'none',  'loose',  'q25', 'グレアム緩和のみ (≤40)'),
+        ('B3_g40_median', 'score', 'loose',  'q50', 'グレアム≤40 + 過去中央値割安で加点'),
+        ('B4_off_median', 'and',   'off',    'q50', 'グレアム外し + 過去中央値割安を必須'),
     ]
 
     log.info('=== VALUE (PER/PBR) COMPARISON (戦略 B / multi-period) ===')
-    for tag, mode, desc in patterns:
+    for tag, mode, gmode, quant, desc in patterns:
         log.info('  %s: %s', tag, desc)
 
     # データを1回だけ取得して全パターンで使い回す
@@ -2138,14 +2161,16 @@ def run_value_compare(args) -> int:
     _args_fetch.end = _latest.isoformat()
     log.info('Fetching data ONCE for all patterns: %s ~ %s', _earliest, _latest)
     shared_data, _, _ = fetch_all_data(_args_fetch)
-    log.info('Data loaded: %d stocks (will be reused for all 3 patterns)', len(shared_data))
+    log.info('Data loaded: %d stocks (will be reused for all 4 patterns)', len(shared_data))
 
     all_results: list[dict] = []
-    for tag, mode, desc in patterns:
+    for tag, mode, gmode, quant, desc in patterns:
         VALUE_MODE = mode
+        GRAHAM_MODE = gmode
+        VALUE_QUANTILE = quant
         log.info('')
         log.info('==============================================================')
-        log.info('PATTERN [%s]: %s (mode=%s)', tag, desc, mode)
+        log.info('PATTERN [%s]: %s (value=%s graham=%s quantile=%s)', tag, desc, mode, gmode, quant)
         log.info('==============================================================')
 
         original_output = Config.OUTPUT_DIR
@@ -2167,6 +2192,8 @@ def run_value_compare(args) -> int:
                                 'pattern': tag,
                                 'description': desc,
                                 'value_mode': mode,
+                                'graham_mode': gmode,
+                                'quantile': quant,
                                 'avg_cagr': row.get('avg_cagr', ''),
                                 'min_cagr': row.get('min_cagr', ''),
                                 'std_cagr': row.get('std_cagr', ''),
