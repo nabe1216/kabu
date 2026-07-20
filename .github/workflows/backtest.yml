@@ -9,6 +9,7 @@ on:
         type: choice
         options:
           - 'multi-period (3期間で全戦略比較・おすすめ)'
+          - 'multi-b3 (全戦略×B3構成: グレアム緩和+過去中央値割安加点)'
           - 'sector-cap-compare (業種分散4パターン比較・戦略B固定)'
           - 'value-compare (PER/PBRバリュー3パターン比較・戦略B固定)'
           - 'compare (1期間で全戦略比較)'
@@ -85,6 +86,13 @@ jobs:
               $PERIODS_ARG
           elif [ "$STRATEGY" = "multi-period" ]; then
             python3 backtest.py --multi-period \
+              --sector-cap ${{ github.event.inputs.sector_cap }} \
+              --capital ${{ github.event.inputs.capital }} \
+              --positions ${{ github.event.inputs.positions }} \
+              $PERIODS_ARG
+          elif [ "$STRATEGY" = "multi-b3" ]; then
+            python3 backtest.py --multi-period \
+              --value-mode score --value-quantile q50 --graham-mode loose \
               --sector-cap ${{ github.event.inputs.sector_cap }} \
               --capital ${{ github.event.inputs.capital }} \
               --positions ${{ github.event.inputs.positions }} \
