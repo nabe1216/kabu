@@ -2300,22 +2300,32 @@ def main():
         help='PER/PBRバリュー割安ルール (none=現状, and=厳格, score=加点)',
     )
     parser.add_argument(
+        '--value-quantile', default='q25', choices=['q25', 'q50'],
+        help='バリュー割安の基準 (q25=下位25%, q50=過去中央値以下)',
+    )
+    parser.add_argument(
+        '--graham-mode', default='strict', choices=['strict', 'loose', 'off'],
+        help='グレアム指数の扱い (strict=22.5, loose=40, off=合否から外す)',
+    )
+    parser.add_argument(
         '--value-compare', action='store_true',
         help='PER/PBRバリュー割安の 3 パターン比較を実行 (現状/AND厳格/スコア加点、戦略 B 固定)',
     )
     args = parser.parse_args()
 
     # SECTOR_CAP_RATIO を CLI 引数で上書き
-    global SECTOR_CAP_RATIO, VALUE_MODE
+    global SECTOR_CAP_RATIO, VALUE_MODE, GRAHAM_MODE, VALUE_QUANTILE
     SECTOR_CAP_RATIO = args.sector_cap
     if SECTOR_CAP_RATIO > 0:
         log.info('Sector diversification: cap=%.1f%% of total assets', SECTOR_CAP_RATIO * 100)
     else:
         log.info('Sector diversification: DISABLED')
 
-    # VALUE_MODE を CLI 引数で上書き
+    # VALUE_MODE / VALUE_QUANTILE / GRAHAM_MODE を CLI 引数で上書き
     VALUE_MODE = args.value_mode
-    log.info('Value (PER/PBR) mode: %s', VALUE_MODE)
+    VALUE_QUANTILE = args.value_quantile
+    GRAHAM_MODE = args.graham_mode
+    log.info('Value mode: %s / quantile: %s / graham: %s', VALUE_MODE, VALUE_QUANTILE, GRAHAM_MODE)
 
     if args.value_compare:
         return run_value_compare(args)
