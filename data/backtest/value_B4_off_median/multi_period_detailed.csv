@@ -1,2 +1,2 @@
 ﻿period,strategy_id,strategy_name,total_return_pct,cagr_pct,sharpe_ratio,max_drawdown_pct,volatility_annual_pct,total_dividend_income_yen,dividend_contribution_pct,annualized_dividend_yield_pct,win_rate_pct,total_buys,total_sells
-2022-2024,B,ボックス × 利回り,44.28,20.13,1.614,2.95,11.84,970999.0,21.9,4.75,83.3,26,6
+2020-2022,B,ボックス × 利回り,15.19,7.32,0.422,24.79,22.87,474365.0,31.2,2.34,45.5,31,11
