@@ -120,6 +120,12 @@ jobs:
           git add data/backtest/
           if ! git diff --cached --quiet; then
             git commit -m "chore: backtest ${{ github.event.inputs.mode }} ($(date -u +'%Y-%m-%dT%H:%M:%SZ'))"
+            # 長時間実行中にリモートが進んでいても push が弾かれないよう、
+            # 生成物 (data/backtest/) を退避 → 最新を取り込み → 戻して commit し直す
+            git pull --rebase --autostash origin main || {
+              git checkout --theirs data/backtest/ 2>/dev/null || true
+              git add data/backtest/ && git rebase --continue || true
+            }
             git push
           fi
 
