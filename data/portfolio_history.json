@@ -302,6 +302,16 @@
       "realized_pl": 52800.0,
       "dividend_total": 31200,
       "holdings_count": 4
+    },
+    {
+      "date": "2026-07-23",
+      "cash": 684550.0,
+      "holdings_value": 9883900.0,
+      "total_value": 10599650.0,
+      "unrealized_pl": 484450.0,
+      "realized_pl": 52800.0,
+      "dividend_total": 31200,
+      "holdings_count": 4
     }
   ],
   "dividends": [
