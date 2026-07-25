@@ -60,7 +60,7 @@ REVENUE_DROP_THRESHOLD = -0.10       # -10%超下落
 REVENUE_CONSECUTIVE_LIMIT = 2        # 2期連続でアウト
 PAYOUT_RATIO_MAX = 50.0              # 配当性向 ≤ 50%
 EQUITY_RATIO_MIN = 0.50              # 自己資本比率 ≥ 50%
-GRAHAM_THRESHOLD = 22.5              # PER × PBR ≤ 22.5
+GRAHAM_THRESHOLD = 40.0              # PER × PBR ≤ 40 (B3: 異常値だけ弾く緩い床。業種バイアス緩和)
 MIN_YIELD_THRESHOLD = 3.0            # 最低利回り ≥ 3.0%
 
 # --- ボックス判定閾値 ---
@@ -523,6 +523,8 @@ def check_min_yield(yield_pct: float | None, code: str) -> bool | None:
         return True
     if yield_pct is None:
         return None
+    if yield_pct <= 0:
+        return False   # 無配 (利回り0以下) は高配当戦略の対象外
     return yield_pct >= MIN_YIELD_THRESHOLD
 
 
@@ -678,6 +680,40 @@ def calculate_valuation_history(
         })
 
     return result
+
+
+def compute_valuation_cheap_flags(
+    valuation_history: list[dict],
+    current_per: float | None,
+    current_pbr: float | None,
+) -> dict:
+    """過去5年月次 PER/PBR の中央値(Q50)を計算し、現在値が中央値以下
+    (= 過去水準比で割安) かのフラグを返す。B3構成の割安ラベル用。
+    PER は分母(EPS)が荒れるため有効点12未満は判定不能(None)。"""
+    per_series = sorted(
+        h['per'] for h in valuation_history
+        if h.get('per') is not None and h['per'] > 0
+    )
+    pbr_series = sorted(
+        h['pbr'] for h in valuation_history
+        if h.get('pbr') is not None and h['pbr'] > 0
+    )
+    per_median = quantile(per_series, 0.50) if len(per_series) >= 12 else None
+    pbr_median = quantile(pbr_series, 0.50) if len(pbr_series) >= 12 else None
+    per_cheap = (
+        current_per is not None and per_median is not None
+        and current_per <= per_median
+    )
+    pbr_cheap = (
+        current_pbr is not None and pbr_median is not None
+        and current_pbr <= pbr_median
+    )
+    return {
+        'per_median': round(per_median, 2) if per_median is not None else None,
+        'pbr_median': round(pbr_median, 2) if pbr_median is not None else None,
+        'per_cheap': per_cheap,
+        'pbr_cheap': pbr_cheap,
+    }
 
 
 def determine_signal(current_yield: float | None, dist: dict[str, float]) -> str:
@@ -1392,6 +1428,9 @@ def process_stock(
         quotes_sorted, statements, yield_dist.get('history', [])
     )
 
+    # --- 過去中央値割安フラグ (B3: 表示ラベル用) ---
+    valuation_flags = compute_valuation_cheap_flags(valuation_history, per, pbr)
+
     # --- ROE 計算: 直近FYの ROE = NP / Eq * 100 ---
     latest_np = get_latest_full_year_metric(statements, 'NP')
     latest_eq = get_latest_full_year_metric(statements, 'Eq')
@@ -1451,6 +1490,10 @@ def process_stock(
         'per': round(per, 2) if per is not None else None,
         'pbr': round(pbr, 2) if pbr is not None else None,
         'per_pbr': round(per_pbr, 2) if per_pbr is not None else None,
+        'per_median': valuation_flags['per_median'],
+        'pbr_median': valuation_flags['pbr_median'],
+        'per_cheap': valuation_flags['per_cheap'],
+        'pbr_cheap': valuation_flags['pbr_cheap'],
         'payout_ratio': round(payout, 2) if payout is not None else None,
         'equity_ratio': round(equity_ratio, 4) if equity_ratio is not None else None,
         'roe': round(roe, 2) if roe is not None else None,
