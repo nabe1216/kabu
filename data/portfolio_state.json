@@ -10,10 +10,10 @@
       "qty": 2700,
       "buy_date": "2026-06-28",
       "buy_price": 1451.5,
-      "current_price": 1550.0,
-      "value": 4185000.0,
-      "unrealized_pl": 265950.0,
-      "unrealized_pl_pct": 6.79
+      "current_price": 1588.0,
+      "value": 4287600.0,
+      "unrealized_pl": 368550.0,
+      "unrealized_pl_pct": 9.4
     },
     {
       "code": "6902",
@@ -22,10 +22,10 @@
       "qty": 1000,
       "buy_date": "2026-06-28",
       "buy_price": 1879.5,
-      "current_price": 1977.0,
-      "value": 1977000.0,
-      "unrealized_pl": 97500.0,
-      "unrealized_pl_pct": 5.19
+      "current_price": 2056.0,
+      "value": 2056000.0,
+      "unrealized_pl": 176500.0,
+      "unrealized_pl_pct": 9.39
     },
     {
       "code": "8439",
@@ -34,10 +34,10 @@
       "qty": 700,
       "buy_date": "2026-06-28",
       "buy_price": 2519.0,
-      "current_price": 2669.5,
-      "value": 1868650.0,
-      "unrealized_pl": 105350.0,
-      "unrealized_pl_pct": 5.97
+      "current_price": 2707.5,
+      "value": 1895250.0,
+      "unrealized_pl": 131950.0,
+      "unrealized_pl_pct": 7.48
     },
     {
       "code": "1925",
@@ -46,16 +46,16 @@
       "qty": 400,
       "buy_date": "2026-07-08",
       "buy_price": 4594.0,
-      "current_price": 4579.0,
-      "value": 1831600.0,
-      "unrealized_pl": -6000.0,
-      "unrealized_pl_pct": -0.33
+      "current_price": 4740.0,
+      "value": 1896000.0,
+      "unrealized_pl": 58400.0,
+      "unrealized_pl_pct": 3.18
     }
   ],
-  "total_value": 10578000.0,
+  "total_value": 10850600.0,
   "total_invested": 11260650.0,
   "realized_pl": 52800.0,
   "dividend_received": 31200,
-  "last_updated": "2026-07-26",
-  "holdings_value": 9862250.0
+  "last_updated": "2026-07-27",
+  "holdings_value": 10134850.0
 }
