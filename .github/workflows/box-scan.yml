@@ -33,11 +33,8 @@ jobs:
 
       - name: ボックス判定を実行
         env:
-          # 既に登録済みのシークレット名に合わせて、どれか1つが入っていれば動きます
-          JQUANTS_REFRESH_TOKEN: ${{ secrets.JQUANTS_REFRESH_TOKEN }}
-          JQUANTS_TOKEN: ${{ secrets.JQUANTS_TOKEN }}
-          JQ_REFRESH_TOKEN: ${{ secrets.JQ_REFRESH_TOKEN }}
-          REFRESH_TOKEN: ${{ secrets.REFRESH_TOKEN }}
+          # kabu リポジトリに登録済みのシークレット名
+          JQUANTS_REFRESH_TOKEN: ${{ secrets.J_QUANTS_API_KEY }}
         run: |
           python box_scan.py \
             --window "${{ github.event.inputs.window || '120' }}" \
