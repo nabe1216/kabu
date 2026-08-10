@@ -37,25 +37,72 @@ except ImportError:
 JQ = "https://api.jquants.com/v1"
 
 # Secrets の名前は環境によって違うので、よくある候補を順に探す
-TOKEN_KEYS = ["JQUANTS_REFRESH_TOKEN", "JQUANTS_TOKEN",
-              "JQ_REFRESH_TOKEN", "REFRESH_TOKEN"]
+TOKEN_KEYS = ["J_QUANTS_API_KEY", "JQUANTS_REFRESH_TOKEN", "JQUANTS_TOKEN",
+              "JQ_REFRESH_TOKEN", "REFRESH_TOKEN", "JQUANTS_MAIL_PASSWORD"]
 
 
-def get_token() -> str:
+def get_secret() -> str:
     for k in TOKEN_KEYS:
         v = os.environ.get(k)
-        if v:
-            print(f"トークンを {k} から読み込みました", file=sys.stderr)
-            return v
-    sys.exit("J-Quants のトークンが環境変数に見つかりません。\n"
+        if v and v.strip():
+            print(f"認証情報を {k} から読み込みました", file=sys.stderr)
+            return v.strip()
+    sys.exit("J-Quants の認証情報が環境変数に見つかりません。\n"
              f"次のいずれかの名前で設定してください: {', '.join(TOKEN_KEYS)}")
 
 
-def jq_auth(refresh_token: str) -> str:
+def jq_auth(secret: str) -> str:
+    """認証情報の形式を自動で判別してIDトークンを取得する。
+
+    J-Quantsのリフレッシュトークンは有効期限が1週間程度と短いため、
+    シークレットにはメールアドレスとパスワードが入っていることが多い。
+    次の順に試す。
+
+      1. JSON形式        {"mailaddress": "...", "password": "..."}
+      2. 区切り形式      メールアドレス:パスワード（改行区切りも可）
+      3. リフレッシュトークンそのもの
+    """
+    mail = pw = None
+
+    # 1) JSON
+    if secret.lstrip().startswith("{"):
+        try:
+            j = json.loads(secret)
+            mail = j.get("mailaddress") or j.get("mail") or j.get("email")
+            pw = j.get("password") or j.get("pass")
+        except json.JSONDecodeError:
+            pass
+
+    # 2) メールアドレスとパスワードの組
+    if not mail and "@" in secret:
+        for sep in ("\n", ",", ":", "\t", " "):
+            if sep in secret:
+                a, _, b = secret.partition(sep)
+                if "@" in a and b.strip():
+                    mail, pw = a.strip(), b.strip()
+                    break
+
+    if mail and pw:
+        print("メールアドレスとパスワードで認証します", file=sys.stderr)
+        r = requests.post(f"{JQ}/token/auth_user",
+                          json={"mailaddress": mail, "password": pw}, timeout=30)
+        if r.status_code != 200:
+            sys.exit(f"ログインに失敗しました（{r.status_code}）: {r.text[:200]}")
+        refresh = r.json().get("refreshToken")
+        if not refresh:
+            sys.exit("refreshToken を取得できませんでした。")
+    else:
+        print("リフレッシュトークンとして扱います", file=sys.stderr)
+        refresh = secret
+
     r = requests.post(f"{JQ}/token/auth_refresh",
-                      params={"refreshtoken": refresh_token}, timeout=30)
+                      params={"refreshtoken": refresh}, timeout=30)
     if r.status_code != 200:
-        sys.exit(f"認証に失敗しました（{r.status_code}）。トークンの有効期限をご確認ください。")
+        sys.exit(
+            f"IDトークンの取得に失敗しました（{r.status_code}）: {r.text[:200]}\n"
+            "シークレットの中身をご確認ください。\n"
+            "  ・リフレッシュトークンの場合、有効期限は1週間程度です\n"
+            "  ・メールアドレスとパスワードなら、改行かコンマで区切って登録してください")
     return r.json()["idToken"]
 
 
@@ -124,7 +171,7 @@ def main():
     ap.add_argument("--outdir", default="data")
     args = ap.parse_args()
 
-    token = jq_auth(get_token())
+    token = jq_auth(get_secret())
 
     print("銘柄一覧を取得中…", file=sys.stderr)
     uni = fetch_universe(token)
