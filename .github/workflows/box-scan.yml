@@ -2,6 +2,9 @@ name: box-scan
 
 # 画面のボタンから手動で実行できます。
 # Actions タブ → 左の box-scan → 右の「Run workflow」
+#
+# 実行結果とエラー内容は、実行後の Summary 画面にそのまま表示されます。
+# ログを開いて探す必要はありません。
 on:
   workflow_dispatch:
     inputs:
@@ -31,24 +34,72 @@ jobs:
       - name: 依存関係をインストール
         run: pip install --quiet numpy pandas requests
 
+      - name: 置かれているファイルを確認
+        run: |
+          {
+            echo "## 1. ファイルの配置"
+            echo ""
+            if [ -f box_detect.py ]; then echo "- box_detect.py … あり"; else echo "- box_detect.py … **見つかりません**"; fi
+            if [ -f box_scan.py ];   then echo "- box_scan.py … あり";   else echo "- box_scan.py … **見つかりません**"; fi
+            echo ""
+            echo "リポジトリ直下のファイル一覧:"
+            echo '```'
+            ls -1
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: シークレットの状態を確認
+        env:
+          J_QUANTS_API_KEY: ${{ secrets.J_QUANTS_API_KEY }}
+        run: |
+          {
+            echo "## 2. シークレット"
+            echo ""
+            if [ -z "$J_QUANTS_API_KEY" ]; then
+              echo "- J_QUANTS_API_KEY … **空です**（登録名をご確認ください）"
+            else
+              echo "- J_QUANTS_API_KEY … 読み込めています（${#J_QUANTS_API_KEY} 文字）"
+              case "$J_QUANTS_API_KEY" in
+                *@*) echo "- 形式 … メールアドレスを含みます（ログイン方式で認証します）" ;;
+                *)   echo "- 形式 … リフレッシュトークンとして扱います" ;;
+              esac
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: ボックス判定を実行
         env:
-          # kabu リポジトリに登録済みのシークレット名
-          JQUANTS_REFRESH_TOKEN: ${{ secrets.J_QUANTS_API_KEY }}
+          J_QUANTS_API_KEY: ${{ secrets.J_QUANTS_API_KEY }}
         run: |
+          set +e
           python box_scan.py \
             --window "${{ github.event.inputs.window || '120' }}" \
-            --min-score "${{ github.event.inputs.min_score || '70' }}"
+            --min-score "${{ github.event.inputs.min_score || '70' }}" > run.log 2>&1
+          code=$?
+          {
+            echo "## 3. 実行結果"
+            echo ""
+            if [ $code -eq 0 ]; then echo "成功しました。"; else echo "**失敗しました（終了コード $code）**"; fi
+            echo ""
+            echo '```'
+            tail -c 12000 run.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          cat run.log
+          exit $code
 
       - name: 結果をダウンロードできるようにする
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: box-scan-result
           path: |
             data/box.csv
             data/box.json
+            run.log
+          if-no-files-found: ignore
 
       - name: 結果をリポジトリに保存
+        if: success()
         run: |
           if git diff --quiet -- data/box.json data/box.csv; then
             echo "変化なし。コミットをスキップします。"
