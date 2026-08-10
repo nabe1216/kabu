@@ -16,6 +16,10 @@ on:
         description: "この点数以上だけ表示（0〜100）"
         required: false
         default: "70"
+      limit:
+        description: "試し実行。先頭N銘柄だけ処理（0で全銘柄）"
+        required: false
+        default: "0"
 
 permissions:
   contents: write
@@ -59,10 +63,7 @@ jobs:
               echo "- J_QUANTS_API_KEY … **空です**（登録名をご確認ください）"
             else
               echo "- J_QUANTS_API_KEY … 読み込めています（${#J_QUANTS_API_KEY} 文字）"
-              case "$J_QUANTS_API_KEY" in
-                *@*) echo "- 形式 … メールアドレスを含みます（ログイン方式で認証します）" ;;
-                *)   echo "- 形式 … リフレッシュトークンとして扱います" ;;
-              esac
+              echo "- J-Quants V2 の API キーとして x-api-key ヘッダーに付けて送ります"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -73,7 +74,8 @@ jobs:
           set +e
           python box_scan.py \
             --window "${{ github.event.inputs.window || '120' }}" \
-            --min-score "${{ github.event.inputs.min_score || '70' }}" > run.log 2>&1
+            --min-score "${{ github.event.inputs.min_score || '70' }}" \
+            --limit "${{ github.event.inputs.limit || '0' }}" > run.log 2>&1
           code=$?
           {
             echo "## 3. 実行結果"
