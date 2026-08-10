@@ -1,1735 +1,874 @@
 <!DOCTYPE html>
 <html lang="ja">
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="theme-color" content="#4F46E5">
-<link rel="manifest" href="manifest.json">
-<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
-<link rel="icon" href="icons/icon-192.png">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="default">
-<meta name="apple-mobile-web-app-title" content="MACRO LENS">
-<meta name="description" content="経済指標がどう株価に伝わるかを、経路として学ぶ学習アプリ。">
-<title>MACRO LENS ─ 指標と株価をつなぐ</title>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DIVIDEND HEIST — Dashboard</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;600;700&display=swap" rel="stylesheet">
-
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
+<script src="https://cdn.plot.ly/plotly-2.32.0.min.js" charset="utf-8"></script>
 <style>
 :root{
- --bg:#fff;--bg-subtle:#F9FAFB;--bg-hover:#F3F4F6;
- --border:#E5E7EB;--border-strong:#D1D5DB;
- --text:#111827;--text-2:#6B7280;--text-3:#9CA3AF;
- --indigo:#4F46E5;--indigo-text:#4338CA;--indigo-bg:#EEF2FF;
- --green:#059669;--green-bg:#ECFDF5;--blue:#2563EB;--blue-bg:#EFF6FF;
- --purple:#7C3AED;--purple-bg:#F5F3FF;--amber:#D97706;--amber-bg:#FFFBEB;
- --red:#DC2626;--red-bg:#FEF2F2;
- --r-sm:6px;--r:8px;--r-lg:10px;--r-pill:999px;
- --font:"Noto Sans JP",system-ui,-apple-system,sans-serif;
+  --primary:#3B5BFD; --primary-soft:#EEF1FF; --primary-hover:#2E4AD9;
+  --bg:#F7F8FA; --card:#FFFFFF; --border:#E9EBF0; --border-strong:#D9DDE5;
+  --text:#1A1D29; --text-2:#5B6472; --text-3:#9AA1AD;
+  --buy:#DC2626; --buy-bg:#FEF2F2; --sell:#2563EB; --sell-bg:#EFF6FF;
+  --neutral:#6B7280; --neutral-bg:#F3F4F6;
+  --green:#10B981; --green-bg:#ECFDF5; --amber:#D97706; --amber-bg:#FFFBEB;
+  --gold:#B7791F; --gold-bg:#FEF9EC; --silver:#64748B; --silver-bg:#F1F5F9; --bronze:#92572A; --bronze-bg:#FBF3EC;
+  --radius:10px; --radius-sm:7px;
+  --shadow:0 1px 2px rgba(16,24,40,.05); --shadow-lg:0 12px 32px rgba(16,24,40,.14);
 }
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:var(--font);background:var(--bg);color:var(--text);
- line-height:1.85;font-size:14px;-webkit-font-smoothing:antialiased}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Inter','Noto Sans JP',system-ui,sans-serif;background:var(--bg);color:var(--text);font-size:14px;line-height:1.55;-webkit-font-smoothing:antialiased}
+button{font-family:inherit;cursor:pointer}
+input,select{font-family:inherit;font-size:13px;color:var(--text);background:var(--card);border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 12px;outline:none;transition:border-color .15s}
+input:focus,select:focus{border-color:var(--primary)}
+::-webkit-scrollbar{width:10px;height:10px}::-webkit-scrollbar-thumb{background:#D4D8E0;border-radius:6px}::-webkit-scrollbar-track{background:transparent}
+
+/* ===== Layout ===== */
 .app{display:flex;min-height:100vh}
-
-/* ── サイドバー ─────────────────── */
-.side{width:244px;flex:0 0 244px;border-right:1px solid var(--border);
- padding:20px 14px;position:sticky;top:0;height:100vh;overflow-y:auto;background:var(--bg)}
-.brand{display:flex;align-items:center;gap:10px;padding:0 8px 18px}
-.mark{width:34px;height:34px;border-radius:var(--r);background:var(--indigo);color:#fff;
- display:grid;place-items:center;font-weight:700;font-size:13px}
-.bname{font-weight:700;font-size:13.5px;line-height:1.35}
-.bsub{font-size:10px;color:var(--text-3);letter-spacing:.1em;font-weight:500}
-
-.prog{margin:0 8px 16px;padding:12px 13px;border:1px solid var(--border);
- border-radius:var(--r);background:var(--bg-subtle)}
-.prog-t{font-size:10.5px;font-weight:600;letter-spacing:.08em;color:var(--text-3)}
-.prog-n{font-size:18px;font-weight:700;margin-top:2px;letter-spacing:-.02em}
-.pbar{height:6px;background:var(--bg-hover);border-radius:3px;overflow:hidden;margin-top:7px}
-.pbar-f{height:100%;background:var(--indigo);width:0;transition:width .35s;border-radius:3px}
-.prog-s{font-size:11px;color:var(--text-2);margin-top:6px;line-height:1.6}
-
-.nav{display:flex;flex-direction:column;gap:2px}
-.nav-lbl{margin:12px 0 4px;padding:0 11px;font-size:10px;font-weight:600;
- letter-spacing:.09em;color:var(--text-3)}
-.nav button{display:flex;align-items:center;justify-content:space-between;gap:8px;
- width:100%;padding:8px 11px;border-radius:var(--r);color:var(--text-2);border:none;
- background:none;font-family:inherit;font-size:13px;font-weight:500;cursor:pointer;
- text-align:left;transition:.12s}
-.nav button:hover{background:var(--bg-hover);color:var(--text)}
-.nav button.on{background:var(--indigo-bg);color:var(--indigo-text);font-weight:600}
-.nav button:focus-visible{outline:2px solid var(--indigo);outline-offset:-2px}
-.nav .cnt{font-size:11px;color:var(--text-3);font-weight:500}
-.nav .done{color:var(--green);font-size:12px}
-
-.switcher{margin:18px 8px 0;padding-top:16px;border-top:1px solid var(--border)}
-.sw-lbl{font-size:10px;font-weight:600;letter-spacing:.09em;color:var(--text-3);padding:0 3px 7px}
-.sw-link{display:flex;align-items:center;gap:9px;padding:9px 10px;border:1px solid var(--border);
- border-radius:var(--r);text-decoration:none;transition:.12s;background:var(--bg)}
-.sw-link:hover{background:var(--bg-hover);border-color:var(--border-strong)}
-.sw-mark{width:26px;height:26px;flex:0 0 26px;border-radius:var(--r-sm);background:var(--indigo);
- color:#fff;display:grid;place-items:center;font-weight:700;font-size:10px}
-.sw-n{display:block;font-size:12px;font-weight:600;color:var(--text);line-height:1.4}
-.sw-s{display:block;font-size:10.5px;color:var(--text-3)}
-.sw-arw{margin-left:auto;color:var(--text-3);font-size:12px}
-
-/* ── メイン ───────────────────── */
-.main{flex:1;min-width:0}
-.topbar{border-bottom:1px solid var(--border);padding:18px 32px;display:flex;
- align-items:center;justify-content:space-between;gap:16px;position:sticky;top:0;
- background:rgba(255,255,255,.94);backdrop-filter:blur(6px);z-index:20}
-.topbar h1{font-size:19px;font-weight:700;letter-spacing:-.01em}
-.topbar .meta{font-size:12px;color:var(--text-3)}
-.menu-btn{display:none;font-family:inherit;font-size:13px;background:var(--bg);
- border:1px solid var(--border);border-radius:var(--r);padding:6px 12px;cursor:pointer;color:var(--text-2)}
-.content{padding:24px 32px 90px;max-width:920px}
-.intro{font-size:13.5px;color:var(--text-2);margin-bottom:22px;max-width:42em}
-.intro b{font-weight:600;color:var(--text)}
-
-.h2{font-size:15px;font-weight:700;margin:34px 0 4px}
-.h2s{font-size:12.5px;color:var(--text-3);margin-bottom:14px}
-.lab{font-size:10px;font-weight:600;letter-spacing:.1em;color:var(--text-3);padding:0 20px;margin-top:16px}
-.pill{font-size:11px;font-weight:600;padding:2px 9px;border-radius:var(--r-pill);white-space:nowrap;display:inline-block}
-.p-i{background:var(--indigo-bg);color:var(--indigo-text)}
-.p-a{background:var(--amber-bg);color:var(--amber)}
-.p-p{background:var(--purple-bg);color:var(--purple)}
-.p-g{background:var(--green-bg);color:var(--green)}
-.p-u{background:var(--red-bg);color:var(--red)}
-.p-d{background:var(--blue-bg);color:var(--blue)}
-.p-f{background:var(--bg-hover);color:var(--text-2)}
-.p-num{background:var(--red-bg);color:var(--red)}
-.p-den{background:var(--blue-bg);color:var(--blue)}
-.p-both{background:var(--purple-bg);color:var(--purple)}
-.p-neutral{background:var(--bg-subtle);color:var(--text-2);border:1px solid var(--border)}
-
-/* ── トピック／カード共通 ─────────── */
-.topic,.card,.q{border:1px solid var(--border);border-radius:var(--r-lg);
- background:var(--bg);margin-bottom:14px;overflow:hidden}
-.t-h{padding:16px 20px 0;display:flex;align-items:flex-start;gap:11px}
-.t-id{font-size:11px;font-weight:600;color:var(--text-2);background:var(--bg-subtle);
- border:1px solid var(--border);padding:2px 8px;border-radius:var(--r-pill);flex:0 0 auto;margin-top:3px}
-.t-q{font-size:16px;font-weight:700;line-height:1.6;letter-spacing:-.01em}
-.answer{margin:5px 20px 0;padding:13px 16px;background:var(--indigo-bg);border-radius:var(--r);
- font-size:15px;font-weight:600;line-height:1.7;color:var(--indigo-text)}
-.figbox{margin:6px 20px 0;border:1px solid var(--border);border-radius:var(--r);
- background:var(--bg-subtle);padding:8px 10px}
-.cap{padding:9px 20px 16px;font-size:12px;color:var(--text-3)}
-.prose{padding:4px 20px 0}
-.prose p{font-size:13.5px;margin-top:13px;color:#374151}
-.prose b,.deep b{font-weight:600;color:var(--text)}
-.warn{margin:14px 20px 18px;background:var(--amber-bg);border:1px solid #FDE68A;
- border-radius:var(--r);padding:12px 15px;font-size:13px;color:#78350F;line-height:1.75}
-.warn b{font-weight:600;display:block;margin-bottom:3px}
-.hl{margin:16px 20px 0;padding:12px 15px;background:var(--indigo-bg);border-radius:var(--r);
- font-size:13.5px;color:var(--indigo-text);font-weight:600;line-height:1.7}
-
-.deep-btn{width:100%;display:flex;align-items:center;gap:9px;background:none;border:none;
- border-top:1px solid var(--border);padding:12px 20px;cursor:pointer;font-family:inherit;
- font-weight:600;font-size:13px;color:var(--text-2);text-align:left;transition:.12s}
-.deep-btn:hover{background:var(--bg-subtle);color:var(--text)}
-.deep-btn:focus-visible{outline:2px solid var(--indigo);outline-offset:-2px}
-.chev{color:var(--text-3);font-size:11px;transition:transform .18s}
-.deep-btn[aria-expanded="true"] .chev{transform:rotate(90deg)}
-.deep{padding:2px 20px 18px;background:var(--bg-subtle);border-top:1px solid var(--border)}
-.deep p{font-size:13px;margin-top:12px;color:#374151;line-height:1.8}
-
-.term{border:none;background:none;padding:0 1px;font:inherit;color:var(--indigo-text);
- font-weight:500;border-bottom:1px dotted var(--indigo);cursor:pointer;border-radius:2px}
-.term:hover{background:var(--indigo-bg)}
-.term:focus-visible{outline:2px solid var(--indigo);outline-offset:1px}
-
-/* ── 経路ステッパー ─────────────── */
-.chain{display:flex;padding:6px 20px 0;overflow-x:auto;scrollbar-width:none}
-.chain::-webkit-scrollbar{display:none}
-.st{flex:1 0 150px;border:1px solid var(--border);border-radius:var(--r);padding:10px 12px;
- margin-right:22px;position:relative;background:var(--bg)}
-.st:last-child{margin-right:0}
-.st::after{content:"";position:absolute;right:-16px;top:50%;width:10px;height:10px;
- border-top:1.5px solid var(--border-strong);border-right:1.5px solid var(--border-strong);
- transform:translateY(-50%) rotate(45deg)}
-.st:last-child::after{display:none}
-.st-n{font-size:9.5px;font-weight:600;letter-spacing:.11em;color:var(--text-3)}
-.st-v{font-size:12.5px;margin-top:3px;line-height:1.6;font-weight:500}
-.st.acc{background:var(--indigo-bg);border-color:#C7D2FE}
-.st.acc .st-v{color:var(--indigo-text)}
-
-/* ── 分数図 ─────────────────────── */
-.mf{border:1px solid var(--border);border-radius:var(--r);margin:6px 20px 0;overflow:hidden}
-.mf-body{display:flex;align-items:center;padding:14px}
-.mf-eq{flex:0 0 62px;font-weight:700;font-size:14px;color:var(--text-2);text-align:center}
-.mf-frac{flex:1;min-width:0}
-.mf-row{border:1px solid var(--border);border-radius:var(--r-sm);padding:9px 12px;
- display:flex;align-items:center;gap:10px;background:var(--bg);transition:.25s}
-.mf-bar{height:2px;background:var(--text);margin:7px 0;border-radius:1px}
-.mf-name{font-weight:600;font-size:13.5px;flex:1}
-.mf-drv{font-size:11px;color:var(--text-2);font-weight:400}
-.mf-arw{font-weight:600;font-size:12px;padding:2px 11px;border-radius:var(--r-pill);
- background:var(--bg-subtle);color:var(--text-3);transition:.25s}
-.up{background:var(--red-bg);border-color:#FCA5A5}.up .mf-arw{background:#FEE2E2;color:var(--red)}
-.dn{background:var(--blue-bg);border-color:#BFDBFE}.dn .mf-arw{background:#DBEAFE;color:var(--blue)}
-.mf-out{border-top:1px solid var(--border);background:var(--bg-subtle);
- display:flex;align-items:center;gap:12px;padding:11px 14px}
-.mf-v{font-weight:600;font-size:13px;padding:4px 13px;border-radius:var(--r-pill);white-space:nowrap}
-.mf-why{font-size:12.5px;color:var(--text-2);flex:1;line-height:1.7}
-.why-box{padding:14px 20px 18px;font-size:13.5px;color:#374151;line-height:1.8}
-
-/* ── 指標カタログ ──────────────── */
-.filters{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:16px}
-.filters button,.modes button,.pfilter button{font-family:inherit;font-size:12.5px;font-weight:500;
- background:var(--bg);border:1px solid var(--border);border-radius:var(--r-pill);
- padding:6px 14px;cursor:pointer;color:var(--text-2);transition:.12s}
-.filters button:hover,.modes button:hover,.pfilter button:hover{background:var(--bg-hover);color:var(--text)}
-.filters button[aria-pressed="true"],.modes button[aria-pressed="true"]{
- background:var(--indigo);border-color:var(--indigo);color:#fff;font-weight:600}
-.pfilter button[aria-pressed="true"]{background:var(--indigo-bg);border-color:#C7D2FE;
- color:var(--indigo-text);font-weight:600}
-.filters button:focus-visible,.modes button:focus-visible{outline:2px solid var(--indigo);outline-offset:2px}
-.modes{display:flex;gap:7px;margin-bottom:16px;flex-wrap:wrap}
-.modes button{font-size:13px;padding:8px 16px}
-.pfilter{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px}
-
-.tbl{border:1px solid var(--border);border-radius:var(--r-lg);overflow:hidden;margin-bottom:22px}
-.tbl-h,.tbl-r{display:grid;grid-template-columns:1.6fr .9fr .9fr .8fr;gap:10px;padding:11px 16px;align-items:center}
-.tbl-h{background:var(--bg-subtle);border-bottom:1px solid var(--border);
- font-size:11px;font-weight:600;color:var(--text-3);letter-spacing:.05em}
-.tbl-r{border-bottom:1px solid var(--border);font-size:13px;transition:background .12s}
-.tbl-r:last-child{border-bottom:none}
-.tbl-r:hover{background:var(--bg-subtle)}
-.tbl-n{font-weight:600}
-.tbl-sub{font-size:11px;color:var(--text-3)}
-
-.card-h{width:100%;background:none;border:none;font-family:inherit;text-align:left;
- padding:15px 18px;cursor:pointer;display:flex;align-items:center;gap:11px;transition:background .12s}
-.card-h:hover{background:var(--bg-subtle)}
-.card-h:focus-visible{outline:2px solid var(--indigo);outline-offset:-2px}
-.card-nm{font-weight:700;font-size:15.5px;letter-spacing:-.01em}
-.card-en{font-size:11px;color:var(--text-3);font-weight:500}
-.card-tags{margin-left:auto;display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end}
-.oneline{padding:0 18px 15px 40px;font-size:13.5px;color:var(--text-2);margin-top:-8px}
-.body{border-top:1px solid var(--border);background:var(--bg-subtle);padding:4px 18px 18px}
-.fld{display:grid;grid-template-columns:118px 1fr;gap:14px;padding:12px 0;
- border-bottom:1px solid var(--border);align-items:start}
-.fld:last-child{border-bottom:none}
-.fld-k{font-size:11.5px;font-weight:600;color:var(--text-3);padding-top:2px}
-.fld-v{font-size:13.5px;color:#374151;line-height:1.8}
-.fld-v b{font-weight:600;color:var(--text)}
-.route{background:var(--bg);border:1px solid var(--border);border-radius:var(--r);
- padding:11px 14px;font-size:13px;color:#374151;line-height:1.75}
-.route b{font-weight:600;color:var(--indigo-text)}
-
-/* ── ケースカード ──────────────── */
-.case-h{padding:16px 20px 14px;border-bottom:1px solid var(--border)}
-.case-top{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
-.case-id{font-size:11px;font-weight:600;color:var(--text-2);background:var(--bg-subtle);
- border:1px solid var(--border);padding:2px 9px;border-radius:var(--r-pill)}
-.case-t{font-size:16.5px;font-weight:700;line-height:1.55;margin-top:9px;letter-spacing:-.01em}
-.case-lede{font-size:13px;color:var(--text-2);margin-top:5px}
-
-/* ── セクター ───────────────────── */
-.sec-block{border:1px solid var(--border);border-radius:var(--r-lg);padding:18px 20px;margin-bottom:20px}
-.sec-row{display:grid;grid-template-columns:132px 1fr 66px;gap:12px;align-items:center;
- padding:9px 0;border-bottom:1px solid var(--border)}
-.sec-row:last-child{border-bottom:none}
-.sec-n{font-size:13px;font-weight:600}
-.sec-n span{display:block;font-size:11px;color:var(--text-3);font-weight:400}
-.track{height:22px;background:var(--bg-subtle);border-radius:var(--r-sm);position:relative;overflow:hidden}
-.track .mid{position:absolute;left:50%;top:0;bottom:0;width:1px;background:var(--border-strong)}
-.fillp,.filln{position:absolute;top:4px;bottom:4px;border-radius:3px}
-.fillp{left:50%;background:#FCA5A5}
-.filln{right:50%;background:#93C5FD}
-.sec-v{font-size:12px;font-weight:600;text-align:right}
-
-/* ── グリッド（9マス／2×2） ──────── */
-.grid-wrap{border:1px solid var(--border);border-radius:var(--r-lg);padding:18px 20px}
-.grid9{display:grid;grid-template-columns:66px repeat(3,1fr);gap:6px;margin-top:10px}
-.rg-grid{display:grid;grid-template-columns:74px 1fr 1fr;gap:6px;margin-top:8px}
-.gh{font-size:11px;font-weight:600;color:var(--text-3);display:grid;place-items:center;text-align:center;padding:4px}
-.cell,.rg-cell{border:1px solid var(--border);border-radius:var(--r);padding:11px 9px;cursor:pointer;
- background:var(--bg);font-family:inherit;transition:.12s}
-.cell{text-align:center}.rg-cell{text-align:left}
-.cell:hover,.rg-cell:hover{border-color:var(--indigo);background:var(--indigo-bg)}
-.cell[aria-pressed="true"],.rg-cell[aria-pressed="true"]{border-color:var(--indigo);
- background:var(--indigo-bg);box-shadow:0 0 0 1px var(--indigo)}
-.cell:focus-visible,.rg-cell:focus-visible{outline:2px solid var(--indigo);outline-offset:2px}
-.cell-v{font-size:12.5px;font-weight:700}
-.cell-v.u{color:var(--red)}.cell-v.d{color:var(--blue)}.cell-v.f{color:var(--text-3)}
-.cell-l{font-size:10.5px;color:var(--text-2);margin-top:3px;line-height:1.45}
-.rg-mode{font-size:13px;font-weight:700}
-.rg-mode.den{color:var(--blue)}.rg-mode.num{color:var(--red)}
-.rg-desc{font-size:11px;color:var(--text-2);margin-top:3px;line-height:1.5}
-.detail{margin-top:14px;border:1px solid var(--border);border-radius:var(--r);
- background:var(--bg-subtle);padding:14px 16px}
-.detail-t{font-weight:700;font-size:14px}
-.detail-p{font-size:13px;color:var(--text-2);margin-top:5px;line-height:1.8}
-
-/* ── 相関・チェックリスト ────────── */
-.corr{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:6px 20px 0}
-.corr-c{border:1px solid var(--border);border-radius:var(--r);padding:13px 15px}
-.corr-t{font-size:12.5px;font-weight:600}
-.corr-s{font-size:11px;color:var(--text-3);margin-bottom:9px}
-.corr-r{display:flex;align-items:center;gap:8px;margin-top:6px;font-size:12px}
-.corr-n{width:44px;color:var(--text-2)}
-.corr-b{flex:1;height:16px;background:var(--bg-subtle);border-radius:4px;position:relative;overflow:hidden}
-.corr-f{position:absolute;top:3px;bottom:3px;border-radius:2px}
-.fu{background:#FCA5A5}.fd{background:#93C5FD}
-.chk{border:1px solid var(--border);border-radius:var(--r-lg);padding:18px 20px}
-.chk-i{display:flex;gap:12px;padding:12px 0;border-bottom:1px solid var(--border);align-items:flex-start}
-.chk-i:last-child{border-bottom:none}
-.chk-box{flex:0 0 22px;width:22px;height:22px;border:1.5px solid var(--border-strong);
- border-radius:var(--r-sm);background:var(--bg);cursor:pointer;display:grid;place-items:center;
- color:transparent;font-size:12px;transition:.12s;margin-top:2px}
-.chk-box[aria-pressed="true"]{background:var(--indigo);border-color:var(--indigo);color:#fff}
-.chk-box:focus-visible{outline:2px solid var(--indigo);outline-offset:2px}
-.chk-n{font-size:13.5px;font-weight:600}
-.chk-d{font-size:12.5px;color:var(--text-2);margin-top:2px;line-height:1.7}
-
-/* ── テスト ─────────────────────── */
-.score{border:1px solid var(--border);border-radius:var(--r-lg);background:var(--bg-subtle);
- padding:14px 18px;display:flex;align-items:center;gap:18px;margin-bottom:16px;flex-wrap:wrap}
-.score-n{font-size:24px;font-weight:700;letter-spacing:-.02em}
-.score-l{font-size:12.5px;color:var(--text-2)}
-.bar{flex:1;min-width:120px;height:7px;background:var(--bg-hover);border-radius:4px;overflow:hidden}
-.bar-f{height:100%;background:var(--indigo);width:0;transition:width .3s;border-radius:4px}
-.reset{font-family:inherit;font-size:12px;background:var(--bg);border:1px solid var(--border);
- border-radius:var(--r-pill);padding:5px 13px;cursor:pointer;color:var(--text-2)}
-.reset:hover{background:var(--bg-hover)}
-.q-top{display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap;padding:18px 20px 0}
-.q-n{font-size:11px;font-weight:600;color:var(--text-2);background:var(--bg-subtle);
- border:1px solid var(--border);padding:2px 9px;border-radius:var(--r-pill)}
-.q-t{font-size:15px;font-weight:600;line-height:1.65;margin-bottom:13px;padding:0 20px}
-.opts{padding:0 20px 18px}
-.opt{display:block;width:100%;text-align:left;font-family:inherit;font-size:13.5px;
- background:var(--bg);border:1px solid var(--border);border-radius:var(--r);
- padding:10px 14px;margin-bottom:7px;cursor:pointer;transition:.12s;color:var(--text)}
-.opt:hover:not(:disabled){border-color:var(--border-strong);background:var(--bg-subtle)}
-.opt:focus-visible{outline:2px solid var(--indigo);outline-offset:2px}
-.opt:disabled{cursor:default}
-.opt.ok{border-color:#A7F3D0;background:var(--green-bg);font-weight:600;color:#065F46}
-.opt.ng{border-color:#FCA5A5;background:var(--red-bg);color:#991B1B}
-.expl{margin:0 20px 18px;padding:12px 15px;background:var(--bg-subtle);border:1px solid var(--border);
- border-radius:var(--r);font-size:13px;color:#374151;line-height:1.8}
-.verdict{font-weight:600;margin-right:6px}
-.v-ok{color:var(--green)}.v-ng{color:var(--red)}
-.news{background:var(--bg-subtle);border:1px solid var(--border);border-radius:var(--r);
- padding:13px 16px;font-size:14px;line-height:1.75;margin:0 20px 14px}
-.news-tag{font-size:10.5px;font-weight:600;letter-spacing:.08em;color:var(--text-3);margin-bottom:4px}
-.picker{display:flex;gap:22px;flex-wrap:wrap;padding:0 20px;margin-bottom:12px}
-.pgrp-l{font-weight:600;font-size:12.5px;margin-bottom:5px}
-.pbtns{display:flex;gap:5px}
-.pbtns button{font-family:inherit;font-weight:600;font-size:13px;width:44px;height:34px;
- background:var(--bg);border:1px solid var(--border);border-radius:var(--r-sm);
- cursor:pointer;color:var(--text-3);transition:.12s}
-.pbtns button[aria-pressed="true"]{border-color:var(--indigo);background:var(--indigo-bg);color:var(--indigo-text)}
-.pbtns button:disabled{cursor:default}
-.pbtns button.ok{border-color:#A7F3D0;background:var(--green-bg);color:#065F46}
-.pbtns button.ng{border-color:#FCA5A5;background:var(--red-bg);color:#991B1B}
-.btn{font-family:inherit;font-size:13px;font-weight:600;background:var(--indigo);
- border:1px solid var(--indigo);color:#fff;border-radius:var(--r-pill);
- padding:9px 20px;cursor:pointer;transition:.12s}
-.btn:hover:not(:disabled){background:#4338CA}
-.btn:disabled{opacity:.45;cursor:default}
-.btn.ghost{background:var(--bg);color:var(--text-2);border-color:var(--border)}
-.btn.ghost:hover:not(:disabled){background:var(--bg-hover);color:var(--text)}
-.empty{border:1px dashed var(--border-strong);border-radius:var(--r-lg);padding:34px 20px;
- text-align:center;color:var(--text-3);font-size:13.5px}
-
-/* ── ライブ ─────────────────────── */
-.livebar{display:flex;gap:9px;align-items:center;flex-wrap:wrap;margin-bottom:18px}
-.stamp{font-size:12px;color:var(--text-3)}
-.status{border:1px solid var(--border);border-radius:var(--r-lg);background:var(--bg-subtle);
- padding:22px;font-size:13px;color:var(--text-2);text-align:center}
-.dots::after{content:"";animation:d 1.2s steps(4,end) infinite}
-@keyframes d{0%{content:""}25%{content:"・"}50%{content:"・・"}75%{content:"・・・"}}
-.err{border:1px solid #FCA5A5;background:var(--red-bg);border-radius:var(--r-lg);
- padding:15px 18px;font-size:13px;color:#991B1B;line-height:1.75}
-.err b{font-weight:600;display:block;margin-bottom:3px}
-
-/* ── 共通末尾 ───────────────────── */
-.note{border:1px solid var(--border);border-radius:var(--r-lg);background:var(--bg-subtle);
- padding:16px 20px;margin-top:24px}
-.note b{display:block;font-weight:600;font-size:12px;color:var(--indigo-text);margin-bottom:5px}
-.note p{font-size:13px;color:var(--text-2);margin-top:6px}
-.foot{margin-top:26px;font-size:11.5px;color:var(--text-3);line-height:1.8}
-.readmark{display:flex;align-items:center;gap:10px;margin-top:22px;padding:14px 18px;
- border:1px solid var(--border);border-radius:var(--r-lg);background:var(--bg-subtle);flex-wrap:wrap}
-.readmark span{font-size:13px;color:var(--text-2);flex:1}
-
-/* ── 用語ポップ ─────────────────── */
-.pop{position:fixed;left:0;right:0;bottom:0;z-index:60;background:var(--bg);
- border-top:1px solid var(--border);border-radius:14px 14px 0 0;padding:20px 24px 26px;
- transform:translateY(102%);transition:transform .22s ease;box-shadow:0 -8px 32px rgba(16,24,40,.10)}
-.pop.on{transform:translateY(0)}
-.pop-in{max-width:640px;margin:0 auto;position:relative}
-.pop-w{font-weight:700;font-size:16px}
-.pop-d{font-size:13.5px;margin-top:6px;color:var(--text-2);line-height:1.8}
-.pop-x{position:absolute;top:-2px;right:0;background:var(--bg-subtle);border:1px solid var(--border);
- width:28px;height:28px;border-radius:var(--r-sm);cursor:pointer;color:var(--text-2);font-size:14px}
-.pop-x:hover{background:var(--bg-hover)}
-.scrim{position:fixed;inset:0;background:rgba(17,24,39,.32);z-index:30;display:none}
-.scrim.on{display:block}
-
-svg{display:block;width:100%;height:auto}
-.s-lab{font:600 12px var(--font);fill:#111827}
-.s-sub{font:400 11px var(--font);fill:#6B7280}
-.s-big{font:700 15px var(--font);fill:#111827}
-.s-red{fill:#DC2626}.s-blue{fill:#2563EB}.s-ind{fill:#4338CA}
-.s-box{fill:#fff;stroke:#D1D5DB;stroke-width:1.5}
-.s-line{stroke:#9CA3AF;stroke-width:1.5;fill:none}
-
-@media(max-width:900px){
- .side{position:fixed;left:0;top:0;z-index:40;transform:translateX(-100%);
-   transition:transform .22s ease;box-shadow:2px 0 20px rgba(16,24,40,.10)}
- .side.on{transform:translateX(0)}
- .menu-btn{display:block}
- .topbar{padding:14px 18px}.content{padding:18px 18px 80px}
- .tbl-h,.tbl-r{grid-template-columns:1.4fr .9fr .8fr}
- .tbl-h span:nth-child(4),.tbl-r span:nth-child(4){display:none}
- .fld{grid-template-columns:1fr;gap:4px}
- .corr{grid-template-columns:1fr}
- .grid9{grid-template-columns:44px repeat(3,1fr);gap:4px}
- .cell-l{display:none}
- .sec-row{grid-template-columns:104px 1fr 54px;gap:8px}
- .rg-grid{grid-template-columns:56px 1fr 1fr}
+.sidebar{width:224px;background:var(--card);border-right:1px solid var(--border);padding:20px 12px;position:fixed;top:0;bottom:0;left:0;display:flex;flex-direction:column;z-index:40}
+.main{flex:1;margin-left:224px;padding:24px 28px 64px;min-width:0}
+@media(max-width:860px){
+  .sidebar{position:static;width:100%;flex-direction:row;align-items:center;padding:10px 14px;border-right:none;border-bottom:1px solid var(--border);overflow-x:auto}
+  .app{flex-direction:column}
+  .main{margin-left:0;padding:16px 14px 56px}
+  .brand{margin-bottom:0!important;margin-right:14px}
+  .nav{flex-direction:row!important;gap:2px!important}
+  .nav button{padding:8px 10px!important}
+  .nav .lbl-sub{display:none}
+  .side-foot{display:none}
 }
-@media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
-</style>
+.brand{display:flex;align-items:center;gap:10px;padding:4px 10px;margin-bottom:22px}
+.brand .logo{width:30px;height:30px;border-radius:8px;background:var(--primary);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;letter-spacing:-.5px}
+.brand .name{font-weight:700;font-size:14px;letter-spacing:.01em}
+.brand .name small{display:block;font-weight:500;font-size:10px;color:var(--text-3);letter-spacing:.06em}
+.nav{display:flex;flex-direction:column;gap:2px}
+.nav button{display:flex;align-items:center;gap:10px;width:100%;padding:9px 12px;border:none;background:transparent;border-radius:var(--radius-sm);color:var(--text-2);font-size:13.5px;font-weight:500;text-align:left;transition:all .12s;white-space:nowrap}
+.nav button:hover{background:var(--bg);color:var(--text)}
+.nav button.active{background:var(--primary-soft);color:var(--primary);font-weight:600}
+.nav button .badge{margin-left:auto;background:var(--primary);color:#fff;font-size:10.5px;font-weight:600;padding:1px 7px;border-radius:99px}
+.nav svg{width:17px;height:17px;flex-shrink:0}
+.side-foot{margin-top:auto;padding:10px 12px;font-size:11px;color:var(--text-3)}
 
-<div class="scrim" id="scrim" onclick="toggleSide()"></div>
+/* ===== Header ===== */
+.page-head{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:18px;flex-wrap:wrap}
+.page-head h1{font-size:19px;font-weight:700;letter-spacing:-.01em}
+.page-head .meta{font-size:12px;color:var(--text-3)}
+.page-head .meta b{color:var(--text-2);font-weight:600}
+
+/* ===== Cards / KPI ===== */
+.card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow)}
+.kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px;margin-bottom:16px}
+.kpi{padding:14px 16px}
+.kpi .k-lbl{font-size:11px;font-weight:600;color:var(--text-3);letter-spacing:.05em;text-transform:uppercase;display:flex;align-items:center;gap:6px}
+.kpi .k-val{font-size:24px;font-weight:700;margin-top:4px;letter-spacing:-.02em}
+.dot{width:8px;height:8px;border-radius:50%;display:inline-block;flex-shrink:0}
+
+/* ===== Logic card ===== */
+.logic{padding:0;margin-bottom:16px;overflow:hidden}
+.logic-head{display:flex;align-items:center;justify-content:space-between;padding:13px 18px;cursor:pointer;user-select:none}
+.logic-head h3{font-size:13.5px;font-weight:600}
+.logic-head .chev{color:var(--text-3);transition:transform .2s}
+.logic.open .chev{transform:rotate(180deg)}
+.logic-body{display:none;padding:2px 18px 16px;border-top:1px solid var(--border)}
+.logic.open .logic-body{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:8px 24px;padding-top:14px}
+.logic-item{display:flex;gap:10px;align-items:baseline;font-size:12.5px;color:var(--text-2)}
+.logic-item .tag{flex-shrink:0;font-size:11px;font-weight:600;padding:1px 9px;border-radius:99px;min-width:52px;text-align:center}
+
+/* ===== Filter bar ===== */
+.filters{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:12px 14px;margin-bottom:14px}
+.filters .grow{flex:1;min-width:160px}
+.chk{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:var(--text-2);padding:8px 4px;user-select:none;cursor:pointer}
+.chk input{width:14px;height:14px;padding:0;accent-color:var(--primary)}
+
+/* ===== Table ===== */
+.tbl-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{font-size:11px;font-weight:600;color:var(--text-3);text-transform:uppercase;letter-spacing:.05em;text-align:left;padding:10px 14px;border-bottom:1px solid var(--border);white-space:nowrap;background:#FBFCFD}
+td{padding:12px 14px;border-bottom:1px solid var(--border);vertical-align:middle;white-space:nowrap}
+tbody tr{cursor:pointer;transition:background .1s}
+tbody tr:hover{background:#FAFBFF}
+tbody tr:last-child td{border-bottom:none}
+.t-right{text-align:right}
+.t-code{font-weight:600;color:var(--text-2);font-size:12.5px}
+.t-name{font-weight:600}
+.t-name small{display:block;font-weight:400;font-size:11px;color:var(--text-3)}
+.mono{font-variant-numeric:tabular-nums}
+
+/* pills */
+.pill{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;font-weight:600;padding:3px 10px;border-radius:99px;white-space:nowrap}
+.p-buy{background:var(--buy-bg);color:var(--buy)}
+.p-sell{background:var(--sell-bg);color:var(--sell)}
+.p-neu{background:var(--neutral-bg);color:var(--neutral)}
+.p-box{background:var(--green-bg);color:var(--green)}
+.p-warn{background:var(--amber-bg);color:var(--amber)}
+.p-ex{background:var(--neutral-bg);color:var(--text-3)}
+.p-core{background:var(--primary-soft);color:var(--primary)}
+.p-swing{background:#F5F3FF;color:#7C3AED}
+.p-cheap{background:var(--green-bg);color:var(--green)}
+.tier{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border-radius:7px;font-size:11.5px;font-weight:700}
+.tier-S{background:var(--gold-bg);color:var(--gold);border:1px solid #EAD9A8}
+.tier-A{background:var(--silver-bg);color:var(--silver);border:1px solid #D8E0EA}
+.tier-B{background:var(--bronze-bg);color:var(--bronze);border:1px solid #EBD6C2}
+.star{background:none;border:none;font-size:16px;color:#D3D7DE;padding:2px 6px}
+.star.on{color:#F59E0B}
+
+/* yield range bar */
+.range{width:130px}
+.range .bar{position:relative;height:6px;border-radius:4px;background:linear-gradient(90deg,#BFD3FE,#FECACA)}
+.range .mk{position:absolute;top:-3.5px;width:2.5px;height:13px;background:var(--text);border-radius:2px}
+.range .lb{display:flex;justify-content:space-between;font-size:10px;color:var(--text-3);margin-top:3px}
+
+/* ===== Slide-over detail ===== */
+.overlay{position:fixed;inset:0;background:rgba(16,20,32,.42);z-index:60;opacity:0;pointer-events:none;transition:opacity .2s}
+.overlay.show{opacity:1;pointer-events:auto}
+.drawer{position:fixed;top:0;right:0;bottom:0;width:min(780px,100%);background:var(--bg);z-index:70;transform:translateX(102%);transition:transform .25s cubic-bezier(.3,.8,.3,1);display:flex;flex-direction:column;box-shadow:var(--shadow-lg)}
+.drawer.show{transform:translateX(0)}
+.d-head{background:var(--card);border-bottom:1px solid var(--border);padding:18px 22px 0}
+.d-title{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.d-title h2{font-size:18px;font-weight:700}
+.d-title h2 .code{color:var(--text-3);font-weight:600;margin-right:8px}
+.d-sub{font-size:12px;color:var(--text-3);margin-top:3px}
+.d-close{background:none;border:none;font-size:22px;color:var(--text-3);line-height:1;padding:4px 8px}
+.d-badges{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}
+.d-price{font-size:22px;font-weight:700;margin-top:8px}
+.d-price small{font-size:12px;color:var(--text-3);font-weight:500;margin-left:8px}
+.d-links{display:flex;gap:10px;margin-top:8px}
+.d-links a{font-size:12px;color:var(--primary);text-decoration:none;font-weight:500}
+.tabs{display:flex;gap:2px;margin-top:14px;overflow-x:auto}
+.tabs button{background:none;border:none;padding:10px 14px;font-size:13px;font-weight:600;color:var(--text-3);border-bottom:2px solid transparent;white-space:nowrap}
+.tabs button.active{color:var(--primary);border-bottom-color:var(--primary)}
+.d-body{flex:1;overflow-y:auto;padding:18px 22px 44px}
+.sec{margin-bottom:16px;padding:16px 18px}
+.sec h4{font-size:13px;font-weight:600;margin-bottom:12px;color:var(--text)}
+.sec h4 small{color:var(--text-3);font-weight:500;margin-left:8px}
+.mgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px 18px}
+.mi .l{font-size:11px;color:var(--text-3);font-weight:500}
+.mi .v{font-size:15px;font-weight:600;margin-top:1px}
+.chart-box{min-height:240px}
+.chk-list{display:flex;flex-direction:column}
+.chk-row{display:flex;align-items:center;justify-content:space-between;padding:10px 2px;border-bottom:1px solid var(--border);font-size:13px}
+.chk-row:last-child{border-bottom:none}
+.ok{color:var(--green);font-weight:700}.ng{color:var(--buy);font-weight:700}
+.pbtns{display:flex;gap:6px;margin-bottom:10px}
+.pbtns button{border:1px solid var(--border);background:var(--card);border-radius:var(--radius-sm);padding:5px 12px;font-size:12px;font-weight:600;color:var(--text-2)}
+.pbtns button.active{background:var(--primary);border-color:var(--primary);color:#fff}
+.empty{padding:44px 16px;text-align:center;color:var(--text-3);font-size:13px}
+
+/* fwd test */
+.fx-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:16px}
+.pl-pos{color:var(--green)}.pl-neg{color:var(--buy)}
+.two-col{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media(max-width:900px){.two-col{grid-template-columns:1fr}}
+.list-scroll{max-height:460px;overflow-y:auto}
+.trade-row{padding:11px 4px;border-bottom:1px solid var(--border);font-size:12.5px}
+.trade-row:last-child{border-bottom:none}
+.trade-row .r1{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.trade-row .r2{color:var(--text-3);font-size:11.5px;margin-top:3px}
+.add-form{display:flex;gap:8px;flex-wrap:wrap;align-items:end;padding:14px;margin-bottom:14px}
+.add-form label{font-size:11px;color:var(--text-3);font-weight:600;display:block;margin-bottom:4px}
+.btn{background:var(--primary);color:#fff;border:none;border-radius:var(--radius-sm);padding:9px 16px;font-size:13px;font-weight:600;transition:background .15s}
+.btn:hover{background:var(--primary-hover)}
+.btn-ghost{background:none;border:none;color:var(--buy);font-size:12px;font-weight:600;padding:4px}
+</style>
+</head>
+<body>
 <div class="app">
-<aside class="side" id="side">
-  <div class="brand"><div class="mark">ML</div>
-    <div><div class="bname">MACRO LENS</div><div class="bsub">LEARNING</div></div></div>
-  <div class="prog">
-    <div class="prog-t">学習の進みぐあい</div>
-    <div class="prog-n" id="progN">0%</div>
-    <div class="pbar"><div class="pbar-f" id="progBar"></div></div>
-    <div class="prog-s" id="progS">まだ始まっていません</div>
+
+<aside class="sidebar">
+  <div class="brand">
+    <div class="logo">DH</div>
+    <div class="name">DIVIDEND HEIST<small>SIGNAL DASHBOARD</small></div>
   </div>
-  <nav class="nav" id="nav"></nav>
-  <div class="switcher">
-    <div class="sw-lbl">別のツールへ</div>
-    <a class="sw-link" id="dhLink" href="../kabu/">
-      <span class="sw-mark">DH</span>
-      <span><span class="sw-n">DIVIDEND HEIST</span>
-        <span class="sw-s">シグナルダッシュボード</span></span>
-      <span class="sw-arw">→</span></a>
-  </div>
+  <nav class="nav" id="nav">
+    <button data-view="signals" class="active">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+      シグナル <span class="badge" id="navSigCount">0</span>
+    </button>
+    <button data-view="all">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>
+      全銘柄
+    </button>
+    <button data-view="fwd">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg>
+      検証運用 <span class="badge" id="navFwdRet" style="display:none"></span>
+    </button>
+    <button data-view="port">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/></svg>
+      保有銘柄
+    </button>
+    <button data-view="watch">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 17.8 5.8 21 7 14.1 2 9.3l6.9-1L12 2l3.1 6.3 6.9 1-5 4.8L18.2 21z"/></svg>
+      監視リスト
+    </button>
+  </nav>
+  <div class="side-foot">最終更新: <span id="lastUpdate">—</span></div>
 </aside>
 
-<div class="main">
-  <div class="topbar">
-    <button class="menu-btn" onclick="toggleSide()">☰ メニュー</button>
-    <h1 id="pageTitle">MACRO LENS</h1>
-    <span class="meta" id="pageMeta"></span>
-  </div>
-  <div class="content" id="view"></div>
-</div>
+<main class="main">
+
+  <!-- ===== シグナル ===== -->
+  <section id="view-signals">
+    <div class="page-head">
+      <h1>本日のシグナル</h1>
+      <div class="meta"><b id="sigDate">—</b> · 東証プライム主要銘柄</div>
+    </div>
+
+    <div class="kpi-grid">
+      <div class="card kpi"><div class="k-lbl"><span class="dot" style="background:var(--buy)"></span>BUY</div><div class="k-val" id="kBuy">0</div></div>
+      <div class="card kpi"><div class="k-lbl"><span class="dot" style="background:var(--sell)"></span>SELL</div><div class="k-val" id="kSell">0</div></div>
+      <div class="card kpi"><div class="k-lbl"><span class="dot" style="background:var(--green)"></span>BOX</div><div class="k-val" id="kBox">0</div></div>
+      <div class="card kpi"><div class="k-lbl"><span class="dot" style="background:#EAB308"></span>TIER S</div><div class="k-val" id="kS">0</div></div>
+      <div class="card kpi"><div class="k-lbl"><span class="dot" style="background:var(--silver)"></span>TIER A</div><div class="k-val" id="kA">0</div></div>
+      <div class="card kpi"><div class="k-lbl"><span class="dot" style="background:var(--bronze)"></span>TIER B</div><div class="k-val" id="kB">0</div></div>
+    </div>
+
+    <div class="card logic" id="logicCard">
+      <div class="logic-head" onclick="document.getElementById('logicCard').classList.toggle('open')">
+        <h3>判定ロジック</h3>
+        <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>
+      </div>
+      <div class="logic-body">
+        <div class="logic-item"><span class="tag p-buy">BUY</span>過去5年で見て利回り上位25%（割安サイン）＋ 8条件クリア</div>
+        <div class="logic-item"><span class="tag p-sell">SELL</span>過去5年で見て利回り下位25%（割高サイン）</div>
+        <div class="logic-item"><span class="tag p-box">BOX</span>横ばい相場（上下のレンジで売買しやすい）</div>
+        <div class="logic-item"><span class="tag p-cheap">割安</span>PER・PBRが過去5年の中央値より低い（過去比で割安）</div>
+        <div class="logic-item"><span class="tag tier-S" style="border-radius:99px;width:auto;padding:1px 9px">S</span>配当を守る企業 × 業界トップ／配分 4倍</div>
+        <div class="logic-item"><span class="tag tier-A" style="border-radius:99px;width:auto;padding:1px 9px">A</span>配当を守る企業 OR 業界トップ／配分 2倍</div>
+        <div class="logic-item"><span class="tag tier-B" style="border-radius:99px;width:auto;padding:1px 9px">B</span>基本条件クリアのみ／配分 1倍</div>
+        <div class="logic-item"><span class="tag p-warn">緊急</span>減配・業績急悪化・配当方針撤回のいずれかが発生</div>
+        <div class="logic-item"><span class="tag p-neu">8条件</span>減配ゼロ・利益安定・配当に無理がない・財務健全・割安・利回り3%以上</div>
+      </div>
+    </div>
+
+    <div class="card tbl-wrap"><table>
+      <thead><tr><th>シグナル</th><th>銘柄</th><th>区分</th><th>Tier</th><th class="t-right">利回り</th><th>5Yレンジ</th><th class="t-right">PER×PBR</th><th class="t-right">時価総額</th><th></th></tr></thead>
+      <tbody id="tbSignals"></tbody>
+    </table><div id="emptySignals" class="empty" style="display:none">本日のシグナルはありません</div></div>
+  </section>
+
+  <!-- ===== 全銘柄 ===== -->
+  <section id="view-all" style="display:none">
+    <div class="page-head"><h1>全銘柄</h1><div class="meta"><b id="allCount">0</b> 件表示</div></div>
+    <div class="card filters">
+      <select id="fBucket"><option value="">区分: すべて</option><option value="コア">コア</option><option value="スイング">スイング</option></select>
+      <select id="fSignal"><option value="">シグナル: すべて</option><option value="BUY">BUY</option><option value="SELL">SELL</option><option value="NEUTRAL">中立</option></select>
+      <select id="fSector"><option value="">業種: すべて</option></select>
+      <label class="chk"><input type="checkbox" id="fBox">ボックスのみ</label>
+      <label class="chk"><input type="checkbox" id="fPass" checked>条件クリアのみ</label>
+      <label class="chk"><input type="checkbox" id="fEx">対象外も表示</label>
+      <input class="grow" id="fSearch" placeholder="コード / 銘柄名で検索">
+      <select id="fSort"><option value="signal">並び順: シグナル</option><option value="leader">業界首位を上に</option><option value="yield">利回りが高い順</option><option value="mcap">時価総額が大きい順</option><option value="code">コード順</option></select>
+    </div>
+    <div class="card tbl-wrap"><table>
+      <thead><tr><th>シグナル</th><th>銘柄</th><th>区分</th><th>Tier</th><th class="t-right">利回り</th><th>5Yレンジ</th><th class="t-right">PER×PBR</th><th class="t-right">時価総額</th><th></th></tr></thead>
+      <tbody id="tbAll"></tbody>
+    </table><div id="emptyAll" class="empty" style="display:none">条件に一致する銘柄がありません</div></div>
+  </section>
+
+  <!-- ===== 検証運用 ===== -->
+  <section id="view-fwd" style="display:none">
+    <div class="page-head"><h1>検証運用</h1><div class="meta">自動売買シミュレーション（フォワードテスト）· 開始 <b id="fxStart">—</b></div></div>
+    <div class="fx-grid">
+      <div class="card kpi"><div class="k-lbl">元本</div><div class="k-val" id="fxInit">—</div></div>
+      <div class="card kpi"><div class="k-lbl">評価総額</div><div class="k-val" id="fxTotal">—</div></div>
+      <div class="card kpi"><div class="k-lbl">損益</div><div class="k-val" id="fxRet">—</div></div>
+      <div class="card kpi"><div class="k-lbl">配当累計</div><div class="k-val" id="fxDiv">—</div></div>
+      <div class="card kpi"><div class="k-lbl">現金</div><div class="k-val" id="fxCash">—</div></div>
+      <div class="card kpi"><div class="k-lbl">保有数</div><div class="k-val" id="fxCount">—</div></div>
+    </div>
+    <div class="card sec"><h4>評価額推移</h4><div id="fxCurve"></div></div>
+    <div class="card sec"><h4>現在の保有 <small id="fxHoldMeta"></small></h4><div class="tbl-wrap"><table>
+      <thead><tr><th>Tier</th><th>銘柄</th><th class="t-right">数量</th><th class="t-right">取得単価</th><th class="t-right">評価額</th><th class="t-right">損益</th></tr></thead>
+      <tbody id="fxHoldings"></tbody></table><div id="fxHoldEmpty" class="empty" style="display:none">保有銘柄なし</div></div>
+    </div>
+    <div class="two-col">
+      <div class="card sec"><h4>売買履歴 <small>直近50件</small></h4><div class="list-scroll" id="fxTrades"></div></div>
+      <div class="card sec"><h4>配当履歴 <small>直近50件</small></h4><div class="list-scroll" id="fxDivs"></div></div>
+    </div>
+  </section>
+
+  <!-- ===== 保有（手動） ===== -->
+  <section id="view-port" style="display:none">
+    <div class="page-head"><h1>保有銘柄</h1><div class="meta">手動記録 · この端末にのみ保存されます</div></div>
+    <div class="card add-form">
+      <div><label>コード</label><input id="pCode" placeholder="1928" style="width:90px"></div>
+      <div><label>株数</label><input id="pShares" type="number" placeholder="100" style="width:90px"></div>
+      <div><label>取得単価</label><input id="pCost" type="number" placeholder="3000" style="width:110px"></div>
+      <div><label>取得日</label><input id="pDate" type="date"></div>
+      <button class="btn" onclick="addHolding()">追加</button>
+    </div>
+    <div class="card tbl-wrap"><table>
+      <thead><tr><th>銘柄</th><th class="t-right">株数</th><th class="t-right">取得単価</th><th class="t-right">現在値</th><th class="t-right">評価額</th><th class="t-right">損益</th><th class="t-right">年間配当(予)</th><th></th></tr></thead>
+      <tbody id="tbPort"></tbody></table><div id="emptyPort" class="empty" style="display:none">保有銘柄が未登録です。上のフォームから追加してください</div></div>
+  </section>
+
+  <!-- ===== 監視 ===== -->
+  <section id="view-watch" style="display:none">
+    <div class="page-head"><h1>監視リスト</h1><div class="meta">★ を付けた銘柄</div></div>
+    <div class="card tbl-wrap"><table>
+      <thead><tr><th>シグナル</th><th>銘柄</th><th>区分</th><th>Tier</th><th class="t-right">利回り</th><th>5Yレンジ</th><th class="t-right">PER×PBR</th><th class="t-right">時価総額</th><th></th></tr></thead>
+      <tbody id="tbWatch"></tbody></table><div id="emptyWatch" class="empty" style="display:none">監視中の銘柄はありません。一覧の ★ で追加できます</div></div>
+  </section>
+
+</main>
 </div>
 
-<div class="pop" id="pop" role="dialog" aria-labelledby="popw">
-  <div class="pop-in">
-    <button class="pop-x" onclick="closePop()" aria-label="閉じる">✕</button>
-    <div class="pop-w" id="popw"></div>
-    <div class="pop-d" id="popd"></div>
+<!-- ===== Detail drawer ===== -->
+<div class="overlay" id="overlay" onclick="closeDetail()"></div>
+<div class="drawer" id="drawer">
+  <div class="d-head">
+    <div class="d-title">
+      <div>
+        <h2><span class="code" id="dCode"></span><span id="dName"></span></h2>
+        <div class="d-sub" id="dSub"></div>
+      </div>
+      <button class="d-close" onclick="closeDetail()">×</button>
+    </div>
+    <div class="d-badges" id="dBadges"></div>
+    <div class="d-price" id="dPrice"></div>
+    <div class="d-links" id="dLinks"></div>
+    <div class="tabs" id="dTabs">
+      <button data-tab="overview" class="active">概要</button>
+      <button data-tab="chart">チャート</button>
+      <button data-tab="judge">判定</button>
+      <button data-tab="fin">業績</button>
+      <button data-tab="peers">同業比較</button>
+    </div>
+  </div>
+  <div class="d-body">
+    <div id="tab-overview">
+      <div class="card sec"><h4>主要指標</h4><div class="mgrid" id="dMetrics"></div></div>
+      <div class="card sec"><h4>配当利回りの推移 <small>過去5年 · 月次</small></h4><div class="chart-box" id="cYield"></div></div>
+      <div class="card sec"><h4>PERの推移 <small>過去5年 · 月次 · 中央値より下＝過去比割安</small><span id="cPerTag"></span></h4><div class="chart-box" id="cPer"></div></div>
+      <div class="card sec"><h4>PBRの推移 <small>過去5年 · 月次 · 中央値より下＝過去比割安</small><span id="cPbrTag"></span></h4><div class="chart-box" id="cPbr"></div></div>
+    </div>
+    <div id="tab-chart" style="display:none">
+      <div class="card sec"><h4>株価チャート</h4>
+        <div class="pbtns" id="cpBtns">
+          <button data-p="1M">1ヶ月</button><button data-p="3M" class="active">3ヶ月</button><button data-p="6M">6ヶ月</button><button data-p="1Y">1年</button>
+        </div>
+        <div id="cCandle"></div>
+      </div>
+    </div>
+    <div id="tab-judge" style="display:none">
+      <div class="card sec"><h4>スクリーニング 8条件</h4><div class="chk-list" id="dScreen"></div></div>
+      <div class="card sec"><h4>ボックス分析</h4><div class="mgrid" id="dBox"></div></div>
+    </div>
+    <div id="tab-fin" style="display:none">
+      <div class="card sec"><h4>売上・利益の推移</h4><div class="chart-box" id="cFin1"></div></div>
+      <div class="card sec"><h4>EPS・配当の推移</h4><div class="chart-box" id="cFin2"></div></div>
+    </div>
+    <div id="tab-peers" style="display:none">
+      <div class="card sec"><h4>同業比較 <small id="peersMeta"></small></h4><div class="tbl-wrap"><table>
+        <thead><tr><th>銘柄</th><th class="t-right">時価総額</th><th class="t-right">利回り</th><th class="t-right">PER</th><th class="t-right">PBR</th><th class="t-right">PER×PBR</th></tr></thead>
+        <tbody id="dPeers"></tbody></table></div>
+      </div>
+    </div>
   </div>
 </div>
 
 <script>
-/* ══ 用語辞書 ══════════════════════ */
-const DICT={
- "金利":"お金を借りたときに、元本に上乗せして払う手数料の割合。1年あたり何％かで表す。",
- "元本":"貸し借りしたお金そのもの。利息を含まない、最初の金額。",
- "インフレ":"モノの値段が全体的に上がり続けること。同じ金額で買える量が減る＝お金の価値が下がる。",
- "デフレ":"インフレの逆。モノの値段が全体的に下がり続けること。",
- "配当":"会社が稼いだ利益のうち、株主に現金で分配される部分。",
- "債券":"お金を貸した証書。決まった利息をもらい、満期に元本が返ってくる。",
- "利回り":"投資した金額に対して、1年で何％戻ってくるかの割合。",
- "中央銀行":"国のお金の量と金利を調節する機関。日本は日銀、米国はFRB。",
- "政策金利":"中央銀行が直接決める、ごく短期の金利。すべての金利の出発点になる。",
- "長期金利":"10年国債利回りなど、返済までが長い金利。市場が将来の政策金利を予想して決まる。",
- "現在価値":"将来もらえるお金を、今の金額に直したらいくらか、という値。",
- "割引率":"将来のお金を今の価値に直すときに使う率。金利が上がるとこれも上がる。",
- "国債":"国が発行する債券。国にお金を貸す形になる。",
- "リスクプレミアム":"リスクを取る見返りとして、上乗せで求められる利回り。",
- "織り込み":"将来起きそうなことを、市場が先に価格に反映させておくこと。"
-};
-
-/* ══ Part 0-1 ══════════════════════ */
-const P01=[
-{key:"p0",part:"PART 0",title:"ゼロ地点",sub:"ここを飛ばすと、あとで必ず詰まります。",topics:[
- {id:"0-1",q:"金利とは、そもそも何か。",
-  a:"お金を貸した人が受け取る「待ち賃」です。",
-  fig:`<svg viewBox="0 0 660 148" role="img"><title>金利の基本</title>
-   <rect class="s-box" x="40" y="42" width="170" height="58" rx="8"/>
-   <text class="s-lab" x="125" y="66" text-anchor="middle">今、貸す</text>
-   <text class="s-big" x="125" y="89" text-anchor="middle">100万円</text>
-   <line class="s-line" x1="228" y1="71" x2="424" y2="71"/>
-   <polygon points="428,71 418,66.5 418,75.5" fill="#9CA3AF"/>
-   <text class="s-sub" x="326" y="60" text-anchor="middle">1年間 待つ ／ 金利 2％</text>
-   <rect class="s-box" x="444" y="42" width="176" height="58" rx="8" fill="#FEF2F2" stroke="#FCA5A5"/>
-   <text class="s-lab" x="532" y="66" text-anchor="middle">1年後、返る</text>
-   <text class="s-big s-red" x="532" y="89" text-anchor="middle">102万円</text>
-   <text class="s-sub" x="40" y="130">増えた2万円が利息。その割合（2％）が金利。</text></svg>`,
-  cap:"金利とは「時間の値段」。長く待つほど、リスクが高いほど大きくなる。",
-  deep:["なぜ待つと上乗せがもらえるのか。理由は3つあります。ひとつは、その間そのお金を他に使えないこと（機会費用）。ふたつめは、返ってこないかもしれないこと（信用リスク）。みっつめは、その間に <t>インフレ</t> でお金の価値が下がるかもしれないこと。",
-   "この3つ目が重要で、金利には必ずインフレ予想が含まれています。金利からインフレ率を引いたものを実質金利と呼び、実際の負担感を表すのはこちらです。名目金利が5％でもインフレが5％なら、実質的な負担はゼロです。",
-   "そして「誰に貸すか」でも金利は変わります。国に貸す（<t>国債</t>）なら低く、危ない会社に貸すなら高い。この上乗せ分が <t>リスクプレミアム</t> です。"]},
-
- {id:"0-2",q:"インフレとは、何が起きている状態か。",
-  a:"モノの値段が上がる、ではなく「お金の価値が下がる」と捉えます。",
-  fig:`<svg viewBox="0 0 660 172" role="img"><title>インフレの意味</title>
-   <text class="s-lab" x="40" y="32">同じ1,000円で買えるパン</text>
-   <text class="s-sub" x="40" y="70">去年（1個100円）</text>
-   ${Array.from({length:10},(_,i)=>`<rect x="${210+i*38}" y="52" width="30" height="24" rx="5" fill="#fff" stroke="#D1D5DB" stroke-width="1.5"/>`).join("")}
-   <text class="s-big" x="620" y="70" text-anchor="end" font-size="13">10個</text>
-   <text class="s-sub" x="40" y="125">今年（1個125円）</text>
-   ${Array.from({length:8},(_,i)=>`<rect x="${210+i*38}" y="107" width="30" height="24" rx="5" fill="#FEF2F2" stroke="#FCA5A5" stroke-width="1.5"/>`).join("")}
-   ${Array.from({length:2},(_,i)=>`<rect x="${514+i*38}" y="107" width="30" height="24" rx="5" fill="none" stroke="#E5E7EB" stroke-width="1.5" stroke-dasharray="3 3"/>`).join("")}
-   <text class="s-big s-red" x="620" y="125" text-anchor="end" font-size="13">8個</text>
-   <text class="s-sub" x="40" y="158">パンが偉くなったのではなく、1,000円が弱くなった。</text></svg>`,
-  cap:"物価が上がるとき、動いているのはモノではなくお金の側。",
-  deep:["この見方に切り替えると、あとの話が全部つながります。インフレでお金の価値が下がるなら、お金を貸している人（債券を持つ人）は損をする。だから貸し手はインフレ分を上乗せした <t>金利</t> を要求する。<b>インフレ予想が上がると金利が上がる</b>のは、このためです。",
-   "<t>中央銀行</t> がインフレを警戒するのも同じ理由です。インフレが行きすぎると、給料の上昇が追いつかず生活が苦しくなり、貯金の価値も目減りする。そこで金利を上げて、お金を借りにくくし、消費と投資を冷やして物価を抑えにいきます。",
-   "逆に <t>デフレ</t> も問題です。値段が下がり続けると、待った方が得なので誰も買わなくなり、企業の売上が減って給料が下がる。だから中央銀行は年2％程度の緩やかな上昇を目標にしています。"]},
-
- {id:"0-3",q:"株を買うと、何を手に入れているのか。",
-  a:"会社が将来稼ぐ利益の、分け前を受け取る権利です。",
-  fig:`<svg viewBox="0 0 660 185" role="img"><title>株式の仕組み</title>
-   <rect class="s-box" x="40" y="32" width="200" height="68" rx="8"/>
-   <text class="s-lab" x="140" y="58" text-anchor="middle">会社が稼いだ利益</text>
-   <text class="s-sub" x="140" y="80" text-anchor="middle">売上 − コスト</text>
-   <path class="s-line" d="M248 56 L318 56 L318 46"/>
-   <polygon points="318,40 313.5,50 322.5,50" fill="#9CA3AF"/>
-   <path class="s-line" d="M248 80 L318 80 L318 114"/>
-   <polygon points="318,120 313.5,110 322.5,110" fill="#9CA3AF"/>
-   <rect class="s-box" x="344" y="20" width="256" height="52" rx="8" fill="#FEF2F2" stroke="#FCA5A5"/>
-   <text class="s-lab" x="472" y="42" text-anchor="middle">株主に配る（配当）</text>
-   <text class="s-sub" x="472" y="61" text-anchor="middle">現金で受け取る分</text>
-   <rect class="s-box" x="344" y="102" width="256" height="52" rx="8"/>
-   <text class="s-lab" x="472" y="124" text-anchor="middle">会社に残す（再投資）</text>
-   <text class="s-sub" x="472" y="143" text-anchor="middle">将来の利益を増やす分</text>
-   <text class="s-sub" x="40" y="175">どちらに回っても、株主の取り分であることは変わらない。</text></svg>`,
-  cap:"配当は今もらう分、再投資は将来もらう分。株価はその合計を先読みして動く。",
-  deep:["再投資に回した分も、将来の利益を増やして最終的に株主に返ってくるので、株主の取り分であることは変わりません。だから成長段階の会社が <t>配当</t> を出さないこと自体は、悪いことではありません。",
-   "重要なのは、株を持つとは<b>将来の利益をすべて受け取る権利</b>だということです。今年の利益だけでなく、来年も再来年も10年後も含まれる。だから株価は今期の業績だけでは決まりません。",
-   "そしてこの「将来の分」があるからこそ、金利が株価に効いてきます。将来もらえるお金は、今もらえるお金より価値が低い。この差を計算するのが <t>割引率</t> です。Part 1の本題はここです。"]},
-
- {id:"0-4",q:"債券とは何か。株とどう違うのか。",
-  a:"お金を貸した証書です。もらえる額があらかじめ決まっているのが株との違いです。",
-  fig:`<svg viewBox="0 0 660 162" role="img"><title>債券と株式の違い</title>
-   <text class="s-lab" x="40" y="38">債券（貸す）</text>
-   <rect class="s-box" x="176" y="18" width="444" height="50" rx="8" fill="#EFF6FF" stroke="#BFDBFE"/>
-   <text class="s-sub" x="398" y="38" text-anchor="middle">毎年きまった利息 ＋ 満期に元本が返る</text>
-   <text class="s-sub" x="398" y="56" text-anchor="middle">会社が儲かっても、これ以上は増えない</text>
-   <text class="s-lab" x="40" y="110">株式（出資する）</text>
-   <rect class="s-box" x="176" y="90" width="444" height="50" rx="8" fill="#FEF2F2" stroke="#FCA5A5"/>
-   <text class="s-sub" x="398" y="110" text-anchor="middle">利益しだいで増える。返ってくる保証はない</text>
-   <text class="s-sub" x="398" y="128" text-anchor="middle">上限がない代わりに、下限もない</text>
-   <text class="s-sub" x="40" y="156">上限を取るか、安定を取るか。両者は同じ資金を奪い合っている。</text></svg>`,
-  cap:"債券と株は競合関係にある。だから債券の利回りが上がると、株から資金が抜ける。",
-  deep:["この競合関係が、金利と株価をつなぐもうひとつの経路です。安全な <t>国債</t> の <t>利回り</t> が1％から4％に上がったとします。リスクを取らずに4％もらえるなら、わざわざ値下がりするかもしれない株を持つ理由が薄れます。結果、株から債券へ資金が動き、株価が下がる。",
-   "つまり金利上昇が株価に効くルートは2つあります。ひとつは <t>割引率</t> が上がって理論価格が下がるルート。もうひとつがこの資金移動のルートです。教科書は前者を中心に説明しますが、体感として効いているのは後者だったりします。",
-   "なお債券価格と <t>利回り</t> は必ず逆に動きます。もらえる利息が固定なので、安く買えるほど投資額に対する利回りは高くなるからです。"]},
-
- {id:"0-5",q:"中央銀行は、何をしている組織か。",
-  a:"金利を上げ下げして、景気と物価の温度を調節する役所です。",
-  fig:`<svg viewBox="0 0 660 158" role="img"><title>中央銀行の金利操作</title>
-   <rect class="s-box" x="32" y="44" width="122" height="58" rx="8" fill="#EEF2FF" stroke="#C7D2FE"/>
-   <text class="s-lab s-ind" x="93" y="68" text-anchor="middle">政策金利</text>
-   <text class="s-sub s-ind" x="93" y="88" text-anchor="middle">引き上げる</text>
-   ${[[160,214],[336,390],[512,566]].map(([a,b])=>`<line class="s-line" x1="${a}" y1="73" x2="${b}" y2="73"/><polygon points="${b+4},73 ${b-6},68.5 ${b-6},77.5" fill="#9CA3AF"/>`).join("")}
-   <rect class="s-box" x="222" y="44" width="112" height="58" rx="8"/>
-   <text class="s-lab" x="278" y="68" text-anchor="middle">借金が</text>
-   <text class="s-sub" x="278" y="88" text-anchor="middle">重くなる</text>
-   <rect class="s-box" x="398" y="44" width="112" height="58" rx="8"/>
-   <text class="s-lab" x="454" y="68" text-anchor="middle">消費・投資</text>
-   <text class="s-sub" x="454" y="88" text-anchor="middle">が減る</text>
-   <rect class="s-box" x="574" y="44" width="76" height="58" rx="8" fill="#ECFDF5" stroke="#A7F3D0"/>
-   <text class="s-lab" x="612" y="68" text-anchor="middle">物価が</text>
-   <text class="s-sub" x="612" y="88" text-anchor="middle">落ち着く</text>
-   <text class="s-sub" x="32" y="136">利下げはこの逆。冷やすか、温めるか、それだけをやっている。</text></svg>`,
-  cap:"中央銀行が持っている道具は実質この一本。だから市場は次の一手を必死に読む。",
-  deep:["米国のFRBには「物価の安定」と「雇用の最大化」という2つの使命があります（デュアルマンデート）。日銀は物価安定が主眼です。つまり中央銀行が見ているのは、基本的に<b>物価と雇用の2つの数字</b>です。",
-   "ここが後で効いてきます。市場参加者が雇用統計や物価統計を注視するのは、景気を知りたいからではなく、<b>中央銀行が次にどう動くかを当てたいから</b>です。指標は経済の健康診断ではなく、政策の予告編として読まれています。",
-   "また、中央銀行が直接決められるのは <t>政策金利</t>（ごく短期）だけです。住宅ローンや企業の借入に効く <t>長期金利</t> は、市場が「将来の政策金利はこうなるだろう」と予想して決まります。だから政策が動かなくても、予想が変われば長期金利は動きます。"]}
-]},
-
-{key:"p1",part:"PART 1",title:"価格が決まる原理",sub:"この章さえ腹落ちすれば、残りはすべて応用です。",topics:[
- {id:"1-1",q:"なぜ、将来のお金は今のお金より価値が低いのか。",
-  a:"今もらえば運用できるから。その差を戻す計算が「割引」です。",
-  fig:`<svg viewBox="0 0 660 160" role="img"><title>現在価値と割引</title>
-   <text class="s-sub" x="40" y="28">増やす方向（金利をかける）</text>
-   <rect class="s-box" x="40" y="40" width="156" height="52" rx="8"/>
-   <text class="s-big" x="118" y="72" text-anchor="middle">今 100万</text>
-   <line class="s-line" x1="206" y1="66" x2="392" y2="66"/>
-   <polygon points="396,66 386,61.5 386,70.5" fill="#9CA3AF"/>
-   <text class="s-sub" x="299" y="56" text-anchor="middle">×1.02</text>
-   <rect class="s-box" x="412" y="40" width="176" height="52" rx="8"/>
-   <text class="s-big" x="500" y="72" text-anchor="middle">1年後 102万</text>
-   <line x1="392" y1="116" x2="210" y2="116" stroke="#4F46E5" stroke-width="1.5" stroke-dasharray="5 4" fill="none"/>
-   <polygon points="206,116 216,111.5 216,120.5" fill="#4F46E5"/>
-   <text class="s-sub s-ind" x="299" y="108" text-anchor="middle">÷1.02 ＝ 割引</text>
-   <text class="s-sub" x="40" y="147">1年後の102万は、今の100万と同じ価値。これが現在価値。</text></svg>`,
-  cap:"割引は、増やす計算を逆回しにしているだけ。難しい話ではない。",
-  deep:["式にすると、<b>現在価値 ＝ 将来の金額 ÷ (1＋金利)</b> です。2年後なら1.02で2回割る。10年後なら10回割る。つまり<b>遠い将来のお金ほど、割引の効き方が強くなる</b>。ここが決定的に重要です。",
-   "たとえば金利が2％から5％に上がったとします。1年後の100万円の <t>現在価値</t> は98万円から95万円へ、3％ほど下がるだけです。ところが10年後の100万円は、82万円から61万円へ、25％も下がります。<b>同じ金利上昇でも、遠い将来のお金ほど激しく減る</b>。",
-   "この非対称性が、のちに「金利が上がるとグロース株が大きく下げる」という現象の正体になります。グロース株は利益が遠い将来に偏っているからです。理屈はここで完結しています。"]},
-
- {id:"1-2",q:"株価は、結局なにで決まるのか。",
-  a:"将来の利益を、割引率で割ったもの。分子と分母の2つしか動きません。",
-  fig:`<svg viewBox="0 0 660 228" role="img"><title>株価の分数構造</title>
-   <text class="s-big" x="72" y="112" text-anchor="middle">株価 ＝</text>
-   <rect class="s-box" x="146" y="26" width="356" height="60" rx="8" fill="#FEF2F2" stroke="#FCA5A5"/>
-   <text class="s-lab" x="324" y="50" text-anchor="middle">将来の利益（期待）</text>
-   <text class="s-sub" x="324" y="70" text-anchor="middle">景気・業績・成長率で動く</text>
-   <line x1="128" y1="104" x2="520" y2="104" stroke="#111827" stroke-width="2"/>
-   <rect class="s-box" x="146" y="122" width="356" height="60" rx="8" fill="#EFF6FF" stroke="#BFDBFE"/>
-   <text class="s-lab" x="324" y="146" text-anchor="middle">割引率</text>
-   <text class="s-sub" x="324" y="166" text-anchor="middle">金利・リスクプレミアムで動く</text>
-   <text class="s-sub" x="532" y="52">分子が上がれば</text>
-   <text class="s-lab s-red" x="532" y="70">株価 ↑</text>
-   <text class="s-sub" x="532" y="148">分母が上がれば</text>
-   <text class="s-lab s-blue" x="532" y="166">株価 ↓</text>
-   <text class="s-sub" x="128" y="212">どんなニュースも、最後はこの2か所のどちらかに落ちる。</text></svg>`,
-  cap:"この図が全編の共通言語。ニュースを見たら「分子の話か、分母の話か」を毎回言う。",
-  deep:["正確には、将来の各年の利益をそれぞれ割り引いて合計します（配当割引モデル、DCF）。ただし実務で電卓を叩く場面は少なく、<b>どちらが動いたかを見分ける道具</b>として使うのが実用的です。",
-   "この2つは独立ではなく、しばしば同時に動きます。しかも<b>逆向きに効くことがある</b>。景気が良くなると分子（業績期待）は上がりますが、同時にインフレ懸念から <t>金利</t> が上がって分母も上がる。どちらが勝つかで株価の向きが決まります。",
-   "「好調な指標が出たのに株が下がった」の正体はこれです。分子のプラスより分母のマイナスが大きかった、というだけの話。神秘的なことは起きていません。",
-   "分母にはもうひとつ <t>リスクプレミアム</t> も入っています。金利が動かなくても、戦争や金融不安で投資家が不安になると、この部分が膨らんで株価が下がります。金利で説明できない下落の多くはこちらです。"]},
-
- {id:"1-3",q:"良いニュースが出たのに、なぜ株価が動かないことがあるのか。",
-  a:"市場はすでに予想を価格に入れているから。動くのは「予想とのズレ」だけです。",
-  fig:`<svg viewBox="0 0 660 200" role="img"><title>予想とのズレが価格を動かす</title>
-   <text class="s-sub" x="40" y="26">ケース1　予想どおり</text>
-   <rect class="s-box" x="40" y="36" width="124" height="44" rx="8"/>
-   <text class="s-sub" x="102" y="63" text-anchor="middle">予想 +10万人</text>
-   <rect class="s-box" x="180" y="36" width="124" height="44" rx="8"/>
-   <text class="s-sub" x="242" y="63" text-anchor="middle">結果 +10万人</text>
-   <line class="s-line" x1="318" y1="58" x2="394" y2="58"/>
-   <polygon points="398,58 388,53.5 388,62.5" fill="#9CA3AF"/>
-   <text class="s-lab" x="412" y="63">株価は動かない</text>
-   <text class="s-sub" x="40" y="126">ケース2　予想より強い</text>
-   <rect class="s-box" x="40" y="136" width="124" height="44" rx="8"/>
-   <text class="s-sub" x="102" y="163" text-anchor="middle">予想 +10万人</text>
-   <rect class="s-box" x="180" y="136" width="124" height="44" rx="8" fill="#FEF2F2" stroke="#FCA5A5"/>
-   <text class="s-sub" x="242" y="163" text-anchor="middle">結果 +25万人</text>
-   <line x1="318" y1="158" x2="394" y2="158" stroke="#FCA5A5" stroke-width="1.5"/>
-   <polygon points="398,158 388,153.5 388,162.5" fill="#FCA5A5"/>
-   <text class="s-lab s-red" x="412" y="163">ここで初めて動く</text></svg>`,
-  cap:"数字の良し悪しではなく、予想からの距離が価格を動かす。",
-  deep:["市場は将来を先に価格に入れています。これを <t>織り込み</t> と呼びます。「利上げがありそうだ」と皆が思った時点で、株価はすでに下がっている。だから実際に利上げが発表されても、想定どおりなら反応は限定的です。",
-   "むしろ「利上げは発表されたが、思ったより弱腰だった」という場合、悪材料の発表で株価が上がります。<b>悪材料出尽くし</b>と呼ばれる現象で、初心者が最も混乱するポイントですが、ズレで動くと理解していれば当然の帰結です。",
-   "実務的には、指標発表の前に「市場予想（コンセンサス）」が必ず出ています。ニュースを見るときは、結果の数字だけでなく必ず予想値とセットで見る。これだけで解像度が一段変わります。",
-   "そしてここからPart 3の本題につながります。<b>雇用統計が予想より強い → 利上げ観測が強まる → 分母が上がる → 株安</b>。分子はむしろプラスなのに、分母が勝つ。これが「好調な雇用統計で株が下がる」の全貌です。"]}
-]}
-];
-/* ══ Part 2 で増える用語を辞書に追加 ══════ */
-Object.assign(DICT,{
- "コアCPI":"消費者物価指数から、値動きの激しい食品とエネルギーを除いたもの。物価の基調を見るために使う。",
- "非農業部門雇用者数":"農業を除く産業で、前の月から雇用が何人増えたか。NFPとも呼ぶ。",
- "平均時給":"働いた1時間あたりの賃金。上がると物価に転嫁されやすいため、インフレの先行材料になる。",
- "ドットチャート":"FOMC参加者一人ひとりが考える将来の政策金利を、点で示した分布図。中央値が注目される。",
- "デュアルマンデート":"FRBに課された2つの使命。物価の安定と、雇用の最大化。",
- "業況判断DI":"「良い」と答えた企業の割合から「悪い」と答えた割合を引いた数値。プラスなら良いと感じる企業が多い。",
- "ベース効果":"前年同月比を見るとき、1年前の数字が異常だと今年の数字が歪んで見える現象。",
- "季節調整":"年末商戦や連休など、毎年決まって起きる変動を取り除く統計処理。",
- "コンセンサス":"指標発表の前に集計される、市場参加者の予想の平均値。",
- "タカ派":"金融引き締め（利上げ）に前向きな姿勢。ハト派はその逆で、緩和寄り。",
- "名目":"物価変動を含んだままの数字。物価分を取り除いたものを実質と呼ぶ。",
- "先行指標":"景気の実態より先に動く指標。早く変調を知らせるが、外れることもある。"
-});
-
-/* ══ Part 2 冒頭の橋渡し ══════════════ */
-const P2INTRO={
- id:"2-0",q:"そもそも、なぜ経済指標を見るのか。",
- a:"景気を知るためではなく、中央銀行の次の一手を当てるためです。",
- fig:`<svg viewBox="0 0 660 150" role="img"><title>指標を見る理由</title>
-  <rect class="s-box" x="30" y="46" width="130" height="56" rx="8"/>
-  <text class="s-lab" x="95" y="70" text-anchor="middle">経済指標</text>
-  <text class="s-sub" x="95" y="89" text-anchor="middle">雇用・物価・消費</text>
-  <line class="s-line" x1="166" y1="74" x2="214" y2="74"/>
-  <polygon points="218,74 208,69.5 208,78.5" fill="#9CA3AF"/>
-  <rect class="s-box" x="224" y="46" width="150" height="56" rx="8" fill="#EEF2FF" stroke="#C7D2FE"/>
-  <text class="s-lab s-ind" x="299" y="70" text-anchor="middle">中央銀行はどう動く？</text>
-  <text class="s-sub s-ind" x="299" y="89" text-anchor="middle">ここを当てにいく</text>
-  <line class="s-line" x1="380" y1="74" x2="428" y2="74"/>
-  <polygon points="432,74 422,69.5 422,78.5" fill="#9CA3AF"/>
-  <rect class="s-box" x="438" y="46" width="106" height="56" rx="8"/>
-  <text class="s-lab" x="491" y="70" text-anchor="middle">金利</text>
-  <text class="s-sub" x="491" y="89" text-anchor="middle">が動く</text>
-  <line class="s-line" x1="550" y1="74" x2="586" y2="74"/>
-  <polygon points="590,74 580,69.5 580,78.5" fill="#9CA3AF"/>
-  <rect class="s-box" x="596" y="46" width="54" height="56" rx="8" fill="#FEF2F2" stroke="#FCA5A5"/>
-  <text class="s-lab s-red" x="623" y="78" text-anchor="middle">株価</text>
-  <text class="s-sub" x="30" y="133">指標そのものより、その先の「政策の予想」を見ている。</text></svg>`,
- cap:"指標は経済の健康診断ではなく、政策の予告編として読まれている。",
- deep:["Part 0-5でやったように、<t>中央銀行</t> が見ているのは物価と雇用の2つです。だから市場参加者も同じ2つを追いかけます。<b>指標を見ているのではなく、指標を通して中央銀行を見ている</b>のです。",
-  "そしてPart 1-3でやったように、動くのは <t>コンセンサス</t> からのズレだけです。だからこの章の指標を読むときは、必ず「予想はいくつだったか」とセットで考えてください。",
-  "この章は通しで読む必要はありません。<b>ニュースで名前を見かけたときに引く辞書</b>として使うのが正しい使い方です。まずは上の一文と図だけ眺めて、必要になったら開いてください。"]
-};
-
-/* ══ Part 2 指標カタログ ══════════════
-   plain  ： 学生向けのやさしい一文
-   hit    ： 伝達経路のどこに強く効くか（0=指標 1=政策予想 2=金利 3=分子分母 4=株価）
-   詳細4項目は折りたたみに格納する（3層構造をPart 0-1と揃えるため） */
-const IND=[
-{n:"雇用統計",en:"Employment Situation",area:"米",imp:"最重要",route:"both",freq:"毎月・第1金曜",
- one:"雇用者数と賃金を同時に見られる、月イチ最大のイベント。",
- plain:"先月アメリカで働き口がどれだけ増えたか、給料がどれだけ上がったかの発表です。給料が上がるとモノの値段も上がりやすいので、<b>景気の話と物価の話が同時に出てくる</b>のがこの指標の厄介なところです。",
- hit:[0,1,3],
- what:"<t>非農業部門雇用者数</t>、失業率、そして <t>平均時給</t>。1か月分の労働市場をまとめて報告する。",
- watch:"注目されるのは雇用者数だが、相場を動かす力は <t>平均時給</t> の方が強いことがある。賃金は物価に転嫁されやすく、政策判断に直結するため。",
- routeTxt:"<b>両方に効く</b>。雇用が増える＝景気が良い＝分子（業績期待）にプラス。同時に、賃金上昇＝インフレ懸念＝利上げ観測＝分母にもプラス（＝株価にマイナス）。<b>どちらが勝つかは局面で入れ替わる</b>。",
- strong:"インフレ警戒が強い局面では<b>株安</b>になりやすい（分母が勝つ）。景気後退が懸念されている局面では<b>株高</b>になりやすい（分子が勝つ）。同じ好数字で逆に動くのはこのため。",
- caution:"数字が3か月分まとめて改定されることがあり、過去分の下方修正で当日の好数字が打ち消されることがある。ヘッドラインだけで判断しない。"},
-
-{n:"消費者物価指数",en:"CPI",area:"米",imp:"最重要",route:"den",freq:"毎月・中旬",
- one:"政策金利にいちばん直結する、物価の本丸。",
- plain:"買い物のときの値段が、1年前と比べてどれだけ上がったかの発表です。<b>物価の話だけで、企業がいくら稼ぐかという話は出てきません</b>。だから9指標のなかで最も反応が読みやすい指標です。",
- hit:[0,1,2],
- what:"消費者が買うモノとサービスの値段が、前年同月比で何％上がったか。食品とエネルギーを除いた <t>コアCPI</t> が本命。",
- watch:"総合ではなく <t>コアCPI</t>。食品とエネルギーは天候や地政学で乱高下し、基調を見誤らせるため除く。近年は住居費とサービス価格の粘り強さが注目される。",
- routeTxt:"<b>ほぼ分母だけ</b>に効く。物価が上がる → 中央銀行が利上げする → 金利が上がる → 割引率が上がる → 株価にマイナス。分子（業績）の話はほとんど出てこない、珍しく素直な指標。",
- strong:"予想より高い＝<b>株安</b>、予想より低い＝<b>株高</b>。ほぼ例外がなく、9指標のなかで最も反応が読みやすい。",
- caution:"前年同月比なので、1年前が異常値だと今年の数字が歪む（<t>ベース効果</t>）。前月比も併せて見ると実勢が掴める。"},
-
-{n:"FOMC・政策金利決定",en:"FOMC",area:"米",imp:"最重要",route:"den",freq:"年8回",
- one:"予想の答え合わせの場。ただし本命は声明文の言い回し。",
- plain:"アメリカの中央銀行が「金利をどうするか」を決めて発表する会合です。ただし<b>金利を上げたか下げたかは事前にほぼ分かっている</b>ので、実際に注目されるのは「これからどうするつもりか」の部分です。",
- hit:[1,2],
- what:"FRBが政策金利を決定・公表する会合。声明文、議長会見、そして参加者の金利見通し（<t>ドットチャート</t>）が出る。",
- watch:"<b>金利の数字そのものより、声明文と会見のトーン</b>。利上げしたかどうかは事前にほぼ織り込まれており、動くのは「次にどうするか」の示唆の部分。",
- routeTxt:"<b>分母の総本山</b>。ここで示された見通しが長期金利を通じて割引率に反映される。ただし <t>タカ派</t> すぎる姿勢は景気を冷やすと見なされ、分子にもマイナスに波及することがある。",
- strong:"想定より <t>タカ派</t>（引き締め寄り）＝<b>株安</b>、想定よりハト派（緩和寄り）＝<b>株高</b>。判断基準は常に「事前の想定と比べてどうか」。",
- caution:"発表直後と会見中で株価が反転することが頻繁にある。声明文で下げて会見で戻す、あるいはその逆。当日の初動だけを見ないこと。"},
-
-{n:"購買担当者景気指数",en:"PMI / ISM",area:"米・日",imp:"重要",route:"num",freq:"毎月・月初",
- one:"景気の先行指標。50が好不況の境目。",
- plain:"企業の仕入れ担当者に「先月より景気は良いですか」と聞いたアンケートです。<b>50が良い悪いの分かれ目</b>で、それより上なら景気は拡大、下なら縮小。アンケートなので実際の数字より早く出ます。",
- hit:[0,3],
- what:"企業の購買担当者への調査。50を超えれば拡大、下回れば縮小。製造業と非製造業（サービス業）に分かれる。",
- watch:"<b>50という絶対水準</b>と、前月からの方向。米国では製造業ISMが有名だが、経済に占める比率ではサービス業の方が大きい。",
- routeTxt:"<b>主に分子</b>。企業活動の勢いを直接表すため、業績期待に効く。ただし内訳の「仕入価格」項目はインフレの <t>先行指標</t> として分母にも波及する。",
- strong:"素直に<b>50超え＝株高、50割れ＝株安</b>になりやすい。ただし景気過熱局面では雇用統計と同じく利上げ観測を呼び、逆に振れることがある。",
- caution:"アンケートなので、実際の生産量ではなく<b>センチメント</b>を測っている。実体と乖離することがある。"},
-
-{n:"国内総生産",en:"GDP",area:"米・日",imp:"参考",route:"num",freq:"四半期",
- one:"最も網羅的だが、最も遅い。相場インパクトは意外と小さい。",
- plain:"国全体でどれだけ稼いだかの総決算です。最も大事な数字に見えますが、<b>3か月に1回しか出ないうえ発表が遅い</b>ので、出たときにはもう他の指標で分かっている。だから相場はあまり動きません。",
- hit:[0,3],
- what:"国全体で、一定期間にどれだけの価値が生み出されたか。経済活動の総決算。",
- watch:"速報値・改定値・確報値と3回出る。相場が反応するのは速報値のみ。内訳では<b>個人消費</b>が最大項目。",
- routeTxt:"<b>分子</b>。ただし発表時点で他の月次指標から内容がほぼ推定できているため、新情報が少ない。",
- strong:"理屈上は好数字＝株高だが、<b>実際にはほとんど動かない</b>ことが多い。すでに織り込まれているため。",
- caution:"重要度と相場インパクトが一致しない代表例。経済を理解するには不可欠だが、トレード材料としては弱い。この違いを混同しないこと。"},
-
-{n:"小売売上高",en:"Retail Sales",area:"米",imp:"重要",route:"num",freq:"毎月・中旬",
- one:"米国経済の7割を占める個人消費を、月次で見る。",
- plain:"お店でどれだけ買い物されたかの発表です。アメリカ経済は<b>7割が個人の買い物</b>でできているので、これが伸びれば企業の売上も伸びる。素直に業績の話です。",
- hit:[0,3],
- what:"小売店の売上高が前月比で何％変化したか。米国はGDPの約7割が個人消費なので、経済の主エンジンを直接見ていることになる。",
- watch:"自動車とガソリンを除いた<b>コア小売売上</b>。変動の大きい項目を外すと基調が見える。",
- routeTxt:"<b>主に分子</b>。消費が強い＝企業の売上が伸びる＝業績期待にプラス。ただし消費が強すぎるとインフレ懸念から分母にも波及する。",
- strong:"通常は好数字＝<b>株高</b>。景気過熱が意識されている局面では逆に振れる。",
- caution:"<t>名目</t> の金額ベースなので、物価が上がっただけでも数字は伸びる。数量が増えたのか値段が上がっただけなのかは、CPIと併せて判断する。"},
-
-{n:"新規失業保険申請件数",en:"Initial Claims",area:"米",imp:"参考",route:"num",freq:"毎週・木曜",
- one:"唯一の週次指標。労働市場の変調をいちばん早く捉える。",
- plain:"その週に失業保険を申し込んだ人の数です。<b>9指標で唯一、毎週出ます</b>。だから雇用がおかしくなり始めたとき、いちばん早く気づける指標になります。",
- hit:[0,3],
- what:"その週に失業保険を新規申請した人の数。増えれば雇用が悪化しているサイン。",
- watch:"単週はブレるので<b>4週移動平均</b>で見る。20万件台なら堅調、30万件を超え始めると警戒圏という目安がある。",
- routeTxt:"<b>分子</b>。雇用の悪化は業績期待の低下につながる。速報性が最大の武器で、月次の雇用統計より先に変調を知らせる。",
- strong:"申請が減る（雇用堅調）＝<b>株高</b>が基本。ただし雇用統計と同様、過熱局面では利上げ観測を呼んで逆に振れる。",
- caution:"祝日や天候、<t>季節調整</t> の影響を受けやすく、単週の数字はノイズが多い。トレンドで見るのが鉄則。"},
-
-{n:"日銀 金融政策決定会合",en:"BOJ MPM",area:"日",imp:"最重要",route:"den",freq:"年8回",
- one:"日本株を見るなら、FOMCと同じ重さで見る会合。",
- plain:"日本銀行が金利や国債の買い方を決める会合です。日本株の場合、ここで決まったことが<b>まず為替（円安・円高）に効いて、それから株価に効きます</b>。米国にはないワンクッションが入るのが特徴です。",
- hit:[1,2,3],
- what:"日銀が政策金利や国債買い入れ方針を決める会合。展望レポート（年4回）で物価・成長率の見通しも示される。",
- watch:"政策変更の有無に加え、総裁会見のトーン。日本の場合、<b>為替への波及</b>が特に大きいのが特徴。",
- routeTxt:"<b>分母が主</b>。ただし日本株には為替経由の分子ルートが強く効く。緩和的な姿勢＝円安＝輸出企業の業績にプラス、という経路があるため、米国よりも分子と分母が絡み合う。",
- strong:"緩和維持＝円安＝<b>株高</b>になりやすいのが従来のパターン。ただし引き締めが金融株にはプラスに働くなど、セクターで反応が割れる。",
- caution:"日本株を分析するとき、米国のロジックをそのまま当てはめると外す。為替という中間変数が1枚入っていることを忘れないこと。"},
-
-{n:"日銀短観",en:"Tankan",area:"日",imp:"重要",route:"num",freq:"四半期",
- one:"日本企業の景況感を、日銀自身が直接聞いて集計する。",
- plain:"日銀が約1万社に「景気はどうですか」と直接聞いた結果です。日本版のPMIのようなもので、<b>企業自身がどう感じているか</b>が分かります。3か月に1回なので速報性は低めです。",
- hit:[0,3],
- what:"約1万社への調査結果を <t>業況判断DI</t> で示す。良いと答えた割合から悪いと答えた割合を引いた数値。",
- watch:"大企業製造業DIが最注目。加えて<b>先行き見通し</b>と、企業の<b>想定為替レート</b>も相場材料になる。",
- routeTxt:"<b>分子</b>。企業自身の景況感なので、業績期待に直結する。日銀の政策判断材料でもあるため、間接的に分母にも波及する。",
- strong:"DIの改善＝<b>株高</b>が基本。想定為替レートが実勢より円高（＝保守的）なら、業績上振れ余地として好感されることがある。",
- caution:"サンプルが大きく信頼性は高いが、四半期なので速報性は低い。PMIで方向を掴み、短観で確認するという使い分けになる。"}
-];
-/* ══ Part 3 ══════════════════════════ */
-const CASES=[
-{id:"c1",no:"3-1",lv:"easy",lvn:"いちばん素直",
- t:"CPIが予想を上回った。株価はどう動くか。",
- lede:"9指標のなかで唯一、ほぼ例外なく反応が読める。ここから始める。",
- hl:"物価が上がった、という情報だけで、企業の業績の話は一切出てこない。だから分母だけが動く。",
- chain:[["01 指標","コアCPIが予想 +3.1％ に対し +3.4％"],["02 政策予想","利下げが遠のく、と市場が判断"],["03 金利","長期金利が上昇"],["04 分子・分母","分母だけが膨らむ",1],["05 株価","下落"]],
- num:0,den:1,why:"業績の話は出ていない。分母だけが動いた、素直なケース。",
- prose:["この経路のポイントは、<b>企業の業績について新しい情報は何も出ていない</b>ことです。パンや家賃の値段が上がったという話であって、企業がいくら稼ぐかは変わっていない。",
-  "それでも株価が下がるのは、Part 1でやった通り、同じ利益でも割引率が上がれば現在価値が下がるからです。分母だけが動くケースは理解しやすく、初めて経路を追うのに最適です。",
-  "逆にCPIが予想を下回れば、利下げ期待から分母が縮み、業績が変わらなくても株価は上がります。<b>この対称性が成り立つのがCPIの特徴</b>です。"],
- warn:"ただし「予想を上回った」が重要で、数字が高いこと自体ではありません。CPIが4％でも、予想が4.5％なら株は上がります。必ず予想値とセットで見ること。",
- deep:["なぜCPIだけこれほど素直なのか。理由は、CPIが<b>景気の強さを直接は測っていない</b>からです。雇用統計やPMIは景気そのものを測るので業績期待に直結しますが、物価は「値段」の話であって「量」の話ではない。だから分子への波及が弱い。",
-  "厳密には、インフレは企業の売上を名目で押し上げるので分子にもわずかにプラスです。ただしコスト（原材料・人件費）も同時に上がるため、利益への影響は相殺されやすく、市場はほぼ無視します。",
-  "実務では、CPI発表と同時に金利先物市場の織り込み確率が動きます。「次回の利下げ確率が60％から30％に低下」といった形で、02の政策予想が数値で観測できる。ここを見る習慣がつくと、経路が目に見えるようになります。"]},
-{id:"c2",no:"3-2",lv:"easy",lvn:"やや素直",
- t:"FOMCが想定よりタカ派だった。政策金利は据え置きなのに株が下がる。",
- lede:"金利の数字は変わっていない。動いたのは「これから」の見通しだけ。",
- hl:"政策金利が据え置きでも株が下がるのは、02の政策予想だけが動いて03の長期金利に伝わるから。",
- chain:[["01 出来事","政策金利は据え置き。だが声明文が強気"],["02 政策予想","利下げ開始が後ずれ、と受け取られる",1],["03 金利","長期金利が上昇"],["04 分子・分母","分母が膨らむ"],["05 株価","下落"]],
- num:0,den:1,why:"金利そのものは動いていない。将来の予想が動いて、長期金利経由で分母に効いた。",
- prose:["Part 0-5でやった通り、中央銀行が直接決めるのは政策金利（超短期）だけです。株価に効くのは長期金利で、これは<b>市場が将来の政策金利を予想して決まります</b>。",
-  "だから政策金利が動かなくても、「今後こうする」という示唆が変われば長期金利は動く。FOMCで最も重要なのが声明文の言い回しと議長会見なのは、そこに02の情報が詰まっているからです。",
-  "実際、発表直後に下げて会見中に戻す（あるいはその逆）ことが頻繁に起きます。声明文と会見で受け取られるトーンが違うためで、当日の初動だけを見て判断すると読み違えます。"],
- warn:"タカ派すぎる姿勢は「景気を冷やしすぎるのでは」という懸念を生み、分子（業績期待）にも波及することがあります。その場合は分子↓・分母↑となり、9マスで最も下げやすい組み合わせになります。",
- deep:["「タカ派」「ハト派」は、引き締め寄り・緩和寄りを指す業界用語です。重要なのは絶対的なタカ派度ではなく、<b>事前の想定と比べてどうだったか</b>。市場が「3回利下げ」を織り込んでいたところに「2回」と示されれば、利下げ方向であってもタカ派サプライズになります。",
-  "ドットチャート（参加者ごとの金利見通しの分布図）が公表される回は、ここが最大の材料になります。中央値がどう動いたかで02が一気に書き換わるためです。",
-  "なお、利上げ・利下げそのものは発表前にほぼ100％織り込まれているのが通常です。つまりFOMC当日に動くのは、ほとんどが<b>ガイダンス部分</b>です。"]},
-{id:"c3",no:"3-3",lv:"mid",lvn:"分子が主役",
- t:"小売売上高が強かった。今度は分子が動く。",
- lede:"ここまでは分母の話ばかりだった。初めて分子が主役になるケース。",
- hl:"消費が強い＝企業の売上が伸びる。物価の話ではなく、業績の話。",
- chain:[["01 指標","コア小売売上が前月比 +0.8％（予想 +0.3％）"],["02 政策予想","大きくは動かない"],["03 金利","小幅上昇にとどまる"],["04 分子・分母","分子が伸びる",1],["05 株価","上昇"]],
- num:1,den:0,why:"消費の強さが業績期待を押し上げた。分子が主役の素直な株高。",
- prose:["米国はGDPの約7割が個人消費です。消費が伸びるということは、企業の売上が伸びるということ。つまり<b>分子（将来の利益）そのものが増える</b>という情報です。",
-  "PMIも同じ構造です。企業の購買担当者が「先月より良い」と答えるなら、生産と受注が伸びている。これも分子の話。",
-  "この2つが分母の話であるCPIと決定的に違うのは、<b>景気の量を測っている</b>点です。値段ではなく、どれだけ動いたかを見ている。"],
- warn:"ただし消費が強すぎると、インフレ懸念から利上げ観測が生まれ、分母にも波及します。そうなると分子↑・分母↑となり、次の3-4と同じ構造になります。「どこから強すぎるのか」の線引きは、その時の物価状況次第です。",
- deep:["小売売上高は<b>金額ベース</b>なので、値段が上がっただけでも数字は伸びます。数量が増えたのか物価が上がっただけなのかは、CPIと突き合わせないとわかりません。<b>名目と実質の区別</b>は、マクロを読むうえで常につきまとう論点です。",
-  "PMIはアンケート調査なので、実際の生産量ではなくセンチメントを測っています。景況感が実体に先行するため先行指標として優れる一方、実体と乖離することもあります。",
-  "実務では、分子系の指標が強いのに株価が反応しないことがあります。多くの場合、すでに他の指標で消費の強さが見えていて<b>織り込み済み</b>だからです。"]},
-{id:"c4",no:"3-4",lv:"hard",lvn:"最難関",
- t:"雇用統計が予想を大きく上回った。なのに株価が下がった。",
- lede:"分子と分母が同時に、逆向きに動く。9指標で最も複雑なケース。",
- hl:"分子はプラス。それでも下がるのは、分母のマイナスがそれを上回ったから。それだけの話。",
- chain:[["01 指標","雇用者数 +25万人（予想 +10万人）／平均時給も上振れ"],["02 政策予想","賃金インフレ懸念で利上げ観測が強まる",1],["03 金利","長期金利が大幅上昇"],["04 分子・分母","分子↑ だが 分母↑ がそれを上回る",1],["05 株価","下落"]],
- num:1,den:1,why:"分子はプラス。だが賃金インフレ経由で分母がそれ以上に膨らんだ。これが「良いニュースで株が下がる」の全貌。",
- prose:["雇用が増えるのは景気が良い証拠なので、<b>分子にはプラス</b>です。ここは間違いありません。",
-  "同時に、雇用が強い＝賃金が上がる＝物価に転嫁される＝中央銀行が利上げする、という連想が働き、<b>分母も上がります</b>。そして分母のマイナスが分子のプラスを上回ると、好材料なのに株価が下がる。",
-  "これがGood news is bad newsと呼ばれる現象の正体です。神秘的なことは何も起きていません。<b>分子と分母が同時に動いて、分母が勝っただけ</b>です。",
-  "重要なのは、<b>これが常に起きるわけではない</b>ことです。インフレ警戒が強い局面でのみ発生します。景気後退が懸念されている局面なら、同じ好数字が素直に株高になります。局面が変われば、同じニュースが逆に効く。"],
- warn:"だから「雇用統計が良い＝株安」と暗記してはいけません。暗記すべきは経路であって、結論ではない。今どちらのルートが支配的かを毎回判断する、それがこの分野の実力です。",
- deep:["雇用統計のなかで、この現象を引き起こす主役は<b>平均時給</b>です。雇用者数が増えるだけなら分子の話で終わりますが、時給が上がると物価に転嫁されるため分母が動く。だから雇用者数より時給の方が相場を動かすことがあります。",
-  "実務的な見分け方があります。発表後に<b>金利と株が同じ方向に動いたか、逆方向に動いたか</b>を見る。金利上昇＋株安なら分母が支配的、金利上昇＋株高なら分子が支配的です。この1点を確認するだけで、その日の相場がどちらのモードにあるかがわかります。",
-  "なお雇用統計は過去3か月分が改定されることがあり、当月の好数字が過去分の下方修正で打ち消されることがあります。ヘッドラインの数字だけでは判断できない指標の代表格です。"]},
-{id:"c5",no:"3-5",lv:"hard",lvn:"日本株の特殊構造",
- t:"日銀が緩和を維持した。日本株では、分母の話が分子に化ける。",
- lede:"米国のロジックをそのまま当てはめると外す。為替という中間変数が1枚挟まる。",
- hl:"日本株には「金利 → 為替 → 輸出企業の業績」という、米国にはない経路がある。",
- chain:[["01 出来事","日銀が緩和的な姿勢を維持"],["02 金利差","日米の金利差が拡大"],["03 為替","円安が進む",1],["04 分子・分母","輸出企業の分子が押し上げられる",1],["05 株価","上昇（ただしセクター差が大きい）"]],
- num:1,den:0,why:"金利の話として始まったのに、為替を経由して分子に着地した。日本株特有の構造。",
- prose:["米国では、金利の話は分母の話で完結します。ところが日本株には<b>為替という中間変数</b>が挟まります。",
-  "緩和維持で日米金利差が広がると円安が進む。円安になると、輸出企業は海外で稼いだドルを円に換えたときの金額が増えるため、<b>業績そのものが押し上げられます</b>。つまり分母の話として始まったものが、為替を経由して分子に着地する。",
-  "この経路があるため、日本株では「緩和＝株高」という関係が米国より強く出ます。逆に引き締めは円高を招き、輸出企業の分子を削ります。",
-  "ただしセクターによって符号が反転します。<b>銀行は利上げで利ざやが広がるためプラス</b>、内需企業は円安で輸入コストが上がるためマイナス。日銀会合の日に日経平均が横ばいでも、中身は激しく入れ替わっていることがあります。"],
- warn:"日本株を分析するとき、米国のロジックをそのまま持ち込むと外します。金利→株価の間に為替が1枚入っていること、そしてその影響がセクターで正負に割れることを常に意識してください。",
- deep:["為替が業績に効く度合いは企業によって全く違います。海外売上比率が高い自動車・機械・電機は円安の恩恵が大きく、食品・小売・電力など輸入依存の内需企業は逆にコスト増になります。<b>同じ円安が、片方の分子を膨らませ、もう片方の分子を削る</b>。",
-  "企業の決算資料には「想定為替レート」が書かれています。実勢がこれより円安なら業績上振れ、円高なら下振れの目安になります。日銀短観でも企業の想定レートが公表され、相場材料になります。",
-  "また近年は、円安が輸入物価を押し上げて国内インフレを招く経路も重視されています。円安→物価上昇→日銀が引き締め、という循環が生まれると、話は一段複雑になります。"]}
-];
-
-/* ══ セクター感応度 ══════════════════
-   den ＝ 金利が「上昇」したときの感応度
-   num ＝ 景気が「改善」したときの感応度
-   fx  ＝ 「円安」が進んだときの感応度
-   いずれも -100〜+100 の相対値。逆方向は DRIVERS 側で符号を反転させる。
-   ここに書いてあるのは概念値。sensitivities.json があれば実測値で上書きされる。 */
-const SECTORS=[
- {n:"グロース・ハイテク",s:"利益が遠い将来に偏る",den:-90,num:70,fx:40},
- {n:"半導体・電子部品",s:"設備投資と輸出の両方に連動",den:-60,num:95,fx:75},
- {n:"自動車・機械",s:"海外売上比率が高い景気敏感",den:-30,num:85,fx:90},
- {n:"銀行",s:"預貸金利ざやが拡大する",den:85,num:55,fx:20},
- {n:"不動産・REIT",s:"借入コストと割引率の二重",den:-100,num:40,fx:-15},
- {n:"資源・エネルギー",s:"インフレ局面に強い",den:35,num:60,fx:25},
- {n:"小売・生活必需",s:"内需中心で輸入コストを負う",den:-25,num:25,fx:-60},
- {n:"医薬・食品",s:"景気に左右されにくい守り",den:-35,num:10,fx:-40},
- {n:"電力・ガス",s:"高配当が債券と競合する",den:-55,num:5,fx:-70}
-];
-
-/* 主導要因の選択肢。key＝SECTORSのフィールド、sign＝向き */
-const DRIVERS=[
- {k:"den",sign:1,label:"金利が上昇",note:"分母が膨らむ局面。割引率の影響を強く受ける順に並びます。借入が重い業種と、利ざやが広がる銀行で符号が反転するのが特徴です。"},
- {k:"den",sign:-1,label:"金利が低下",note:"分母が縮む局面。上昇時とちょうど裏返しになります。グロースとREITが最も恩恵を受け、銀行は逆に利ざやが縮みます。"},
- {k:"num",sign:1,label:"景気が改善",note:"分子が伸びる局面。売上が景気に連動する業種ほど大きく動きます。医薬や電力はほとんど反応しません。"},
- {k:"num",sign:-1,label:"景気が悪化",note:"分子が縮む局面。景気敏感業種が大きく下げる一方、ディフェンシブは相対的に持ちこたえます。下落局面で資金が守りに逃げるのはこのためです。"},
- {k:"fx",sign:1,label:"円安が進む",note:"日本株特有の経路。輸出企業の分子が押し上げられる一方、輸入コストを負う内需業種はマイナスになります。同じ材料で符号が割れます。"},
- {k:"fx",sign:-1,label:"円高が進む",note:"円安の裏返し。輸出企業の業績が削られ、内需・輸入依存の業種にはプラスに働きます。"}
-];
-
-
-
-const CELLS=[
- {n:1,d:1,v:"拮抗",c:"f",l:"雇用統計が強すぎた",t:"分子↑ ／ 分母↑ ── 拮抗、局面しだい",
-  p:"最も判断が難しいマス。景気は良いが利上げ観測も強まる。インフレ警戒が強い局面なら分母が勝って株安、景気後退懸念が強い局面なら分子が勝って株高。同じニュースが逆に効くのはこのマスです。"},
- {n:1,d:0,v:"株高",c:"u",l:"小売・PMIが好調",t:"分子↑ ／ 分母→ ── 素直な株高",
-  p:"業績期待だけが上がり、金利は動かない。最もわかりやすい株高。好決算や景気改善のニュースがここに入ります。"},
- {n:1,d:-1,v:"強い株高",c:"u",l:"業績改善＋利下げ観測",t:"分子↑ ／ 分母↓ ── 最も上がりやすい",
-  p:"景気は堅調なのにインフレは落ち着き、利下げ期待が高まる状態。ゴルディロックス（適温相場）と呼ばれます。分子と分母が両方とも株高方向に効く、最も強い組み合わせ。"},
- {n:0,d:1,v:"株安",c:"d",l:"CPI上振れ・タカ派FOMC",t:"分子→ ／ 分母↑ ── 素直な株安",
-  p:"業績の話は出ていないのに、金利上昇だけで株価が下がる。3-1と3-2がここです。反応が読みやすく、経路を学ぶのに最適なマス。"},
- {n:0,d:0,v:"動かない",c:"f",l:"織り込み済み",t:"分子→ ／ 分母→ ── 材料出尽くし",
-  p:"事前の予想どおりの結果。すでに価格に入っているので動かない。「good newsなのに反応しない」の多くはこのマスです。"},
- {n:0,d:-1,v:"株高",c:"u",l:"CPI鈍化・ハト派転換",t:"分子→ ／ 分母↓ ── 金利低下による株高",
-  p:"業績は変わらないのに、利下げ期待だけで株価が上がる。実体経済が改善していない局面での上昇は、たいていこれです。"},
- {n:-1,d:1,v:"最も下落",c:"d",l:"スタグフレーション・リスクオフ",t:"分子↓ ／ 分母↑ ── 最悪の組み合わせ",
-  p:"業績期待が落ちるのに金利やリスクプレミアムは上がる。景気後退とインフレが同時に来る局面や、金融不安でリスクオフが進む局面。分子と分母が両方とも株安方向に効きます。"},
- {n:-1,d:0,v:"株安",c:"d",l:"業績悪化",t:"分子↓ ／ 分母→ ── 素直な株安",
-  p:"金利は動かず、業績期待だけが落ちる。個別企業の下方修正や、特定セクターの悪材料がここです。"},
- {n:-1,d:-1,v:"拮抗",c:"f",l:"景気後退＋利下げ",t:"分子↓ ／ 分母↓ ── 読みにくい",
-  p:"業績は落ちるが、利下げ期待で分母も縮む。景気後退入りの局面がここで、どちらが勝つかは市場の関心が「今の業績」と「将来の金利」のどちらにあるかで決まります。株価が景気より先に底を打つのは、このマスで分母が勝つためです。"}
-];
-
-/* ══ Part 4 ══════════════════════════ */
-const P4=[
-{id:"4-1",tag:"最頻出",cls:"p-i",t:"悪材料が出たのに株価が上がった。なぜか。",
- hl:"市場は将来を先に価格に入れている。動くのは常に「予想とのズレ」であって、数字の良し悪しではない。",
- prose:["これを<b>織り込み済み</b>と呼びます。「利上げがありそうだ」と皆が思った時点で、株価はすでに下がっている。だから実際に利上げが発表されても、想定どおりなら反応は限定的です。",
-  "さらに一歩進むと、<b>悪材料出尽くし</b>が起きます。「利上げは発表されたが、思ったより弱腰だった」という場合、悪材料の発表で株価が上がる。初心者が最も混乱する現象ですが、ズレで動くと理解していれば当然の帰結です。",
-  "実務では、ズレは数字で観測できます。指標発表前には必ず<b>市場予想（コンセンサス）</b>が公表されており、金利先物からは「次回の利下げ確率58％」といった織り込み度合いが読み取れます。発表前後でこの確率がどう動いたかを見れば、経路の02（政策予想）が実際に動いたかを確認できます。"],
- warn:"ニュースの見出しには結果の数字しか載りません。予想値とセットで見る習慣がつくかどうかで、解像度が一段変わります。「CPIが3.4％」ではなく「予想3.1％に対し3.4％」で読む。"},
-{id:"4-3",tag:"危機時",cls:"p-a",t:"平時の理屈が全部通用しなくなる場面がある。",
- hl:"極端なリスクオフでは、株も債券も金も同時に売られる。理由は「現金が欲しい」だけ。",
- prose:["平時は、株が下がると安全資産である債券が買われます（逆相関）。ところが金融危機や急激な流動性不安の局面では、<b>ほぼ全資産が同時に売られます</b>。損失を埋めるための換金売りが、資産の性質を無視して起きるからです。",
-  "このとき、分数図でいえば分母の<b>リスクプレミアム</b>が急拡大しています。金利が動いていなくても分母が膨らむので、「金利で説明できない下落」が起きる。Part 1-2の深掘りで触れた部分が、ここで前面に出てきます。"],
- corr:true,
- warn:"理屈が効かない場面が存在すると知っておくこと自体が防御になります。「説明できないから自分の理解が足りない」と考えて無理に理由を探すより、<b>今はモデルの外にいる</b>と認識する方が正確です。"},
-{id:"4-4",tag:"よくある誤解",cls:"p-a",t:"マクロでは説明できない値動きも、かなりの割合で存在する。",
- hl:"すべての値動きに経済的な理由があるわけではない。需給だけで動く日がある。",
- prose:["学んだ枠組みを手に入れると、あらゆる値動きをそれで説明したくなります。しかし実際には、<b>マクロと無関係な要因</b>で動く日が相当あります。",
-  "<b>需給要因</b>──指数の銘柄入れ替え、大型IPO、機関投資家のリバランス、年度末の売り。これらは経済的な意味を持たず、単に売り買いの量で価格が動きます。",
-  "<b>地政学ショック</b>──紛争や災害は、経路の01（指標）を経由せずいきなり分母のリスクプレミアムに効きます。予測不能で、経路の外側から入ってくる。",
-  "<b>流動性</b>──連休前や薄商いの日は、同じニュースでも値幅が大きく出ます。参加者が少ないほど価格は動きやすい。"],
- warn:"説明できない動きに無理やり理由をつけると、間違った因果を覚え込んでしまいます。<b>「今日はマクロでは説明できない」と判断できることも、この教材のゴールのひとつ</b>です。"}
-];
-
-const REG=[
- {r:1,s:-1,mode:"分母が支配",cls:"den",d:"インフレ警戒モード",
-  t:"金利↑ ／ 株↓ ── 分母が支配している",
-  p:"市場の関心が金利にある状態。この局面では、好調な経済指標が利上げ観測を呼んで株安につながります。Good news is bad news が起きるのはこのモードのときだけ。景気の良いニュースを素直に好材料と受け取ると読み違えます。"},
- {r:1,s:1,mode:"分子が支配",cls:"num",d:"景気回復モード",
-  t:"金利↑ ／ 株↑ ── 分子が支配している",
-  p:"金利が上がっているのに株も上がる。これは市場が金利より業績を見ている証拠です。景気回復期によく現れ、この局面では好調な指標は素直に株高につながります。同じ雇用統計でも、上のモードとは正反対の反応になります。"},
- {r:-1,s:1,mode:"分母が支配",cls:"den",d:"利下げ期待モード",
-  t:"金利↓ ／ 株↑ ── 分母が支配している",
-  p:"金利低下だけで株が上がる状態。業績が改善していなくても上昇するため、実体経済との乖離が生まれやすい。インフレ鈍化や利下げ観測が主役の局面です。"},
- {r:-1,s:-1,mode:"分子が支配",cls:"num",d:"景気悪化モード",
-  t:"金利↓ ／ 株↓ ── 分子が支配している",
-  p:"金利が下がっているのに株も下がる。これは市場が「利下げより景気悪化の方が深刻だ」と判断している状態です。景気後退入りの局面や、リスクオフの初期に現れます。利下げが株価を支えられなくなっているサインとして重要。"}
-];
-
-const CHK=[
- {n:"予想値と比べる",d:"結果の数字だけを見ない。市場予想からどれだけズレたかを確認する。ズレていなければ、そもそも相場は動かない。"},
- {n:"分子か分母かを言う",d:"そのニュースは業績の話か、金利の話か。両方なら、どちらが大きいか。声に出して一文で言えるかを確認する。"},
- {n:"今のモードを確かめる",d:"金利と株が同じ方向か逆方向か。レジーム判定で、今どちらが支配的かを見る。先週の判定を持ち込まない。"},
- {n:"セクター差を見る",d:"指数だけでなく業種別騰落率を見る。金利が動いた日は、指数が横ばいでも中身が入れ替わっている。"},
- {n:"説明できないなら、そう認める",d:"需給・地政学・薄商いの可能性を検討する。無理に理由をつけない。これも正しい判断のひとつ。"}
-];
-/* ══ 設問バンク ══════════════════════ */
-const QB=[
-{p:0,q:"金利とは、何に対して支払われる対価か。",o:["会社の利益","貸したお金を待つ時間","株式の売買手数料","為替の変動"],a:1,
- e:"金利は「時間の値段」。待つこと、リスクを取ること、インフレで目減りすることへの対価です。"},
-{p:0,q:"中央銀行が直接決められる金利はどれか。",o:["10年国債利回り","住宅ローン金利","政策金利（超短期）","社債利回り"],a:2,
- e:"中央銀行が触れるのは超短期の政策金利だけ。長期金利は将来の政策金利予想の積み上げで市場が決めます。"},
-{p:0,q:"インフレを正確に言い換えると。",o:["モノが偉くなること","お金の価値が下がること","企業の利益が増えること","株価が上がること"],a:1,
- e:"動いているのはモノではなくお金の側。この見方に切り替えると、金利との関係が理解しやすくなります。"},
-{p:0,q:"国債の利回りが1％から4％に上がると、株式市場で起きやすいことは。",o:["株に資金が流入する","株から債券へ資金が移る","為替が固定される","出来高が消える"],a:1,
- e:"リスクを取らず4％もらえるなら株を持つ理由が薄れます。金利が株価に効く2本目の経路です。"},
-{p:0,q:"株を持つとは、何を持つことか。",o:["会社の負債を肩代わりする義務","将来の利益の分け前を受け取る権利","元本が保証された債権","経営に参加する義務"],a:1,
- e:"今年の利益だけでなく、来年も10年後も含めた将来のすべての利益が対象です。だから金利が効いてきます。"},
-{p:1,q:"株価＝将来の利益÷割引率としたとき、金利上昇が直接動かすのは。",o:["分子（期待利益）","分母（割引率）","どちらも動かない","為替のみ"],a:1,
- e:"金利は割引率＝分母に効きます。業績期待（分子）は景気そのものが動いたときに変化します。"},
-{p:1,q:"現在価値の計算式として正しいのは。",o:["将来の金額 ×（1＋金利）","将来の金額 ÷（1＋金利）","将来の金額 − 金利","将来の金額 ＋ 金利"],a:1,
- e:"増やす計算（×）を逆回しにしているだけです。2年後なら2回割ります。"},
-{p:1,q:"金利が2％から5％に上がったとき、より大きく価値が下がるのは。",o:["1年後にもらう100万円","10年後にもらう100万円","どちらも同じ","判断できない"],a:1,
- e:"1年後は約3％の下落ですが、10年後は約25％も下がります。割引は遠い将来ほど強く効きます。"},
-{p:1,q:"金利上昇局面でグロース株が大きく下げる理由は。",o:["業績が悪いから","利益が遠い将来に偏っているから","流動性が低いから","配当が高いから"],a:1,
- e:"割引の影響は将来のキャッシュフローほど大きいため。理屈はPart 1-1で完結しています。"},
-{p:1,q:"予想どおりの好指標が出たのに株価が動かない理由は。",o:["出来高が少ないから","すでに織り込み済みだから","報道されていないから","為替が動かないから"],a:1,
- e:"市場は将来を先に価格に入れています。動くのは予想とのズレの部分だけです。"},
-{p:1,q:"金利が動いていないのに株価が下がった。分母で膨らんだ可能性が高いのは。",o:["期待利益","リスクプレミアム","配当性向","出来高"],a:1,
- e:"戦争や金融不安で投資家が不安になると、割引率のうちリスクプレミアム部分が膨らみます。"},
-{p:2,q:"雇用統計のなかで、インフレ観測に最も直結する項目は。",o:["非農業部門雇用者数","平均時給","失業率","労働参加率"],a:1,
- e:"賃金は物価に転嫁されやすいため、雇用者数以上に相場を動かすことがあります。"},
-{p:2,q:"CPIで政策判断上より重視されるのは。",o:["総合CPI","コアCPI（食品・エネルギー除く）","輸入物価","企業物価"],a:1,
- e:"食品とエネルギーは変動が激しく基調を見誤らせるため、除いたコアで判断します。"},
-{p:2,q:"PMIが50を下回るとは、どういう意味か。",o:["景気が拡大している","前月から縮小している","失業率が50％","インフレ率が5％"],a:1,
- e:"50が拡大と縮小の分岐点。アンケート調査なのでGDPに先行して動きます。"},
-{p:2,q:"GDPが最も網羅的なのに相場インパクトが小さい理由は。",o:["精度が低いから","四半期ごとで遅く、内容が他指標で既に見えているから","政府が公表しないから","株式市場と無関係だから"],a:1,
- e:"発表時点で新情報が少ないためサプライズになりにくい。重要度と相場インパクトは一致しません。"},
-{p:2,q:"米国のGDPの約7割を占めるのは。",o:["設備投資","個人消費","政府支出","純輸出"],a:1,
- e:"だから小売売上高が、企業の売上＝分子に直結する重要指標になります。"},
-{p:2,q:"9指標のなかで唯一、週次で発表されるのは。",o:["雇用統計","新規失業保険申請件数","CPI","日銀短観"],a:1,
- e:"速報性が最大の武器。ただし単週はブレるので4週移動平均で見ます。"},
-{p:2,q:"日銀会合が日本株に効くとき、米国にはない中間変数は。",o:["原油価格","為替","金価格","出来高"],a:1,
- e:"緩和維持→円安→輸出企業の業績改善という、分母の話が分子に化ける経路があります。"},
-{p:3,q:"CPIの反応が9指標で最も読みやすい理由は。",o:["発表頻度が高いから","ほぼ分母だけに効き、業績の話が出ないから","政府が発表するから","数字が単純だから"],a:1,
- e:"物価は「値段」の話であって「量」の話ではないため、分子への波及が弱い。だから素直に動きます。"},
-{p:3,q:"政策金利が据え置きだったのにFOMC後に株価が下がった。最も考えられる理由は。",o:["政策金利が実は上がっていた","声明文のトーンから将来の利下げ後ずれが読まれた","為替が固定された","出来高が急減した"],a:1,
- e:"株価に効くのは長期金利で、これは将来の政策金利予想で決まります。だからガイダンスだけで動きます。"},
-{p:3,q:"小売売上高やPMIが主に動かすのは。",o:["分子（業績期待）","分母（割引率）","為替のみ","出来高のみ"],a:0,
- e:"どちらも景気の「量」を測る指標なので、企業の売上＝分子に直結します。"},
-{p:3,q:"好調な雇用統計で株価が下がるのは、どのような局面か。",o:["デフレ懸念が強い局面","インフレ警戒と利上げ観測が強い局面","決算発表期","連休前"],a:1,
- e:"分母のマイナスが分子のプラスを上回る局面でのみ発生。局面が変われば同じ数字で株高になります。"},
-{p:3,q:"金利上昇が業績にプラスに働きやすいセクターは。",o:["不動産・REIT","銀行","公益","新興テック"],a:1,
- e:"預貸金利ざやが拡大するため。金利上昇＝全面安ではなく、セクター間の順位入れ替えが起きます。"},
-{p:3,q:"金利上昇で最も打撃を受けやすいのは。",o:["銀行","資源・エネルギー","不動産・REIT","バリュー株"],a:2,
- e:"借入コストの上昇と割引率の上昇が二重に効くため、最も弱い部類です。"},
-{p:3,q:"日銀が緩和を維持したとき、日本の輸出企業に起きることは。",o:["円高で業績が悪化する","円安で業績が押し上げられる","為替の影響を受けない","分母だけが動く"],a:1,
- e:"海外で稼いだドルを円に換えた金額が増えるため。分母の話が為替経由で分子に着地します。"},
-{p:3,q:"9マスのうち、最も下落しやすい組み合わせは。",o:["分子↑・分母↓","分子↓・分母↑","分子→・分母→","分子↑・分母→"],a:1,
- e:"業績期待が落ちるのに金利やリスクプレミアムは上がる。両方が株安方向に効きます。"},
-{p:4,q:"利上げが発表されたのに株価が上がった。最も考えられる理由は。",o:["利上げは株高要因だから","想定より弱腰で、悪材料出尽くしとなったから","為替が動かなかったから","出来高が少なかったから"],a:1,
- e:"動くのは常に予想とのズレ。事前の想定より緩ければ、悪材料の発表でも株価は上がります。"},
-{p:4,q:"金利が上昇し、同時に株価も上昇した。この日の相場は。",o:["分母が支配している","分子が支配している","判断できない","異常事態"],a:1,
- e:"市場が金利より業績を見ている証拠。この局面では好調な指標は素直に株高につながります。"},
-{p:4,q:"金利が低下しているのに株価も下落している。これが示すのは。",o:["利下げが株価を支えられていない","インフレが加速している","為替が急変した","流動性が高い"],a:0,
- e:"市場が「利下げより景気悪化の方が深刻だ」と判断している状態。局面転換の重要な手がかりです。"},
-{p:4,q:"極端なリスクオフ局面で起きやすいことは。",o:["株と債券の逆相関が強まる","ほぼ全資産が同時に売られる","金利が必ず低下する","為替が動かなくなる"],a:1,
- e:"換金売りが優先され、平時の相関が崩れます。分散が効かなくなる局面です。"},
-{p:4,q:"マクロで説明できない値動きの要因として、当てはまらないのは。",o:["指数の銘柄入れ替え","大型IPOによる需給","連休前の薄商い","コアCPIの上振れ"],a:3,
- e:"CPIはマクロ経路そのもの。他の3つは経済的な意味を持たない需給・流動性要因です。"},
-{p:4,q:"ニュースを見たときの実践チェックリスト、最初のステップは。",o:["業種別騰落率を見る","予想値と比べる","チャートを見る","出来高を確認する"],a:1,
- e:"結果の数字だけでは判断できません。予想からのズレを確認するのが出発点です。"}
-];
-
-/* ══ 実戦問題 ══════════════════════ */
-const PRAC=[
-{news:"コアCPIが予想を下回り、インフレ鈍化が確認された。景気指標に特段の変化はなし。",num:0,den:-1,
- e:"物価の話だけで業績の情報は出ていない。利下げ期待から分母が縮み、業績が変わらなくても株価は上がります。"},
-{news:"雇用統計が予想を大きく上回り、平均時給も加速。市場ではインフレ警戒が強い局面が続いている。",num:1,den:1,
- e:"分子はプラスだが、賃金インフレ経由で分母も膨らむ。インフレ警戒局面では分母が勝ち、株安になりやすい典型です。"},
-{news:"コア小売売上高が前月比で大幅に上振れ。長期金利はほぼ横ばいで推移した。",num:1,den:0,
- e:"消費の強さが業績期待を押し上げた一方、金利は動いていない。分子が主役の素直な株高です。"},
-{news:"地政学リスクが急激に高まり、投資家心理が悪化。同時に企業の業績見通しも下方修正された。",num:-1,den:1,
- e:"業績期待が落ち、リスクプレミアムで分母も膨らむ。9マスで最も下げやすい組み合わせです。"},
-{news:"FOMCが想定よりハト派な姿勢を示した。景気見通しについては据え置かれた。",num:0,den:-1,
- e:"業績の話は出ていない。利下げ観測で分母だけが縮み、株価が上がるパターンです。"},
-{news:"複数の大手企業が業績の下方修正を発表。金利水準に変化はなかった。",num:-1,den:0,
- e:"金利は動かず、業績期待だけが落ちた。マクロではなく個別・セクター要因による素直な株安です。"},
-{news:"日銀が金融緩和の維持を決定。日米金利差の拡大から円安が進み、輸出企業に買いが集まった。",num:1,den:0,
- e:"金利の話として始まったのに、為替を経由して輸出企業の分子に着地した。日本株特有の経路です。"},
-{news:"景気後退入りが統計的に確認された。同時に、市場は大幅な利下げを織り込み始めた。",num:-1,den:-1,
- e:"業績は落ちるが分母も縮む。どちらが勝つかは市場の関心しだいで、方向が読みにくいマスです。株価が景気より先に底を打つのはこの構造によります。"},
-{news:"PMIが50を大きく上回る一方、仕入価格指数も急上昇しインフレ圧力が意識された。",num:1,den:1,
- e:"景気の強さで分子が上がり、インフレ圧力で分母も上がる。雇用統計と同じ構造で、局面しだいで方向が決まります。"},
-{news:"CPIは事前の市場予想とまったく同じ数字だった。市場は完全に織り込み済みだった。",num:0,den:0,
- e:"ズレがなければ動かない。「材料出尽くし」で反応が出ないパターンです。"}
-];
-
-/* ══ ライブ用サンプル ══════════════ */
-const DEMO=[
-{date:"サンプル",source:"米BLS",headline:"コアCPIが予想を下回り、インフレ鈍化が鮮明に",
- indicator:"コアCPIが前年比＋3.4％（予想＋3.6％）",policy:"年内の利下げ開始観測が強まる",
- rate:"10年国債利回りが低下",valuation:"分母（割引率）が縮小。業績見通しに変更なし",
- impact:"主要指数が上昇。特にグロース株の上げが目立つ",
- num:0,den:-1,regime:"分母が支配（利下げ期待）",surprise:"中",level:"大",
-levelWhy:"重要指標かつ市場の関心テーマ（インフレ）と一致。ズレも通常変動を超えた。",
- sectors:["グロース・ハイテク","不動産・REIT"],
- why:"物価の話だけで、企業の業績についての新しい情報は出ていない。分母だけが縮んだ素直な株高。金利低下局面ではグロース株の反応が大きくなる。"},
-{date:"サンプル",source:"米BLS",headline:"雇用統計が予想を大幅に上回り、平均時給も加速",
- indicator:"非農業部門雇用者数＋25万人（予想＋10万人）、平均時給も上振れ",
- policy:"賃金インフレ懸念から利上げ観測が再燃",rate:"長期金利が大幅上昇",
- valuation:"分子は改善するが、分母の膨張がそれを上回る",
- impact:"指数は下落。金利敏感セクターの下げが大きい",
- num:1,den:1,regime:"分母が支配（インフレ警戒）",surprise:"大",level:"大",
- levelWhy:"予想比のズレが大きく、賃金も同時に上振れ。関心テーマとも一致している。",
- sectors:["グロース・ハイテク","不動産・REIT","銀行"],
- why:"景気が良いのだから分子にはプラス。それでも下がるのは、賃金インフレ経由で分母がそれ以上に膨らんだため。局面が変われば同じ数字が株高になる。"},
-{date:"サンプル",source:"日本銀行",headline:"日銀が緩和維持を決定、円安進行で輸出株に買い",
- indicator:"金融政策の現状維持を決定",policy:"日米金利差の拡大が意識される",
- rate:"国内長期金利は小動き、為替が円安方向へ",
- valuation:"為替経由で輸出企業の分子が押し上げられる",
- impact:"輸出関連が上昇する一方、内需・輸入依存企業は軟調",
- num:1,den:0,regime:"分子が支配（為替経由）",surprise:"小",level:"中",
- levelWhy:"政策変更なしで事前想定どおり。ただし為替が動いたぶんセクター差は大きい。",
- sectors:["自動車・機械","半導体・電子部品","小売・生活必需"],
- why:"金利の話として始まったのに、為替を経由して分子に着地した日本株特有の経路。指数が上がってもセクター間で符号が割れる。"}
-];
-/* ══ 共通ユーティリティ ══════════════ */
-const AR={"1":"↑","0":"→","-1":"↓"},CL={"1":"up","0":"","-1":"dn"};
-const ROUTE={num:["分子","p-num"],den:["分母","p-den"],both:["両方","p-both"]};
-const IMP={"最重要":"p-a","重要":"p-d","参考":"p-neutral"};
-const $=id=>document.getElementById(id);
-const linkTerms=t=>t.replace(/<t>(.+?)<\/t>/g,(m,w)=>`<button class="term" onclick="showPop('${w}')">${w}</button>`);
-
-/* ══ 状態 ══════════════════════════ */
-const PAGES=[
- {k:"p0",label:"Part 0　ゼロ地点",title:"Part 0　ゼロ地点",cnt:"5"},
- {k:"p1",label:"Part 1　価格の原理",title:"Part 1　価格が決まる原理",cnt:"3"},
- {k:"p2",label:"Part 2　指標カタログ",title:"Part 2　指標カタログ",cnt:"9"},
- {k:"p3",label:"Part 3　伝達経路",title:"Part 3　伝達経路",cnt:"7"},
- {k:"p4",label:"Part 4　例外と局面判断",title:"Part 4　例外と局面判断",cnt:"5"},
- {k:"test",label:"テスト",title:"テスト",cnt:"42",sec:"演習"},
- {k:"live",label:"今日の相場",title:"今日の相場",sec:"演習"}
-];
-const READABLE=["p0","p1","p2","p3","p4"];
-const state={page:"p0",read:new Set(),correct:0,answered:0,wrong:new Set(),
- tmode:"chapter",tpart:-1,ifilter:"all",live:null};
-
-/* ══ サイドバー ══════════════════════ */
-function buildNav(){
-  const nav=$("nav");nav.innerHTML="";
-  const lbl=document.createElement("div");lbl.className="nav-lbl";lbl.textContent="座学";nav.appendChild(lbl);
-  PAGES.forEach(p=>{
-    if(p.sec&&!nav.querySelector(`[data-sec="${p.sec}"]`)){
-      const l=document.createElement("div");l.className="nav-lbl";l.dataset.sec=p.sec;
-      l.textContent=p.sec;nav.appendChild(l);
+'use strict';
+/* ================= State & helpers ================= */
+/* DUMMY_DATA は data/results.json が読めない時だけ使う予備表示。
+   代表4銘柄に絞り、うち2銘柄に valuation_history を入れて
+   新しい PER/PBR 推移グラフと「割安」ラベルの動作確認ができるようにしてある。 */
+const DUMMY_DATA = (function(){
+  // 過去60ヶ月の月次PER/PBRを生成するヘルパー（ダミー用）
+  function mkVal(perStart, perEnd, pbrStart, pbrEnd){
+    const n=60, out=[];
+    for(let i=0;i<n;i++){
+      const t=i/(n-1);
+      const d=new Date(2021,4+i,1);
+      const ym=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-01`;
+      const per=perStart+(perEnd-perStart)*t;
+      const pbr=pbrStart+(pbrEnd-pbrStart)*t;
+      out.push({date:ym, per:+per.toFixed(2), pbr:+pbr.toFixed(3), graham:+(per*pbr).toFixed(2)});
     }
-    const b=document.createElement("button");
-    b.className=state.page===p.k?"on":"";b.dataset.k=p.k;
-    b.innerHTML=`<span>${p.label}</span><span class="${state.read.has(p.k)?"done":"cnt"}">${
-      state.read.has(p.k)?"✓":(p.cnt||"")}</span>`;
-    b.onclick=()=>{go(p.k);if(window.innerWidth<=900)toggleSide();};
-    nav.appendChild(b);
-  });
+    return out;
+  }
+  function mkYield(yStart, yEnd){
+    const n=60, out=[];
+    for(let i=0;i<n;i++){
+      const t=i/(n-1);
+      const d=new Date(2021,4+i,1);
+      const ym=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-01`;
+      out.push({date:ym, yield:+(yStart+(yEnd-yStart)*t).toFixed(3), price:1000, dps:40});
+    }
+    return out;
+  }
+  return {
+    "generated_at":"2026-05-06T19:30:00+09:00",
+    "universe_count":487,"processed_count":4,
+    "stocks":[
+      {"code":"9433","name":"KDDI","sector":"情報・通信業","sector33_code":"5250","market_cap_oku":113000,"price":2990,
+       "bucket":"コア","core_type":"progressive","screening_pass":true,"signal":"BUY","is_box":true,"emergency_exit":false,
+       "earnings_imminent":false,"next_earnings_date":null,"fiscal_month":3,"interim_month":9,
+       "forecast_dps":145,"current_yield":4.85,"yield_q25":3.65,"yield_median":4.2,"yield_q75":4.75,
+       "per":13.8,"pbr":1.62,"per_pbr":22.4,"per_median":15.5,"pbr_median":1.7,"per_cheap":true,"pbr_cheap":true,
+       "payout_ratio":42.5,"equity_ratio":0.562,"roe":13.2,"tier":"S","tier_weight":4,"is_industry_leader":true,"is_progressive_or_doe":true,
+       "latest_sales_oku":58000,"latest_op_oku":10800,"latest_np_oku":6700,
+       "screening":{"dividend":true,"revenue":true,"op_profit":true,"net_profit":true,"payout":true,"equity":true,"valuation":true,"min_yield":true},
+       "box":{"is_box":true,"adx":18.2,"width_pct":11.5,"upper":3120,"lower":2820,"upper_touches":3,"lower_touches":4,"atr_ratio":1.85},
+       "yield_history":mkYield(3.2,4.85),"valuation_history":mkVal(18,13.8,1.9,1.62),
+       "financials_history":[{"period":"2024Q4","sales":4640000,"op":864000,"np":536000,"eps":236,"dps":116},{"period":"2023Q4","sales":5568000,"op":1036800,"np":643200,"eps":283,"dps":139}],
+       "price_history":[],"links":{"minkabu":"https://minkabu.jp/stock/9433","irbank":"https://irbank.net/9433/","tdnet":"https://www.release.tdnet.info/inbs/I_main_00.html"}},
+
+      {"code":"1605","name":"INPEX","sector":"鉱業","sector33_code":"1050","market_cap_oku":27500,"price":1738,
+       "bucket":"コア","core_type":"progressive","screening_pass":true,"signal":"BUY","is_box":true,"emergency_exit":false,
+       "earnings_imminent":false,"next_earnings_date":null,"fiscal_month":12,"interim_month":6,
+       "forecast_dps":86,"current_yield":4.95,"yield_q25":3.1,"yield_median":4.2,"yield_q75":4.85,
+       "per":7.8,"pbr":0.62,"per_pbr":4.8,"per_median":9.5,"pbr_median":0.78,"per_cheap":true,"pbr_cheap":true,
+       "payout_ratio":30.5,"equity_ratio":0.621,"roe":9.8,"tier":"A","tier_weight":2,"is_industry_leader":true,"is_progressive_or_doe":true,
+       "latest_sales_oku":25000,"latest_op_oku":8500,"latest_np_oku":4600,
+       "screening":{"dividend":true,"revenue":true,"op_profit":true,"net_profit":true,"payout":true,"equity":true,"valuation":true,"min_yield":true},
+       "box":{"is_box":true,"adx":16.8,"width_pct":13.2,"upper":1820,"lower":1610,"upper_touches":3,"lower_touches":3,"atr_ratio":2.15},
+       "yield_history":mkYield(2.9,4.95),"valuation_history":mkVal(11,7.8,1.0,0.62),
+       "financials_history":[{"period":"2024Q4","sales":2000000,"op":680000,"np":368000,"eps":176,"dps":68.8},{"period":"2023Q4","sales":2400000,"op":816000,"np":441600,"eps":211,"dps":82.6}],
+       "price_history":[],"links":{"minkabu":"https://minkabu.jp/stock/1605","irbank":"https://irbank.net/1605/","tdnet":"https://www.release.tdnet.info/inbs/I_main_00.html"}},
+
+      {"code":"1928","name":"積水ハウス","sector":"建設業","sector33_code":"2050","market_cap_oku":23000,"price":3375,
+       "bucket":"スイング","core_type":null,"screening_pass":true,"signal":"NEUTRAL","is_box":false,"emergency_exit":false,
+       "earnings_imminent":false,"next_earnings_date":null,"fiscal_month":1,"interim_month":7,
+       "forecast_dps":130,"current_yield":3.85,"yield_q25":3.1,"yield_median":3.55,"yield_q75":3.8,
+       "per":12.5,"pbr":1.32,"per_pbr":16.5,"per_median":11.0,"pbr_median":1.2,"per_cheap":false,"pbr_cheap":false,
+       "payout_ratio":41.2,"equity_ratio":0.565,"roe":11.5,"tier":"B","tier_weight":1,"is_industry_leader":false,"is_progressive_or_doe":false,
+       "latest_sales_oku":33000,"latest_op_oku":3200,"latest_np_oku":2200,
+       "screening":{"dividend":true,"revenue":true,"op_profit":true,"net_profit":true,"payout":true,"equity":true,"valuation":true,"min_yield":true},
+       "box":null,
+       "yield_history":mkYield(3.2,3.85),"valuation_history":mkVal(10,12.5,1.1,1.32),
+       "financials_history":[{"period":"2024Q4","sales":2640000,"op":256000,"np":176000,"eps":216,"dps":104},{"period":"2023Q4","sales":3168000,"op":307200,"np":211200,"eps":259,"dps":124.8}],
+       "price_history":[],"links":{"minkabu":"https://minkabu.jp/stock/1928","irbank":"https://irbank.net/1928/","tdnet":"https://www.release.tdnet.info/inbs/I_main_00.html"}},
+
+      {"code":"4503","name":"アステラス製薬","sector":"医薬品","sector33_code":"3250","market_cap_oku":28500,"price":1546,
+       "bucket":"対象外","core_type":null,"screening_pass":false,"signal":"SELL","is_box":false,"emergency_exit":true,
+       "emergency_reasons":["営業利益YoY-20%"],"earnings_imminent":false,"next_earnings_date":null,"fiscal_month":3,"interim_month":9,
+       "forecast_dps":75,"current_yield":4.85,"yield_q25":2.8,"yield_median":3.5,"yield_q75":4.1,
+       "per":99.0,"pbr":1.85,"per_pbr":99.0,"per_median":22.0,"pbr_median":1.9,"per_cheap":false,"pbr_cheap":true,
+       "payout_ratio":120.5,"equity_ratio":0.485,"roe":2.1,"tier":null,"tier_weight":1,"is_industry_leader":false,"is_progressive_or_doe":false,
+       "latest_sales_oku":15000,"latest_op_oku":800,"latest_np_oku":300,
+       "screening":{"dividend":true,"revenue":false,"op_profit":false,"net_profit":false,"payout":false,"equity":true,"valuation":false,"min_yield":true},
+       "box":null,
+       "yield_history":mkYield(2.8,4.85),"valuation_history":mkVal(18,99,1.7,1.85),
+       "financials_history":[{"period":"2024Q4","sales":1200000,"op":64000,"np":24000,"eps":11.6,"dps":60},{"period":"2023Q4","sales":1440000,"op":76800,"np":28800,"eps":13.9,"dps":72}],
+       "price_history":[],"links":{"minkabu":"https://minkabu.jp/stock/4503","irbank":"https://irbank.net/4503/","tdnet":"https://www.release.tdnet.info/inbs/I_main_00.html"}}
+    ]
+  };
+})();
+const S = {
+  data:null, view:'signals', detail:null, dtab:'overview', period:'3M',
+  watch: JSON.parse(localStorage.getItem('div_watchlist')||'[]'),
+  port:  JSON.parse(localStorage.getItem('div_portfolio')||'[]'),
+  fwd:{state:null,hist:null},
+};
+const fmt = {
+  yen:(n)=>n==null?'—':'¥'+Math.round(n).toLocaleString(),
+  num:(n,d=2)=>n==null?'—':Number(n).toFixed(d),
+  oku:(n)=>n==null?'—':(n>=10000?(n/10000).toFixed(1)+'兆':Math.round(n).toLocaleString()+'億'),
+  pct:(n,d=2)=>n==null?'—':Number(n).toFixed(d)+'%',
+  date:(s)=>{if(!s)return'—';const d=new Date(s);return isNaN(d)?s:d.toLocaleDateString('ja-JP').replace(/\//g,'.');},
+};
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+const bucketLabel=s=>{ if(s.bucket==='対象外')return'対象外';
+  if(s.bucket==='コア'&&s.core_type==='progressive')return'コア・累進';
+  if(s.bucket==='コア'&&s.core_type==='doe')return'コア・DOE'; return s.bucket||'—'; };
+const bucketClass=s=>s.bucket==='対象外'?'p-ex':(s.bucket==='コア'?'p-core':'p-swing');
+const sigPill=s=>{
+  if(s.emergency_exit)return'<span class="pill p-warn"><span class="dot" style="background:var(--amber)"></span>緊急</span>';
+  if(s.signal==='BUY')return'<span class="pill p-buy"><span class="dot" style="background:var(--buy)"></span>BUY</span>';
+  if(s.signal==='SELL')return'<span class="pill p-sell"><span class="dot" style="background:var(--sell)"></span>SELL</span>';
+  return'<span class="pill p-neu"><span class="dot" style="background:var(--neutral)"></span>中立</span>';
+};
+const tierChip=s=>s.tier?`<span class="tier tier-${s.tier}">${s.tier}</span>`:'—';
+const rangeBar=s=>{
+  const lo=s.yield_q25,hi=s.yield_q75,cur=s.current_yield;
+  if(lo==null||hi==null||cur==null||hi<=lo)return'—';
+  const min=Math.min(lo,cur)-.15,max=Math.max(hi,cur)+.15;
+  const pos=Math.min(99,Math.max(1,(cur-min)/(max-min)*100));
+  return`<div class="range"><div class="bar"><div class="mk" style="left:${pos}%"></div></div><div class="lb"><span>${lo.toFixed(2)}</span><span>${hi.toFixed(2)}</span></div></div>`;
+};
+const grahamCell=s=>{
+  if(s.per_pbr==null)return'—';
+  const ok=s.per_pbr<=22.5;
+  return`<span class="mono" style="color:${ok?'var(--green)':'var(--buy)'};font-weight:600">${s.per_pbr.toFixed(1)}</span>`;
+};
+
+/* ===== PER/PBR 割安判定（追加） =====
+   generate.py が per_cheap/pbr_cheap を出力していればそれを使用。
+   無ければ valuation_history から過去5年の中央値を自算し、現在値が中央値以下なら割安。
+   PER は EPS が荒れるため有効点12未満は判定しない。 */
+function valMedian(s,key){
+  const mk=key==='per'?'per_median':'pbr_median';
+  if(s[mk]!=null)return s[mk];
+  const h=(s.valuation_history||[]).map(x=>x[key]).filter(v=>v!=null&&!isNaN(v));
+  if(h.length<12)return null;
+  const a=h.slice().sort((p,q)=>p-q),m=Math.floor(a.length/2);
+  return a.length%2?a[m]:(a[m-1]+a[m])/2;
 }
-function updProgress(){
-  const readPct=state.read.size/READABLE.length*60;
-  const testPct=state.answered?Math.min(state.answered/42,1)*40:0;
-  const pct=Math.round(readPct+testPct);
-  $("progN").textContent=pct+"%";
-  $("progBar").style.width=pct+"%";
-  $("progS").textContent=state.answered
-    ? `読了 ${state.read.size}/5　／　正答 ${state.correct}/${state.answered}　／　復習 ${state.wrong.size}`
-    : (state.read.size?`読了 ${state.read.size}/5　／　テストは未着手`:"まだ始まっていません");
+function isCheap(s,key){
+  const cf=key==='per'?'per_cheap':'pbr_cheap';
+  if(typeof s[cf]==='boolean')return s[cf];
+  const med=valMedian(s,key),cur=s[key];
+  return med!=null&&cur!=null&&cur<=med;
 }
-function toggleSide(){
-  $("side").classList.toggle("on");$("scrim").classList.toggle("on");
+function cheapTags(s){
+  const t=[];if(isCheap(s,'per'))t.push('PER');if(isCheap(s,'pbr'))t.push('PBR');
+  if(!t.length)return'';
+  return ' '+t.map(x=>`<span class="pill p-cheap" style="font-size:10px;padding:1px 7px">${x}割安</span>`).join(' ');
 }
-function go(k){
-  state.page=k;buildNav();
-  const p=PAGES.find(x=>x.k===k);
-  $("pageTitle").textContent=p.title;
-  window.scrollTo({top:0});
+
+/* ================= Load ================= */
+// ローカルでファイルを直接開いた場合でも GitHub Pages 上のデータを読みに行く
+const REMOTE_BASE='https://nabe1216.github.io/kabu/';
+async function loadJSON(path){
+  try{const r=await fetch(path,{cache:'no-cache'});if(r.ok)return await r.json();}catch{}
+  try{const r=await fetch(REMOTE_BASE+path,{cache:'no-cache'});if(r.ok)return await r.json();}catch{}
+  return null;
+}
+async function init(){
+  S.data = await loadJSON('data/results.json') || DUMMY_DATA;
+  const [st,hi]=await Promise.all([loadJSON('data/portfolio_state.json'),loadJSON('data/portfolio_history.json')]);
+  S.fwd.state=st;S.fwd.hist=hi;
+  const dt=new Date(S.data.generated_at);
+  $('lastUpdate').textContent=dt.toLocaleString('ja-JP',{hour12:false}).replace(/\//g,'.');
+  $('sigDate').textContent=dt.toLocaleDateString('ja-JP').replace(/\//g,'.');
+  buildSectorFilter(); updateKpis(); updateFwdBadge(); render();
+}
+function buildSectorFilter(){
+  const secs=[...new Set(S.data.stocks.map(s=>s.sector).filter(Boolean))].sort();
+  $('fSector').innerHTML='<option value="">業種: すべて</option>'+secs.map(x=>`<option>${esc(x)}</option>`).join('');
+}
+function updateKpis(){
+  const st=S.data.stocks, act=st.filter(s=>s.screening_pass&&!s.emergency_exit);
+  const buy=act.filter(s=>s.signal==='BUY');
+  $('kBuy').textContent=buy.length;
+  $('kSell').textContent=act.filter(s=>s.signal==='SELL').length;
+  $('kBox').textContent=act.filter(s=>s.is_box).length;
+  $('kS').textContent=buy.filter(s=>s.tier==='S').length;
+  $('kA').textContent=buy.filter(s=>s.tier==='A').length;
+  $('kB').textContent=buy.filter(s=>s.tier==='B').length;
+  $('navSigCount').textContent=buy.length+act.filter(s=>s.signal==='SELL').length;
+}
+function updateFwdBadge(){
+  const st=S.fwd.state; if(!st)return;
+  const p=(st.total_value-st.initial_cash)/st.initial_cash*100;
+  const el=$('navFwdRet'); el.style.display='';
+  el.textContent=(p>=0?'+':'')+p.toFixed(1)+'%';
+  el.style.background=p>=0?'var(--green)':'var(--buy)';
+}
+
+/* ================= Nav & render ================= */
+$('nav').addEventListener('click',e=>{
+  const b=e.target.closest('button'); if(!b)return;
+  S.view=b.dataset.view;
+  document.querySelectorAll('#nav button').forEach(x=>x.classList.toggle('active',x===b));
+  ['signals','all','fwd','port','watch'].forEach(v=>$('view-'+v).style.display=v===S.view?'':'none');
   render();
-}
-function markRead(k){
-  state.read.add(k);buildNav();updProgress();render();
-}
-
-/* ══ 部品 ══════════════════════════ */
-function fracHTML(num,den,why){
-  const sc=num-den;
-  const v=(num===den&&num!==0)?["p-f","拮抗 ／ 局面しだい"]
-    :sc>0?["p-u","株価 ↑"]:sc<0?["p-d","株価 ↓"]:["p-f","動きにくい"];
-  return `<div class="mf"><div class="mf-body"><div class="mf-eq">株価 ＝</div><div class="mf-frac">
-    <div class="mf-row ${CL[num]}"><span class="mf-name">将来の利益（期待）
-      <span class="mf-drv">景気・業績</span></span><span class="mf-arw">${AR[num]}</span></div>
-    <div class="mf-bar"></div>
-    <div class="mf-row ${CL[den]}"><span class="mf-name">割引率
-      <span class="mf-drv">金利・リスクプレミアム</span></span><span class="mf-arw">${AR[den]}</span></div>
-  </div></div>
-  <div class="mf-out"><span class="mf-v ${v[0]}">${v[1]}</span>
-    <span class="mf-why">${why}</span></div></div>`;
-}
-function chainHTML(steps){
-  return `<div class="chain">${steps.map(s=>`<div class="st${s[2]?" acc":""}">
-    <div class="st-n">${s[0]}</div><div class="st-v">${s[1]}</div></div>`).join("")}</div>`;
-}
-function readMark(k){
-  const done=state.read.has(k);
-  return `<div class="readmark">
-    <span>${done?"この章は読了済みです。テストで理解度を確かめてみてください。":"読み終えたら、進捗に反映されます。"}</span>
-    <button class="btn ${done?"ghost":""}" onclick="${done?`state.read.delete('${k}');buildNav();updProgress();render()`:`markRead('${k}')`}">
-      ${done?"読了を取り消す":"読み終えた"}</button></div>`;
-}
-function bindDeep(){
-  document.querySelectorAll(".deep-btn").forEach(b=>{
-    b.onclick=()=>{const d=b.parentElement.querySelector(".deep");
-      const o=d.hidden;d.hidden=!o;b.setAttribute("aria-expanded",o);};
-  });
-}
-
-/* ══ 画面：Part 0-1 ══════════════════ */
-function viewP01(key){
-  const sec=P01.find(s=>s.key===key);
-  const v=$("view");
-  v.innerHTML=`<p class="intro">${key==="p0"
-    ? "前提知識はいりません。各トピックは<b>答え → 図 → 深掘り</b>の3層構成です。上2つだけ読めば最後まで進めます。青い点線の語はタップすると意味が出ます。"
-    : "ここが全編の土台です。<b>この章さえ腹落ちすれば、残りはすべて応用</b>になります。特に1-2の分数図は、以降ずっと共通言語として使います。"}</p>
-   <div class="h2s">${sec.sub}</div>` +
-   sec.topics.map(t=>`<article class="topic">
-     <div class="t-h"><span class="t-id">${t.id}</span><div class="t-q">${t.q}</div></div>
-     <div class="lab">答え</div><div class="answer">${t.a}</div>
-     <div class="lab">図で見る</div><div class="figbox">${t.fig}</div>
-     <div class="cap">${t.cap}</div>
-     <button class="deep-btn" aria-expanded="false"><span class="chev">▶</span>もっと深く知りたい人へ</button>
-     <div class="deep" hidden>${t.deep.map(x=>`<p>${linkTerms(x)}</p>`).join("")}</div>
-   </article>`).join("") + readMark(key);
-  $("pageMeta").textContent=`${sec.topics.length} トピック`;
-  bindDeep();
-}
-
-/* ══ 画面：Part 2 ══════════════════ */
-/* 経路のどこに効くかを示すミニ図（全指標で共通の型） */
-const PATH_STEPS=[["01","経済指標"],["02","政策の予想"],["03","金利"],["04","分子・分母"],["05","株価"]];
-function pathMini(hit){
-  const W=124,G=14;
-  return `<svg viewBox="0 0 ${PATH_STEPS.length*(W+G)-G} 62" role="img">
-   <title>この指標が効く場所</title>
-   ${PATH_STEPS.map((st,i)=>{
-     const x=i*(W+G), on=hit.includes(i);
-     return `<rect x="${x}" y="8" width="${W}" height="40" rx="8"
-       fill="${on?"#EEF2FF":"#fff"}" stroke="${on?"#C7D2FE":"#E5E7EB"}" stroke-width="1.5"/>
-      <text x="${x+W/2}" y="24" text-anchor="middle" font-size="9.5" font-weight="600"
-        fill="${on?"#4338CA":"#9CA3AF"}" letter-spacing="1">${st[0]}</text>
-      <text x="${x+W/2}" y="40" text-anchor="middle" font-size="11.5" font-weight="${on?600:400}"
-        fill="${on?"#4338CA":"#9CA3AF"}">${st[1]}</text>`
-      +(i<PATH_STEPS.length-1
-        ? `<polygon points="${x+W+G-3},28 ${x+W+4},24 ${x+W+4},32" fill="#D1D5DB"/>`:"");
-   }).join("")}</svg>`;
-}
-
-function viewP2(){
-  const v=$("view");
-  v.innerHTML=`<p class="intro">この章は<b>通しで読む章ではありません</b>。ニュースで名前を見かけたときに引く辞書として使ってください。まずは各指標の「答え」と図だけ眺めて、必要になったら開けば十分です。</p>
-
-    <article class="topic">
-      <div class="t-h"><span class="t-id">${P2INTRO.id}</span><div class="t-q">${P2INTRO.q}</div></div>
-      <div class="lab">答え</div><div class="answer">${P2INTRO.a}</div>
-      <div class="lab">図で見る</div><div class="figbox">${P2INTRO.fig}</div>
-      <div class="cap">${P2INTRO.cap}</div>
-      <button class="deep-btn" aria-expanded="false"><span class="chev">▶</span>もっと深く知りたい人へ</button>
-      <div class="deep" hidden>${P2INTRO.deep.map(x=>`<p>${linkTerms(x)}</p>`).join("")}</div>
-    </article>
-
-    <div class="h2">指標カタログ</div>
-    <div class="h2s">全指標が同じ形式で書かれています。上2段だけ読めば十分で、詳細は開いたときだけ出ます。</div>
-    <div class="filters" id="ifil"></div><div class="tbl" id="itbl"></div><div id="icards"></div>`+readMark("p2");
-
-  const FL=[["all","すべて"],["最重要","最重要のみ"],["num","分子に効く"],["den","分母に効く"],["both","両方に効く"],["日","日本"]];
-  const fw=$("ifil");
-  FL.forEach(([k,l])=>{
-    const b=document.createElement("button");b.textContent=l;
-    b.setAttribute("aria-pressed",state.ifilter===k);
-    b.onclick=()=>{state.ifilter=k;viewP2();};
-    fw.appendChild(b);
-  });
-  const f=state.ifilter;
-  const list=IND.filter(x=>f==="all"||(f==="最重要"?x.imp==="最重要":f==="日"?x.area.includes("日"):x.route===f));
-  $("pageMeta").textContent=`${list.length} 指標`;
-
-  $("itbl").innerHTML=`<div class="tbl-h"><span>指標</span><span>発表頻度</span><span>効くルート</span><span>重要度</span></div>`
-   +list.map(x=>`<div class="tbl-r">
-      <span><span class="tbl-n">${x.n}</span><br><span class="tbl-sub">${x.en}</span></span>
-      <span class="tbl-sub">${x.freq}</span>
-      <span><span class="pill ${ROUTE[x.route][1]}">${ROUTE[x.route][0]}</span></span>
-      <span><span class="pill ${IMP[x.imp]}">${x.imp}</span></span></div>`).join("");
-
-  /* 各指標も Part 0-1 と同じ3層構造にする。
-     常時表示＝答え（やさしい一文）＋図。詳細4項目は折りたたみへ。 */
-  $("icards").innerHTML=list.map(x=>`<article class="topic">
-      <div class="t-h"><span class="t-id">${x.freq}</span>
-        <div><div class="t-q">${x.n}<span class="card-en" style="margin-left:7px">${x.en}</span></div></div>
-        <span class="card-tags" style="margin-left:auto">
-          <span class="pill ${x.area.includes("日")?"p-g":"p-i"}">${x.area}</span>
-          <span class="pill ${ROUTE[x.route][1]}">${ROUTE[x.route][0]}</span>
-          <span class="pill ${IMP[x.imp]}">${x.imp}</span></span></div>
-      <div class="lab">答え</div>
-      <div class="answer">${x.one}</div>
-      <div class="prose"><p>${linkTerms(x.plain)}</p></div>
-      <div class="lab">経路のどこに効くか</div>
-      <div class="figbox">${pathMini(x.hit)}</div>
-      <div class="cap">色がついている段階に、この指標が強く効きます。</div>
-      <button class="deep-btn" aria-expanded="false"><span class="chev">▶</span>もっと深く知りたい人へ</button>
-      <div class="deep" hidden>
-        <div class="fld"><div class="fld-k">何を測るか</div><div class="fld-v">${linkTerms(x.what)}</div></div>
-        <div class="fld"><div class="fld-k">どこを見るか</div><div class="fld-v">${linkTerms(x.watch)}</div></div>
-        <div class="fld"><div class="fld-k">効くルート</div><div class="fld-v"><div class="route">${linkTerms(x.routeTxt)}</div></div></div>
-        <div class="fld"><div class="fld-k">強い数字が出たら</div><div class="fld-v">${linkTerms(x.strong)}</div></div>
-        <div class="fld"><div class="fld-k">つまずきやすい点</div><div class="fld-v"><div class="warn" style="margin:0">${linkTerms(x.caution)}</div></div></div>
-      </div>
-    </article>`).join("");
-  bindDeep();
-}
-
-/* ══ 実測感応度の読み込み ══════════════
-   sensitivities.json があれば SECTORS を実データで置き換える。
-   無い場合は概念値のまま動く（GitHub Pages に置く前でも壊れない）。 */
-let SENS_META=null;
-async function loadSensitivities(){
-  try{
-    const r=await fetch("sensitivities.json",{cache:"no-cache"});
-    if(!r.ok)throw new Error("not found");
-    const j=await r.json();
-    if(!Array.isArray(j.sectors)||!j.sectors.length)throw new Error("empty");
-    SECTORS.length=0;
-    j.sectors.forEach(x=>SECTORS.push(x));
-    SENS_META={asOf:j.asOf,window:j.window,n:j.observations,r2:j.medianR2};
-    if(state.page==="p3")render();
-  }catch(_){ /* 概念値のまま続行 */ }
-}
-
-/* ══ 画面：Part 3 ══════════════════ */
-function viewP3(){
-  const v=$("view");
-  v.innerHTML=`<p class="intro">ここが本編です。実際のニュースを1件ずつ、指標から株価まで追いかけます。並び順は重要度ではなく<b>難易度順</b>。反応が素直なCPIから入り、最も複雑な雇用統計を後半に置いています。</p>
-   ${CASES.map(c=>`<div class="card">
-    <div class="case-h"><div class="case-top"><span class="case-id">${c.no}</span>
-      <span class="pill ${c.lv==="easy"?"p-g":c.lv==="mid"?"p-d":"p-a"}">${c.lvn}</span></div>
-      <div class="case-t">${c.t}</div><div class="case-lede">${c.lede}</div></div>
-    <div class="hl">${c.hl}</div>
-    <div class="lab">経路をたどる</div>${chainHTML(c.chain)}
-    <div class="lab">分数図で見る</div>${fracHTML(c.num,c.den,c.why)}
-    <div class="prose">${c.prose.map(p=>`<p>${p}</p>`).join("")}</div>
-    <div class="warn"><b>ここに注意</b>${c.warn}</div>
-    <button class="deep-btn" aria-expanded="false"><span class="chev">▶</span>もっと深く知りたい人へ</button>
-    <div class="deep" hidden>${c.deep.map(p=>`<p>${p}</p>`).join("")}</div></div>`).join("")}
-
-   <div class="h2">3-6　どのセクターが動くかは、経路から決まる</div>
-   <div class="h2s">主導要因を選ぶと、反応の大きい順に並び替わります。方向と順位は決まりますが、何％動くかは決まりません。</div>
-   <div class="sec-block">
-     <div class="filters" id="drv"></div>
-     <div id="secList"></div>
-     <div style="font-size:12.5px;color:var(--text-2);margin-top:14px;line-height:1.8" id="drvNote"></div>
-     <div id="sensSrc"></div>
-   </div>
-
-   <div class="h2">3-7　すべてのニュースは、この9マスのどれかに入る</div>
-   <div class="h2s">分子3通り × 分母3通り。マスを選ぶと、典型例と読み方が出ます。</div>
-   <div class="grid-wrap">
-     <div style="font-size:12px;color:var(--text-3)">縦＝分子（業績期待）　横＝分母（割引率）</div>
-     <div class="grid9" id="grid9"></div>
-     <div class="detail" id="d9"></div>
-   </div>` + readMark("p3");
-  $("pageMeta").textContent="5ケース ＋ 9マス";
-  bindDeep();
-
-  /* セクター影響マップ */
-  state.drv=state.drv??0;
-  const dw=$("drv");
-  DRIVERS.forEach((d,i)=>{
-    const b=document.createElement("button");b.textContent=d.label;
-    b.setAttribute("aria-pressed",state.drv===i);
-    b.onclick=()=>{state.drv=i;drawSectors();
-      dw.querySelectorAll("button").forEach((x,j)=>x.setAttribute("aria-pressed",j===i));};
-    dw.appendChild(b);
-  });
-  drawSectors();
-
-  const g=$("grid9");
-  ["","分母 ↑","分母 →","分母 ↓"].forEach(h=>{
-    const d=document.createElement("div");d.className="gh";d.textContent=h;g.appendChild(d);});
-  [1,0,-1].forEach(n=>{
-    const rh=document.createElement("div");rh.className="gh";rh.textContent="分子 "+AR[String(n)];g.appendChild(rh);
-    [1,0,-1].forEach(d=>{
-      const c=CELLS.find(x=>x.n===n&&x.d===d);
-      const b=document.createElement("button");b.className="cell";b.setAttribute("aria-pressed",false);
-      b.innerHTML=`<div class="cell-v ${c.c}">${c.v}</div><div class="cell-l">${c.l}</div>`;
-      b.onclick=()=>{g.querySelectorAll(".cell").forEach(x=>x.setAttribute("aria-pressed",x===b));
-        $("d9").innerHTML=`<div class="detail-t">${c.t}</div><div class="detail-p">${c.p}</div>`;};
-      g.appendChild(b);
-    });
-  });
-  $("d9").innerHTML=`<div class="detail-t">マスを選んでください</div>
-    <div class="detail-p">9つのマスは、それぞれ典型的な相場局面に対応しています。どのニュースも必ずこのどれかに入ります。</div>`;
-}
-
-/* 主導要因ごとにセクターを並び替えて表示する */
-function drawSectors(){
-  const d=DRIVERS[state.drv??0];
-  const rows=SECTORS.map(x=>({n:x.n,s:x.s,v:x[d.k]*d.sign}))
-    .sort((a,b)=>b.v-a.v);
-  const el=$("secList");if(!el)return;
-  el.innerHTML=rows.map(r=>`<div class="sec-row">
-    <div class="sec-n">${r.n}<span>${r.s}</span></div>
-    <div class="track"><div class="mid"></div>
-      <div class="${r.v>=0?"fillp":"filln"}" style="width:${Math.abs(r.v)/2}%"></div></div>
-    <div class="sec-v" style="color:${r.v>=0?"var(--red)":"var(--blue)"}">${
-      Math.abs(r.v)>=70?(r.v>0?"大きく上":"大きく下"):Math.abs(r.v)>=35?(r.v>0?"上":"下"):"小さい"}</div></div>`).join("");
-  const note=$("drvNote");
-  if(note)note.innerHTML=d.note+"　<b>指数が横ばいでも、中身はこれだけ違う方向に動いています。</b>";
-  const src=$("sensSrc");
-  if(src)src.innerHTML=SENS_META
-    ? `<div class="note" style="margin-top:14px"><b>実測データにもとづく感応度</b>
-        <p>${SENS_META.window}／${SENS_META.n}営業日の日次リターンを、TOPIX・10年国債利回り・ドル円で重回帰した係数です（${SENS_META.asOf} 時点、決定係数の中央値 ${SENS_META.r2}）。市場全体の動きを除いた、その業種固有の感応度を表しています。</p></div>`
-    : `<div class="warn" style="margin-top:14px">この強弱は<b>相対的な傾向を示す概念値</b>で、実測データではありません。<code>sensitivities.json</code> を配置すると、実測値に自動で切り替わります。</div>`;
-}
-
-/* ══ 画面：Part 4 ══════════════════ */
-function viewP4(){
-  const corrHTML=`<div class="lab">株と債券の関係</div>
-   <div class="corr">
-    <div class="corr-c"><div class="corr-t">平時</div><div class="corr-s">逆に動く（分散が効く）</div>
-      <div class="corr-r"><span class="corr-n">株</span><div class="corr-b"><div class="corr-f fd" style="right:50%;width:28%"></div></div></div>
-      <div class="corr-r"><span class="corr-n">債券</span><div class="corr-b"><div class="corr-f fu" style="left:50%;width:24%"></div></div></div></div>
-    <div class="corr-c"><div class="corr-t">極端なリスクオフ</div><div class="corr-s">同じ方向に落ちる（分散が効かない）</div>
-      <div class="corr-r"><span class="corr-n">株</span><div class="corr-b"><div class="corr-f fd" style="right:50%;width:44%"></div></div></div>
-      <div class="corr-r"><span class="corr-n">債券</span><div class="corr-b"><div class="corr-f fd" style="right:50%;width:26%"></div></div></div></div>
-   </div>`;
-
-  $("view").innerHTML=`<p class="intro">Part 3までで経路は身につきました。ここからは<b>その経路が通用しない場面をどう見分けるか</b>です。経路を覚えることより、今それが効いているかを判断できることの方が実力に近い。最後にその手順をチェックリストにまとめます。</p>
-
-   ${P4.slice(0,1).map(c=>card4(c)).join("")}
-
-   <div class="card">
-     <div class="case-h"><div class="case-top"><span class="case-id">4-2</span>
-       <span class="pill p-p">この章の核心</span></div>
-       <div class="case-t">今日の相場は、分子と分母のどちらが支配しているか。</div></div>
-     <div class="hl">金利と株が同じ方向に動いたか、逆方向に動いたか。それだけで、その日のモードが判定できる。</div>
-     <div class="prose"><p>同じニュースが局面によって逆に効くことは、Part 3-4で見たとおりです。では、今がどちらの局面かをどうやって知るか。<b>金利と株価の動きの符号を突き合わせる</b>のが最も簡単な方法です。</p>
-       <p>下の表で、その日の動きに当てはまるマスを選んでください。</p></div>
-     <div class="lab">レジーム判定</div>
-     <div style="padding:0 20px"><div class="rg-grid" id="rgGrid"></div>
-       <div class="detail" id="rgOut"></div></div>
-     <div class="warn">この判定は「今どちらが支配的か」を教えるだけで、明日どうなるかは教えません。モードは数週間から数か月で切り替わります。<b>先週の判定を今週にそのまま持ち込まない</b>こと。</div>
-   </div>
-
-   ${card4(P4[1],corrHTML)}
-   ${card4(P4[2])}
-
-   <div class="h2">4-5　ニュースを見たときの、実践チェックリスト</div>
-   <div class="h2s">この5ステップを順に踏むと、Part 0からの内容が一本につながります。</div>
-   <div class="chk"><div id="chkList"></div>
-     <div style="font-size:12.5px;color:var(--text-3);margin-top:12px" id="chkDone">0 / 5</div></div>
-   ` + readMark("p4");
-  $("pageMeta").textContent="5トピック";
-  bindDeep();
-
-  const g=$("rgGrid");
-  ["","株価 ↑","株価 ↓"].forEach(h=>{
-    const d=document.createElement("div");d.className="gh";d.textContent=h;g.appendChild(d);});
-  [1,-1].forEach(r=>{
-    const rh=document.createElement("div");rh.className="gh";rh.textContent="金利 "+(r===1?"↑":"↓");g.appendChild(rh);
-    [1,-1].forEach(s=>{
-      const c=REG.find(x=>x.r===r&&x.s===s);
-      const b=document.createElement("button");b.className="rg-cell";b.setAttribute("aria-pressed",false);
-      b.innerHTML=`<div class="rg-mode ${c.cls}">${c.mode}</div><div class="rg-desc">${c.d}</div>`;
-      b.onclick=()=>{g.querySelectorAll(".rg-cell").forEach(x=>x.setAttribute("aria-pressed",x===b));
-        $("rgOut").innerHTML=`<div class="detail-t">${c.t}</div><div class="detail-p">${c.p}</div>`;};
-      g.appendChild(b);
-    });
-  });
-  $("rgOut").innerHTML=`<div class="detail-t">マスを選んでください</div>
-    <div class="detail-p">その日の金利と株価の動きを突き合わせるだけで、市場が今どちらを見ているかがわかります。</div>`;
-
-  let done=0;
-  $("chkList").innerHTML=CHK.map((c,i)=>`<div class="chk-i">
-    <button class="chk-box" aria-pressed="false" aria-label="${c.n}">✓</button>
-    <div><div class="chk-n">${i+1}. ${c.n}</div><div class="chk-d">${c.d}</div></div></div>`).join("");
-  document.querySelectorAll(".chk-box").forEach(b=>{
-    b.onclick=()=>{const on=b.getAttribute("aria-pressed")==="true";
-      b.setAttribute("aria-pressed",!on);done+=on?-1:1;
-      $("chkDone").textContent=`${done} / 5`+(done===5?"　── ここまで踏めば、その日のニュースは読み切れています。":"");};
-  });
-}
-function card4(c,extra){
-  return `<div class="card">
-    <div class="case-h"><div class="case-top"><span class="case-id">${c.id}</span>
-      <span class="pill ${c.cls}">${c.tag}</span></div>
-      <div class="case-t">${c.t}</div></div>
-    <div class="hl">${c.hl}</div>
-    <div class="prose">${c.prose.map(p=>`<p>${p}</p>`).join("")}</div>
-    ${extra||""}
-    <div class="warn"><b>ここに注意</b>${c.warn}</div></div>`;
-}
-
-/* ══ 画面：テスト ══════════════════ */
-const TMODES=[["chapter","章末テスト","Part別に理解度を確認します。間違えた問題は自動で復習キューに入ります。"],
- ["review","弱点復習","間違えた問題だけを再出題します。まずは章末テストか実戦問題に取り組んでください。"],
- ["practice","実戦問題","ニュースを読んで、分子と分母がそれぞれどちらに動くかを答えます。9マスの実地訓練です。"]];
-
-function viewTest(){
-  $("view").innerHTML=`<div class="modes" id="tm"></div>
-    <div class="intro" id="tdesc"></div>
-    <div class="score"><span class="score-n" id="sn">0 / 0</span>
-      <div class="bar"><div class="bar-f" id="bf"></div></div>
-      <span class="score-l" id="sl">未回答</span>
-      <button class="reset" onclick="resetTest()">リセット</button></div>
-    <div class="pfilter" id="pf"></div><div id="qout"></div>
-    <div class="note"><b>間隔反復について</b>
-      <p>このプロトタイプでは、間違えた問題をその場で復習キューに入れています。実運用では「3日後・1週間後・1か月後」に自動で再出題する仕組みにします。忘却曲線に合わせた再出題が、学習定着で最も効果が大きい部分です。</p></div>`;
-  const tm=$("tm");
-  TMODES.forEach(([k,l])=>{
-    const b=document.createElement("button");b.textContent=l;
-    b.setAttribute("aria-pressed",state.tmode===k);
-    b.onclick=()=>{state.tmode=k;viewTest();};tm.appendChild(b);
-  });
-  $("tdesc").textContent=TMODES.find(m=>m[0]===state.tmode)[2];
-  const pf=$("pf");
-  pf.style.display=state.tmode==="chapter"?"flex":"none";
-  ["すべて","Part 0","Part 1","Part 2","Part 3","Part 4"].forEach((l,i)=>{
-    const b=document.createElement("button");b.textContent=l;
-    b.setAttribute("aria-pressed",state.tpart===i-1);
-    b.onclick=()=>{state.tpart=i-1;viewTest();};pf.appendChild(b);
-  });
-  updScore();
-  const out=$("qout");
-  if(state.tmode==="practice"){PRAC.forEach((p,n)=>out.appendChild(pracCard(p,n)));return;}
-  let list;
-  if(state.tmode==="review"){
-    list=[...state.wrong].map(i=>({i,...QB[i]}));
-    if(!list.length){out.innerHTML=`<div class="empty">復習キューは空です。<br>章末テストか実戦問題で間違えた問題が、ここに溜まります。</div>`;return;}
-  }else list=QB.map((q,i)=>({i,...q})).filter(q=>state.tpart<0||q.p===state.tpart);
-  list.forEach((q,n)=>out.appendChild(qCard(q,n)));
-  $("pageMeta").textContent=`設問 ${QB.length} ＋ 実戦 ${PRAC.length}`;
-}
-function updScore(){
-  if(!$("sn"))return;
-  $("sn").textContent=`${state.correct} / ${state.answered}`;
-  $("bf").style.width=state.answered?`${state.correct/state.answered*100}%`:"0";
-  $("sl").textContent=state.answered
-    ?`正答率 ${Math.round(state.correct/state.answered*100)}％　／　復習キュー ${state.wrong.size} 問`:"未回答";
-  updProgress();
-}
-function mark(ok){state.answered++;if(ok)state.correct++;updScore();}
-function resetTest(){state.correct=0;state.answered=0;state.wrong.clear();viewTest();}
-
-function qCard(q,n){
-  const d=document.createElement("div");d.className="q";
-  d.innerHTML=`<div class="q-top"><span class="q-n">Q${String(n+1).padStart(2,"0")}</span>
-     <span class="pill p-i">Part ${q.p}</span></div>
-    <div class="q-t">${q.q}</div><div class="opts"></div><div class="expl" hidden></div>`;
-  const box=d.querySelector(".opts"),ex=d.querySelector(".expl");
-  q.o.forEach((o,j)=>{
-    const b=document.createElement("button");b.className="opt";b.textContent=o;
-    b.onclick=()=>{
-      box.querySelectorAll("button").forEach((x,k)=>{x.disabled=true;
-        if(k===q.a)x.classList.add("ok");else if(k===j)x.classList.add("ng");});
-      const ok=j===q.a;
-      if(ok)state.wrong.delete(q.i);else state.wrong.add(q.i);
-      ex.hidden=false;
-      ex.innerHTML=`<span class="verdict ${ok?"v-ok":"v-ng"}">${ok?"正解":"不正解"}</span>${q.e}`;
-      mark(ok);
-    };
-    box.appendChild(b);
-  });
-  return d;
-}
-function pracCard(p,n){
-  const d=document.createElement("div");d.className="q";
-  d.innerHTML=`<div class="q-top"><span class="q-n">実戦 ${String(n+1).padStart(2,"0")}</span></div>
-    <div class="news"><div class="news-tag">NEWS</div>${p.news}</div>
-    ${pickerHTML()}
-    <div style="padding:0 20px 18px"><button class="btn" disabled>答え合わせ</button></div>
-    <div class="ans"></div>`;
-  bindPicker(d,(sel,sub)=>{
-    const okN=sel.n===p.num,okD=sel.d===p.den,ok=okN&&okD;
-    revealPicker(d,p.num,p.den,sel);sub.disabled=true;
-    d.querySelector(".ans").innerHTML=`<div class="expl">
-      <span class="verdict ${ok?"v-ok":"v-ng"}">${ok?"正解":okN||okD?"惜しい（片方のみ正解）":"不正解"}</span>
-      正解は 分子 ${AR[p.num]} ／ 分母 ${AR[p.den]}<br>${p.e}</div>`;
-    mark(ok);
-  });
-  return d;
-}
-function pickerHTML(){
-  return `<div class="picker">
-    <div><div class="pgrp-l">分子（業績期待）</div><div class="pbtns" data-t="n">
-      <button data-v="1" aria-pressed="false">↑</button><button data-v="0" aria-pressed="false">→</button>
-      <button data-v="-1" aria-pressed="false">↓</button></div></div>
-    <div><div class="pgrp-l">分母（割引率）</div><div class="pbtns" data-t="d">
-      <button data-v="1" aria-pressed="false">↑</button><button data-v="0" aria-pressed="false">→</button>
-      <button data-v="-1" aria-pressed="false">↓</button></div></div></div>`;
-}
-function bindPicker(root,onSubmit){
-  const sel={n:null,d:null},sub=root.querySelector(".btn");
-  root.querySelectorAll(".pbtns").forEach(grp=>{
-    grp.querySelectorAll("button").forEach(b=>{
-      b.onclick=()=>{grp.querySelectorAll("button").forEach(y=>y.setAttribute("aria-pressed",y===b));
-        sel[grp.dataset.t]=Number(b.dataset.v);sub.disabled=sel.n===null||sel.d===null;};
-    });
-  });
-  sub.onclick=()=>onSubmit(sel,sub);
-}
-function revealPicker(root,num,den,sel){
-  root.querySelectorAll(".pbtns").forEach(grp=>{
-    const t=grp.dataset.t,ans=t==="n"?num:den,mine=sel[t];
-    grp.querySelectorAll("button").forEach(b=>{b.disabled=true;const v=Number(b.dataset.v);
-      if(v===ans)b.classList.add("ok");else if(v===mine)b.classList.add("ng");});
-  });
-}
-
-/* ══ 画面：今日の相場 ══════════════
-   AIも有料APIも使わない。build_market_daily.py が公開データから作った
-   market.json を読み、Part 2〜4のルールで組み立てた結果を表示するだけ。 */
-
-function viewLive(){
-  $("view").innerHTML=`<p class="intro">公開データから機械的に計算しています。<b>金利と株価の符号からレジームを判定し</b>、
-    直近の指標が過去のブレ幅からどれだけ外れたかでサプライズを測ります。推測は一切入りません。</p>
-    <div class="modes" id="lm"></div>
-    <div class="livebar"><span class="stamp" id="src"></span></div>
-    <div id="lout"><div class="status"><span class="dots">データを読み込んでいます</span></div></div>`;
-  const lm=$("lm");
-  [["decode","今日の相場"],["quiz","今日の1問"]].forEach(([k,l])=>{
-    const b=document.createElement("button");b.textContent=l;
-    b.setAttribute("aria-pressed",(state.lmode||"decode")===k);
-    b.onclick=()=>{state.lmode=k;viewLive();};lm.appendChild(b);
-  });
-  if(state.market===undefined)loadMarket();else renderLive();
-}
-
-async function loadMarket(){
-  try{
-    const r=await fetch("market.json",{cache:"no-cache"});
-    if(!r.ok)throw new Error("not found");
-    state.market=await r.json();
-  }catch(_){ state.market=null; }
-  if(state.page==="live")renderLive();
-}
-
-function renderLive(){
-  const out=$("lout");if(!out)return;
-  const m=state.market;
-  if(!m){
-    $("src").textContent="サンプル表示";
-    out.innerHTML=`<div class="warn" style="margin:0 0 16px"><b>market.json がまだありません</b>
-        build_market_daily.py を実行して market.json を置くと、実際の数字に切り替わります。
-        いまはサンプルを表示しています。</div>`;
-    DEMO.forEach(x=>out.appendChild(liveCard(x)));
-    return;
-  }
-  $("src").textContent=`${m.asOf} 時点 ／ ${m.sources||""}`;
-  out.innerHTML="";
-
-  if((state.lmode||"decode")==="quiz"){
-    const top=(m.indicators||[])[0];
-    if(!top){out.innerHTML=`<div class="empty">出題できる指標がありません。</div>`;return;}
-    out.appendChild(marketQuiz(top));
-    return;
-  }
-
-  /* レジーム判定 */
-  (m.regimes||[]).forEach(r=>out.appendChild(regimeCard(r)));
-  if(m.fx)out.appendChild(fxCard(m.fx));
-
-  /* 指標 */
-  (m.indicators||[]).forEach(x=>out.appendChild(indicatorCard(x)));
-
-  const note=document.createElement("div");note.className="note";
-  note.innerHTML=`<b>この数字の作り方</b><p>${m.method||""}</p>
-    <p>ニュース記事ではなく、統計そのものを見ています。解釈はPart 2〜4で学んだルールをそのまま当てはめており、
-    AIによる推測は入っていません。</p>`;
-  out.appendChild(note);
-}
-
-function regimeCard(r){
-  const d=document.createElement("div");d.className="card";
-  const cls=r.mode.includes("分母")?"p-d":r.mode.includes("分子")?"p-u":"p-f";
-  d.innerHTML=`<div class="case-h"><div class="case-top">
-      <span class="case-id">${r.market}</span>
-      <span class="pill ${cls}">${r.mode}</span>
-      <span class="pill p-p">${r.desc}</span></div>
-      <div class="case-t">直近5営業日：金利 ${r.rateChg>=0?"＋":""}${r.rateChg}％pt ／ 株価 ${r.stockChg>=0?"＋":""}${r.stockChg}％</div></div>
-    <div class="lab">レジーム判定</div>
-    ${chainHTML([["金利","10年国債利回りが "+(r.r>0?"上昇":r.r<0?"低下":"横ばい")],
-      ["株価","指数が "+(r.s>0?"上昇":r.s<0?"下落":"横ばい"),1],
-      ["判定",r.mode+"（"+r.desc+"）",1]])}
-    <div class="why-box">${r.note}</div>`;
-  return d;
-}
-
-function fxCard(f){
-  const d=document.createElement("div");d.className="card";
-  d.innerHTML=`<div class="case-h"><div class="case-top">
-      <span class="case-id">為替</span>
-      <span class="pill ${f.chg>=0?"p-u":"p-d"}">${f.dir}</span></div>
-      <div class="case-t">ドル円 ${f.value}（直近5営業日 ${f.chg>=0?"＋":""}${f.chg}％）</div></div>
-    <div class="why-box">${f.note} Part 3-6のセクター影響マップで「${f.dir}が進む」を選ぶと、
-      どの業種が動きやすいかを確認できます。</div>`;
-  return d;
-}
-
-function indicatorCard(x){
-  const d=document.createElement("div");d.className="card";
-  const lvCls=x.level==="大"?"p-a":x.level==="中"?"p-d":"p-neutral";
-  d.innerHTML=`<div class="case-h"><div class="case-top">
-      <span class="case-id">${x.date}</span>
-      <span class="pill ${lvCls}">影響度 ${x.level}</span>
-      <span class="pill p-neutral">サプライズ ${x.surprise}</span>
-      <span class="pill p-neutral">出典 ${x.source}</span></div>
-      <div class="case-t">${x.name}　${x.value}</div>
-      <div class="case-lede">${x.baseline}　／　zスコア ${x.z>=0?"＋":""}${x.z}</div></div>
-    <div class="lab">分数図で見る</div>${fracHTML(x.num,x.den,x.why)}
-    <div class="lab">影響度の根拠</div>
-    <div class="prose"><p>${x.levelWhy}</p></div>
-    <div style="height:18px"></div>`;
-  return d;
-}
-
-function marketQuiz(x){
-  const d=document.createElement("div");d.className="card";
-  d.innerHTML=`<div class="case-h"><div class="case-top">
-      <span class="case-id">${x.date}</span><span class="pill p-p">今日の1問</span></div>
-      <div class="case-t">この発表で、分子と分母はどちらに動いたか。</div></div>
-    <div class="lab">発表された数字</div>
-    <div class="news" style="margin-top:6px"><div class="news-tag">${x.name}</div>
-      ${x.value}（${x.baseline}）</div>
-    ${pickerHTML()}
-    <div style="padding:0 20px 18px"><button class="btn" disabled>答え合わせ</button></div>
-    <div class="ans"></div>`;
-  bindPicker(d,(sel,sub)=>{
-    const okN=sel.n===x.num,okD=sel.d===x.den,ok=okN&&okD;
-    revealPicker(d,x.num,x.den,sel);sub.disabled=true;
-    d.querySelector(".ans").innerHTML=`<div class="expl">
-        <span class="verdict ${ok?"v-ok":"v-ng"}">${ok?"正解":okN||okD?"惜しい（片方のみ正解）":"不正解"}</span>
-        正解は 分子 ${AR[x.num]} ／ 分母 ${AR[x.den]}<br>${x.why}</div>
-      <div class="lab">分数図で確認する</div>${fracHTML(x.num,x.den,x.why)}
-      <div style="height:18px"></div>`;
-    mark(ok);
-  });
-  return d;
-}
-
-/* market.json が無いときのサンプル表示用 */
-function liveCard(x){
-  const sc=x.num-x.den;
-  const v=(x.num===x.den&&x.num!==0)?["p-f","拮抗 ／ 局面しだい"]
-    :sc>0?["p-u","株価 ↑"]:sc<0?["p-d","株価 ↓"]:["p-f","動きにくい"];
-  const d=document.createElement("div");d.className="card";
-  d.innerHTML=`<div class="case-h"><div class="case-top">
-      <span class="case-id">${x.date||"サンプル"}</span>
-      <span class="pill ${v[0]}">${v[1]}</span>
-      <span class="pill p-p">${x.regime||""}</span></div>
-      <div class="case-t">${x.headline}</div></div>
-    <div class="lab">経路をたどる</div>
-    ${chainHTML([["01 指標",x.indicator],["02 政策予想",x.policy],["03 金利",x.rate],
-      ["04 分子・分母",x.valuation,1],["05 株価",x.impact]])}
-    <div class="lab">分数図で見る</div>${fracHTML(x.num,x.den,x.valuation)}
-    <div class="why-box"><b>ひとことで言うと</b>　${x.why}</div>`;
-  return d;
-}
-
-/* ══ ルーター ══════════════════════ */
+});
+['fBucket','fSignal','fSector','fBox','fPass','fEx','fSearch','fSort'].forEach(id=>{
+  $(id).addEventListener('input',()=>{if(S.view==='all')renderAll();});
+});
 function render(){
-  $("pageMeta").textContent="";
-  const k=state.page;
-  if(k==="p0"||k==="p1")viewP01(k);
-  else if(k==="p2")viewP2();
-  else if(k==="p3")viewP3();
-  else if(k==="p4")viewP4();
-  else if(k==="test")viewTest();
-  else if(k==="live")viewLive();
+  if(S.view==='signals')renderSignals();
+  else if(S.view==='all')renderAll();
+  else if(S.view==='fwd')renderFwd();
+  else if(S.view==='port')renderPort();
+  else if(S.view==='watch')renderWatch();
 }
 
-/* ══ 用語ポップ ══════════════════════ */
-const pop=$("pop");
-function showPop(w){$("popw").textContent=w;$("popd").textContent=DICT[w]||"（定義未登録）";pop.classList.add("on");}
-function closePop(){pop.classList.remove("on");}
-document.addEventListener("keydown",e=>{if(e.key==="Escape")closePop();});
-
-/* ══ 起動 ══════════════════════════ */
-const _p=new URLSearchParams(location.search).get("p");
-buildNav();updProgress();
-go(PAGES.some(x=>x.k===_p)?_p:"p0");
-loadSensitivities();
-
-/* DIVIDEND HEIST へのリンク先。配置に合わせて書き換える */
-const DH_URL="https://nabe1216.github.io/kabu/";
-document.getElementById("dhLink").setAttribute("href",DH_URL);
-
-if("serviceWorker" in navigator){
-  window.addEventListener("load",()=>{
-    navigator.serviceWorker.register("sw.js")
-      .catch(err=>console.info("SW未登録（この環境では正常です）:",err.message));
+function stockRow(s){
+  const watchOn=S.watch.includes(s.code);
+  return`<tr onclick="openDetail('${s.code}')">
+    <td>${sigPill(s)}${s.is_box?' <span class="pill p-box">BOX</span>':''}</td>
+    <td><span class="t-code">${s.code}</span><div class="t-name" style="display:inline-block;margin-left:8px">${esc(s.name)}${cheapTags(s)}<small>${esc(s.sector||'')}</small></div></td>
+    <td><span class="pill ${bucketClass(s)}">${bucketLabel(s)}</span></td>
+    <td>${tierChip(s)}</td>
+    <td class="t-right mono" style="font-weight:600">${fmt.pct(s.current_yield)}</td>
+    <td>${rangeBar(s)}</td>
+    <td class="t-right">${grahamCell(s)}</td>
+    <td class="t-right mono">${fmt.oku(s.market_cap_oku)}</td>
+    <td onclick="event.stopPropagation()"><button class="star ${watchOn?'on':''}" onclick="toggleWatch('${s.code}',this)">★</button></td>
+  </tr>`;
+}
+function renderSignals(){
+  const rows=S.data.stocks.filter(s=>s.screening_pass&&!s.emergency_exit&&(s.signal==='BUY'||s.signal==='SELL'));
+  const order={S:0,A:1,B:2};
+  rows.sort((a,b)=>(a.signal===b.signal?0:a.signal==='BUY'?-1:1)||(order[a.tier]??9)-(order[b.tier]??9)||(b.current_yield||0)-(a.current_yield||0));
+  $('tbSignals').innerHTML=rows.map(stockRow).join('');
+  $('emptySignals').style.display=rows.length?'none':'';
+}
+function renderAll(){
+  const f={bucket:$('fBucket').value,sig:$('fSignal').value,sec:$('fSector').value,
+    box:$('fBox').checked,pass:$('fPass').checked,ex:$('fEx').checked,
+    q:$('fSearch').value.trim().toLowerCase(),sort:$('fSort').value};
+  let rows=S.data.stocks.filter(s=>{
+    if(!f.ex&&s.bucket==='対象外')return false;
+    if(f.bucket&&s.bucket!==f.bucket)return false;
+    if(f.sig&&s.signal!==f.sig)return false;
+    if(f.sec&&s.sector!==f.sec)return false;
+    if(f.box&&!s.is_box)return false;
+    if(f.pass&&!s.screening_pass)return false;
+    if(f.q&&!(s.code.toLowerCase().includes(f.q)||s.name.toLowerCase().includes(f.q)))return false;
+    return true;
   });
+  const so={signal:(a,b)=>(a.signal===b.signal?0:a.signal==='BUY'?-1:b.signal==='BUY'?1:a.signal==='SELL'?-1:1)||(b.current_yield||0)-(a.current_yield||0),
+    yield:(a,b)=>(b.current_yield||0)-(a.current_yield||0),
+    mcap:(a,b)=>(b.market_cap_oku||0)-(a.market_cap_oku||0),
+    code:(a,b)=>a.code.localeCompare(b.code),
+    leader:(a,b)=>((b.is_industry_leader?1:0)-(a.is_industry_leader?1:0))||(b.current_yield||0)-(a.current_yield||0)};
+  rows.sort(so[f.sort]||so.signal);
+  $('allCount').textContent=rows.length;
+  $('tbAll').innerHTML=rows.map(stockRow).join('');
+  $('emptyAll').style.display=rows.length?'none':'';
+}
+function renderWatch(){
+  const rows=S.data.stocks.filter(s=>S.watch.includes(s.code));
+  $('tbWatch').innerHTML=rows.map(stockRow).join('');
+  $('emptyWatch').style.display=rows.length?'none':'';
+}
+function toggleWatch(code,btn){
+  const i=S.watch.indexOf(code);
+  if(i>=0)S.watch.splice(i,1);else S.watch.push(code);
+  localStorage.setItem('div_watchlist',JSON.stringify(S.watch));
+  if(btn)btn.classList.toggle('on');
+  if(S.view==='watch')renderWatch();
 }
 
+/* ================= 保有（手動） ================= */
+function addHolding(){
+  const code=$('pCode').value.trim(),shares=+$('pShares').value,cost=+$('pCost').value,date=$('pDate').value;
+  if(!code||!shares||!cost){alert('コード・株数・取得単価を入力してください');return;}
+  S.port.push({code,shares,cost_basis:cost,purchased_at:date||new Date().toISOString().slice(0,10)});
+  localStorage.setItem('div_portfolio',JSON.stringify(S.port));
+  $('pCode').value='';$('pShares').value='';$('pCost').value='';
+  renderPort();
+}
+function delHolding(code,date){
+  S.port=S.port.filter(p=>!(p.code===code&&p.purchased_at===date));
+  localStorage.setItem('div_portfolio',JSON.stringify(S.port));
+  renderPort();
+}
+function renderPort(){
+  const rows=S.port.map(p=>{
+    const s=S.data.stocks.find(x=>x.code===p.code);
+    const price=s?.price??null, val=price!=null?price*p.shares:null;
+    const pl=val!=null?val-p.cost_basis*p.shares:null;
+    const plPct=pl!=null?pl/(p.cost_basis*p.shares)*100:null;
+    const dps=s?.forecast_dps!=null?s.forecast_dps*p.shares:null;
+    return`<tr onclick="openDetail('${p.code}')">
+      <td><span class="t-code">${p.code}</span> <span class="t-name">${esc(s?.name||'—')}</span></td>
+      <td class="t-right mono">${p.shares.toLocaleString()}</td>
+      <td class="t-right mono">${fmt.yen(p.cost_basis)}</td>
+      <td class="t-right mono">${fmt.yen(price)}</td>
+      <td class="t-right mono">${fmt.yen(val)}</td>
+      <td class="t-right mono ${pl>=0?'pl-pos':'pl-neg'}" style="font-weight:600">${pl==null?'—':(pl>=0?'+':'')+fmt.yen(pl)+` (${plPct>=0?'+':''}${plPct.toFixed(1)}%)`}</td>
+      <td class="t-right mono">${fmt.yen(dps)}</td>
+      <td onclick="event.stopPropagation()"><button class="btn-ghost" onclick="delHolding('${p.code}','${p.purchased_at}')">削除</button></td>
+    </tr>`;
+  }).join('');
+  $('tbPort').innerHTML=rows;
+  $('emptyPort').style.display=S.port.length?'none':'';
+}
+
+/* ================= 検証運用 ================= */
+function renderFwd(){
+  const st=S.fwd.state,hi=S.fwd.hist;
+  if(!st){$('fxCurve').innerHTML='<div class="empty">データ未生成（generate.py 実行後に表示されます）</div>';return;}
+  const ret=st.total_value-st.initial_cash, pct=ret/st.initial_cash*100;
+  $('fxStart').textContent=fmt.date(st.started_at);
+  $('fxInit').textContent=fmt.yen(st.initial_cash);
+  $('fxTotal').textContent=fmt.yen(st.total_value);
+  $('fxRet').innerHTML=`<span class="${ret>=0?'pl-pos':'pl-neg'}">${ret>=0?'+':''}${fmt.yen(ret)}<small style="font-size:13px;font-weight:600"> (${pct>=0?'+':''}${pct.toFixed(2)}%)</small></span>`;
+  $('fxDiv').textContent=fmt.yen(st.dividend_received);
+  $('fxCash').textContent=fmt.yen(st.cash);
+  $('fxCount').textContent=`${st.holdings.length} / 20`;
+  // curve
+  const snaps=hi?.daily_snapshots||[];
+  if(snaps.length<2){$('fxCurve').innerHTML='<div class="empty">データ蓄積中（2日以上で描画されます）</div>';}
+  else{
+    Plotly.newPlot('fxCurve',[{x:snaps.map(x=>x.date),y:snaps.map(x=>x.total_value),type:'scatter',mode:'lines',
+      line:{color:snaps.at(-1).total_value>=st.initial_cash?'#10B981':'#DC2626',width:2.2},
+      hovertemplate:'%{x}<br>¥%{y:,.0f}<extra></extra>'}],
+      {...plyLayout(),height:260,shapes:[{type:'line',xref:'paper',x0:0,x1:1,y0:st.initial_cash,y1:st.initial_cash,line:{color:'#9AA1AD',width:1,dash:'dot'}}]},plyCfg());
+  }
+  // holdings
+  const hs=[...st.holdings].sort((a,b)=>(b.value||0)-(a.value||0));
+  $('fxHoldMeta').textContent=`${hs.length} 銘柄`;
+  $('fxHoldings').innerHTML=hs.map(h=>`<tr onclick="openDetail('${h.code}')">
+    <td>${h.tier?`<span class="tier tier-${h.tier}">${h.tier}</span>`:'—'}</td>
+    <td><span class="t-code">${h.code}</span> <span class="t-name">${esc(h.name)}</span></td>
+    <td class="t-right mono">${h.qty.toLocaleString()}</td>
+    <td class="t-right mono">${fmt.yen(h.buy_price)}</td>
+    <td class="t-right mono">${fmt.yen(h.value)}</td>
+    <td class="t-right mono ${h.unrealized_pl>=0?'pl-pos':'pl-neg'}" style="font-weight:600">${h.unrealized_pl>=0?'+':''}${fmt.yen(h.unrealized_pl)} (${h.unrealized_pl_pct>=0?'+':''}${(h.unrealized_pl_pct||0).toFixed(2)}%)</td>
+  </tr>`).join('');
+  $('fxHoldEmpty').style.display=hs.length?'none':'';
+  // trades
+  const tr=(hi?.trades||[]).slice(-50).reverse();
+  $('fxTrades').innerHTML=tr.length?tr.map(t=>{
+    const isBuy=t.action==='BUY';
+    const pl=t.realized_pl!=null?`<div class="r2 mono ${t.realized_pl>=0?'pl-pos':'pl-neg'}" style="font-weight:600">${t.realized_pl>=0?'+':''}${fmt.yen(t.realized_pl)} (${t.realized_pl_pct>=0?'+':''}${t.realized_pl_pct}% · 保有${t.holding_days}日)</div>`:'';
+    const rz=t.reason&&!['BUY_SIGNAL','SELL_SIGNAL'].includes(t.reason)?`<div class="r2" style="color:var(--amber)">${esc(t.reason)}</div>`:'';
+    return`<div class="trade-row"><div class="r1"><span class="pill ${isBuy?'p-buy':'p-sell'}">${t.action}</span><span class="t-code">${t.code}</span><b>${esc(t.name)}</b>${t.tier?`<span class="tier tier-${t.tier}" style="width:20px;height:20px;font-size:10.5px">${t.tier}</span>`:''}</div>
+    <div class="r2 mono">${t.date} · ${t.qty.toLocaleString()}株 × ${fmt.yen(t.price)} = ${fmt.yen(t.amount)}</div>${pl}${rz}</div>`;
+  }).join(''):'<div class="empty">売買履歴なし</div>';
+  // dividends
+  const dv=(hi?.dividends||[]).slice(-50).reverse();
+  $('fxDivs').innerHTML=dv.length?dv.map(d=>`<div class="trade-row"><div class="r1"><span class="t-code">${d.code}</span><b>${esc(d.name)}</b><span class="pill p-core">${d.type==='final'?'期末':'中間'}</span><span class="mono pl-pos" style="margin-left:auto;font-weight:700">+${fmt.yen(d.amount)}</span></div>
+    <div class="r2 mono">${d.date} · ${d.shares.toLocaleString()}株 × ¥${Number(d.dps).toFixed(2)}</div></div>`).join(''):'<div class="empty">配当履歴なし</div>';
+}
+
+/* ================= Detail ================= */
+function openDetail(code){
+  const s=S.data.stocks.find(x=>x.code===code); if(!s)return;
+  S.detail=s; S.dtab='overview';
+  $('dCode').textContent=s.code; $('dName').textContent=s.name;
+  $('dSub').textContent=`${s.sector||''} · 時価総額 ${fmt.oku(s.market_cap_oku)} · ${s.fiscal_month?s.fiscal_month+'月決算':''}${s.interim_month?`（権利月 ${s.fiscal_month}月/${s.interim_month}月）`:''}`;
+  $('dBadges').innerHTML=[sigPill(s),s.is_box?'<span class="pill p-box">BOX</span>':'',`<span class="pill ${bucketClass(s)}">${bucketLabel(s)}</span>`,s.tier?`<span class="pill" style="background:var(--neutral-bg);color:var(--text-2)">Tier ${s.tier}（配分 ${s.tier_weight||1}倍）</span>`:'',s.is_industry_leader?'<span class="pill p-core">業界トップ級</span>':'',isCheap(s,'per')?'<span class="pill p-cheap">PER割安</span>':'',isCheap(s,'pbr')?'<span class="pill p-cheap">PBR割安</span>':''].filter(Boolean).join('');
+  $('dPrice').innerHTML=`${fmt.yen(s.price)}<small>利回り ${fmt.pct(s.current_yield)} / 予想DPS ¥${fmt.num(s.forecast_dps,1)}</small>`;
+  $('dLinks').innerHTML=s.links?Object.entries({minkabu:'みんかぶ',irbank:'IR BANK',tdnet:'TDnet'}).map(([k,l])=>s.links[k]?`<a href="${s.links[k]}" target="_blank" rel="noopener">${l} ↗</a>`:'').join(''):'';
+  switchTab('overview');
+  $('overlay').classList.add('show');$('drawer').classList.add('show');
+}
+function closeDetail(){$('overlay').classList.remove('show');$('drawer').classList.remove('show');}
+$('dTabs').addEventListener('click',e=>{const b=e.target.closest('button');if(b)switchTab(b.dataset.tab);});
+function switchTab(tab){
+  S.dtab=tab;
+  document.querySelectorAll('#dTabs button').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));
+  ['overview','chart','judge','fin','peers'].forEach(t=>$('tab-'+t).style.display=t===tab?'':'none');
+  const s=S.detail; if(!s)return;
+  if(tab==='overview'){
+    renderMetrics(s);drawYield(s);
+    drawValLine('cPer',s,'per','#DC2626','rgba(220,38,38,0.06)',1);
+    drawValLine('cPbr',s,'pbr','#2563EB','rgba(37,99,235,0.06)',2);
+    $('cPerTag').innerHTML=isCheap(s,'per')?' <span class="pill p-cheap" style="font-size:10.5px">割安</span>':'';
+    $('cPbrTag').innerHTML=isCheap(s,'pbr')?' <span class="pill p-cheap" style="font-size:10.5px">割安</span>':'';
+  }
+  else if(tab==='chart')drawCandles(s);
+  else if(tab==='judge'){renderScreen(s);renderBox(s);}
+  else if(tab==='fin')drawFin(s);
+  else if(tab==='peers')renderPeers(s);
+}
+function renderMetrics(s){
+  const perTag=isCheap(s,'per')?' <span class="pill p-cheap" style="font-size:10px;padding:0 6px">割安</span>':'';
+  const pbrTag=isCheap(s,'pbr')?' <span class="pill p-cheap" style="font-size:10px;padding:0 6px">割安</span>':'';
+  const items=[['現在利回り',fmt.pct(s.current_yield)],['5年Q25 / 中央値 / Q75',`${fmt.num(s.yield_q25)} / ${fmt.num(s.yield_median)} / ${fmt.num(s.yield_q75)}%`],
+    ['PER',fmt.num(s.per,1)+perTag],['PBR',fmt.num(s.pbr,2)+pbrTag],['PER×PBR',s.per_pbr==null?'—':s.per_pbr.toFixed(1)+(s.per_pbr<=22.5?' ✓':' ✗')],
+    ['配当性向',fmt.pct(s.payout_ratio,1)],['自己資本比率',s.equity_ratio==null?'—':(s.equity_ratio*100).toFixed(1)+'%'],['ROE',fmt.pct(s.roe,1)],
+    ['売上(直近)',fmt.oku(s.latest_sales_oku)],['営業利益(直近)',fmt.oku(s.latest_op_oku)],['純利益(直近)',fmt.oku(s.latest_np_oku)],['予想DPS','¥'+fmt.num(s.forecast_dps,1)]];
+  $('dMetrics').innerHTML=items.map(([l,v])=>`<div class="mi"><div class="l">${l}</div><div class="v mono">${v}</div></div>`).join('');
+}
+function plyLayout(){return{paper_bgcolor:'rgba(0,0,0,0)',plot_bgcolor:'rgba(0,0,0,0)',margin:{l:46,r:46,t:14,b:36},
+  font:{family:'Inter, Noto Sans JP',size:11,color:'#5B6472'},
+  xaxis:{gridcolor:'#EEF0F4',zeroline:false},yaxis:{gridcolor:'#EEF0F4',zeroline:false},showlegend:false};}
+function plyCfg(){return{displayModeBar:false,responsive:true};}
+function drawYield(s){
+  const h=s.yield_history||[];
+  if(!h.length){$('cYield').innerHTML='<div class="empty">履歴データなし</div>';return;}
+  const shapes=[s.yield_q75,s.yield_q25].filter(v=>v!=null).map((v,i)=>({type:'line',xref:'paper',x0:0,x1:1,y0:v,y1:v,line:{color:i===0?'#DC2626':'#2563EB',width:1,dash:'dot'}}));
+  const ann=[
+    s.yield_q75!=null?{xref:'paper',x:1,y:s.yield_q75,text:`Q75 ${s.yield_q75}`,showarrow:false,xanchor:'left',font:{size:10,color:'#DC2626'}}:null,
+    s.yield_q25!=null?{xref:'paper',x:1,y:s.yield_q25,text:`Q25 ${s.yield_q25}`,showarrow:false,xanchor:'left',font:{size:10,color:'#2563EB'}}:null].filter(Boolean);
+  if(s.current_yield!=null){
+    ann.push({x:h[h.length-1].date,y:s.current_yield,text:`現在 ${fmt.num(s.current_yield)}%`,showarrow:true,arrowhead:2,ax:-38,ay:-24,
+      font:{size:11,color:'#1A1D29'},bgcolor:'#FFFFFF',bordercolor:'#1A1D29',borderwidth:1});
+  }
+  Plotly.newPlot('cYield',[{x:h.map(x=>x.date),y:h.map(x=>x.yield),type:'scatter',mode:'lines',line:{color:'#3B5BFD',width:2},
+    fill:'tozeroy',fillcolor:'rgba(59,91,253,0.06)',hovertemplate:'%{x|%Y-%m}<br>%{y:.2f}%<extra></extra>'}],
+    {...plyLayout(),height:240,shapes,annotations:ann},plyCfg());
+}
+/* PER / PBR それぞれを独立した推移グラフとして描く（中央値の点線＋現在値マーカー付き） */
+function drawValLine(elId,s,key,color,fill,dec){
+  const h=(s.valuation_history||[]).filter(x=>x[key]!=null);
+  const el=$(elId);
+  if(h.length<2){el.innerHTML='<div class="empty">履歴データなし（次回データ更新後に表示）</div>';return;}
+  const med=valMedian(s,key),cur=s[key];
+  const shapes=[],ann=[];
+  if(med!=null){
+    shapes.push({type:'line',xref:'paper',x0:0,x1:1,y0:med,y1:med,line:{color:'#9AA1AD',width:1,dash:'dot'}});
+    ann.push({xref:'paper',x:1,y:med,text:`中央値 ${med.toFixed(dec)}`,showarrow:false,xanchor:'left',font:{size:10,color:'#9AA1AD'}});
+  }
+  if(cur!=null){
+    ann.push({x:h[h.length-1].date,y:cur,text:`現在 ${cur.toFixed(dec)}`,showarrow:true,arrowhead:2,ax:-38,ay:-24,
+      font:{size:11,color},bgcolor:'#FFFFFF',bordercolor:color,borderwidth:1});
+  }
+  Plotly.newPlot(elId,[{x:h.map(x=>x.date),y:h.map(x=>x[key]),type:'scatter',mode:'lines',
+    line:{color,width:2},fill:'tozeroy',fillcolor:fill,hovertemplate:'%{x|%Y-%m}<br>%{y:.'+dec+'f}<extra></extra>'}],
+    {...plyLayout(),height:220,shapes,annotations:ann},plyCfg());
+}
+$('cpBtns').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;
+  S.period=b.dataset.p;document.querySelectorAll('#cpBtns button').forEach(x=>x.classList.toggle('active',x===b));
+  if(S.detail)drawCandles(S.detail);});
+function drawCandles(s){
+  const days={'1M':22,'3M':66,'6M':132,'1Y':250}[S.period]||66;
+  const h=(s.price_history||[]).slice(-days);
+  const el=$('cCandle');
+  if(h.length<5){el.innerHTML='<div class="empty">価格データなし</div>';return;}
+  Plotly.newPlot(el,[{x:h.map(x=>x.d),open:h.map(x=>x.o),high:h.map(x=>x.h),low:h.map(x=>x.l),close:h.map(x=>x.c),
+    type:'candlestick',increasing:{line:{color:'#DC2626'},fillcolor:'#FCA5A5'},decreasing:{line:{color:'#2563EB'},fillcolor:'#93C5FD'}}],
+    {...plyLayout(),height:340,xaxis:{gridcolor:'#EEF0F4',rangeslider:{visible:false},type:'category',tickmode:'auto',nticks:8}},plyCfg());
+  // BOXレンジ
+  if(s.box?.is_box&&s.box.upper&&s.box.lower){
+    Plotly.relayout(el,{shapes:[
+      {type:'line',xref:'paper',x0:0,x1:1,y0:s.box.upper,y1:s.box.upper,line:{color:'#10B981',width:1.4,dash:'dash'}},
+      {type:'line',xref:'paper',x0:0,x1:1,y0:s.box.lower,y1:s.box.lower,line:{color:'#10B981',width:1.4,dash:'dash'}}]});
+  }
+}
+function renderScreen(s){
+  const sc=s.screening||{};
+  const eqMin=s.equity_ratio!=null&&['2050','5100','6050'].includes(s.sector33_code)?'≥33%':'≥50%';
+  const rows=[['減配経験（10期）','過去に減配していない',sc.dividend],['売上の安定性','構造的な売上減がない',sc.revenue],
+    ['営業利益の安定性','本業が崩れていない',sc.op_profit],['純利益の安定性','配当原資が確保',sc.net_profit],
+    ['配当性向 ≤ 50%','無理のない配当',sc.payout],[`自己資本比率 ${eqMin}`,'財務健全（業種別基準）',sc.equity],
+    ['PER×PBR ≤ 22.5','割高すぎない',sc.valuation],['利回り ≥ 3.0%','高配当の前提',sc.min_yield]];
+  $('dScreen').innerHTML=rows.map(([t,d,ok])=>`<div class="chk-row"><div><b>${t}</b><div style="font-size:11.5px;color:var(--text-3)">${d}</div></div><span class="${ok?'ok':'ng'}">${ok?'✓':'✗'}</span></div>`).join('');
+}
+function renderBox(s){
+  const b=s.box||{};
+  const items=[['ボックス判定',b.is_box?'該当':'非該当'],['ADX(14)',fmt.num(b.adx,1)+'（22未満で横ばい）'],['値幅',fmt.pct(b.width_pct,1)],
+    ['上限 / 下限',`${fmt.yen(b.upper)} / ${fmt.yen(b.lower)}`],['タッチ回数',`上${b.upper_touches??'—'} / 下${b.lower_touches??'—'}`],['ATR/終値',fmt.pct(b.atr_ratio,2)]];
+  $('dBox').innerHTML=items.map(([l,v])=>`<div class="mi"><div class="l">${l}</div><div class="v mono">${v}</div></div>`).join('');
+}
+function drawFin(s){
+  const h=s.financials_history||[];
+  if(!h.length){$('cFin1').innerHTML='<div class="empty">業績データなし</div>';$('cFin2').innerHTML='';return;}
+  const x=h.map(v=>v.period);
+  Plotly.newPlot('cFin1',[
+    {x,y:h.map(v=>v.sales),name:'売上',type:'bar',marker:{color:'#C7D2FE'}},
+    {x,y:h.map(v=>v.op),name:'営業利益',type:'bar',marker:{color:'#3B5BFD'}},
+    {x,y:h.map(v=>v.np),name:'純利益',type:'bar',marker:{color:'#10B981'}}],
+    {...plyLayout(),height:250,barmode:'group',showlegend:true,legend:{orientation:'h',y:1.12,font:{size:10}}},plyCfg());
+  Plotly.newPlot('cFin2',[
+    {x,y:h.map(v=>v.eps),name:'EPS',type:'scatter',mode:'lines+markers',line:{color:'#3B5BFD',width:2}},
+    {x,y:h.map(v=>v.dps),name:'DPS',type:'scatter',mode:'lines+markers',line:{color:'#DC2626',width:2}}],
+    {...plyLayout(),height:250,showlegend:true,legend:{orientation:'h',y:1.12,font:{size:10}}},plyCfg());
+}
+function renderPeers(s){
+  if(!s.sector33_code){$('dPeers').innerHTML='';$('peersMeta').textContent='業種コードなし';return;}
+  let peers=S.data.stocks.filter(x=>x.sector33_code===s.sector33_code)
+    .sort((a,b)=>(b.market_cap_oku||0)-(a.market_cap_oku||0)).slice(0,6);
+  if(!peers.find(p=>p.code===s.code))peers.push(s);
+  peers.sort((a,b)=>(b.market_cap_oku||0)-(a.market_cap_oku||0));
+  $('peersMeta').textContent=`${s.sector||''} · 時価総額順`;
+  $('dPeers').innerHTML=peers.map(p=>{
+    const self=p.code===s.code;
+    return`<tr onclick="openDetail('${p.code}')" style="${self?'background:var(--primary-soft)':''}">
+      <td><span class="t-code">${p.code}</span> <b>${esc(p.name)}</b>${self?' <span class="pill p-core" style="font-size:10px">この銘柄</span>':''}</td>
+      <td class="t-right mono">${fmt.oku(p.market_cap_oku)}</td>
+      <td class="t-right mono">${fmt.pct(p.current_yield)}</td>
+      <td class="t-right mono">${fmt.num(p.per,1)}</td>
+      <td class="t-right mono">${fmt.num(p.pbr,2)}</td>
+      <td class="t-right">${grahamCell(p)}</td></tr>`;
+  }).join('');
+}
+
+document.addEventListener('keydown',e=>{if(e.key==='Escape')closeDetail();});
+init();
 </script>
+</body>
 </html>
