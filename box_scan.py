@@ -1,30 +1,36 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-ボックス銘柄スキャン（GitHub Actions から実行する用）
+ボックス銘柄スキャン（J-Quants V2 対応）
+
+generate.py と同じ流儀で書いてあります。
+  認証   : J_QUANTS_API_KEY を x-api-key ヘッダーに付けるだけ（トークン交換は不要）
+  一覧   : /v2/equities/master     … Mkt / ScaleCat でプライムの大型〜中型株に絞る
+  株価   : /v2/equities/bars/daily … 短縮カラム名を V1 相当に正規化して使う
 
 やること:
-  1. J-Quants から直近の日次株価をまとめて取得
-  2. box_detect.py の判定にかける
-  3. 結果を data/box.json と data/box.csv に書き出し、実行ログに一覧を表示
-
-必要なもの:
-  box_detect.py が同じ場所にあること
-  環境変数に J-Quants のリフレッシュトークンが入っていること
-  （GitHub の Secrets に登録済みのものをそのまま使えます）
+  1. ユニバースを取得
+  2. 銘柄ごとに日次株価を取得
+  3. box_detect.py の判定にかけて 0〜100 でスコア化
+  4. data/box.json と data/box.csv に書き出し、実行ログに一覧を表示
 
 使い方:
-  python box_scan.py                    直近120営業日で判定
-  python box_scan.py --window 240       1年で判定
-  python box_scan.py --min-score 75     しきい値を上げる
+  python box_scan.py                  直近120営業日で判定
+  python box_scan.py --window 240     1年で判定
+  python box_scan.py --limit 30       まず30銘柄だけで試す
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import sys
-from datetime import date, timedelta
+import time
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any
 
 import pandas as pd
 import requests
@@ -32,202 +38,248 @@ import requests
 try:
     from box_detect import BoxConfig, detect_box
 except ImportError:
-    sys.exit("box_detect.py が見つかりません。同じフォルダに置いてください。")
+    sys.exit("box_detect.py が見つかりません。box_scan.py と同じ場所に置いてください。")
 
-JQ = "https://api.jquants.com/v1"
+logging.basicConfig(level=logging.INFO,
+                    format="[%(asctime)s] %(levelname)s: %(message)s",
+                    datefmt="%H:%M:%S")
+log = logging.getLogger("box-scan")
 
-# Secrets の名前は環境によって違うので、よくある候補を順に探す
-TOKEN_KEYS = ["J_QUANTS_API_KEY", "JQUANTS_REFRESH_TOKEN", "JQUANTS_TOKEN",
-              "JQ_REFRESH_TOKEN", "REFRESH_TOKEN", "JQUANTS_MAIL_PASSWORD"]
+JQUANTS_BASE = "https://api.jquants.com"
+API_SLEEP_SEC = 0.55          # Standard は 120 req/min。余裕を持たせる
+API_TIMEOUT_SEC = 30
+API_MAX_RETRIES = 3
+
+MARKET_CODE_PRIME = "0111"
+SCALE_TARGETS = {"TOPIX Core30", "TOPIX Large70", "TOPIX Mid400"}
+
+OUTPUT_DIR = Path("data")
 
 
-def get_secret() -> str:
-    for k in TOKEN_KEYS:
-        v = os.environ.get(k)
-        if v and v.strip():
-            print(f"認証情報を {k} から読み込みました", file=sys.stderr)
-            return v.strip()
-    sys.exit("J-Quants の認証情報が環境変数に見つかりません。\n"
-             f"次のいずれかの名前で設定してください: {', '.join(TOKEN_KEYS)}")
+# ────────────────────────────────── APIクライアント
+class JQuantsClient:
+    """J-Quants V2 クライアント。generate.py と同じ認証方式。"""
 
+    def __init__(self, api_key: str):
+        if not api_key:
+            raise ValueError("J_QUANTS_API_KEY is empty")
+        self.api_key = api_key
+        self.session = requests.Session()
 
-def jq_auth(secret: str) -> str:
-    """認証情報の形式を自動で判別してIDトークンを取得する。
+    def get(self, path: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        url = f"{JQUANTS_BASE}{path}"
+        rows_all: list[dict[str, Any]] = []
+        pagination_key: str | None = None
 
-    J-Quantsのリフレッシュトークンは有効期限が1週間程度と短いため、
-    シークレットにはメールアドレスとパスワードが入っていることが多い。
-    次の順に試す。
+        while True:
+            req = dict(params or {})
+            if pagination_key:
+                req["pagination_key"] = pagination_key
 
-      1. JSON形式        {"mailaddress": "...", "password": "..."}
-      2. 区切り形式      メールアドレス:パスワード（改行区切りも可）
-      3. リフレッシュトークンそのもの
-    """
-    mail = pw = None
-
-    # 1) JSON
-    if secret.lstrip().startswith("{"):
-        try:
-            j = json.loads(secret)
-            mail = j.get("mailaddress") or j.get("mail") or j.get("email")
-            pw = j.get("password") or j.get("pass")
-        except json.JSONDecodeError:
-            pass
-
-    # 2) メールアドレスとパスワードの組
-    if not mail and "@" in secret:
-        for sep in ("\n", ",", ":", "\t", " "):
-            if sep in secret:
-                a, _, b = secret.partition(sep)
-                if "@" in a and b.strip():
-                    mail, pw = a.strip(), b.strip()
+            for attempt in range(API_MAX_RETRIES):
+                try:
+                    resp = self.session.get(
+                        url, params=req,
+                        headers={"x-api-key": self.api_key},
+                        timeout=API_TIMEOUT_SEC)
+                    if resp.status_code == 429:
+                        wait = 2 ** (attempt + 1)
+                        log.warning("レート制限。%d秒待機します", wait)
+                        time.sleep(wait)
+                        continue
+                    if resp.status_code in (401, 403):
+                        sys.exit(f"認証に失敗しました（{resp.status_code}）: {resp.text[:200]}\n"
+                                 "J_QUANTS_API_KEY の値をご確認ください。")
+                    resp.raise_for_status()
                     break
+                except requests.RequestException as e:
+                    if attempt == API_MAX_RETRIES - 1:
+                        raise
+                    time.sleep(2 ** attempt)
+            else:
+                raise RuntimeError(f"リトライ上限に達しました: {url}")
 
-    if mail and pw:
-        print("メールアドレスとパスワードで認証します", file=sys.stderr)
-        r = requests.post(f"{JQ}/token/auth_user",
-                          json={"mailaddress": mail, "password": pw}, timeout=30)
-        if r.status_code != 200:
-            sys.exit(f"ログインに失敗しました（{r.status_code}）: {r.text[:200]}")
-        refresh = r.json().get("refreshToken")
-        if not refresh:
-            sys.exit("refreshToken を取得できませんでした。")
-    else:
-        print("リフレッシュトークンとして扱います", file=sys.stderr)
-        refresh = secret
-
-    r = requests.post(f"{JQ}/token/auth_refresh",
-                      params={"refreshtoken": refresh}, timeout=30)
-    if r.status_code != 200:
-        sys.exit(
-            f"IDトークンの取得に失敗しました（{r.status_code}）: {r.text[:200]}\n"
-            "シークレットの中身をご確認ください。\n"
-            "  ・リフレッシュトークンの場合、有効期限は1週間程度です\n"
-            "  ・メールアドレスとパスワードなら、改行かコンマで区切って登録してください")
-    return r.json()["idToken"]
-
-
-def jq_get(path: str, token: str, **params) -> list:
-    out, key = [], None
-    while True:
-        p = dict(params)
-        if key:
-            p["pagination_key"] = key
-        r = requests.get(f"{JQ}{path}", headers={"Authorization": f"Bearer {token}"},
-                         params=p, timeout=60)
-        if r.status_code != 200:
-            return out
-        j = r.json()
-        body = next((v for k, v in j.items()
-                     if isinstance(v, list) and k != "pagination_key"), [])
-        out.extend(body)
-        key = j.get("pagination_key")
-        if not key:
-            return out
-
-
-def fetch_universe(token: str) -> pd.DataFrame:
-    """プライム・スタンダードの銘柄一覧"""
-    df = pd.DataFrame(jq_get("/listed/info", token))
-    if df.empty:
-        sys.exit("銘柄一覧を取得できませんでした。")
-    df = df[df["MarketCode"].isin(["0111", "0112"])]
-    cols = ["Code", "CompanyName"]
-    return df[[c for c in cols if c in df.columns]]
-
-
-def fetch_prices(token: str, days: int) -> pd.DataFrame:
-    """日付ごとに全銘柄の終値を取得する。
-       銘柄ごとに引くより呼び出し回数が少なく済む。"""
-    end = date.today()
-    start = end - timedelta(days=int(days * 1.6) + 20)   # 休場日ぶんを見込む
-    frames, d, n = [], start, 0
-    while d <= end:
-        if d.weekday() < 5:
-            rows = jq_get("/prices/daily_quotes", token, date=d.isoformat())
+            payload = resp.json()
+            rows = payload.get("data")
+            if rows is None:
+                for k, v in payload.items():
+                    if k != "pagination_key" and isinstance(v, list):
+                        rows = v
+                        break
             if rows:
-                df = pd.DataFrame(rows)
-                keep = [c for c in ["Date", "Code", "AdjustmentClose",
-                                    "AdjustmentHigh", "AdjustmentLow"] if c in df.columns]
-                frames.append(df[keep])
-                n += 1
-                if n % 20 == 0:
-                    print(f"  ... {d} まで取得（{n}営業日）", file=sys.stderr)
-        d += timedelta(days=1)
-    if not frames:
-        sys.exit("株価を取得できませんでした。")
-    out = pd.concat(frames, ignore_index=True)
-    out["Date"] = pd.to_datetime(out["Date"])
-    for c in ["AdjustmentClose", "AdjustmentHigh", "AdjustmentLow"]:
-        if c in out.columns:
-            out[c] = pd.to_numeric(out[c], errors="coerce")
-    return out.dropna(subset=["AdjustmentClose"])
+                rows_all.extend(rows)
+
+            pagination_key = payload.get("pagination_key")
+            if not pagination_key:
+                break
+            time.sleep(API_SLEEP_SEC)
+
+        return rows_all
+
+    @staticmethod
+    def _normalize(q: dict[str, Any]) -> dict[str, Any]:
+        """V2の短縮カラム名を V1 相当に揃える。"""
+        mapping = {"O": "Open", "H": "High", "L": "Low", "C": "Close",
+                   "AdjO": "AdjustmentOpen", "AdjH": "AdjustmentHigh",
+                   "AdjL": "AdjustmentLow", "AdjC": "AdjustmentClose"}
+        out = dict(q)
+        for short, long_name in mapping.items():
+            if short in out and long_name not in out:
+                out[long_name] = out[short]
+        return out
+
+    def master(self) -> list[dict[str, Any]]:
+        return self.get("/v2/equities/master", {})
+
+    def bars(self, code: str, frm: str, to: str) -> list[dict[str, Any]]:
+        rows = self.get("/v2/equities/bars/daily",
+                        {"code": code, "from": frm, "to": to})
+        return [self._normalize(r) for r in rows]
 
 
-def main():
+# ────────────────────────────────── 補助
+def normalize_code(code: str) -> str:
+    code = str(code).strip()
+    return code[:4] if len(code) == 5 and code.endswith("0") else code
+
+
+def to_float(v: Any) -> float | None:
+    if v is None or v == "":
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def build_universe(client: JQuantsClient) -> list[dict[str, str]]:
+    log.info("銘柄一覧を取得中…")
+    info = client.master()
+    log.info("取得件数: %d", len(info))
+
+    uni = []
+    for row in info:
+        if row.get("Mkt", "") != MARKET_CODE_PRIME:
+            continue
+        if (row.get("ScaleCat", "") or "") not in SCALE_TARGETS:
+            continue
+        code = normalize_code(row.get("Code", ""))
+        if not code:
+            continue
+        uni.append({
+            "code": code,
+            "name": row.get("CoName", "") or row.get("CoNameEn", ""),
+            "sector": row.get("S33Nm", ""),
+        })
+    log.info("対象ユニバース: %d銘柄", len(uni))
+    return uni
+
+
+# ────────────────────────────────── メイン
+def main() -> int:
+    api_key = os.environ.get("J_QUANTS_API_KEY")
+    if not api_key:
+        log.error("J_QUANTS_API_KEY 環境変数が設定されていません")
+        return 2
+
     ap = argparse.ArgumentParser()
     ap.add_argument("--window", type=int, default=120, help="判定期間（営業日）")
     ap.add_argument("--min-score", type=float, default=70.0)
     ap.add_argument("--top", type=int, default=60)
-    ap.add_argument("--outdir", default="data")
+    ap.add_argument("--limit", type=int, default=0, help="試し実行用。先頭N銘柄だけ処理")
     args = ap.parse_args()
 
-    token = jq_auth(get_secret())
+    client = JQuantsClient(api_key)
+    uni = build_universe(client)
+    if args.limit:
+        uni = uni[:args.limit]
+        log.info("試し実行のため %d銘柄に絞ります", len(uni))
 
-    print("銘柄一覧を取得中…", file=sys.stderr)
-    uni = fetch_universe(token)
-    names = dict(zip(uni["Code"], uni.get("CompanyName", uni["Code"])))
-
-    print(f"株価を取得中（{args.window}営業日ぶん、数分かかります）…", file=sys.stderr)
-    px = fetch_prices(token, args.window)
-    px = px[px["Code"].isin(set(uni["Code"]))]
+    today = date.today()
+    to_date = today.strftime("%Y-%m-%d")
+    # 休場日を見込んで多めに取る
+    frm_date = (today - timedelta(days=int(args.window * 1.7) + 30)).strftime("%Y-%m-%d")
 
     cfg = BoxConfig(window=args.window)
-    print("判定中…", file=sys.stderr)
+    rows, failures = [], 0
 
-    rows = []
-    for code, g in px.sort_values("Date").groupby("Code"):
-        if len(g) < args.window * 0.6:
+    log.info("株価を取得して判定中（%d銘柄、数分かかります）…", len(uni))
+    for i, u in enumerate(uni, 1):
+        time.sleep(API_SLEEP_SEC)
+        try:
+            q = client.bars(u["code"], frm_date, to_date)
+        except Exception as e:
+            log.warning("取得失敗 %s: %s", u["code"], e)
+            failures += 1
             continue
-        r = detect_box(g["AdjustmentClose"],
-                       g.get("AdjustmentHigh"), g.get("AdjustmentLow"), cfg)
+        if not q:
+            continue
+
+        df = pd.DataFrame(q)
+        if "Date" not in df.columns:
+            continue
+        df["Date"] = pd.to_datetime(df["Date"])
+        df = df.sort_values("Date")
+
+        close = df.get("AdjustmentClose")
+        if close is None:
+            close = df.get("Close")
+        if close is None:
+            continue
+        close = pd.to_numeric(close, errors="coerce").dropna()
+        if len(close) < args.window * 0.6:
+            continue
+
+        high = pd.to_numeric(df.get("AdjustmentHigh", df.get("High")), errors="coerce")
+        low = pd.to_numeric(df.get("AdjustmentLow", df.get("Low")), errors="coerce")
+
+        r = detect_box(close, high, low, cfg)
         if r.get("score", 0) < args.min_score:
             continue
+
         rows.append({
-            "code": code, "name": names.get(code, ""),
+            "code": u["code"], "name": u["name"], "sector": u["sector"],
             "score": r["score"], "type": r["type"], "status": r["status"],
             "position": r["position"], "lower": r["lower"], "upper": r["upper"],
             "width_pct": r["width_pct"], "slope_pct": r["slope_annual_pct"],
             "adf_t": r["adf_t"], "crosses": r["crosses"],
-            "last": round(float(g["AdjustmentClose"].iloc[-1]), 1),
+            "last": round(float(close.iloc[-1]), 1),
         })
+
+        if i % 50 == 0:
+            log.info("進捗 %d/%d（該当 %d件）", i, len(uni), len(rows))
 
     if not rows:
         print(f"\n{args.min_score}点以上の銘柄はありませんでした。"
-              f"--min-score を下げて試してください。")
-        return
+              f"--min-score を下げてお試しください。（失敗 {failures}件）")
+        return 0
 
     out = pd.DataFrame(rows)
     # 買い場に近い順：点数が高く、レンジ下限に近いものを上に
     out["rank"] = out["score"] - out["position"] * 0.25
     out = out.sort_values("rank", ascending=False).head(args.top).drop(columns="rank")
 
-    os.makedirs(args.outdir, exist_ok=True)
-    out.to_csv(f"{args.outdir}/box.csv", index=False, encoding="utf-8-sig")
-    with open(f"{args.outdir}/box.json", "w", encoding="utf-8") as f:
-        json.dump({"asOf": date.today().isoformat(), "window": args.window,
-                   "minScore": args.min_score, "items": out.to_dict("records")},
-                  f, ensure_ascii=False, indent=2)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    out.to_csv(OUTPUT_DIR / "box.csv", index=False, encoding="utf-8-sig")
+    with (OUTPUT_DIR / "box.json").open("w", encoding="utf-8") as f:
+        json.dump({
+            "generated_at": datetime.now(timezone(timedelta(hours=9))).isoformat(),
+            "window": args.window, "min_score": args.min_score,
+            "universe_count": len(uni), "failure_count": failures,
+            "items": out.to_dict("records"),
+        }, f, ensure_ascii=False, indent=2)
 
-    print(f"\n■ ボックス候補 {len(out)}件（判定期間 {args.window}営業日）\n")
-    print(f"{'コード':<7}{'銘柄':<18}{'点':>5}{'種別':>12}{'状態':>9}"
+    print(f"\n■ ボックス候補 {len(out)}件（判定期間 {args.window}営業日 / 対象 {len(uni)}銘柄）\n")
+    print(f"{'コード':<7}{'銘柄':<20}{'点':>5}{'種別':>13}{'状態':>10}"
           f"{'位置':>7}{'現在値':>9}{'下限':>9}{'上限':>9}{'幅':>7}")
-    print("-" * 96)
+    print("-" * 100)
     for _, x in out.iterrows():
-        print(f"{x['code']:<7}{str(x['name'])[:16]:<18}{x['score']:>5.0f}"
-              f"{x['type']:>12}{x['status']:>9}{x['position']:>6.0f}%"
+        print(f"{x['code']:<7}{str(x['name'])[:18]:<20}{x['score']:>5.0f}"
+              f"{x['type']:>13}{x['status']:>10}{x['position']:>6.0f}%"
               f"{x['last']:>9.1f}{x['lower']:>9.1f}{x['upper']:>9.1f}{x['width_pct']:>6.1f}%")
-    print(f"\n書き出しました: {args.outdir}/box.csv, {args.outdir}/box.json")
+    print(f"\n書き出しました: data/box.csv, data/box.json（失敗 {failures}件）")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
