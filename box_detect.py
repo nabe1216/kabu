@@ -44,7 +44,7 @@ class BoxConfig:
     upper_q: float = 0.92       # 上限の分位点
     touch_band: float = 0.18    # 上下限から幅の何％以内を「タッチ」とみなすか
     min_touches: int = 2        # 上下それぞれ最低何回の反発を求めるか（足切り用）
-    ideal_crosses: int = 6      # 中心線をこの回数またいでいれば満点
+    ideal_crosses: int = 18     # 中心線をこの回数またいでいれば満点（実データは往復が多い）
     outside_tol: float = 0.30   # 帯幅の何割まで外側を許容するか（はみ出し許容の本体）
     max_outside: float = 0.06   # 許容線をも超えた本数の上限割合
     width_min: float = 0.06     # 幅の下限（中心価格比）。狭すぎるのは単なる停滞
@@ -177,15 +177,18 @@ def detect_box(close, high=None, low=None, cfg: BoxConfig | None = None) -> dict
     outside = float(np.mean((resid > hi_r + tol) | (resid < lo_r - tol)))
 
     # ── スコア化 ──────────────────────────
-    sc_er = float(np.clip(1 - er / 0.45, 0, 1))            # ER 0.45以上でトレンド扱い
+    sc_er = float(np.clip(1 - er / 0.28, 0, 1))            # ER 0.28以上でトレンド扱い
     sc_width = _score_width(width, cfg)
     crosses = cross_count(resid)
     sc_osc = float(np.clip(crosses / cfg.ideal_crosses, 0, 1))
     sc_out = float(np.clip(1 - outside / max(cfg.max_outside * 2, 1e-9), 0, 1))
-    sc_mr = float(np.clip((-tstat - 1.2) / 2.2, 0, 1))     # t = -3.4 以下で満点
+    sc_mr = float(np.clip((-tstat - 1.8) / 1.8, 0, 1))     # t = -3.6 以下で満点
 
-    score = 100 * (0.20 * sc_er + 0.10 * sc_width +
-                   0.25 * sc_osc + 0.10 * sc_out + 0.35 * sc_mr)
+    # 配点は合成データで分離が最大になるよう調整したもの。
+    # 実データでは「方向感」「往復」「収まり」が大半の銘柄で満点近くになり
+    # 選別に効かなかったため、統計的な裏づけである平均回帰の比重を上げている。
+    score = 100 * (0.25 * sc_er + 0.10 * sc_width +
+                   0.15 * sc_osc + 0.05 * sc_out + 0.45 * sc_mr)
 
     # ── 種別と足切り ─────────────────────
     a = abs(slope_annual)
@@ -251,6 +254,134 @@ def detect_box(close, high=None, low=None, cfg: BoxConfig | None = None) -> dict
                   "往復": round(sc_osc, 2), "収まり": round(sc_out, 2),
                   "平均回帰": round(sc_mr, 2)},
     }
+
+
+# ────────────────────────────────── 高精度判定（検証つき）
+def detect_box_validated(close, high=None, low=None,
+                         cfg: BoxConfig | None = None,
+                         holdout: int = 40) -> dict:
+    """検証期間を分けて判定する。
+
+    通常の detect_box は、上下限を引いたのと同じデータで当てはまりを測っている。
+    これでは「よく当てはまって当然」で、実際に守られるかは分からない。
+
+    そこで期間を2つに割る。
+
+        [────── 学習：ここで上下限を引く ──────][── 検証：守られたかを見る ──]
+
+    学習部分で引いた線を検証期間まで延ばし、その間の終値が枠の中に
+    収まっていたか、両側で反発していたか、抜けなかったかを測る。
+    実際に効いたボックスだけが高い点になる。
+    """
+    cfg = cfg or BoxConfig()
+    s = pd.Series(close).dropna().astype(float)
+    if len(s) < cfg.window * 0.8:
+        return {"score": 0, "type": "データ不足",
+                "reason": f"{len(s)}本しかありません", "validated": False}
+
+    s = s.iloc[-cfg.window:]
+    holdout = max(20, min(holdout, len(s) // 3))
+    train, test = s.iloc[:-holdout], s.iloc[-holdout:]
+
+    hi_s = pd.Series(high).dropna().astype(float).iloc[-len(s):] if high is not None else s
+    lo_s = pd.Series(low).dropna().astype(float).iloc[-len(s):] if low is not None else s
+
+    base = detect_box(train, hi_s.iloc[:-holdout], lo_s.iloc[:-holdout],
+                      BoxConfig(**{**cfg.__dict__, "window": len(train)}))
+    if base.get("score", 0) <= 0:
+        return {**base, "validated": False}
+
+    # 学習部分の回帰直線を検証期間まで延長する
+    p_tr = train.to_numpy()
+    x_tr = np.arange(len(p_tr))
+    slope, intercept = np.polyfit(x_tr, np.log(p_tr), 1)
+    resid_tr = p_tr / np.exp(intercept + slope * x_tr) - 1.0
+    lo_r = float(np.quantile(resid_tr, cfg.lower_q))
+    hi_r = float(np.quantile(resid_tr, cfg.upper_q))
+
+    x_te = np.arange(len(p_tr), len(p_tr) + len(test))
+    trend_te = np.exp(intercept + slope * x_te)
+    p_te = test.to_numpy()
+    resid_te = p_te / trend_te - 1.0
+
+    tol = (hi_r - lo_r) * cfg.outside_tol
+    inside = float(np.mean((resid_te <= hi_r + tol) & (resid_te >= lo_r - tol)))
+
+    band = (hi_r - lo_r) * cfg.touch_band
+    up_te = count_touches(resid_te, hi_r, band, upper=True)
+    dn_te = count_touches(resid_te, lo_r, band, upper=False)
+    both_sides = up_te >= 1 and dn_te >= 1
+
+    last = float(p_te[-1])
+    lo_now, hi_now = float(trend_te[-1] * (1 + lo_r)), float(trend_te[-1] * (1 + hi_r))
+    broke = last > hi_now * (1 + cfg.break_margin) or last < lo_now * (1 - cfg.break_margin)
+    position = (last - lo_now) / (hi_now - lo_now) * 100 if hi_now > lo_now else 50.0
+
+    # 検証期間の成績で、学習時の点数を割り引く
+    keep = 0.55 * min(inside / 0.85, 1.0) + 0.25 * (1.0 if both_sides else 0.0) \
+         + 0.20 * (0.0 if broke else 1.0)
+    score = base["score"] * keep
+
+    reasons = list(base.get("reasons", []))
+    if inside < 0.75:
+        reasons.append(f"検証期間で枠から外れがち（枠内 {inside*100:.0f}％）")
+    if broke:
+        reasons.append("検証期間の最後にレンジを抜けています")
+    if not both_sides:
+        reasons.append("検証期間に両側での反発がありません")
+
+    status = ("上抜け" if last > hi_now * (1 + cfg.break_margin) else
+              "下抜け" if last < lo_now * (1 - cfg.break_margin) else
+              "下限圏" if position <= 25 else
+              "上限圏" if position >= 75 else "レンジ中央")
+
+    return {**base,
+            "score": round(score, 1),
+            "train_score": base["score"],
+            "validated": True,
+            "holdout_bars": len(test),
+            "inside_pct": round(inside * 100, 1),
+            "touch_both": both_sides,
+            "status": status,
+            "position": round(float(np.clip(position, -20, 120)), 1),
+            "upper": round(hi_now, 1),
+            "lower": round(lo_now, 1),
+            "reasons": reasons}
+
+
+def detect_box_multi(close, high=None, low=None,
+                     windows=(120, 240), holdout: int = 40) -> dict:
+    """複数の期間で判定し、どれでも成立したものだけを高く評価する。
+
+    6か月では横ばいでも1年で見れば下降トレンド、ということは普通に起きる。
+    期間を変えても同じ結論になる銘柄だけを残すと、信頼度が上がる。
+
+    最終スコアは各期間の最小値。ひとつでも崩れたら評価を下げる考え方。
+    """
+    results = {}
+    for w in windows:
+        r = detect_box_validated(close, high, low, BoxConfig(window=w), holdout)
+        if r.get("score", 0) > 0 and r.get("validated"):
+            results[w] = r
+
+    if not results:
+        return {"score": 0, "type": "判定不能", "windows_ok": 0,
+                "reasons": ["どの期間でも成立しませんでした"]}
+
+    # 種別が期間で食い違う場合は減点（例: 6か月は水平だが1年では下降）
+    types = {r["type"] for r in results.values()}
+    agree = len(types) == 1
+    base = min(r["score"] for r in results.values())
+    score = base * (1.0 if agree else 0.75) * (len(results) / len(windows))
+
+    primary = results[min(results)]      # 短い期間を表示の基準にする
+    return {**primary,
+            "score": round(score, 1),
+            "windows_ok": len(results),
+            "windows_total": len(windows),
+            "type_agree": agree,
+            "per_window": {w: r["score"] for w, r in results.items()},
+            "types_by_window": {w: r["type"] for w, r in results.items()}}
 
 
 # ────────────────────────────────── 自己テスト
