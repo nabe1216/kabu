@@ -254,7 +254,9 @@ def main() -> int:
 
         rows.append({
             "code": u["code"], "name": u["name"], "sector": u["sector"],
-            "score": r["score"], "type": r["type"],
+            "score": r["score"],
+            # 種別は2つ持つ。長期＝信頼性の根拠、直近＝いま売買できる形かどうか。
+            "type": cur["type"], "type_long": r["type"],
             "inside_pct": r.get("inside_pct"), "touch_both": r.get("touch_both"),
             "status": cur["status"], "position": cur["position"],
             "lower": cur["lower"], "upper": cur["upper"],
@@ -298,9 +300,15 @@ def main() -> int:
         broken = out["status"].isin(["上抜け", "下抜け"]) | (out["position"] < -5) | (out["position"] > 105)
         excluded.append(("レンジを抜けている", int(broken.sum())))
         out = out[~broken]
+    # 長期で見てボックスでも、直近が一方向に走っていれば今は買い場ではない。
+    # 長期の信頼性と直近の形、両方が揃ったものだけを候補にする。
+    trending = (out["type"] == "トレンド") | (out["drift"] > 3.0)
+    excluded.append(("直近がトレンド化している", int(trending.sum())))
+    out = out[~trending]
+
     if not args.include_down:
         # 右肩下がりのレンジは、下限で買っても次の下限がさらに低い
-        down = out["type"] == "下降チャネル"
+        down = out["type"].isin(["下降チャネル"]) | (out["type_long"] == "下降チャネル")
         excluded.append(("下降チャネル", int(down.sum())))
         out = out[~down]
     if args.horizontal_only:
@@ -340,10 +348,15 @@ def main() -> int:
     for _, x in out.iterrows():
         ins = f"{x['inside_pct']:>5.0f}%" if x.get("inside_pct") is not None else "    −"
         dr = f"{x['drift']:>5.1f}本" if x.get("drift") is not None else "     −"
+        mark = "" if x["type"] == x["type_long"] else "*"
         print(f"{x['code']:<7}{str(x['name'])[:18]:<20}{x['score']:>5.0f}"
-              f"{x['type']:>13}{ins}{x['slope_pct']:>+7.0f}%{dr}"
+              f"{x['type']+mark:>13}{ins}{x['slope_pct']:>+7.0f}%{dr}"
               f"{x['status']:>10}{x['position']:>6.0f}%"
               f"{x['last']:>9.1f}{x['lower']:>9.1f}{x['upper']:>9.1f}{x['width_pct']:>6.1f}%")
+    n_diff = int((out["type"] != out["type_long"]).sum())
+    if n_diff:
+        print(f"\n  * 印（{n_diff}件）は、直近120日と長期360日で種別が異なる銘柄です。"
+              f"形が変わりつつある可能性があるのでチャートで確認してください。")
     print(f"\n書き出しました: data/box.csv, data/box.json（失敗 {failures}件）")
     return 0
 
