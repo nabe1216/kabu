@@ -197,6 +197,8 @@ def main() -> int:
                     help="レンジを抜けた銘柄も候補に含める（既定は除外）")
     ap.add_argument("--include-down", action="store_true",
                     help="下降チャネルも候補に含める（既定は除外）")
+    ap.add_argument("--horizontal-only", action="store_true",
+                    help="水平ボックスだけに絞る（上昇チャネルも除外）")
     args = ap.parse_args()
 
     client = JQuantsClient(api_key)
@@ -257,6 +259,7 @@ def main() -> int:
             "status": cur["status"], "position": cur["position"],
             "lower": cur["lower"], "upper": cur["upper"],
             "width_pct": cur["width_pct"], "slope_pct": cur["slope_annual_pct"],
+            "drift": cur.get("drift_ratio"),
             "adf_t": r["adf_t"], "crosses": r["crosses"],
             "last": round(float(close.iloc[-1]), 1),
         })
@@ -300,6 +303,10 @@ def main() -> int:
         down = out["type"] == "下降チャネル"
         excluded.append(("下降チャネル", int(down.sum())))
         out = out[~down]
+    if args.horizontal_only:
+        up = out["type"] != "水平ボックス"
+        excluded.append(("水平ボックス以外", int(up.sum())))
+        out = out[~up]
 
     print(f"\n■ 絞り込み（{args.min_score}点以上 {n_before}件 から）")
     for label, n in excluded:
@@ -327,13 +334,15 @@ def main() -> int:
         }, f, ensure_ascii=False, indent=2)
 
     print(f"\n■ 買い候補 上位{len(out)}件（スコアは順位づけのための目安です）\n")
-    print(f"{'コード':<7}{'銘柄':<20}{'点':>5}{'種別':>13}{'枠内':>6}{'状態':>10}"
-          f"{'位置':>7}{'現在値':>9}{'下限':>9}{'上限':>9}{'幅':>7}")
-    print("-" * 108)
+    print(f"{'コード':<7}{'銘柄':<20}{'点':>5}{'種別':>13}{'枠内':>6}{'年率':>8}{'進む幅':>7}"
+          f"{'状態':>10}{'位置':>7}{'現在値':>9}{'下限':>9}{'上限':>9}{'幅':>7}")
+    print("-" * 124)
     for _, x in out.iterrows():
         ins = f"{x['inside_pct']:>5.0f}%" if x.get("inside_pct") is not None else "    −"
+        dr = f"{x['drift']:>5.1f}本" if x.get("drift") is not None else "     −"
         print(f"{x['code']:<7}{str(x['name'])[:18]:<20}{x['score']:>5.0f}"
-              f"{x['type']:>13}{ins}{x['status']:>10}{x['position']:>6.0f}%"
+              f"{x['type']:>13}{ins}{x['slope_pct']:>+7.0f}%{dr}"
+              f"{x['status']:>10}{x['position']:>6.0f}%"
               f"{x['last']:>9.1f}{x['lower']:>9.1f}{x['upper']:>9.1f}{x['width_pct']:>6.1f}%")
     print(f"\n書き出しました: data/box.csv, data/box.json（失敗 {failures}件）")
     return 0
