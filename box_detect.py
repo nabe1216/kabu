@@ -51,8 +51,11 @@ class BoxConfig:
     width_ideal_lo: float = 0.10
     width_ideal_hi: float = 0.30
     width_max: float = 0.45     # 幅の上限。広すぎるとボックスとは呼べない
-    slope_flat: float = 0.15    # 年率換算の傾きがこの範囲なら「水平ボックス」
-    slope_max: float = 0.60     # これを超える傾きはチャネルとしても対象外
+    slope_flat: float = 0.12    # 年率換算の傾きがこの範囲なら「水平ボックス」
+    slope_max: float = 0.30     # これを超える傾きはチャネルとしても対象外
+    drift_max: float = 3.0      # 1年で値幅の何本分まで進んでよいか。
+                                # 水平ボックスは約1.1本、上昇チャネルは約2〜2.7本、
+                                # 一方向のトレンドは20本以上になる。ここが実質的な分かれ目。
     break_margin: float = 0.02  # 直近終値が帯をこの割合超えたらブレイク扱い
 
 
@@ -192,16 +195,21 @@ def detect_box(close, high=None, low=None, cfg: BoxConfig | None = None) -> dict
 
     # ── 種別と足切り ─────────────────────
     a = abs(slope_annual)
-    if a <= cfg.slope_flat:
+    # 1年でレンジ幅の何本分進むか。傾きだけで見ると、値幅の広い銘柄が
+    # 不当にトレンド扱いされるため、値幅で割って比較する。
+    drift = a / width if width > 0 else 99.0
+
+    if a <= cfg.slope_flat and drift <= 1.6:
         btype = "水平ボックス"
-    elif a <= cfg.slope_max:
+    elif a <= cfg.slope_max and drift <= cfg.drift_max:
         btype = "上昇チャネル" if slope_annual > 0 else "下降チャネル"
     else:
         btype = "トレンド"
 
     reasons = []
     if btype == "トレンド":
-        reasons.append(f"傾きが大きすぎます（年率 {slope_annual*100:+.0f}％）")
+        reasons.append(f"一方向に進みすぎています"
+                       f"（年率 {slope_annual*100:+.0f}％／1年で値幅 {drift:.1f}本分）")
     if min(up_touch, dn_touch) < cfg.min_touches:
         reasons.append(f"反発回数が不足（上{up_touch}回・下{dn_touch}回）")
     if tstat > -0.6:
@@ -242,6 +250,7 @@ def detect_box(close, high=None, low=None, cfg: BoxConfig | None = None) -> dict
         "lower": round(lo_now, 1),
         "width_pct": round(width * 100, 1),
         "slope_annual_pct": round(slope_annual * 100, 1),
+        "drift_ratio": round(drift, 2),
         "efficiency_ratio": round(er, 3),
         "adf_t": round(tstat, 2),
         "crosses": crosses,
