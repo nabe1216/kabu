@@ -187,6 +187,10 @@ def main() -> int:
     ap.add_argument("--min-score", type=float, default=70.0)
     ap.add_argument("--top", type=int, default=60)
     ap.add_argument("--limit", type=int, default=0, help="試し実行用。先頭N銘柄だけ処理")
+    ap.add_argument("--include-broken", action="store_true",
+                    help="レンジを抜けた銘柄も候補に含める（既定は除外）")
+    ap.add_argument("--include-down", action="store_true",
+                    help="下降チャネルも候補に含める（既定は除外）")
     args = ap.parse_args()
 
     client = JQuantsClient(api_key)
@@ -234,9 +238,6 @@ def main() -> int:
         low = pd.to_numeric(df.get("AdjustmentLow", df.get("Low")), errors="coerce")
 
         r = detect_box(close, high, low, cfg)
-        if r.get("score", 0) < args.min_score:
-            continue
-
         rows.append({
             "code": u["code"], "name": u["name"], "sector": u["sector"],
             "score": r["score"], "type": r["type"], "status": r["status"],
@@ -250,13 +251,53 @@ def main() -> int:
             log.info("進捗 %d/%d（該当 %d件）", i, len(uni), len(rows))
 
     if not rows:
-        print(f"\n{args.min_score}点以上の銘柄はありませんでした。"
-              f"--min-score を下げてお試しください。（失敗 {failures}件）")
+        print(f"\n判定できる銘柄がありませんでした。（失敗 {failures}件）")
         return 0
 
-    out = pd.DataFrame(rows)
-    # 買い場に近い順：点数が高く、レンジ下限に近いものを上に
-    out["rank"] = out["score"] - out["position"] * 0.25
+    allf = pd.DataFrame(rows)
+
+    # ── 全体の分布を必ず出す。しきい値はこれを見て決める ──
+    print(f"\n■ スコアの分布（判定した {len(allf)}銘柄 / 判定期間 {args.window}営業日）\n")
+    bins = [(90, 101), (80, 90), (70, 80), (60, 70), (0, 60)]
+    for lo, hi in bins:
+        n = int(((allf["score"] >= lo) & (allf["score"] < hi)).sum())
+        bar = "█" * int(n / max(len(allf), 1) * 40)
+        print(f"  {lo:>3}点以上 {n:>4}件 ({n/len(allf)*100:>4.1f}%) {bar}")
+    print("\n  種別の内訳:")
+    for t, n in allf["type"].value_counts().items():
+        print(f"    {t:<12}{n:>4}件")
+    print("\n  状態の内訳:")
+    for t, n in allf["status"].value_counts().items():
+        print(f"    {t:<12}{n:>4}件")
+
+    # ── 買い候補として妥当なものだけに絞る ──
+    out = allf[allf["score"] >= args.min_score].copy()
+    n_before = len(out)
+
+    excluded = []
+    if not args.include_broken:
+        # レンジを抜けた銘柄はボックス売買の前提が崩れている
+        broken = out["status"].isin(["上抜け", "下抜け"]) | (out["position"] < -5) | (out["position"] > 105)
+        excluded.append(("レンジを抜けている", int(broken.sum())))
+        out = out[~broken]
+    if not args.include_down:
+        # 右肩下がりのレンジは、下限で買っても次の下限がさらに低い
+        down = out["type"] == "下降チャネル"
+        excluded.append(("下降チャネル", int(down.sum())))
+        out = out[~down]
+
+    print(f"\n■ 絞り込み（{args.min_score}点以上 {n_before}件 から）")
+    for label, n in excluded:
+        print(f"    − {label}: {n}件を除外")
+    print(f"    → 候補 {len(out)}件")
+
+    if out.empty:
+        print("\n条件を満たす銘柄がありませんでした。min_score を下げてお試しください。")
+        return 0
+
+    # 並べ替え: 点数が高く、レンジの下寄り（買い場）にあるものを上に。
+    # 下限ちょうどではなく少し上（15%付近）を最良として、離れるほど減点する。
+    out["rank"] = out["score"] - (out["position"] - 15).abs() * 0.30
     out = out.sort_values("rank", ascending=False).head(args.top).drop(columns="rank")
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -265,11 +306,12 @@ def main() -> int:
         json.dump({
             "generated_at": datetime.now(timezone(timedelta(hours=9))).isoformat(),
             "window": args.window, "min_score": args.min_score,
-            "universe_count": len(uni), "failure_count": failures,
+            "universe_count": len(uni), "evaluated_count": len(allf),
+            "failure_count": failures,
             "items": out.to_dict("records"),
         }, f, ensure_ascii=False, indent=2)
 
-    print(f"\n■ ボックス候補 {len(out)}件（判定期間 {args.window}営業日 / 対象 {len(uni)}銘柄）\n")
+    print(f"\n■ 買い候補 {len(out)}件\n")
     print(f"{'コード':<7}{'銘柄':<20}{'点':>5}{'種別':>13}{'状態':>10}"
           f"{'位置':>7}{'現在値':>9}{'下限':>9}{'上限':>9}{'幅':>7}")
     print("-" * 100)
