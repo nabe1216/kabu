@@ -20,6 +20,14 @@ on:
         description: "試し実行。先頭N銘柄だけ処理（0で全銘柄）"
         required: false
         default: "0"
+      include_down:
+        description: "下降チャネルも候補に含める（true/false）"
+        required: false
+        default: "false"
+      include_broken:
+        description: "レンジを抜けた銘柄も含める（true/false）"
+        required: false
+        default: "false"
 
 permissions:
   contents: write
@@ -75,7 +83,9 @@ jobs:
           python box_scan.py \
             --window "${{ github.event.inputs.window || '120' }}" \
             --min-score "${{ github.event.inputs.min_score || '70' }}" \
-            --limit "${{ github.event.inputs.limit || '0' }}" > run.log 2>&1
+            --limit "${{ github.event.inputs.limit || '0' }}" \
+            ${{ github.event.inputs.include_down == 'true' && '--include-down' || '' }} \
+            ${{ github.event.inputs.include_broken == 'true' && '--include-broken' || '' }} > run.log 2>&1
           code=$?
           {
             echo "## 3. 実行結果"
