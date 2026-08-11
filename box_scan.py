@@ -36,7 +36,7 @@ import pandas as pd
 import requests
 
 try:
-    from box_detect import BoxConfig, detect_box
+    from box_detect import BoxConfig, detect_box, detect_box_validated
 except ImportError:
     sys.exit("box_detect.py が見つかりません。box_scan.py と同じ場所に置いてください。")
 
@@ -183,9 +183,15 @@ def main() -> int:
         return 2
 
     ap = argparse.ArgumentParser()
-    ap.add_argument("--window", type=int, default=120, help="判定期間（営業日）")
-    ap.add_argument("--min-score", type=float, default=70.0)
-    ap.add_argument("--top", type=int, default=60)
+    ap.add_argument("--window", type=int, default=360,
+                    help="信頼性を測る期間（営業日）。長いほど精度が上がる")
+    ap.add_argument("--holdout", type=int, default=80,
+                    help="そのうち検証に使う期間（営業日）")
+    ap.add_argument("--entry-window", type=int, default=120,
+                    help="売買の上下限を出す期間（営業日）。直近の値幅を見る")
+    ap.add_argument("--min-score", type=float, default=55.0)
+    ap.add_argument("--top", type=int, default=20,
+                    help="最終的に表示する件数。目視確認できる数に絞る")
     ap.add_argument("--limit", type=int, default=0, help="試し実行用。先頭N銘柄だけ処理")
     ap.add_argument("--include-broken", action="store_true",
                     help="レンジを抜けた銘柄も候補に含める（既定は除外）")
@@ -202,7 +208,7 @@ def main() -> int:
     today = date.today()
     to_date = today.strftime("%Y-%m-%d")
     # 休場日を見込んで多めに取る
-    frm_date = (today - timedelta(days=int(args.window * 1.7) + 30)).strftime("%Y-%m-%d")
+    frm_date = (today - timedelta(days=int(args.window * 1.75) + 40)).strftime("%Y-%m-%d")
 
     cfg = BoxConfig(window=args.window)
     rows, failures = [], 0
@@ -231,18 +237,26 @@ def main() -> int:
         if close is None:
             continue
         close = pd.to_numeric(close, errors="coerce").dropna()
-        if len(close) < args.window * 0.6:
+        if len(close) < args.window * 0.8:
             continue
 
         high = pd.to_numeric(df.get("AdjustmentHigh", df.get("High")), errors="coerce")
         low = pd.to_numeric(df.get("AdjustmentLow", df.get("Low")), errors="coerce")
 
-        r = detect_box(close, high, low, cfg)
+        # 信頼性は長い期間＋検証で測る（過去で線を引き、その後に守られたかを見る）
+        r = detect_box_validated(close, high, low, cfg, holdout=args.holdout)
+        if not r.get("validated"):
+            continue
+        # 売買の上下限は直近の値幅から出す（古い線で入るのは実用的でない）
+        cur = detect_box(close, high, low, BoxConfig(window=args.entry_window))
+
         rows.append({
             "code": u["code"], "name": u["name"], "sector": u["sector"],
-            "score": r["score"], "type": r["type"], "status": r["status"],
-            "position": r["position"], "lower": r["lower"], "upper": r["upper"],
-            "width_pct": r["width_pct"], "slope_pct": r["slope_annual_pct"],
+            "score": r["score"], "type": r["type"],
+            "inside_pct": r.get("inside_pct"), "touch_both": r.get("touch_both"),
+            "status": cur["status"], "position": cur["position"],
+            "lower": cur["lower"], "upper": cur["upper"],
+            "width_pct": cur["width_pct"], "slope_pct": cur["slope_annual_pct"],
             "adf_t": r["adf_t"], "crosses": r["crosses"],
             "last": round(float(close.iloc[-1]), 1),
         })
@@ -257,8 +271,9 @@ def main() -> int:
     allf = pd.DataFrame(rows)
 
     # ── 全体の分布を必ず出す。しきい値はこれを見て決める ──
-    print(f"\n■ スコアの分布（判定した {len(allf)}銘柄 / 判定期間 {args.window}営業日）\n")
-    bins = [(90, 101), (80, 90), (70, 80), (60, 70), (0, 60)]
+    print(f"\n■ スコアの分布（判定 {len(allf)}銘柄 / 信頼性は{args.window}営業日"
+          f"（うち検証{args.holdout}日）/ 上下限は直近{args.entry_window}営業日）\n")
+    bins = [(80, 101), (70, 80), (60, 70), (50, 60), (0, 50)]
     for lo, hi in bins:
         n = int(((allf["score"] >= lo) & (allf["score"] < hi)).sum())
         bar = "█" * int(n / max(len(allf), 1) * 40)
@@ -311,13 +326,14 @@ def main() -> int:
             "items": out.to_dict("records"),
         }, f, ensure_ascii=False, indent=2)
 
-    print(f"\n■ 買い候補 {len(out)}件\n")
-    print(f"{'コード':<7}{'銘柄':<20}{'点':>5}{'種別':>13}{'状態':>10}"
+    print(f"\n■ 買い候補 上位{len(out)}件（スコアは順位づけのための目安です）\n")
+    print(f"{'コード':<7}{'銘柄':<20}{'点':>5}{'種別':>13}{'枠内':>6}{'状態':>10}"
           f"{'位置':>7}{'現在値':>9}{'下限':>9}{'上限':>9}{'幅':>7}")
-    print("-" * 100)
+    print("-" * 108)
     for _, x in out.iterrows():
+        ins = f"{x['inside_pct']:>5.0f}%" if x.get("inside_pct") is not None else "    −"
         print(f"{x['code']:<7}{str(x['name'])[:18]:<20}{x['score']:>5.0f}"
-              f"{x['type']:>13}{x['status']:>10}{x['position']:>6.0f}%"
+              f"{x['type']:>13}{ins}{x['status']:>10}{x['position']:>6.0f}%"
               f"{x['last']:>9.1f}{x['lower']:>9.1f}{x['upper']:>9.1f}{x['width_pct']:>6.1f}%")
     print(f"\n書き出しました: data/box.csv, data/box.json（失敗 {failures}件）")
     return 0
