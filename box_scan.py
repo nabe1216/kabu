@@ -199,6 +199,10 @@ def main() -> int:
                     help="下降チャネルも候補に含める（既定は除外）")
     ap.add_argument("--horizontal-only", action="store_true",
                     help="水平ボックスだけに絞る（上昇チャネルも除外）")
+    ap.add_argument("--max-position", type=float, default=90.0,
+                    help="レンジ内位置がこの％を超える銘柄は除外する（上限圏は買い場でない）")
+    ap.add_argument("--sort", choices=["entry", "score"], default="entry",
+                    help="entry＝買い場に近い順（既定）、score＝信頼性の高い順")
     args = ap.parse_args()
 
     client = JQuantsClient(api_key)
@@ -297,8 +301,12 @@ def main() -> int:
     excluded = []
     if not args.include_broken:
         # レンジを抜けた銘柄はボックス売買の前提が崩れている
-        broken = out["status"].isin(["上抜け", "下抜け"]) | (out["position"] < -5) | (out["position"] > 105)
-        excluded.append(("レンジを抜けている", int(broken.sum())))
+        # 上限に到達した時点で買い場ではない。105%まで許すと日本ペイントのような
+        # 「すでに上抜けている」銘柄が残ってしまうため、90%で切る。
+        broken = (out["status"].isin(["上抜け", "下抜け"])
+                  | (out["position"] < -5) | (out["position"] > args.max_position))
+        excluded.append((f"上限圏または抜けている（位置{args.max_position:.0f}％超）",
+                         int(broken.sum())))
         out = out[~broken]
     # 長期で見てボックスでも、直近が一方向に走っていれば今は買い場ではない。
     # 長期の信頼性と直近の形、両方が揃ったものだけを候補にする。
@@ -325,9 +333,13 @@ def main() -> int:
         print("\n条件を満たす銘柄がありませんでした。min_score を下げてお試しください。")
         return 0
 
-    # 並べ替え: 点数が高く、レンジの下寄り（買い場）にあるものを上に。
-    # 下限ちょうどではなく少し上（15%付近）を最良として、離れるほど減点する。
-    out["rank"] = out["score"] - (out["position"] - 15).abs() * 0.30
+    # 並べ替え。既定は「買い場に近い順」。
+    # 下限ちょうどではなく少し上（15％付近）を最良とし、離れるほど下げる。
+    # 信頼性（スコア）も加味するが、位置の重みを大きくして上限圏が上に来ないようにする。
+    if args.sort == "entry":
+        out["rank"] = out["score"] * 0.5 - (out["position"] - 15).abs() * 0.8
+    else:
+        out["rank"] = out["score"] - (out["position"] - 15).abs() * 0.15
     out = out.sort_values("rank", ascending=False).head(args.top).drop(columns="rank")
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -341,7 +353,8 @@ def main() -> int:
             "items": out.to_dict("records"),
         }, f, ensure_ascii=False, indent=2)
 
-    print(f"\n■ 買い候補 上位{len(out)}件（スコアは順位づけのための目安です）\n")
+    label = "買い場に近い順" if args.sort == "entry" else "信頼性の高い順"
+    print(f"\n■ 買い候補 上位{len(out)}件（{label}／スコアは順位づけの目安です）\n")
     print(f"{'コード':<7}{'銘柄':<20}{'点':>5}{'種別':>13}{'枠内':>6}{'年率':>8}{'進む幅':>7}"
           f"{'状態':>10}{'位置':>7}{'現在値':>9}{'下限':>9}{'上限':>9}{'幅':>7}")
     print("-" * 124)
