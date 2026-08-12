@@ -1,2343 +1,515 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-DIVIDEND HEIST バックテスト (簡易版)
-====================================
+配当利回り戦略のバックテスト
 
-高配当スイング戦略を過去の市場データで検証する。
+複数のルールを、同じ期間・同じデータで走らせて比較します。
+「相場によって早めた方がいいのか」を議論ではなく数字で決めるための道具です。
 
-戦略:
-  - 各月初にユニバース全銘柄をスクリーニング (look-ahead bias 回避)
-  - BUY シグナル: スクリーニング PASS + 利回り ≥ 過去5Y Q75
-  - SELL シグナル: 利回り ≤ 過去5Y Q25 (or 緊急撤退条件)
-  - 等金額、最大20ポジション、月初リバランス
-  - 配当再投資あり
+■ 未来のデータを使わないための決まりごと
+  ある時点 t の判定に使ってよいのは次だけです。
+    株価   … t 以前の終値
+    配当   … t 以前に開示された予想DPS（DiscDate <= t）
+    分布   … t より前の期間だけで作った利回り分布
+  ここを守らないと、実際には取れなかった好成績が出ます。
+  すべての計算を「その日までのデータ」に限定しています。
 
-実行方法:
-  cd dividend-heist/scripts
-  J_QUANTS_API_KEY=xxxxx python3 backtest.py
+■ 比較するルール（VARIANTS で自由に足せます）
+  fixed      いまの実装。Q75で買い、Q25で売る
+  tranche    3分割。Q75/Q85/Q95 で1/3ずつ買い、Q25/Q15/Q5 で1/3ずつ売る
+  dynamic    条件で必要パーセンタイルを上下させる（増配率・市場内順位）
+  cross      自分の過去比ではなく、その日の市場内順位で判定
 
-オプション:
-  --start 2021-04-01     開始日 (デフォルト: 2021-04-01)
-  --end   2026-04-30     終了日 (デフォルト: 2026-04-30)
-  --capital 10000000     初期資金 (円, デフォルト: 1000万円)
-  --positions 20         最大保有銘柄数 (デフォルト: 20)
-  --no-cache             キャッシュを使わず再取得
-
-出力 (./data/backtest/):
-  summary.csv             サマリー指標 (CAGR, シャープ, 最大DDなど)
-  equity_curve.csv        日次評価額推移 (戦略 vs TOPIX)
-  monthly_returns.csv     月次リターン
-  trades.csv              全取引履歴
-  positions_history.csv   月初時点のポジション一覧
-
-注意点 (v1):
-  - 生存者バイアス: 現在のユニバースのみ使用 (上場廃止銘柄なし)
-  - 取引コスト: 0.05%（買・売各々）+ 配当税20.315%
-  - ベンチマーク: TOPIX 連動 ETF (1306) との比較
-  - look-ahead bias 対策: 開示日 (DiscDate) より前のデータのみ使用
+■ 使い方
+  python backtest.py --years 7            過去7年で全ルールを比較
+  python backtest.py --only fixed,tranche 一部だけ比較
+  python backtest.py --limit 80           試し実行（80銘柄）
 """
 
 from __future__ import annotations
 
+import argparse
+import json
+import logging
 import os
 import sys
-import json
 import time
-import csv
-import math
-import bisect
-import logging
-import argparse
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from datetime import date, timedelta
 from typing import Any
-from collections import defaultdict
 
-# 同ディレクトリの generate.py から関数を借用
-sys.path.insert(0, str(Path(__file__).parent.absolute()))
-from generate import (  # noqa: E402
-    JQuantsClient,
-    parse_date,
-    safe_float,
-    quantile,
-    cumulative_adj_factor_after,
-    extract_annual_dividends,
-    extract_annual_metric,
-    check_dividend_history,
-    check_stability,
-    check_payout_ratio,
-    check_equity_ratio,
-    check_valuation,
-    check_min_yield,
-    evaluate_box,
-    EQUITY_RATIO_EXEMPT_SECTORS,
-    DIVIDEND_CHECK_EXEMPT,
-    PROGRESSIVE_DIVIDEND_LIST,
-    DOE_LIST,
-    MARKET_CODE_PRIME,
-    API_SLEEP_SEC,
-)
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='[%(asctime)s] %(levelname)s: %(message)s',
-    datefmt='%H:%M:%S',
-)
-log = logging.getLogger('backtest')
-
-# ============================================================================
-# Config
-# ============================================================================
-
-
-class Config:
-    # キャッシュ
-    CACHE_DIR = Path(__file__).parent.parent / 'data' / 'backtest_cache'
-
-    # 出力
-    OUTPUT_DIR = Path(__file__).parent.parent / 'data' / 'backtest'
-
-    # スクリーニング 8 条件
-    YIELD_MIN = 3.0
-    GRAHAM_MAX = 22.5
-    PAYOUT_MAX = 50.0
-    EQUITY_MIN = 0.5
-
-    # トレーディングコスト
-    BUY_COMMISSION = 0.0005   # 0.05%
-    SELL_COMMISSION = 0.0005  # 0.05%
-    DIVIDEND_TAX = 0.20315
-    CAPITAL_GAINS_TAX = 0.20315
-
-    # ベンチマーク
-    BENCHMARK_CODE = '1306'   # TOPIX連動型上場投資信託
-    # フォールバック: 直接取れなかったら TOPIX 配当再投資指数を諦め単純な株価
-    # にする
-
-
-# === 業種分散ルール (グローバル設定、main() で上書き可能) ===
-# 0 = 業種分散なし (現状)
-# 0.40 = 同業種に総資産の最大40%まで
-# 0.30 = 同業種に総資産の最大30%まで
-# 0.25 = 同業種に総資産の最大25%まで
-SECTOR_CAP_RATIO = 0.0
-
-# === PER/PBR バリュー割安ルール (グローバル設定) ===
-# 'none'  = 現状 (利回りQ75のみで判定)
-# 'and'   = 利回りQ75 かつ PER・PBR両方が過去水準以下 (厳格フィルタ)
-# 'score' = 利回りQ75、バリュー割安ならスコア×1.3で買付優先
-VALUE_MODE = 'none'
-VALUE_SCORE_BOOST = 1.3  # 'score' モードでの倍率
-
-# バリュー割安判定に使う過去分布の基準
-# 'q25' = 過去下位25% (厳しい・現状) / 'q50' = 過去中央値以下 (緩い・過去比割安)
-VALUE_QUANTILE = 'q25'
-
-# グレアム指数 (PER×PBR) をスクリーニング8条件でどう扱うか
-# 'strict' = ≤22.5 (現状) / 'loose' = ≤40 (異常値だけ弾く緩い床) / 'off' = 合否から外す
-GRAHAM_MODE = 'strict'
-GRAHAM_LOOSE_MAX = 40.0
-
-# === multi-period で回す戦略の限定 (グローバル設定) ===
-# None = 全5戦略 (通常の multi-period)
-# 'B'  = 戦略Bのみ (compare系で高速化。1/5の時間)
-ONLY_STRATEGY: str | None = None
-
-
-# === 分布計算キャッシュ (修正B: 高速化) ===
-# compute_yield_dist_at / compute_valuation_dist_at は「過去5年の月次分布」を
-# 計算するが、月をまたいでもほぼ変わらない。毎リバランス日(25回)×490銘柄で
-# 再計算していたのがタイムアウトの主因。
-# 3ヶ月(四半期)粒度でキャッシュし、同一四半期内の再計算をスキップする。
-# キー: (code, year, quarter)。1銘柄あたり 25回 → 約8回に削減。
-_YIELD_DIST_CACHE: dict[tuple, dict | None] = {}
-_VAL_DIST_CACHE: dict[tuple, dict | None] = {}
-
-
-def _dist_cache_key(code: str, target_date: date) -> tuple:
-    """3ヶ月(四半期)粒度のキャッシュキー"""
-    quarter = (target_date.month - 1) // 3
-    return (code, target_date.year, quarter)
-
-
-def reset_dist_cache() -> None:
-    """期間(バックテスト)をまたぐ際にキャッシュをクリア"""
-    _YIELD_DIST_CACHE.clear()
-    _VAL_DIST_CACHE.clear()
-
-
-# ============================================================================
-# Utility: 日付ヘルパー
-# ============================================================================
-
-
-def get_monthly_first_dates(start: date, end: date) -> list[date]:
-    """月初日のリストを返す（start月から含む）"""
-    dates = []
-    cur = date(start.year, start.month, 1)
-    while cur <= end:
-        dates.append(cur)
-        if cur.month == 12:
-            cur = date(cur.year + 1, 1, 1)
-        else:
-            cur = date(cur.year, cur.month + 1, 1)
-    return dates
-
-
-def get_first_trading_close_after(quotes_sorted: list[dict], target: date) -> tuple[date, float] | None:
-    """target以降で最初の取引日の調整済終値"""
-    for q in quotes_sorted:
-        d = parse_date(q.get('Date'))
-        if d is None or d < target:
-            continue
-        c = safe_float(q.get('AdjustmentClose')) or safe_float(q.get('Close'))
-        if c is not None and c > 0:
-            return (d, c)
-    return None
-
-
-def get_last_trading_close_at_or_before(quotes_sorted: list[dict], target: date) -> tuple[date, float] | None:
-    """target以前の最後の取引日の調整済終値"""
-    last = None
-    for q in quotes_sorted:
-        d = parse_date(q.get('Date'))
-        if d is None:
-            continue
-        if d > target:
-            break
-        c = safe_float(q.get('AdjustmentClose')) or safe_float(q.get('Close'))
-        if c is not None and c > 0:
-            last = (d, c)
-    return last
-
-
-# ============================================================================
-# データ取得 (キャッシュあり)
-# ============================================================================
-
-
-def fetch_universe(client: JQuantsClient, force_refresh: bool = False) -> list[dict]:
-    """
-    ユニバース取得。
-
-    対象: 東証プライム × TOPIX Core30 + Large70 + Mid400 (約470銘柄)
-    キャッシュ: data/backtest_cache/universe.json
-    """
-    cache_file = Config.CACHE_DIR / 'universe.json'
-    if cache_file.exists() and not force_refresh:
-        log.info('Using cached universe: %s', cache_file)
-        return json.loads(cache_file.read_text())
-
-    log.info('Fetching universe from J-Quants...')
-    info = client.get_listed_info()
-    SCALE_TARGETS = {'TOPIX Core30', 'TOPIX Large70', 'TOPIX Mid400'}
-
-    universe = []
-    for row in info:
-        if row.get('Mkt') != MARKET_CODE_PRIME:
-            continue
-        if row.get('ScaleCat') not in SCALE_TARGETS:
-            continue
-        code = row.get('Code', '')
-        if len(code) == 5 and code.endswith('0'):
-            code = code[:4]
-        universe.append({
-            'code': code,
-            'name': row.get('CoName', ''),
-            'sector33': row.get('S33', ''),
-            'sector33_name': row.get('S33Nm', ''),
-            'scale_cat': row.get('ScaleCat', ''),  # TOPIX Core30/Large70/Mid400
-        })
-    cache_file.parent.mkdir(parents=True, exist_ok=True)
-    cache_file.write_text(json.dumps(universe, ensure_ascii=False, indent=2))
-    log.info('Universe: %d stocks (cached to %s)', len(universe), cache_file)
-    return universe
-
-
-def fetch_stock_history(
-    client: JQuantsClient,
-    code: str,
-    backtest_start: date,
-    backtest_end: date,
-    force_refresh: bool = False,
-) -> tuple[list, list]:
-    """
-    銘柄1つの全データ (株価+財務) を取得しキャッシュ。
-
-    必要範囲:
-      - 株価: backtest_start - 5年 (Q25/Q75計算用) ~ backtest_end
-      - 財務: 全期間
-    """
-    cache_file = Config.CACHE_DIR / f'{code}.json'
-    if cache_file.exists() and not force_refresh:
-        try:
-            d = json.loads(cache_file.read_text())
-            return d['quotes'], d['statements']
-        except Exception:
-            pass
-
-    # J-Quants Standard プランは過去10年分のデータが取得可能。
-    # 5年遡って Q25/Q75 を計算したいが、10年制限を超えないよう安全マージン込みで調整。
-    today = date.today()
-    safe_earliest = today - timedelta(days=int(9.5 * 365))  # 9.5年前 (6ヶ月の安全マージン)
-    desired_from = backtest_start - timedelta(days=5 * 365 + 30)
-    from_date_obj = max(desired_from, safe_earliest)
-    from_date = from_date_obj.isoformat()
-    to_date = backtest_end.isoformat()
-
-    try:
-        quotes = client.get_daily_quotes(code, from_date, to_date)
-        time.sleep(API_SLEEP_SEC)
-        statements = client.get_statements(code)
-        time.sleep(API_SLEEP_SEC)
-    except Exception as e:
-        log.warning('Fetch fail %s: %s', code, e)
-        return [], []
-
-    cache_file.parent.mkdir(parents=True, exist_ok=True)
-    cache_file.write_text(json.dumps(
-        {'quotes': quotes, 'statements': statements},
-        ensure_ascii=False,
-    ))
-    return quotes, statements
-
-
-# ============================================================================
-# As-of-date analysis (look-ahead bias 回避)
-# ============================================================================
-
-
-def filter_statements_disclosed_before(statements: list[dict], target: date) -> list[dict]:
-    """
-    target以前に開示された disclosure のみを返す (線形スキャン版・互換性維持)。
-
-    多数のリバランス日で繰り返し呼ばれる場合は、_fast 版を使うこと。
-    """
-    return [s for s in statements
-            if (parse_date(s.get('DiscDate')) or date.min) <= target]
-
-
-def filter_quotes_at_or_before(quotes_sorted: list[dict], target: date) -> list[dict]:
-    """
-    target以前の価格データのみを返す (線形スキャン版・互換性維持)。
-
-    多数のリバランス日で繰り返し呼ばれる場合は、_fast 版を使うこと。
-    """
-    return [q for q in quotes_sorted
-            if (parse_date(q.get('Date')) or date.min) <= target]
-
-
-def filter_quotes_at_or_before_fast(
-    quotes_sorted: list[dict],
-    quote_dates: list[date],
-    target: date,
-) -> list[dict]:
-    """
-    bisect で O(log N) フィルタ。
-
-    quotes_sorted: Date 昇順ソート済み
-    quote_dates: 事前パース済みの date リスト (quotes_sorted と同じ順)
-    """
-    idx = bisect.bisect_right(quote_dates, target)
-    return quotes_sorted[:idx]
-
-
-def filter_statements_disclosed_before_fast(
-    statements_sorted: list[dict],
-    disc_dates: list[date],
-    target: date,
-) -> list[dict]:
-    """
-    bisect で O(log N) フィルタ (DiscDate ソート済み版)。
-    """
-    idx = bisect.bisect_right(disc_dates, target)
-    return statements_sorted[:idx]
-
-
-def compute_forecast_dps_at(
-    statements: list[dict],
-    quotes_sorted: list[dict],
-) -> tuple[float, date | None] | None:
-    """
-    その時点の予想DPS (分割調整済) を返す。
-    """
-    sorted_stmts = sorted(
-        statements,
-        key=lambda s: (
-            parse_date(s.get('CurPerEn'))
-            or parse_date(s.get('DiscDate'))
-            or date.min
-        ),
-        reverse=True,
-    )
-    for s in sorted_stmts:
-        per_type = s.get('CurPerType', '')
-        if per_type in ('FY', '4Q'):
-            f = safe_float(s.get('NxFDivAnn'))
-        else:
-            f = safe_float(s.get('FDivAnn'))
-        if f is not None and f > 0:
-            disc_d = parse_date(s.get('DiscDate')) or parse_date(s.get('CurPerEn'))
-            adj = cumulative_adj_factor_after(quotes_sorted, disc_d)
-            return (f * adj, disc_d)
-    # フォールバック: 直近FY実績
-    for s in sorted_stmts:
-        if s.get('CurPerType') in ('FY', '4Q'):
-            f = safe_float(s.get('DivAnn'))
-            if f is not None and f > 0:
-                disc_d = parse_date(s.get('DiscDate')) or parse_date(s.get('CurPerEn'))
-                adj = cumulative_adj_factor_after(quotes_sorted, disc_d)
-                return (f * adj, disc_d)
-    return None
-
-
-def compute_yield_dist_at(
-    statements: list[dict],
-    quotes_sorted: list[dict],
-    target_date: date,
-) -> dict[str, float] | None:
-    """
-    target以前の5年間の月次利回り分布 (分割調整済)。
-    """
-    five_years_ago = date(target_date.year - 5, target_date.month, 1)
-
-    div_history_by_year: dict[int, float] = {}
-    for s in statements:
-        if s.get('CurPerType') not in ('FY', '4Q'):
-            continue
-        per_end = parse_date(s.get('CurPerEn'))
-        v = safe_float(s.get('DivAnn'))
-        disc_d = parse_date(s.get('DiscDate')) or per_end
-        if per_end and v is not None:
-            adj = cumulative_adj_factor_after(quotes_sorted, disc_d)
-            div_history_by_year[per_end.year] = v * adj
-
-    monthly: dict[str, tuple[date, float]] = {}
-    for q in quotes_sorted:
-        d = parse_date(q.get('Date'))
-        if d is None or d < five_years_ago or d > target_date:
-            continue
-        close = safe_float(q.get('AdjustmentClose')) or safe_float(q.get('Close'))
-        if close is None or close <= 0:
-            continue
-        ym = f'{d.year}-{d.month:02d}'
-        prev = monthly.get(ym)
-        if prev is None or d > prev[0]:
-            monthly[ym] = (d, close)
-
-    yields: list[float] = []
-    for _ym, (d, close) in monthly.items():
-        dps = div_history_by_year.get(d.year)
-        if dps is None or dps <= 0:
-            continue
-        yields.append((dps / close) * 100.0)
-
-    if len(yields) < 12:
-        return None
-
-    yields.sort()
-    return {
-        'q25': quantile(yields, 0.25),
-        'q50': quantile(yields, 0.50),
-        'q75': quantile(yields, 0.75),
-        'n': len(yields),
-    }
-
-
-def compute_valuation_dist_at(
-    statements: list[dict],
-    quotes_sorted: list[dict],
-    target_date: date,
-) -> dict[str, float] | None:
-    """
-    target以前の5年間の月次 PER / PBR 分布 (分割調整済)。
-    各月末で「その時点で公表済みの最新 EPS/BPS」から PER/PBR を計算し Q25/Q50/Q75 を返す。
-    """
-    five_years_ago = date(target_date.year - 5, target_date.month, 1)
-
-    fin_timeline: list[tuple[date, float | None, float | None]] = []
-    for s in statements:
-        if s.get('CurPerType') not in ('FY', '4Q'):
-            continue
-        disc_d = parse_date(s.get('DiscDate')) or parse_date(s.get('CurPerEn'))
-        if disc_d is None:
-            continue
-        eps_raw = safe_float(s.get('EPS'))
-        bps_raw = safe_float(s.get('BPS'))
-        if eps_raw is None and bps_raw is None:
-            continue
-        fin_timeline.append((disc_d, eps_raw, bps_raw))
-    fin_timeline.sort(key=lambda x: x[0])
-    if not fin_timeline:
-        return None
-
-    monthly: dict[str, tuple[date, float]] = {}
-    for q in quotes_sorted:
-        d = parse_date(q.get('Date'))
-        if d is None or d < five_years_ago or d > target_date:
-            continue
-        close = safe_float(q.get('AdjustmentClose')) or safe_float(q.get('Close'))
-        if close is None or close <= 0:
-            continue
-        ym = f'{d.year}-{d.month:02d}'
-        prev = monthly.get(ym)
-        if prev is None or d > prev[0]:
-            monthly[ym] = (d, close)
-
-    per_list: list[float] = []
-    pbr_list: list[float] = []
-    for _ym, (d, close) in monthly.items():
-        latest = None
-        for ft in fin_timeline:
-            if ft[0] <= d:
-                latest = ft
-            else:
-                break
-        if latest is None:
-            continue
-        _disc, eps_raw, bps_raw = latest
-        adj = cumulative_adj_factor_after(quotes_sorted, _disc)
-        eps_adj = eps_raw * adj if eps_raw is not None else None
-        bps_adj = bps_raw * adj if bps_raw is not None else None
-        if eps_adj and eps_adj > 0:
-            per_list.append(close / eps_adj)
-        if bps_adj and bps_adj > 0:
-            pbr_list.append(close / bps_adj)
-
-    result: dict[str, float] = {}
-    if len(per_list) >= 12:
-        per_list.sort()
-        result['per_q25'] = quantile(per_list, 0.25)
-        result['per_q50'] = quantile(per_list, 0.50)
-        result['per_q75'] = quantile(per_list, 0.75)
-    if len(pbr_list) >= 12:
-        pbr_list.sort()
-        result['pbr_q25'] = quantile(pbr_list, 0.25)
-        result['pbr_q50'] = quantile(pbr_list, 0.50)
-        result['pbr_q75'] = quantile(pbr_list, 0.75)
-    return result if result else None
-
-
-def get_latest_fy_metric_at(statements: list[dict], key: str) -> float | None:
-    """target以前のdisclosure内で最新FYのキー値"""
-    fy_list = [s for s in statements if s.get('CurPerType') in ('FY', '4Q')]
-    fy_list.sort(key=lambda s: parse_date(s.get('CurPerEn')) or date.min, reverse=True)
-    for s in fy_list:
-        v = safe_float(s.get(key))
-        if v is not None:
-            return v
-    return None
-
-
-def compute_box_reliability(box_info: dict | None) -> float:
-    """
-    ボックス信頼度を 0〜1 で返す。
-
-    内訳 (重み):
-      ADX 40%      : 低いほど横ばい (22以下が望ましい)
-      値幅 20%      : 8〜20%が理想 (中央値14%が満点)
-      ATR比率 20%   : 1.5%以上が望ましい
-      タッチ回数 20% : 上下各2回以上で満点
-    """
-    if box_info is None:
-        return 0.0
-
-    # ADX (40%)
-    adx = box_info.get('adx')
-    if adx is None:
-        adx_score = 0.0
-    else:
-        adx_score = max(0.0, min(1.0, (22 - adx) / 22))
-
-    # 値幅 (20%) - width_pct は generate.py で × 100 されている
-    width_pct = box_info.get('width_pct', 0)
-    if 8 <= width_pct <= 20:
-        # 中央値14%が最も理想
-        deviation = abs(width_pct - 14) / 6  # 14±6
-        width_score = max(0.0, 1.0 - deviation * 0.3)
-    elif width_pct < 8:
-        width_score = max(0.0, width_pct / 8 * 0.5)
-    else:
-        width_score = max(0.0, 1.0 - (width_pct - 20) / 10) * 0.5
-
-    # ATR比率 (20%) - atr_ratio も × 100 された値
-    atr_ratio = box_info.get('atr_ratio') or 0
-    atr_score = min(atr_ratio / 1.5, 1.0)
-
-    # タッチ回数 (20%)
-    upper = box_info.get('upper_touches', 0)
-    lower = box_info.get('lower_touches', 0)
-    touch_score = min(min(upper, lower) / 2, 1.0)
-
-    return (
-        0.4 * adx_score
-        + 0.2 * width_score
-        + 0.2 * atr_score
-        + 0.2 * touch_score
-    )
-
-
-def compute_buy_score(current_yield: float, box_reliability: float) -> float:
-    """
-    BUY 優先順位スコア (B戦略・後方互換用)。
-
-    yield × (0.5 + 0.5 × box_reliability)
-      box_reliability=0 → score = yield × 0.5  (50%減点)
-      box_reliability=1 → score = yield × 1.0  (満点、ボックス完璧)
-    """
-    return current_yield * (0.5 + 0.5 * box_reliability)
-
-
-# ============================================================================
-# 戦略レジストリ (--compare で全戦略を試す)
-# ============================================================================
-
-
-def score_A_yield_only(info: dict) -> float:
-    """A: 利回り単純順"""
-    return info.get('current_yield') or 0
-
-
-def score_B_box_yield(info: dict) -> float:
-    """B: ボックス信頼度 × 利回り"""
-    y = info.get('current_yield') or 0
-    box_rel = info.get('box_reliability') or 0
-    return y * (0.5 + 0.5 * box_rel)
-
-
-def score_C_q75_deviation(info: dict) -> float:
-    """C: Q75乖離率順 (歴史的にどれだけ割安か)"""
-    y = info.get('current_yield') or 0
-    q75 = info.get('q75')
-    if not q75 or q75 <= 0:
-        return 0
-    return (y - q75) / q75
-
-
-def score_D_multi_factor(info: dict) -> float:
-    """
-    D: 多要素スコア
-       0.4 × 利回り(正規化) + 0.2 × ROE(正規化) +
-       0.2 × 自己資本比率(正規化) + 0.2 × ボックス信頼度
-    """
-    y = info.get('current_yield') or 0
-    roe = info.get('roe') or 0
-    eq = info.get('equity_ratio') or 0  # decimal: 0.5 = 50%
-    box_rel = info.get('box_reliability') or 0
-    yield_norm = min(y / 5.0, 1.0)        # 5%以上で満点
-    roe_norm = min(roe / 15.0, 1.0)        # ROE 15%以上で満点
-    eq_norm = min(eq / 0.6, 1.0)           # 自己資本比率 60%以上で満点
-    return 0.4 * yield_norm + 0.2 * roe_norm + 0.2 * eq_norm + 0.2 * box_rel
-
-
-def score_E_yield_x_roe(info: dict) -> float:
-    """E: 利回り × ROE (質と価格両方)"""
-    y = info.get('current_yield') or 0
-    roe = info.get('roe') or 0
-    return y * (roe / 10.0)
-
-
-STRATEGIES = {
-    'A': {
-        'name': '利回り単純順',
-        'desc': 'yield高い順',
-        'score_fn': score_A_yield_only,
+import numpy as np
+import pandas as pd
+import requests
+
+logging.basicConfig(level=logging.INFO,
+                    format="[%(asctime)s] %(message)s", datefmt="%H:%M:%S")
+log = logging.getLogger("backtest")
+
+JQUANTS_BASE = "https://api.jquants.com"
+API_SLEEP = 0.55
+MARKET_PRIME = "0111"
+SCALE_TARGETS = {"TOPIX Core30", "TOPIX Large70", "TOPIX Mid400"}
+OUTDIR = Path("data")
+CACHE = OUTDIR / "backtest_cache.pkl"
+
+
+# ══════════════════════════════════════════
+# 比較するルール
+#   ここを編集すれば、いくらでも条件を足せます。
+#   entry / exit はパーセンタイル。数字が小さいほど「安いところで買う」。
+# ══════════════════════════════════════════
+VARIANTS: dict[str, dict[str, Any]] = {
+    "fixed": {
+        "label": "固定Q75（現行）",
+        "entry": [75], "exit": [25],
     },
-    'B': {
-        'name': 'ボックス × 利回り',
-        'desc': 'yield × (0.5 + 0.5 × box信頼度)',
-        'score_fn': score_B_box_yield,
+    "fixed65": {
+        "label": "固定Q65（緩め）",
+        "entry": [65], "exit": [35],
     },
-    'C': {
-        'name': 'Q75乖離率順',
-        'desc': '(yield - Q75) / Q75',
-        'score_fn': score_C_q75_deviation,
+    "tranche": {
+        "label": "3分割 Q75/85/95",
+        "entry": [75, 85, 95], "exit": [25, 15, 5],
     },
-    'D': {
-        'name': '多要素スコア',
-        'desc': '0.4y + 0.2ROE + 0.2eq + 0.2box',
-        'score_fn': score_D_multi_factor,
+    "tranche_wide": {
+        "label": "3分割 Q60/75/90",
+        "entry": [60, 75, 90], "exit": [40, 25, 10],
     },
-    'E': {
-        'name': '利回り × ROE',
-        'desc': 'yield × ROE / 10',
-        'score_fn': score_E_yield_x_roe,
+    "dynamic": {
+        "label": "条件で閾値を可変",
+        "entry": [75], "exit": [25], "dynamic": True,
+    },
+    "dynamic_tranche": {
+        "label": "3分割＋可変",
+        "entry": [75, 85, 95], "exit": [25, 15, 5], "dynamic": True,
+    },
+    "cross": {
+        "label": "市場内順位で判定",
+        "entry": [75], "exit": [25], "cross": True,
     },
 }
 
-
-def screen_stock_at(
-    code: str,
-    sector33: str,
-    statements_filtered: list[dict],
-    quotes_sorted_filtered: list[dict],
-    target_date: date,
-) -> tuple[bool, dict[str, Any]]:
-    """
-    target_date時点で銘柄を 8 条件スクリーニング。
-
-    Returns:
-        (passes, info)
-        info: {
-            'price', 'forecast_dps', 'current_yield',
-            'q25', 'q75', 'q50',
-            'per', 'pbr', 'payout', 'equity_ratio',
-            'div_history',
-        }
-    """
-    info: dict[str, Any] = {}
-
-    if not quotes_sorted_filtered or not statements_filtered:
-        return (False, info)
-
-    # 価格
-    price_pair = get_last_trading_close_at_or_before(quotes_sorted_filtered, target_date)
-    if not price_pair:
-        return (False, info)
-    _last_date, price = price_pair
-    info['price'] = price
-
-    # 予想DPS
-    fdps_pair = compute_forecast_dps_at(statements_filtered, quotes_sorted_filtered)
-    if not fdps_pair or fdps_pair[0] is None or fdps_pair[0] <= 0:
-        return (False, info)
-    forecast_dps, _ = fdps_pair
-    info['forecast_dps'] = forecast_dps
-
-    current_yield = forecast_dps / price * 100.0
-    info['current_yield'] = current_yield
-
-    # 利回り分布 (四半期粒度でキャッシュ)
-    _yk = _dist_cache_key(code, target_date)
-    if _yk in _YIELD_DIST_CACHE:
-        dist = _YIELD_DIST_CACHE[_yk]
-    else:
-        dist = compute_yield_dist_at(statements_filtered, quotes_sorted_filtered, target_date)
-        _YIELD_DIST_CACHE[_yk] = dist
-    if dist is None:
-        return (False, info)
-    info.update({'q25': dist['q25'], 'q50': dist['q50'], 'q75': dist['q75']})
-
-    # PER, PBR
-    eps = get_latest_fy_metric_at(statements_filtered, 'EPS')
-    bps = get_latest_fy_metric_at(statements_filtered, 'BPS')
-    # 分割調整
-    fy_list = [s for s in statements_filtered if s.get('CurPerType') in ('FY', '4Q')]
-    fy_list.sort(key=lambda s: parse_date(s.get('CurPerEn')) or date.min, reverse=True)
-    if fy_list:
-        latest_fy = fy_list[0]
-        disc_d = parse_date(latest_fy.get('DiscDate')) or parse_date(latest_fy.get('CurPerEn'))
-        adj = cumulative_adj_factor_after(quotes_sorted_filtered, disc_d)
-        eps = (eps * adj) if eps is not None else None
-        bps = (bps * adj) if bps is not None else None
-    per = (price / eps) if (eps is not None and eps > 0) else None
-    pbr = (price / bps) if (bps is not None and bps > 0) else None
-    info['per'] = per
-    info['pbr'] = pbr
-
-    # PER/PBR 過去5年分布 → バリュー割安判定 (Q3=C: 両方が過去Q25以下)
-    # VALUE_MODE='none' のときはバリュー判定を一切使わないので、重い分布計算をスキップ (高速化)
-    val_dist = None
-    if VALUE_MODE != 'none':
-        _vk = _dist_cache_key(code, target_date)
-        if _vk in _VAL_DIST_CACHE:
-            val_dist = _VAL_DIST_CACHE[_vk]
-        else:
-            val_dist = compute_valuation_dist_at(statements_filtered, quotes_sorted_filtered, target_date)
-            _VAL_DIST_CACHE[_vk] = val_dist
-    is_value_cheap = False
-    if val_dist:
-        # VALUE_QUANTILE に応じて閾値を選ぶ ('q25'=下位25% / 'q50'=中央値)
-        per_key = 'per_' + VALUE_QUANTILE
-        pbr_key = 'pbr_' + VALUE_QUANTILE
-        info['per_q25'] = val_dist.get('per_q25')
-        info['pbr_q25'] = val_dist.get('pbr_q25')
-        per_cheap = (
-            per is not None and val_dist.get(per_key) is not None
-            and per <= val_dist[per_key]
-        )
-        pbr_cheap = (
-            pbr is not None and val_dist.get(pbr_key) is not None
-            and pbr <= val_dist[pbr_key]
-        )
-        # PER・PBR両方が過去水準 (Q25 or Q50) 以下なら「バリュー割安」
-        is_value_cheap = per_cheap and pbr_cheap
-    info['is_value_cheap'] = is_value_cheap
-
-    # 配当性向 (DPS / EPS から計算)
-    div_actual = get_latest_fy_metric_at(statements_filtered, 'DivAnn')
-    if fy_list and div_actual is not None:
-        latest_fy = fy_list[0]
-        disc_d = parse_date(latest_fy.get('DiscDate')) or parse_date(latest_fy.get('CurPerEn'))
-        adj = cumulative_adj_factor_after(quotes_sorted_filtered, disc_d)
-        div_adj = div_actual * adj
-        if eps is not None and eps > 0:
-            payout = (div_adj / eps) * 100.0
-        else:
-            payout = None
-    else:
-        payout = None
-    info['payout'] = payout
-
-    # 自己資本比率
-    equity_ratio = None
-    sorted_all = sorted(
-        statements_filtered,
-        key=lambda s: parse_date(s.get('CurPerEn')) or date.min,
-        reverse=True,
-    )
-    for s in sorted_all:
-        v = safe_float(s.get('EqAR'))
-        if v is not None:
-            equity_ratio = v
-            break
-    info['equity_ratio'] = equity_ratio
-
-    # 8 条件チェック
-    div_history = extract_annual_dividends(statements_filtered, quotes_sorted=quotes_sorted_filtered)
-    info['div_history'] = div_history
-
-    # ボックス相場評価 (BUY優先順位用) - 直近の価格データから判定
-    box_info = evaluate_box(quotes_sorted_filtered)
-    info['box_info'] = box_info
-    info['box_reliability'] = compute_box_reliability(box_info)
-
-    # ROE = 純利益 / 自己資本 × 100 (戦略Dで使用)
-    np_val = get_latest_fy_metric_at(statements_filtered, 'NP')
-    eq_val = get_latest_fy_metric_at(statements_filtered, 'Eq')
-    if np_val is not None and eq_val is not None and eq_val > 0:
-        info['roe'] = (np_val / eq_val) * 100.0
-    else:
-        info['roe'] = 0.0
-
-    sales_history = extract_annual_metric(statements_filtered, 'Sales')
-    op_history = extract_annual_metric(statements_filtered, 'OP')
-    np_history = extract_annual_metric(statements_filtered, 'NP')
-
-    c1 = check_dividend_history(div_history, code)[0]      # 減配ゼロ
-    c2 = check_stability(sales_history)                    # 売上安定性
-    c3 = check_stability(op_history)                       # 営利安定性
-    c4 = check_stability(np_history)                       # 純利安定性
-    c5 = check_payout_ratio(payout)                        # 配当性向 ≤50%
-    c6 = check_equity_ratio(equity_ratio, sector33)        # 自己資本比率 ≥50%
-    # c7: グレアム指数 (PER×PBR) — GRAHAM_MODE で strict/loose/off を切替
-    if GRAHAM_MODE == 'off':
-        c7 = True                                          # 合否から外す
-    elif GRAHAM_MODE == 'loose':
-        c7 = (
-            per is not None and pbr is not None and per > 0 and pbr > 0
-            and (per * pbr) <= GRAHAM_LOOSE_MAX            # ≤40 (異常値だけ弾く)
-        )
-    else:
-        c7 = check_valuation(per, pbr)                     # PER × PBR ≤22.5 (現状)
-    c8 = check_min_yield(current_yield, code)              # 最低利回り ≥3%
-
-    checks = [c1, c2, c3, c4, c5, c6, c7, c8]
-    info['checks'] = checks
-    # None は判定不能（データ不足）→ False扱い
-    passes = all(c is True for c in checks)
-    info['passes'] = passes
-    return (passes, info)
+# 可変ルールの加減点。必要パーセンタイルを下げる＝買いやすくする。
+# 条件を増やすほど過去に合わせただけの数字になりやすいので、3つに絞っています。
+DYNAMIC_RULES = {
+    "growth": (-10, "増配率が年5％超"),
+    "cross_top": (-10, "市場内で上位10％"),
+    "regime_tight": (+10, "利回り分布が上振れしやすい局面"),
+}
+PCT_FLOOR, PCT_CEIL = 50.0, 90.0
 
 
-# ============================================================================
-# Backtest engine
-# ============================================================================
+# ══════════════════════════════════════════
+# データ取得
+# ══════════════════════════════════════════
+class JQ:
+    def __init__(self, key: str):
+        self.key = key
+        self.s = requests.Session()
+
+    def get(self, path: str, params: dict | None = None) -> list[dict]:
+        rows, pk = [], None
+        while True:
+            p = dict(params or {})
+            if pk:
+                p["pagination_key"] = pk
+            for attempt in range(3):
+                try:
+                    r = self.s.get(f"{JQUANTS_BASE}{path}", params=p,
+                                   headers={"x-api-key": self.key}, timeout=30)
+                    if r.status_code == 429:
+                        time.sleep(2 ** (attempt + 1))
+                        continue
+                    if r.status_code in (401, 403):
+                        sys.exit(f"認証に失敗しました（{r.status_code}）")
+                    r.raise_for_status()
+                    break
+                except requests.RequestException:
+                    if attempt == 2:
+                        raise
+                    time.sleep(2 ** attempt)
+            j = r.json()
+            data = j.get("data")
+            if data is None:
+                data = next((v for k, v in j.items()
+                             if k != "pagination_key" and isinstance(v, list)), [])
+            rows.extend(data or [])
+            pk = j.get("pagination_key")
+            if not pk:
+                return rows
+            time.sleep(API_SLEEP)
 
 
-def is_progressive_or_doe(code: str) -> bool:
-    """累進配当 or DOE 採用銘柄か"""
-    return code in PROGRESSIVE_DIVIDEND_LIST or code in DOE_LIST
+def norm_code(c: str) -> str:
+    c = str(c).strip()
+    return c[:4] if len(c) == 5 and c.endswith("0") else c
 
 
-def compute_industry_leaders(stock_data: dict[str, dict], target_date: date) -> set[str]:
-    """
-    target_date時点での「業界首位級」銘柄コードのセットを返す。
+def fnum(v: Any) -> float | None:
+    if v is None or v == "" or v == "－":
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
 
-    定義:
-      - 同じ33業種コード内で、時価総額 TOP3
-      - または TOPIX Core30 銘柄
 
-    時価総額 = target_date時点の価格 × 直近FYのShOutFY (or NP/EPS逆算)
-    """
-    leaders: set[str] = set()
+def pdate(s: Any) -> date | None:
+    if not s:
+        return None
+    try:
+        return datetime.strptime(str(s)[:10], "%Y-%m-%d").date()
+    except ValueError:
+        return None
 
-    # 1. TOPIX Core30 銘柄を全部追加
-    for code, sd in stock_data.items():
-        if sd.get('scale_cat') == 'TOPIX Core30':
-            leaders.add(code)
 
-    # 2. 同業種33コード内で時価総額 TOP3
-    # 各銘柄の時価総額を計算
-    market_caps: dict[str, float] = {}  # code → market_cap_yen
-    sector_groups: dict[str, list[tuple[str, float]]] = {}  # sector33 → [(code, mcap)]
-
-    for code, sd in stock_data.items():
-        sector33 = sd.get('sector33', '')
-        if not sector33:
+def fetch_all(jq: JQ, years: int, limit: int) -> dict:
+    """株価と財務をまとめて取得する。時間がかかるのでキャッシュします。"""
+    log.info("銘柄一覧を取得中…")
+    info = jq.get("/v2/equities/master", {})
+    uni = []
+    for row in info:
+        if row.get("Mkt") != MARKET_PRIME:
             continue
-        # 価格取得
-        quotes_filtered = filter_quotes_at_or_before_fast(
-            sd['quotes_sorted'], sd['quote_dates'], target_date,
-        )
-        price_pair = get_last_trading_close_at_or_before(quotes_filtered, target_date)
-        if not price_pair:
+        if (row.get("ScaleCat") or "") not in SCALE_TARGETS:
             continue
-        price = price_pair[1]
+        code = norm_code(row.get("Code", ""))
+        if code:
+            uni.append({"code": code,
+                        "name": row.get("CoName", "") or row.get("CoNameEn", ""),
+                        "sector": row.get("S33Nm", "")})
+    if limit:
+        uni = uni[:limit]
+    log.info("対象 %d銘柄", len(uni))
 
-        # 発行株式数を取得
-        stmts_filt = filter_statements_disclosed_before_fast(
-            sd['statements_sorted'], sd['statement_disc_dates'], target_date,
-        )
-        shares = None
-        # FY/4Q から ShOutFY を取得
-        fy_list = [s for s in stmts_filt if s.get('CurPerType') in ('FY', '4Q')]
-        fy_list.sort(key=lambda s: parse_date(s.get('CurPerEn')) or date.min, reverse=True)
-        for s in fy_list:
-            v = safe_float(s.get('ShOutFY'))
-            if v is not None and v > 0:
-                shares = v
-                disc_d = parse_date(s.get('DiscDate')) or parse_date(s.get('CurPerEn'))
-                # 分割調整
-                adj = cumulative_adj_factor_after(sd['quotes_sorted'], disc_d)
-                if adj > 0:
-                    shares = shares / adj
-                break
-        if shares is None or shares <= 0:
+    today = date.today()
+    frm = (today - timedelta(days=365 * (years + 5) + 60)).isoformat()
+    to = today.isoformat()
+
+    store = {"universe": uni, "quotes": {}, "stmts": {}}
+    for i, u in enumerate(uni, 1):
+        time.sleep(API_SLEEP)
+        try:
+            q = jq.get("/v2/equities/bars/daily",
+                       {"code": u["code"], "from": frm, "to": to})
+        except Exception as e:
+            log.warning("株価取得失敗 %s: %s", u["code"], e)
             continue
-
-        mcap = price * shares
-        market_caps[code] = mcap
-        sector_groups.setdefault(sector33, []).append((code, mcap))
-
-    # 各業種で時価総額順 TOP3
-    for sector33, members in sector_groups.items():
-        members.sort(key=lambda x: -x[1])
-        for code, _ in members[:3]:
-            leaders.add(code)
-
-    return leaders
-
-
-def classify_tier(
-    code: str,
-    industry_leaders: set[str],
-) -> tuple[str, float]:
-    """
-    銘柄を Tier に分類し、(tier, weight) を返す。
-
-    Tier S: 累進/DOE銘柄 AND 業界首位級 → 重み 4.0
-    Tier A: 累進/DOE銘柄 OR 業界首位級   → 重み 2.0
-    Tier B: スクリーニングPASSのみ         → 重み 1.0
-    """
-    is_qual = is_progressive_or_doe(code)
-    is_leader = code in industry_leaders
-
-    if is_qual and is_leader:
-        return ('S', 4.0)
-    elif is_qual or is_leader:
-        return ('A', 2.0)
-    else:
-        return ('B', 1.0)
-
-
-class Position:
-    __slots__ = ('code', 'name', 'qty', 'cost_basis', 'open_date', 'cost_total', 'tier')
-
-    def __init__(self, code: str, name: str, qty: float, price: float, open_date: date, tier: str = 'B'):
-        self.code = code
-        self.name = name
-        self.qty = qty                    # 株数
-        self.cost_basis = price           # 1株あたり買値（取得単価）
-        self.open_date = open_date
-        self.cost_total = qty * price     # 取得総額
-        self.tier = tier                  # 'S' / 'A' / 'B'
-
-    def market_value(self, price: float) -> float:
-        return self.qty * price
-
-    def unrealized_pnl(self, price: float) -> float:
-        return (price - self.cost_basis) * self.qty
-
-
-class Portfolio:
-    def __init__(self, initial_capital: float, max_positions: int):
-        self.cash = initial_capital
-        self.initial_capital = initial_capital
-        self.max_positions = max_positions
-        self.positions: dict[str, Position] = {}
-        self.trades: list[dict] = []
-        self.equity_curve: list[dict] = []  # 日別評価額
-        self.dividends_received_total = 0.0       # 累積配当（税引後）
-        self.realized_capital_gain_total = 0.0    # 累積実現キャピタルゲイン (税引後)
-        self.total_commissions_paid = 0.0         # 累積手数料
-        self.total_taxes_paid = 0.0               # 累積税金
-
-    def position_size_yen(self) -> float:
-        """1ポジションあたりの目標金額"""
-        return self.initial_capital / self.max_positions
-
-    def buy(self, code: str, name: str, price: float, dt: date, target_yen: float, tier: str = 'B') -> bool:
-        if price <= 0 or target_yen <= 0:
-            return False
-        gross = target_yen / (1 + Config.BUY_COMMISSION)  # 手数料込みでtarget_yen 使う想定
-        qty = math.floor(gross / price / 100) * 100      # 100株単位
-        if qty <= 0:
-            return False
-        cost = qty * price
-        commission = cost * Config.BUY_COMMISSION
-        total_cost = cost + commission
-        if total_cost > self.cash:
-            return False
-        self.cash -= total_cost
-        self.total_commissions_paid += commission
-        # 既存ポジションがあったら平均化（通常無いが）
-        if code in self.positions:
-            old = self.positions[code]
-            new_qty = old.qty + qty
-            new_cost_total = old.cost_total + cost
-            new_basis = new_cost_total / new_qty
-            old.qty = new_qty
-            old.cost_basis = new_basis
-            old.cost_total = new_cost_total
-        else:
-            self.positions[code] = Position(code, name, qty, price, dt, tier=tier)
-        self.trades.append({
-            'date': dt.isoformat(),
-            'code': code,
-            'name': name,
-            'action': f'BUY [{tier}]',
-            'price': round(price, 2),
-            'qty': qty,
-            'value': round(cost, 0),
-            'commission': round(commission, 0),
-            'pnl': 0,
-        })
-        return True
-
-    def sell(self, code: str, price: float, dt: date, reason: str = ''):
-        if code not in self.positions:
-            return
-        pos = self.positions[code]
-        proceeds = pos.qty * price
-        commission = proceeds * Config.SELL_COMMISSION
-        gain = (price - pos.cost_basis) * pos.qty - commission
-        tax = max(0, gain) * Config.CAPITAL_GAINS_TAX
-        net_proceeds = proceeds - commission - tax
-        self.cash += net_proceeds
-        # 集計
-        self.total_commissions_paid += commission
-        self.total_taxes_paid += tax
-        self.realized_capital_gain_total += (gain - tax)  # 税引後実現損益
-        self.trades.append({
-            'date': dt.isoformat(),
-            'code': code,
-            'name': pos.name,
-            'action': f'SELL ({reason})',
-            'price': round(price, 2),
-            'qty': pos.qty,
-            'value': round(proceeds, 0),
-            'commission': round(commission + tax, 0),
-            'pnl': round(gain - tax, 0),
-        })
-        del self.positions[code]
-
-    def receive_dividends(self, dividends: dict[str, float], dt: date):
-        """配当受領 (税引後)"""
-        for code, amount in dividends.items():
-            if code not in self.positions:
-                continue
-            pos = self.positions[code]
-            gross = amount * pos.qty
-            tax = gross * Config.DIVIDEND_TAX
-            net = gross - tax
-            self.cash += net
-            self.dividends_received_total += net
-            self.total_taxes_paid += tax
-            if gross > 0:
-                self.trades.append({
-                    'date': dt.isoformat(),
-                    'code': code,
-                    'name': pos.name,
-                    'action': 'DIVIDEND',
-                    'price': round(amount, 2),
-                    'qty': pos.qty,
-                    'value': round(gross, 0),
-                    'commission': round(tax, 0),  # 税金
-                    'pnl': round(net, 0),
-                })
-
-    def total_value(self, prices: dict[str, float]) -> float:
-        v = self.cash
-        for code, pos in self.positions.items():
-            p = prices.get(code, pos.cost_basis)
-            v += pos.market_value(p)
-        return v
-
-
-# ============================================================================
-# Performance metrics
-# ============================================================================
-
-
-def compute_metrics(
-    equity_curve: list[dict],
-    initial_capital: float,
-    portfolio: 'Portfolio',
-    final_prices: dict[str, float],
-) -> dict:
-    if not equity_curve:
-        return {}
-    final = equity_curve[-1]['value']
-    total_return = (final / initial_capital - 1) * 100
-
-    # 期間 (年)
-    start_d = parse_date(equity_curve[0]['date'])
-    end_d = parse_date(equity_curve[-1]['date'])
-    years = max((end_d - start_d).days / 365.25, 1e-6)
-    cagr = ((final / initial_capital) ** (1 / years) - 1) * 100
-
-    # 月次リターン
-    monthly_values: dict[str, float] = {}
-    for row in equity_curve:
-        d = parse_date(row['date'])
-        ym = f'{d.year}-{d.month:02d}'
-        monthly_values[ym] = row['value']
-    sorted_monthly = sorted(monthly_values.items())
-    monthly_returns = []
-    for i in range(1, len(sorted_monthly)):
-        prev = sorted_monthly[i - 1][1]
-        cur = sorted_monthly[i][1]
-        if prev > 0:
-            monthly_returns.append(cur / prev - 1)
-
-    # ボラティリティ (年率) + シャープレシオ
-    if len(monthly_returns) > 1:
-        mean = sum(monthly_returns) / len(monthly_returns)
-        var = sum((x - mean) ** 2 for x in monthly_returns) / (len(monthly_returns) - 1)
-        vol_monthly = math.sqrt(var)
-        vol_annual = vol_monthly * math.sqrt(12) * 100
-        sharpe = (mean * 12) / (vol_monthly * math.sqrt(12)) if vol_monthly > 0 else 0
-    else:
-        vol_annual = 0
-        sharpe = 0
-
-    # 最大ドローダウン
-    peak = equity_curve[0]['value']
-    max_dd = 0
-    for row in equity_curve:
-        v = row['value']
-        if v > peak:
-            peak = v
-        dd = (peak - v) / peak * 100 if peak > 0 else 0
-        if dd > max_dd:
-            max_dd = dd
-
-    # 配当・キャピタルゲインの内訳
-    realized_gain = portfolio.realized_capital_gain_total
-    div_total = portfolio.dividends_received_total
-    # 未実現損益: 現在保有銘柄の評価益
-    unrealized_gain = 0.0
-    for code, pos in portfolio.positions.items():
-        p = final_prices.get(code, pos.cost_basis)
-        unrealized_gain += pos.unrealized_pnl(p)
-    total_capital_gain = realized_gain + unrealized_gain
-
-    # 配当が総リターンに占める割合
-    total_profit = final - initial_capital
-    if total_profit > 0:
-        div_contribution = div_total / total_profit * 100
-    else:
-        div_contribution = 0
-
-    # 配当の年率換算（初期資金に対して）
-    div_yield_total = div_total / initial_capital * 100
-    div_yield_annual = ((1 + div_yield_total / 100) ** (1 / years) - 1) * 100
-
-    # 取引回数
-    n_trades = sum(1 for t in portfolio.trades if t['action'].startswith('BUY'))
-    n_sells = sum(1 for t in portfolio.trades if t['action'].startswith('SELL'))
-    n_dividends = sum(1 for t in portfolio.trades if t['action'] == 'DIVIDEND')
-
-    # 勝率 (実現益 > 0 のSELL/全SELL)
-    wins = sum(1 for t in portfolio.trades
-               if t['action'].startswith('SELL') and t['pnl'] > 0)
-    win_rate = (wins / n_sells * 100) if n_sells > 0 else 0
-
-    return {
-        'period_start': equity_curve[0]['date'],
-        'period_end': equity_curve[-1]['date'],
-        'years': round(years, 2),
-        'initial_capital_yen': initial_capital,
-        'final_value_yen': final,
-        'total_profit_yen': round(total_profit, 0),
-        '---リターン---': '',
-        'total_return_pct': round(total_return, 2),
-        'cagr_pct': round(cagr, 2),
-        'volatility_annual_pct': round(vol_annual, 2),
-        'sharpe_ratio': round(sharpe, 3),
-        'max_drawdown_pct': round(max_dd, 2),
-        '---配当 vs キャピタルゲイン---': '',
-        'total_dividend_income_yen': round(div_total, 0),
-        'total_capital_gain_yen': round(total_capital_gain, 0),
-        '  realized_capital_gain_yen': round(realized_gain, 0),
-        '  unrealized_capital_gain_yen': round(unrealized_gain, 0),
-        'dividend_contribution_pct': round(div_contribution, 1),
-        'annualized_dividend_yield_pct': round(div_yield_annual, 2),
-        '---取引統計---': '',
-        'total_buys': n_trades,
-        'total_sells': n_sells,
-        'total_dividends_received': n_dividends,
-        'win_rate_pct': round(win_rate, 1),
-        'total_commissions_paid_yen': round(portfolio.total_commissions_paid, 0),
-        'total_taxes_paid_yen': round(portfolio.total_taxes_paid, 0),
-    }
-
-
-# ============================================================================
-# CSV writers
-# ============================================================================
-
-
-def write_csv(path: Path, rows: list[dict], fieldnames: list[str] | None = None):
-    if not rows:
-        log.warning('Empty data, skipping write to %s', path)
-        return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fns = fieldnames or list(rows[0].keys())
-    with path.open('w', encoding='utf-8-sig', newline='') as f:
-        w = csv.DictWriter(f, fieldnames=fns)
-        w.writeheader()
-        for r in rows:
-            w.writerow(r)
-
-
-# ============================================================================
-# Main backtest
-# ============================================================================
-
-
-def fetch_all_data(args) -> tuple[dict[str, dict], date, date]:
-    """
-    バックテスト用データを取得 (全戦略で共通利用)。
-    Returns:
-        (stock_data, start_date, end_date)
-    """
-    api_key = os.environ.get('J_QUANTS_API_KEY')
-    if not api_key:
-        raise RuntimeError('J_QUANTS_API_KEY env var not set')
-
-    Config.CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    Config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
-    start = date.fromisoformat(args.start)
-    end = date.fromisoformat(args.end)
-
-    client = JQuantsClient(api_key)
-
-    universe = fetch_universe(client, force_refresh=args.no_cache)
-
-    log.info('Pre-fetching data for %d stocks...', len(universe))
-    stock_data: dict[str, dict] = {}
-    for i, u in enumerate(universe):
+        if not q:
+            continue
+        time.sleep(API_SLEEP)
+        try:
+            st = jq.get("/v2/fins/summary", {"code": u["code"]})
+        except Exception:
+            st = []
+        store["quotes"][u["code"]] = q
+        store["stmts"][u["code"]] = st
         if i % 50 == 0:
-            log.info('  [%d/%d] %s %s', i, len(universe), u['code'], u['name'])
-        quotes, statements = fetch_stock_history(
-            client, u['code'], start, end,
-            force_refresh=args.no_cache,
-        )
-        if quotes and statements:
-            quotes_sorted = sorted(quotes, key=lambda q: parse_date(q.get('Date')) or date.min)
-            quote_dates = [parse_date(q.get('Date')) or date.min for q in quotes_sorted]
-            # statements を DiscDate でソート (フィルタ高速化のため)
-            statements_sorted = sorted(
-                statements,
-                key=lambda s: parse_date(s.get('DiscDate')) or date.min,
-            )
-            statement_disc_dates = [
-                parse_date(s.get('DiscDate')) or date.min
-                for s in statements_sorted
-            ]
-            stock_data[u['code']] = {
-                'name': u['name'],
-                'sector33': u['sector33'],
-                'scale_cat': u.get('scale_cat', ''),
-                'quotes_sorted': quotes_sorted,
-                'quote_dates': quote_dates,
-                'statements': statements,  # 互換性維持 (CurPerEnでソートされてる)
-                'statements_sorted': statements_sorted,  # DiscDate ソート版
-                'statement_disc_dates': statement_disc_dates,
-            }
-
-    log.info('Loaded data for %d/%d stocks', len(stock_data), len(universe))
-    return stock_data, start, end
+            log.info("  取得 %d/%d", i, len(uni))
+    return store
 
 
-def run_strategies_parallel(
-    stock_data: dict[str, dict],
-    start: date,
-    end: date,
-    initial_capital: float,
-    max_positions: int,
-    strategy_ids: list[str],
-) -> dict[str, tuple['Portfolio', dict]]:
+# ══════════════════════════════════════════
+# 時点を守った指標づくり
+# ══════════════════════════════════════════
+def quotes_to_df(rows: list[dict]) -> pd.DataFrame:
+    df = pd.DataFrame(rows)
+    if df.empty or "Date" not in df.columns:
+        return pd.DataFrame()
+    df["Date"] = pd.to_datetime(df["Date"])
+    close = df.get("AdjC", df.get("AdjustmentClose", df.get("C", df.get("Close"))))
+    adj = df.get("AdjFactor", df.get("AdjustmentFactor"))
+    out = pd.DataFrame({"date": df["Date"],
+                        "close": pd.to_numeric(close, errors="coerce"),
+                        "adj": pd.to_numeric(adj, errors="coerce").fillna(1.0)})
+    return out.dropna(subset=["close"]).sort_values("date").reset_index(drop=True)
+
+
+def dps_timeline(stmts: list[dict], px: pd.DataFrame) -> pd.DataFrame:
+    """開示日つきの予想DPS系列を作る。
+
+    その日に「すでに開示されていた」DPSしか使わないのが要点。
+    分割は、開示日より後に起きたぶんだけ調整して現在基準に揃える。
     """
-    複数戦略を並列実行 (screening 結果を共有して大幅高速化)。
-
-    各リバランス日で screening を1回だけ実行し、5戦略で結果を共有する。
-    戦略間の差は「BUY 候補の並び順 (スコア関数)」のみ。
-    SELL 条件と screening は全戦略で同一。
-
-    Returns: {strategy_id: (Portfolio, metrics)}
-    """
-    rebalance_dates = get_monthly_first_dates(start, end)
-    portfolios = {sid: Portfolio(initial_capital, max_positions) for sid in strategy_ids}
-    paid_dividends_seens = {sid: set() for sid in strategy_ids}
-
-    # 分布キャッシュを期間開始時にクリア (前期間の値の混入を防ぐ)
-    reset_dist_cache()
-
-    log.info('Running %d strategies in parallel for %d rebalance dates...',
-             len(strategy_ids), len(rebalance_dates))
-
-    for ri, rdate in enumerate(rebalance_dates):
-        # ---- 1. 価格取得 (全戦略共通、1回だけ) ----
-        prices_today: dict[str, float] = {}
-        for code, sd in stock_data.items():
-            quotes_filtered = filter_quotes_at_or_before_fast(sd['quotes_sorted'], sd['quote_dates'], rdate)
-            p = get_last_trading_close_at_or_before(quotes_filtered, rdate)
-            if p:
-                prices_today[code] = p[1]
-
-        # ---- 1b. 業界首位級銘柄を計算 (全戦略共通、3ヶ月ごとに更新で十分) ----
-        if ri % 3 == 0:
-            industry_leaders = compute_industry_leaders(stock_data, rdate)
-
-        # ---- 2. screening (全戦略共通、1回だけ) ----
-        screening_cache: dict[str, tuple[bool, dict]] = {}
-        for code, sd in stock_data.items():
-            stmts_filt = filter_statements_disclosed_before_fast(sd['statements_sorted'], sd['statement_disc_dates'], rdate)
-            quotes_filt = filter_quotes_at_or_before_fast(sd['quotes_sorted'], sd['quote_dates'], rdate)
-            screening_cache[code] = screen_stock_at(
-                code, sd['sector33'], stmts_filt, quotes_filt, rdate,
-            )
-
-        # ---- 3. 各戦略について BUY/SELL 判定 ----
-        for sid in strategy_ids:
-            portfolio = portfolios[sid]
-            score_fn = STRATEGIES[sid]['score_fn']
-            paid_dividends_seen = paid_dividends_seens[sid]
-
-            # 配当処理
-            for code in list(portfolio.positions.keys()):
-                sd = stock_data.get(code)
-                if not sd:
-                    continue
-                stmts_filt = filter_statements_disclosed_before_fast(sd['statements_sorted'], sd['statement_disc_dates'], rdate)
-                for s in stmts_filt:
-                    if s.get('CurPerType') not in ('FY', '4Q'):
-                        continue
-                    per_end = parse_date(s.get('CurPerEn'))
-                    if per_end is None:
-                        continue
-                    key = (code, per_end.year)
-                    if key in paid_dividends_seen:
-                        continue
-                    pos = portfolio.positions[code]
-                    if pos.open_date <= per_end:
-                        div = safe_float(s.get('DivAnn'))
-                        if div is None or div <= 0:
-                            paid_dividends_seen.add(key)
-                            continue
-                        disc_d = parse_date(s.get('DiscDate')) or per_end
-                        adj = cumulative_adj_factor_after(sd['quotes_sorted'], disc_d)
-                        portfolio.receive_dividends({code: div * adj}, rdate)
-                    paid_dividends_seen.add(key)
-
-            # SELL 判定 (キャッシュされた screening_cache を使用)
-            sells = []
-            for code, pos in list(portfolio.positions.items()):
-                _, info = screening_cache.get(code, (False, {}))
-                cur_y = info.get('current_yield')
-                q25 = info.get('q25')
-                if cur_y is not None and q25 is not None and cur_y <= q25:
-                    sells.append((code, 'YIELD_Q25'))
-                    continue
-                div_h = info.get('div_history', [])
-                if len(div_h) >= 2 and div_h[-2] > 0:
-                    if (div_h[-1] - div_h[-2]) / div_h[-2] < -0.10:
-                        sells.append((code, 'DPS_CUT'))
-
-            for code, reason in sells:
-                price = prices_today.get(code)
-                if price:
-                    portfolio.sell(code, price, rdate, reason)
-
-            # BUY 候補発掘 (キャッシュ + 戦略別スコア + Tier 判定)
-            buy_candidates = []
-            for code, sd in stock_data.items():
-                if code in portfolio.positions:
-                    continue
-                passes, info = screening_cache.get(code, (False, {}))
-                cur_y = info.get('current_yield')
-                q75 = info.get('q75')
-                if not passes or cur_y is None or q75 is None or cur_y < q75:
-                    continue
-
-                is_value_cheap = info.get('is_value_cheap', False)
-
-                # VALUE_MODE によるフィルタ / スコア調整
-                if VALUE_MODE == 'and':
-                    # 厳格: バリュー割安でない銘柄は候補から除外
-                    if not is_value_cheap:
-                        continue
-
-                score = score_fn(info)
-
-                if VALUE_MODE == 'score' and is_value_cheap:
-                    # スコア加点: バリュー割安なら買付優先度UP
-                    score *= VALUE_SCORE_BOOST
-
-                tier, weight = classify_tier(code, industry_leaders)
-                buy_candidates.append({
-                    'code': code,
-                    'name': sd['name'],
-                    'yield': cur_y,
-                    'q75': q75,
-                    'score': score,
-                    'tier': tier,
-                    'weight': weight,
-                    'sector33': sd.get('sector33', ''),
-                })
-
-            # スコア高い順
-            buy_candidates.sort(key=lambda x: -x['score'])
-
-            slots_available = portfolio.max_positions - len(portfolio.positions)
-            # 候補がmax_positionsを超える場合はトップを取る
-            selected = buy_candidates[:slots_available] if slots_available > 0 else []
-
-            # 最低保有銘柄数 5 を守る (候補が5未満ならあるだけ買付)
-            min_positions = 5
-            if len(selected) + len(portfolio.positions) < min_positions and len(buy_candidates) > slots_available:
-                # 候補は十分にあるので、上位で min_positions まで埋める
-                selected = buy_candidates[:max(slots_available, min_positions - len(portfolio.positions))]
-
-            # ---- 業種分散フィルタ (SECTOR_CAP_RATIO > 0 の場合のみ) ----
-            # 投下資金が業種全体で上限を超えないように制限。
-            # 既存保有銘柄の業種別資金を計算し、新規買付候補の中で
-            # 業種上限を超えるものをスキップする。
-            # ただし最低保有5銘柄ルールを優先 (保有数 < 5 なら緩和)。
-            if SECTOR_CAP_RATIO > 0 and len(portfolio.positions) >= min_positions:
-                # 総資産推定 (現金 + 保有評価額)
-                est_total = portfolio.cash + sum(
-                    pos.market_value(prices_today.get(c, pos.cost_basis))
-                    for c, pos in portfolio.positions.items()
-                )
-                sector_cap_yen = est_total * SECTOR_CAP_RATIO
-
-                # 既存保有の業種別資金
-                sector_invested: dict[str, float] = {}
-                for c, pos in portfolio.positions.items():
-                    sec = stock_data.get(c, {}).get('sector33', '')
-                    if sec:
-                        sector_invested[sec] = sector_invested.get(sec, 0) + pos.market_value(
-                            prices_today.get(c, pos.cost_basis)
-                        )
-
-                # 新規候補を業種上限でフィルタ
-                filtered_selected = []
-                # 1単位あたりの想定金額 (Tier重み付け配分の目安)
-                if selected:
-                    tmp_total_weight = sum(c['weight'] for c in selected)
-                    tmp_budget = portfolio.cash * 0.95
-                    tmp_unit_yen = tmp_budget / tmp_total_weight if tmp_total_weight > 0 else 0
-                else:
-                    tmp_unit_yen = 0
-
-                for cand in selected:
-                    sec = cand.get('sector33', '')
-                    if not sec:
-                        filtered_selected.append(cand)
-                        continue
-                    target_yen = tmp_unit_yen * cand['weight']
-                    if sector_invested.get(sec, 0) + target_yen <= sector_cap_yen:
-                        filtered_selected.append(cand)
-                        sector_invested[sec] = sector_invested.get(sec, 0) + target_yen
-                    # 業種上限超えはスキップ
-                selected = filtered_selected
-
-            # Tier重み付けで配分計算
-            if selected:
-                total_weight = sum(c['weight'] for c in selected)
-                # 利用可能資金を「キャッシュの範囲内」で配分
-                # 1単位あたり = 利用可能資金 / 重み合計
-                # ただし全資金を使い切らないよう、安全マージンで95%まで使う
-                budget = portfolio.cash * 0.95
-                if total_weight > 0:
-                    unit_yen = budget / total_weight
-                else:
-                    unit_yen = portfolio.position_size_yen()
-
-                for cand in selected:
-                    if portfolio.cash < unit_yen * cand['weight'] * 0.5:
-                        # キャッシュ不足 - 最低でも目標の50%は確保したい
-                        break
-                    price = prices_today.get(cand['code'])
-                    if not price:
-                        continue
-                    target_for_this = unit_yen * cand['weight']
-                    portfolio.buy(
-                        cand['code'], cand['name'], price, rdate,
-                        target_for_this, tier=cand['tier'],
-                    )
-
-            # equity_curve 記録
-            total = portfolio.total_value(prices_today)
-            portfolio.equity_curve.append({
-                'date': rdate.isoformat(),
-                'value': round(total, 0),
-                'cash': round(portfolio.cash, 0),
-                'positions': len(portfolio.positions),
-                'cumulative_dividends': round(portfolio.dividends_received_total, 0),
-            })
-
-        # 進捗ログ (12ヶ月ごと)
-        if ri % 12 == 0:
-            avg_value = sum(p.total_value(prices_today) for p in portfolios.values()) / len(portfolios)
-            log.info('  [%s] %d/%d - Avg portfolio: %s',
-                     rdate.isoformat(), ri + 1, len(rebalance_dates),
-                     f'{int(avg_value):,}')
-
-    # 各戦略の最終 metrics 計算
-    results = {}
-    for sid in strategy_ids:
-        portfolio = portfolios[sid]
-        final_prices: dict[str, float] = {}
-        for code, sd in stock_data.items():
-            if code in portfolio.positions:
-                quotes_filtered = filter_quotes_at_or_before_fast(sd['quotes_sorted'], sd['quote_dates'], end)
-                p = get_last_trading_close_at_or_before(quotes_filtered, end)
-                if p:
-                    final_prices[code] = p[1]
-        metrics = compute_metrics(portfolio.equity_curve, initial_capital, portfolio, final_prices)
-        results[sid] = (portfolio, metrics)
-
-    return results
-
-
-def run_strategy(
-    stock_data: dict[str, dict],
-    start: date,
-    end: date,
-    initial_capital: float,
-    max_positions: int,
-    strategy_id: str,
-) -> tuple[Portfolio, dict]:
-    """
-    指定の戦略でバックテストを実行。
-
-    Returns:
-        (portfolio, metrics)
-    """
-    score_fn = STRATEGIES[strategy_id]['score_fn']
-    strategy_name = STRATEGIES[strategy_id]['name']
-    log.info('=== Running strategy [%s] %s ===', strategy_id, strategy_name)
-
-    rebalance_dates = get_monthly_first_dates(start, end)
-    portfolio = Portfolio(initial_capital, max_positions)
-    paid_dividends_seen: set[tuple[str, int]] = set()
-
-    # 分布キャッシュを期間開始時にクリア (前期間の値の混入を防ぐ)
-    reset_dist_cache()
-
-    for ri, rdate in enumerate(rebalance_dates):
-        # 1. 価格取得
-        prices_today: dict[str, float] = {}
-        for code, sd in stock_data.items():
-            quotes_filtered = filter_quotes_at_or_before_fast(sd['quotes_sorted'], sd['quote_dates'], rdate)
-            p = get_last_trading_close_at_or_before(quotes_filtered, rdate)
-            if p:
-                prices_today[code] = p[1]
-
-        # 2. 配当受領
-        for code in list(portfolio.positions.keys()):
-            sd = stock_data.get(code)
-            if not sd:
-                continue
-            stmts_filt = filter_statements_disclosed_before_fast(sd['statements_sorted'], sd['statement_disc_dates'], rdate)
-            for s in stmts_filt:
-                if s.get('CurPerType') not in ('FY', '4Q'):
-                    continue
-                per_end = parse_date(s.get('CurPerEn'))
-                if per_end is None:
-                    continue
-                key = (code, per_end.year)
-                if key in paid_dividends_seen:
-                    continue
-                pos = portfolio.positions[code]
-                if pos.open_date <= per_end:
-                    div = safe_float(s.get('DivAnn'))
-                    if div is None or div <= 0:
-                        paid_dividends_seen.add(key)
-                        continue
-                    disc_d = parse_date(s.get('DiscDate')) or per_end
-                    adj = cumulative_adj_factor_after(sd['quotes_sorted'], disc_d)
-                    div_adj = div * adj
-                    portfolio.receive_dividends({code: div_adj}, rdate)
-                paid_dividends_seen.add(key)
-
-        # 3. SELL シグナル
-        sells = []
-        for code, pos in list(portfolio.positions.items()):
-            sd = stock_data.get(code)
-            if not sd:
-                continue
-            stmts_filt = filter_statements_disclosed_before_fast(sd['statements_sorted'], sd['statement_disc_dates'], rdate)
-            quotes_filt = filter_quotes_at_or_before_fast(sd['quotes_sorted'], sd['quote_dates'], rdate)
-            _, info = screen_stock_at(code, sd['sector33'], stmts_filt, quotes_filt, rdate)
-            cur_y = info.get('current_yield')
-            q25 = info.get('q25')
-            if cur_y is not None and q25 is not None and cur_y <= q25:
-                sells.append((code, 'YIELD_Q25'))
-                continue
-            div_h = info.get('div_history', [])
-            if len(div_h) >= 2 and div_h[-2] > 0:
-                if (div_h[-1] - div_h[-2]) / div_h[-2] < -0.10:
-                    sells.append((code, 'DPS_CUT'))
-
-        for code, reason in sells:
-            price = prices_today.get(code)
-            if price:
-                portfolio.sell(code, price, rdate, reason)
-
-        # 4. BUY 候補の発掘 (戦略ごとのスコア)
-        buy_candidates = []
-        for code, sd in stock_data.items():
-            if code in portfolio.positions:
-                continue
-            stmts_filt = filter_statements_disclosed_before_fast(sd['statements_sorted'], sd['statement_disc_dates'], rdate)
-            quotes_filt = filter_quotes_at_or_before_fast(sd['quotes_sorted'], sd['quote_dates'], rdate)
-            passes, info = screen_stock_at(code, sd['sector33'], stmts_filt, quotes_filt, rdate)
-            cur_y = info.get('current_yield')
-            q75 = info.get('q75')
-            if not passes or cur_y is None or q75 is None or cur_y < q75:
-                continue
-            score = score_fn(info)
-            buy_candidates.append({
-                'code': code,
-                'name': sd['name'],
-                'yield': cur_y,
-                'q75': q75,
-                'box_reliability': info.get('box_reliability', 0.0),
-                'roe': info.get('roe', 0.0),
-                'score': score,
-            })
-
-        # スコア高い順
-        buy_candidates.sort(key=lambda x: -x['score'])
-
-        # 5. BUY 実行
-        slots_available = portfolio.max_positions - len(portfolio.positions)
-        target_per_pos = portfolio.position_size_yen()
-        bought_count = 0
-        for cand in buy_candidates:
-            if bought_count >= slots_available:
-                break
-            if portfolio.cash < target_per_pos * 0.5:
-                break
-            price = prices_today.get(cand['code'])
-            if not price:
-                continue
-            if portfolio.buy(cand['code'], cand['name'], price, rdate, target_per_pos):
-                bought_count += 1
-
-        # 6. 評価額記録
-        total = portfolio.total_value(prices_today)
-        portfolio.equity_curve.append({
-            'date': rdate.isoformat(),
-            'value': round(total, 0),
-            'cash': round(portfolio.cash, 0),
-            'positions': len(portfolio.positions),
-            'cumulative_dividends': round(portfolio.dividends_received_total, 0),
-        })
-
-        if ri % 12 == 0:
-            log.info('  [%s] Value: %s, Pos: %d',
-                     rdate.isoformat(),
-                     f'{int(total):,}',
-                     len(portfolio.positions))
-
-    # 最終時点の価格
-    final_prices: dict[str, float] = {}
-    for code, sd in stock_data.items():
-        if code in portfolio.positions:
-            quotes_filtered = filter_quotes_at_or_before_fast(sd['quotes_sorted'], sd['quote_dates'], end)
-            p = get_last_trading_close_at_or_before(quotes_filtered, end)
-            if p:
-                final_prices[code] = p[1]
-
-    metrics = compute_metrics(portfolio.equity_curve, initial_capital, portfolio, final_prices)
-    return portfolio, metrics
-
-
-def run_backtest(args) -> int:
-    """シングル戦略バックテスト"""
-    stock_data, start, end = fetch_all_data(args)
-    initial_capital = args.capital
-    max_positions = args.positions
-    strategy_id = args.strategy
-
-    log.info('=== DIVIDEND HEIST BACKTEST ===')
-    log.info('Period: %s ~ %s', start, end)
-    log.info('Capital: %s yen, Max positions: %d', f'{initial_capital:,}', max_positions)
-    log.info('Strategy: [%s] %s', strategy_id, STRATEGIES[strategy_id]['name'])
-
-    portfolio, metrics = run_strategy(stock_data, start, end, initial_capital, max_positions, strategy_id)
-
-    log.info('=== METRICS ===')
-    for k, v in metrics.items():
-        log.info('  %-30s %s', k, v)
-
-    summary_rows = [{'metric': k, 'value': v} for k, v in metrics.items()]
-    write_csv(Config.OUTPUT_DIR / 'summary.csv', summary_rows, ['metric', 'value'])
-    write_csv(Config.OUTPUT_DIR / 'equity_curve.csv', portfolio.equity_curve)
-    write_csv(Config.OUTPUT_DIR / 'trades.csv', portfolio.trades)
-
-    monthly_rows = []
-    if portfolio.equity_curve:
-        for i in range(1, len(portfolio.equity_curve)):
-            prev = portfolio.equity_curve[i - 1]
-            cur = portfolio.equity_curve[i]
-            ret_pct = (cur['value'] / prev['value'] - 1) * 100 if prev['value'] > 0 else 0
-            monthly_rows.append({
-                'date': cur['date'],
-                'value': cur['value'],
-                'return_pct': round(ret_pct, 3),
-            })
-    write_csv(Config.OUTPUT_DIR / 'monthly_returns.csv', monthly_rows)
-    log.info('Output written to: %s', Config.OUTPUT_DIR)
-    return 0
-
-
-def run_compare(args) -> int:
-    """全戦略を比較実行"""
-    stock_data, start, end = fetch_all_data(args)
-    initial_capital = args.capital
-    max_positions = args.positions
-
-    log.info('=== STRATEGY COMPARISON ===')
-    log.info('Period: %s ~ %s', start, end)
-
-    # 全戦略を並列実行 (screening 結果共有で5倍高速化)
-    parallel_results = run_strategies_parallel(
-        stock_data, start, end, initial_capital, max_positions,
-        list(STRATEGIES.keys()),
-    )
-    all_results = {
-        sid: {'portfolio': p, 'metrics': m}
-        for sid, (p, m) in parallel_results.items()
-    }
-
-    # 比較サマリー作成
-    comparison_rows = []
-    metrics_keys_to_show = [
-        'total_return_pct', 'cagr_pct', 'volatility_annual_pct', 'sharpe_ratio',
-        'max_drawdown_pct',
-        'total_dividend_income_yen', 'total_capital_gain_yen',
-        'dividend_contribution_pct', 'annualized_dividend_yield_pct',
-        'total_buys', 'total_sells', 'win_rate_pct',
-    ]
-    for strategy_id, result in all_results.items():
-        m = result['metrics']
-        row = {
-            'strategy_id': strategy_id,
-            'strategy_name': STRATEGIES[strategy_id]['name'],
-            'description': STRATEGIES[strategy_id]['desc'],
-        }
-        for k in metrics_keys_to_show:
-            row[k] = m.get(k, '')
-        comparison_rows.append(row)
-
-    # CAGR順にソート
-    comparison_rows.sort(key=lambda x: -float(x.get('cagr_pct') or 0))
-
-    write_csv(
-        Config.OUTPUT_DIR / 'comparison.csv',
-        comparison_rows,
-        ['strategy_id', 'strategy_name', 'description'] + metrics_keys_to_show,
-    )
-
-    # 各戦略のequity curve をまとめて1ファイルに
-    combined_equity = []
-    for strategy_id, result in all_results.items():
-        for row in result['portfolio'].equity_curve:
-            combined_equity.append({
-                'date': row['date'],
-                'strategy': strategy_id,
-                'value': row['value'],
-            })
-    write_csv(Config.OUTPUT_DIR / 'comparison_equity_curves.csv', combined_equity)
-
-    # ランキング表示
-    log.info('')
-    log.info('=== RANKING (CAGR順) ===')
-    log.info('%-3s %-25s %-12s %-10s %-10s', 'ID', 'Strategy', 'Total Ret', 'CAGR', 'Sharpe')
-    for row in comparison_rows:
-        log.info('%-3s %-25s %-12s %-10s %-10s',
-                 row['strategy_id'],
-                 row['strategy_name'],
-                 f"{row['total_return_pct']}%",
-                 f"{row['cagr_pct']}%",
-                 row['sharpe_ratio'])
-
-    log.info('')
-    log.info('Output written to: %s', Config.OUTPUT_DIR)
-    log.info('  comparison.csv             (戦略別サマリー)')
-    log.info('  comparison_equity_curves.csv (全戦略の評価額推移)')
-    return 0
-
-
-def run_multi_period(args, preloaded_data=None) -> int:
-    """
-    複数期間 × 全戦略を比較。
-    各期間で全戦略を実行し、安定的に強い戦略を発見する。
-
-    preloaded_data: 事前取得済みの (stock_data, earliest, latest) タプル。
-                    compare系で4回呼ぶ際、データ取得を1回に共通化するため。
-
-    デフォルト期間 (--periods で上書き可能):
-      2020-04-01 ~ 2022-04-01
-      2022-04-01 ~ 2024-04-01
-      2024-04-01 ~ 2026-04-01
-    """
-    # 期間リストの構築
-    if args.periods:
-        periods = []
-        for p_str in args.periods.split(','):
-            s, e = p_str.split(':')
-            periods.append((date.fromisoformat(s.strip()), date.fromisoformat(e.strip())))
-    else:
-        periods = [
-            (date(2020, 4, 1), date(2022, 4, 1)),
-            (date(2022, 4, 1), date(2024, 4, 1)),
-            (date(2024, 4, 1), date(2026, 4, 1)),
-        ]
-
-    earliest = min(p[0] for p in periods)
-    latest = max(p[1] for p in periods)
-
-    # データ取得 (preloaded_data があれば再取得せず使い回す = compare系で高速化)
-    if preloaded_data is not None:
-        stock_data = preloaded_data
-        log.info('Reusing preloaded data (%d stocks) — skipping fetch', len(stock_data))
-    else:
-        args_fetch = argparse.Namespace(**vars(args))
-        args_fetch.start = earliest.isoformat()
-        args_fetch.end = latest.isoformat()
-        log.info('Fetching data for the widest range %s ~ %s', earliest, latest)
-        stock_data, _, _ = fetch_all_data(args_fetch)
-
-    # 実行する戦略の決定 (ONLY_STRATEGY 指定時はその戦略のみ = compare系で高速化)
-    if ONLY_STRATEGY and ONLY_STRATEGY in STRATEGIES:
-        active_strategies = [ONLY_STRATEGY]
-    else:
-        active_strategies = list(STRATEGIES.keys())
-
-    log.info('=== MULTI-PERIOD STRATEGY COMPARISON ===')
-    log.info('%d periods × %d strategies = %d backtests',
-             len(periods), len(active_strategies), len(periods) * len(active_strategies))
-
-    initial_capital = args.capital
-    max_positions = args.positions
-
-    # 結果収集: {(period_label, strategy_id): metrics}
-    all_results: dict[tuple[str, str], dict] = {}
-    period_labels: list[str] = []
-
-    for pi, (p_start, p_end) in enumerate(periods):
-        period_label = f'{p_start.year}-{p_end.year}'
-        period_labels.append(period_label)
-        log.info('')
-        log.info('========================================')
-        log.info('  PERIOD %d/%d: %s', pi + 1, len(periods), period_label)
-        log.info('========================================')
-
-        # 全戦略を並列実行 (screening 結果共有で5倍高速化)
-        try:
-            parallel_results = run_strategies_parallel(
-                stock_data, p_start, p_end,
-                initial_capital, max_positions,
-                active_strategies,
-            )
-            for sid, (_p, metrics) in parallel_results.items():
-                all_results[(period_label, sid)] = metrics
-        except Exception as e:
-            log.error('Period %s failed: %s', period_label, e)
-            for sid in active_strategies:
-                all_results[(period_label, sid)] = {}
-
-    # ---- 詳細CSV: 期間別 × 戦略別の全指標 ----
-    detailed_rows = []
-    for period_label in period_labels:
-        for strategy_id in active_strategies:
-            m = all_results.get((period_label, strategy_id), {})
-            detailed_rows.append({
-                'period': period_label,
-                'strategy_id': strategy_id,
-                'strategy_name': STRATEGIES[strategy_id]['name'],
-                'total_return_pct': m.get('total_return_pct', ''),
-                'cagr_pct': m.get('cagr_pct', ''),
-                'sharpe_ratio': m.get('sharpe_ratio', ''),
-                'max_drawdown_pct': m.get('max_drawdown_pct', ''),
-                'volatility_annual_pct': m.get('volatility_annual_pct', ''),
-                'total_dividend_income_yen': m.get('total_dividend_income_yen', ''),
-                'dividend_contribution_pct': m.get('dividend_contribution_pct', ''),
-                'annualized_dividend_yield_pct': m.get('annualized_dividend_yield_pct', ''),
-                'win_rate_pct': m.get('win_rate_pct', ''),
-                'total_buys': m.get('total_buys', ''),
-                'total_sells': m.get('total_sells', ''),
-            })
-    write_csv(Config.OUTPUT_DIR / 'multi_period_detailed.csv', detailed_rows)
-
-    # ---- ランキング表 (戦略ごとの集約) ----
-    ranking_rows = []
-    for strategy_id in active_strategies:
-        cagrs = []
-        sharpes = []
-        ddowns = []
-        div_yields = []
-        for period_label in period_labels:
-            m = all_results.get((period_label, strategy_id), {})
-            try:
-                cagr = float(m.get('cagr_pct') or 0)
-                cagrs.append(cagr)
-            except (TypeError, ValueError):
-                pass
-            try:
-                sh = float(m.get('sharpe_ratio') or 0)
-                sharpes.append(sh)
-            except (TypeError, ValueError):
-                pass
-            try:
-                dd = float(m.get('max_drawdown_pct') or 0)
-                ddowns.append(dd)
-            except (TypeError, ValueError):
-                pass
-            try:
-                dy = float(m.get('annualized_dividend_yield_pct') or 0)
-                div_yields.append(dy)
-            except (TypeError, ValueError):
-                pass
-
-        if not cagrs:
+    if px.empty:
+        return pd.DataFrame()
+    # 分割係数は日付順に累積させておき、任意の日以降の累積を引けるようにする
+    adj = px.set_index("date")["adj"].replace(0, 1.0)
+    cum = adj[::-1].cumprod()[::-1]        # その日以降の累積係数
+    cum_after = cum.shift(-1).fillna(1.0)
+
+    recs = []
+    for s in stmts:
+        d = pdate(s.get("DiscDate")) or pdate(s.get("CurPerEn"))
+        if d is None:
+            continue
+        per = s.get("CurPerType", "")
+        v = fnum(s.get("NxFDivAnn")) if per in ("FY", "4Q") else fnum(s.get("FDivAnn"))
+        if v is None or v <= 0:
+            v = fnum(s.get("DivAnn"))
+        if v is None or v <= 0:
+            continue
+        ts = pd.Timestamp(d)
+        # 開示日以降の分割ぶんだけ調整
+        idx = cum_after.index.searchsorted(ts)
+        factor = float(cum_after.iloc[idx]) if idx < len(cum_after) else 1.0
+        recs.append({"date": ts, "dps": v * factor})
+    if not recs:
+        return pd.DataFrame()
+    df = pd.DataFrame(recs).sort_values("date")
+    return df.groupby("date", as_index=False)["dps"].last()
+
+
+def build_panel(store: dict, years: int) -> pd.DataFrame:
+    """月末ごとの「その時点で分かっていた」利回りの表を作る。"""
+    frames = []
+    for code, qrows in store["quotes"].items():
+        px = quotes_to_df(qrows)
+        if len(px) < 300:
+            continue
+        dps = dps_timeline(store["stmts"].get(code, []), px)
+        if dps.empty:
             continue
 
-        # 集約指標
-        avg_cagr = sum(cagrs) / len(cagrs)
-        min_cagr = min(cagrs)
-        max_cagr = max(cagrs)
-        # 標準偏差
-        if len(cagrs) > 1:
-            var = sum((x - avg_cagr) ** 2 for x in cagrs) / (len(cagrs) - 1)
-            std_cagr = math.sqrt(var)
-        else:
-            std_cagr = 0
-        # 安定性スコア = 平均CAGR / 標準偏差 (高いほど安定して強い)
-        consistency_score = (avg_cagr / std_cagr) if std_cagr > 0.5 else avg_cagr / 0.5
+        m = px.set_index("date")["close"].resample("ME").last().dropna()
+        d = dps.set_index("date")["dps"].reindex(m.index, method="ffill")
+        y = (d / m * 100.0).replace([np.inf, -np.inf], np.nan)
 
-        avg_sharpe = sum(sharpes) / len(sharpes) if sharpes else 0
-        avg_dd = sum(ddowns) / len(ddowns) if ddowns else 0
-        avg_div = sum(div_yields) / len(div_yields) if div_yields else 0
+        f = pd.DataFrame({"date": m.index, "code": code,
+                          "price": m.values, "dps": d.values, "yield": y.values})
+        # 増配率（過去3年）。これも過去だけを見る
+        f["dps_growth"] = f["dps"].pct_change(36) * 100.0 / 3.0
+        frames.append(f.dropna(subset=["yield"]))
 
-        row = {
-            'strategy_id': strategy_id,
-            'strategy_name': STRATEGIES[strategy_id]['name'],
-            'description': STRATEGIES[strategy_id]['desc'],
-        }
-        # 各期間のCAGR
-        for i, period_label in enumerate(period_labels):
-            row[f'cagr_{period_label}'] = cagrs[i] if i < len(cagrs) else ''
-        # 集約
-        row['avg_cagr'] = round(avg_cagr, 2)
-        row['min_cagr'] = round(min_cagr, 2)
-        row['max_cagr'] = round(max_cagr, 2)
-        row['std_cagr'] = round(std_cagr, 2)
-        row['consistency_score'] = round(consistency_score, 2)
-        row['avg_sharpe'] = round(avg_sharpe, 3)
-        row['avg_max_dd'] = round(avg_dd, 2)
-        row['avg_dividend_yield'] = round(avg_div, 2)
+    if not frames:
+        sys.exit("パネルを作れませんでした。データ取得をご確認ください。")
+    panel = pd.concat(frames, ignore_index=True)
 
-        ranking_rows.append(row)
+    # 各時点で、過去5年ぶんの分布における自分の位置（未来は見ない）
+    panel = panel.sort_values(["code", "date"])
+    panel["pct_own"] = (
+        panel.groupby("code")["yield"]
+        .transform(lambda s: s.rolling(60, min_periods=24)
+                   .apply(lambda w: (w.iloc[-1] >= w[:-1]).mean() * 100, raw=False))
+    )
+    # その日の市場内での順位
+    panel["pct_cross"] = panel.groupby("date")["yield"].rank(pct=True) * 100.0
 
-    # 安定性スコア順にソート (高い = 全期間で安定して強い)
-    ranking_rows.sort(key=lambda x: -x['consistency_score'])
+    start = panel["date"].max() - pd.DateOffset(years=years)
+    return panel[panel["date"] >= start].dropna(subset=["pct_own"]).reset_index(drop=True)
 
-    # CSV出力
-    field_order = [
-        'strategy_id', 'strategy_name', 'description',
-    ] + [f'cagr_{p}' for p in period_labels] + [
-        'avg_cagr', 'min_cagr', 'max_cagr', 'std_cagr',
-        'consistency_score', 'avg_sharpe', 'avg_max_dd', 'avg_dividend_yield',
-    ]
-    write_csv(Config.OUTPUT_DIR / 'multi_period_ranking.csv', ranking_rows, field_order)
 
-    # ---- ログ出力: 一目でわかるランキング ----
-    log.info('')
-    log.info('==============================================================')
-    log.info('  RANKING by Consistency Score (高いほど全期間で安定して強い)')
-    log.info('==============================================================')
-    header = f'{"ID":<3} {"Strategy":<25}'
-    for p in period_labels:
-        header += f' {p:>10}'
-    header += f' {"AVG":>8} {"MIN":>8} {"Score":>8}'
-    log.info(header)
-    log.info('-' * len(header))
-    for row in ranking_rows:
-        line = f'{row["strategy_id"]:<3} {row["strategy_name"]:<25}'
-        for p in period_labels:
-            v = row.get(f'cagr_{p}', 0)
-            line += f' {v:>9.2f}%'
-        line += f' {row["avg_cagr"]:>7.2f}%'
-        line += f' {row["min_cagr"]:>7.2f}%'
-        line += f' {row["consistency_score"]:>8.2f}'
-        log.info(line)
+# ══════════════════════════════════════════
+# 売買ルール
+# ══════════════════════════════════════════
+def required_pct(base: float, row: pd.Series, dynamic: bool) -> float:
+    """必要パーセンタイル。条件が揃うほど下がる＝買いやすくなる。"""
+    if not dynamic:
+        return base
+    p = base
+    if row.get("dps_growth", 0) is not None and row.get("dps_growth", 0) > 5:
+        p += DYNAMIC_RULES["growth"][0]
+    if row.get("pct_cross", 0) >= 90:
+        p += DYNAMIC_RULES["cross_top"][0]
+    if row.get("mkt_yield_z", 0) > 1.0:
+        p += DYNAMIC_RULES["regime_tight"][0]
+    return float(np.clip(p, PCT_FLOOR, PCT_CEIL))
 
-    log.info('')
-    log.info('==============================================================')
-    log.info('Output written to: %s', Config.OUTPUT_DIR)
-    log.info('  multi_period_detailed.csv  (期間×戦略の全指標)')
-    log.info('  multi_period_ranking.csv   (戦略別ランキング、安定性スコア順)')
-    log.info('==============================================================')
 
+def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
+             max_names: int = 15) -> dict:
+    """月末ごとに判定して売買する。等金額・分割建玉。"""
+    entry, exits = cfg["entry"], cfg["exit"]
+    dyn, cross = cfg.get("dynamic", False), cfg.get("cross", False)
+    n_tr = len(entry)
+
+    dates = sorted(panel["date"].unique())
+    cash = capital
+    pos: dict[str, dict] = {}          # code -> {"units": n, "shares": [], "cost": x}
+    curve, trades = [], []
+    # 診断：可変ルールが実際に判定を変えた回数。
+    # 保有上限で先に枠が埋まると、閾値を緩めても結果が変わらない。
+    # 「効いていないのに複雑にしている」状態を見つけるために数える。
+    diag = {"adjusted": 0, "changed": 0, "full_slots": 0, "months": 0}
+
+    # 市場全体の利回り水準（局面判定に使う）
+    mkt = panel.groupby("date")["yield"].median()
+    mkt_z = (mkt - mkt.rolling(36, min_periods=12).mean()) / \
+            mkt.rolling(36, min_periods=12).std()
+
+    for dt in dates:
+        day = panel[panel["date"] == dt].set_index("code")
+        day = day.assign(mkt_yield_z=float(mkt_z.get(dt, 0) or 0))
+
+        # ── 保有の評価と売り判定 ──
+        for code in list(pos.keys()):
+            if code not in day.index:
+                continue
+            row = day.loc[code]
+            p = row["pct_cross"] if cross else row["pct_own"]
+            st = pos[code]
+            # 売り: 分位が exit を下回った段階数だけ手放す
+            want_units = n_tr - sum(1 for e in exits if p <= e)
+            while st["units"] > want_units and st["units"] > 0:
+                sh = st["shares"].pop()
+                cash += sh * row["price"]
+                trades.append({"code": code, "date": dt, "side": "sell",
+                               "price": row["price"], "shares": sh})
+                st["units"] -= 1
+            if st["units"] == 0:
+                del pos[code]
+
+        # ── 買い判定 ──
+        total = cash + sum(sum(s["shares"]) * day.loc[c, "price"]
+                           for c, s in pos.items() if c in day.index)
+        unit_size = total / max_names / n_tr
+
+        cands = []
+        diag["months"] += 1
+        for code, row in day.iterrows():
+            p = row["pct_cross"] if cross else row["pct_own"]
+            need = [required_pct(e, row, dyn) for e in entry]
+            want = sum(1 for nd in need if p >= nd)
+            want_base = sum(1 for e in entry if p >= e)
+            if dyn and need != list(map(float, entry)):
+                diag["adjusted"] += 1
+                if want != want_base:
+                    diag["changed"] += 1
+            have = pos.get(code, {}).get("units", 0)
+            if want > have:
+                cands.append((p, code, want - have, row["price"]))
+        cands.sort(reverse=True)
+        # 実際の制約は候補数ではなく保有枠。枠が埋まっていれば、
+        # 閾値をいくら緩めても新しい銘柄は入らない。
+        if len(pos) >= max_names:
+            diag["full_slots"] += 1
+
+        for p, code, add, price in cands:
+            if len(pos) >= max_names and code not in pos:
+                continue
+            for _ in range(add):
+                if cash < unit_size or unit_size < price:
+                    break
+                sh = int(unit_size // price)
+                if sh <= 0:
+                    break
+                cash -= sh * price
+                st = pos.setdefault(code, {"units": 0, "shares": []})
+                st["shares"].append(sh)
+                st["units"] += 1
+                trades.append({"code": code, "date": dt, "side": "buy",
+                               "price": price, "shares": sh})
+
+        val = cash + sum(sum(s["shares"]) * day.loc[c, "price"]
+                         for c, s in pos.items() if c in day.index)
+        curve.append({"date": dt, "value": val, "cash": cash, "names": len(pos)})
+
+    return {"curve": pd.DataFrame(curve), "trades": pd.DataFrame(trades),
+            "capital": capital, "diag": diag}
+
+
+def metrics(res: dict) -> dict:
+    c = res["curve"]
+    if c.empty:
+        return {}
+    v = c["value"].to_numpy()
+    cap = res["capital"]
+    yrs = max((c["date"].iloc[-1] - c["date"].iloc[0]).days / 365.25, 0.5)
+    total = v[-1] / cap - 1
+    cagr = (v[-1] / cap) ** (1 / yrs) - 1
+    dd = float((1 - v / np.maximum.accumulate(v)).max())
+    r = pd.Series(v).pct_change().dropna()
+    sharpe = float(r.mean() / r.std() * np.sqrt(12)) if r.std() > 0 else 0.0
+    t = res["trades"]
+    d = res.get("diag", {})
+    # 保有枠が埋まっていた月の割合。高いほど「閾値を緩めても効かない」状態。
+    saturated = d["full_slots"] / d["months"] * 100 if d.get("months") else 0.0
+    return {"総リターン": total * 100, "年率": cagr * 100,
+            "最大下落": dd * 100, "シャープ": sharpe,
+            "売買回数": len(t), "平均保有銘柄": float(c["names"].mean()),
+            "判定変化": d.get("changed", 0), "枠飽和率": saturated}
+
+
+# ══════════════════════════════════════════
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--years", type=int, default=7, help="検証する年数")
+    ap.add_argument("--limit", type=int, default=0, help="試し実行。先頭N銘柄")
+    ap.add_argument("--only", default="", help="比較するルールをカンマ区切りで指定")
+    ap.add_argument("--capital", type=float, default=3_000_000)
+    ap.add_argument("--max-names", type=int, default=15)
+    ap.add_argument("--refetch", action="store_true", help="キャッシュを無視して取り直す")
+    args = ap.parse_args()
+
+    OUTDIR.mkdir(parents=True, exist_ok=True)
+
+    if CACHE.exists() and not args.refetch:
+        log.info("キャッシュから読み込みます（取り直すなら --refetch）")
+        store = pd.read_pickle(CACHE)
+    else:
+        key = os.environ.get("J_QUANTS_API_KEY")
+        if not key:
+            log.error("J_QUANTS_API_KEY が設定されていません")
+            return 2
+        store = fetch_all(JQ(key), args.years, args.limit)
+        pd.to_pickle(store, CACHE)
+        log.info("キャッシュに保存しました: %s", CACHE)
+
+    log.info("パネルを作成中…")
+    panel = build_panel(store, args.years)
+    log.info("判定できる時点: %d件 / 銘柄 %d / 期間 %s〜%s",
+             len(panel), panel["code"].nunique(),
+             panel["date"].min().date(), panel["date"].max().date())
+
+    names = [x.strip() for x in args.only.split(",") if x.strip()] or list(VARIANTS)
+    rows = []
+    for name in names:
+        if name not in VARIANTS:
+            log.warning("未定義のルール: %s", name)
+            continue
+        cfg = VARIANTS[name]
+        res = simulate(panel, cfg, args.capital, args.max_names)
+        m = metrics(res)
+        if m:
+            rows.append({"ルール": cfg["label"], **m})
+            log.info("  %s 完了", cfg["label"])
+
+    if not rows:
+        print("結果がありません。")
+        return 1
+
+    df = pd.DataFrame(rows).sort_values("年率", ascending=False)
+    print(f"\n■ 比較結果（{panel['date'].min().date()} 〜 "
+          f"{panel['date'].max().date()} / 元本 {args.capital:,.0f}円）\n")
+    print(f"{'ルール':<22}{'総リターン':>10}{'年率':>8}{'最大下落':>9}"
+          f"{'シャープ':>9}{'売買':>7}{'判定変化':>9}")
+    print("-" * 76)
+    for _, x in df.iterrows():
+        print(f"{x['ルール']:<22}{x['総リターン']:>9.1f}%{x['年率']:>7.1f}%"
+              f"{x['最大下落']:>8.1f}%{x['シャープ']:>9.2f}"
+              f"{x['売買回数']:>7.0f}{x['判定変化']:>9.0f}")
+
+    sat = df["枠飽和率"].mean()
+    print(f"\n  枠飽和率 {sat:.0f}%（保有が上限 {args.max_names}銘柄 に達していた月の割合）")
+    if sat > 60:
+        print("  → 枠が常に埋まっているため、買いの閾値を緩めても結果はほとんど変わりません。")
+        print("     この状態では「いつ買うか」より「どれを優先するか」が効きます。")
+        print("     --max-names を増やすか、資金に対して銘柄数を絞ってお試しください。")
+    zero = df[(df["判定変化"] == 0) & (df["ルール"].str.contains("可変"))]
+    if len(zero):
+        print("  → 可変ルールが一度も判定を変えていません。条件が厳しすぎる可能性があります。")
+
+    df.to_csv(OUTDIR / "backtest.csv", index=False, encoding="utf-8-sig")
+    with (OUTDIR / "backtest.json").open("w", encoding="utf-8") as f:
+        json.dump({"generated_at": datetime.now(timezone(timedelta(hours=9))).isoformat(),
+                   "years": args.years, "results": df.to_dict("records")},
+                  f, ensure_ascii=False, indent=2)
+    print(f"\n書き出しました: data/backtest.csv, data/backtest.json")
+    print("\n※ 過去の成績であり、将来の結果を保証するものではありません。"
+          "\n※ 手数料・税金・約定のずれは含めていません。実際の成績はこれより下がります。")
     return 0
 
 
-def run_sector_cap_compare(args) -> int:
-    """業種分散ルールの 4 パターン比較 (戦略 B 固定)"""
-    global SECTOR_CAP_RATIO, ONLY_STRATEGY
-    ONLY_STRATEGY = 'B'  # 戦略Bのみ実行して高速化 (1/5の時間)
-
-    patterns = [
-        ('P1_none', 0.0,  '業種分散なし (現状)'),
-        ('P2_40',   0.40, '業種上限 40%'),
-        ('P3_30',   0.30, '業種上限 30%'),
-        ('P4_25',   0.25, '業種上限 25%'),
-    ]
-
-    log.info('=== SECTOR CAP COMPARISON (戦略 B / multi-period) ===')
-    for tag, ratio, desc in patterns:
-        log.info('  %s: %s', tag, desc)
-
-    # データを1回だけ取得して全パターンで使い回す (4回取得 → 1回に短縮)
-    if args.periods:
-        _periods = []
-        for p_str in args.periods.split(','):
-            s, e = p_str.split(':')
-            _periods.append((date.fromisoformat(s.strip()), date.fromisoformat(e.strip())))
-    else:
-        _periods = [
-            (date(2020, 4, 1), date(2022, 4, 1)),
-            (date(2022, 4, 1), date(2024, 4, 1)),
-            (date(2024, 4, 1), date(2026, 4, 1)),
-        ]
-    _earliest = min(p[0] for p in _periods)
-    _latest = max(p[1] for p in _periods)
-    _args_fetch = argparse.Namespace(**vars(args))
-    _args_fetch.start = _earliest.isoformat()
-    _args_fetch.end = _latest.isoformat()
-    log.info('Fetching data ONCE for all patterns: %s ~ %s', _earliest, _latest)
-    shared_data, _, _ = fetch_all_data(_args_fetch)
-    log.info('Data loaded: %d stocks (will be reused for all 4 patterns)', len(shared_data))
-
-    # 各パターンを順次実行
-    all_results: list[dict] = []
-    for tag, ratio, desc in patterns:
-        SECTOR_CAP_RATIO = ratio
-        log.info('')
-        log.info('==============================================================')
-        log.info('PATTERN [%s]: %s (cap=%.1f%%)', tag, desc, ratio * 100)
-        log.info('==============================================================')
-
-        # 出力先を切り替え (パターン別ディレクトリ)
-        original_output = Config.OUTPUT_DIR
-        Config.OUTPUT_DIR = original_output / f'sector_cap_{tag}'
-        Config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
-        try:
-            # 事前取得データを渡して再取得を回避
-            args_pattern = argparse.Namespace(**vars(args))
-            run_multi_period(args_pattern, preloaded_data=shared_data)
-
-            # サマリーCSVを読み込んで集約 (multi_period_ranking.csv から戦略B行を抽出)
-            ranking_csv = Config.OUTPUT_DIR / 'multi_period_ranking.csv'
-            if ranking_csv.exists():
-                import csv as _csv
-                with ranking_csv.open('r', encoding='utf-8') as f:
-                    reader = _csv.DictReader(f)
-                    for row in reader:
-                        # strategy_id == 'B' 行のみ取得
-                        if row.get('strategy_id') == 'B':
-                            all_results.append({
-                                'pattern': tag,
-                                'description': desc,
-                                'sector_cap': f'{ratio * 100:.0f}%',
-                                'avg_cagr': row.get('avg_cagr', ''),
-                                'min_cagr': row.get('min_cagr', ''),
-                                'std_cagr': row.get('std_cagr', ''),
-                                'consistency_score': row.get('consistency_score', ''),
-                                'avg_max_dd': row.get('avg_max_dd', ''),
-                                'avg_sharpe': row.get('avg_sharpe', ''),
-                                'avg_dividend_yield': row.get('avg_dividend_yield', ''),
-                            })
-                            break
-        except Exception as e:
-            log.error('Pattern %s failed: %s', tag, e, exc_info=True)
-        finally:
-            Config.OUTPUT_DIR = original_output
-
-    # 結果サマリー出力
-    log.info('')
-    log.info('==============================================================')
-    log.info('              SECTOR CAP COMPARISON RESULTS')
-    log.info('==============================================================')
-    log.info('%-10s %-22s %12s %12s %12s %12s' % (
-        'Pattern', 'Description', 'Avg CAGR%', 'Min CAGR%', 'Avg DD%', 'Sharpe',
-    ))
-    log.info('-' * 90)
-    for r in all_results:
-        log.info('%-10s %-22s %12s %12s %12s %12s' % (
-            r['pattern'], r['description'],
-            r['avg_cagr'], r['min_cagr'], r['avg_max_dd'], r['avg_sharpe'],
-        ))
-    log.info('==============================================================')
-
-    # CSV書き出し
-    summary_csv = Config.OUTPUT_DIR / 'sector_cap_comparison.csv'
-    if all_results:
-        import csv as _csv
-        with summary_csv.open('w', encoding='utf-8', newline='') as f:
-            writer = _csv.DictWriter(f, fieldnames=list(all_results[0].keys()))
-            writer.writeheader()
-            writer.writerows(all_results)
-        log.info('Comparison summary saved to: %s', summary_csv)
-
-    return 0
-
-
-def run_value_compare(args) -> int:
-    """PER/PBR バリュー割安ルールの 3 パターン比較 (戦略 B 固定)"""
-    global VALUE_MODE, ONLY_STRATEGY, GRAHAM_MODE, VALUE_QUANTILE
-    ONLY_STRATEGY = 'B'  # 戦略Bのみ実行して高速化 (1/5の時間)
-
-    # (tag, value_mode, graham_mode, quantile, desc)
-    patterns = [
-        ('B1_current',    'none',  'strict', 'q25', '現行 (グレアム22.5+利回りQ75のみ)'),
-        ('B2_g40',        'none',  'loose',  'q25', 'グレアム緩和のみ (≤40)'),
-        ('B3_g40_median', 'score', 'loose',  'q50', 'グレアム≤40 + 過去中央値割安で加点'),
-        ('B4_off_median', 'and',   'off',    'q50', 'グレアム外し + 過去中央値割安を必須'),
-    ]
-
-    log.info('=== VALUE (PER/PBR) COMPARISON (戦略 B / multi-period) ===')
-    for tag, mode, gmode, quant, desc in patterns:
-        log.info('  %s: %s', tag, desc)
-
-    # データを1回だけ取得して全パターンで使い回す
-    if args.periods:
-        _periods = []
-        for p_str in args.periods.split(','):
-            s, e = p_str.split(':')
-            _periods.append((date.fromisoformat(s.strip()), date.fromisoformat(e.strip())))
-    else:
-        _periods = [
-            (date(2020, 4, 1), date(2022, 4, 1)),
-            (date(2022, 4, 1), date(2024, 4, 1)),
-            (date(2024, 4, 1), date(2026, 4, 1)),
-        ]
-    _earliest = min(p[0] for p in _periods)
-    _latest = max(p[1] for p in _periods)
-    _args_fetch = argparse.Namespace(**vars(args))
-    _args_fetch.start = _earliest.isoformat()
-    _args_fetch.end = _latest.isoformat()
-    log.info('Fetching data ONCE for all patterns: %s ~ %s', _earliest, _latest)
-    shared_data, _, _ = fetch_all_data(_args_fetch)
-    log.info('Data loaded: %d stocks (will be reused for all 4 patterns)', len(shared_data))
-
-    all_results: list[dict] = []
-    for tag, mode, gmode, quant, desc in patterns:
-        VALUE_MODE = mode
-        GRAHAM_MODE = gmode
-        VALUE_QUANTILE = quant
-        log.info('')
-        log.info('==============================================================')
-        log.info('PATTERN [%s]: %s (value=%s graham=%s quantile=%s)', tag, desc, mode, gmode, quant)
-        log.info('==============================================================')
-
-        original_output = Config.OUTPUT_DIR
-        Config.OUTPUT_DIR = original_output / f'value_{tag}'
-        Config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
-        try:
-            args_pattern = argparse.Namespace(**vars(args))
-            run_multi_period(args_pattern, preloaded_data=shared_data)
-
-            ranking_csv = Config.OUTPUT_DIR / 'multi_period_ranking.csv'
-            if ranking_csv.exists():
-                import csv as _csv
-                with ranking_csv.open('r', encoding='utf-8') as f:
-                    reader = _csv.DictReader(f)
-                    for row in reader:
-                        if row.get('strategy_id') == 'B':
-                            all_results.append({
-                                'pattern': tag,
-                                'description': desc,
-                                'value_mode': mode,
-                                'graham_mode': gmode,
-                                'quantile': quant,
-                                'avg_cagr': row.get('avg_cagr', ''),
-                                'min_cagr': row.get('min_cagr', ''),
-                                'std_cagr': row.get('std_cagr', ''),
-                                'consistency_score': row.get('consistency_score', ''),
-                                'avg_max_dd': row.get('avg_max_dd', ''),
-                                'avg_sharpe': row.get('avg_sharpe', ''),
-                                'avg_dividend_yield': row.get('avg_dividend_yield', ''),
-                            })
-                            break
-        except Exception as e:
-            log.error('Pattern %s failed: %s', tag, e, exc_info=True)
-        finally:
-            Config.OUTPUT_DIR = original_output
-
-    log.info('')
-    log.info('==============================================================')
-    log.info('              VALUE (PER/PBR) COMPARISON RESULTS')
-    log.info('==============================================================')
-    log.info('%-10s %-32s %10s %10s %10s %10s' % (
-        'Pattern', 'Description', 'AvgCAGR%', 'MinCAGR%', 'AvgDD%', 'Sharpe',
-    ))
-    log.info('-' * 92)
-    for r in all_results:
-        log.info('%-10s %-32s %10s %10s %10s %10s' % (
-            r['pattern'], r['description'],
-            r['avg_cagr'], r['min_cagr'], r['avg_max_dd'], r['avg_sharpe'],
-        ))
-    log.info('==============================================================')
-
-    summary_csv = Config.OUTPUT_DIR / 'value_comparison.csv'
-    if all_results:
-        import csv as _csv
-        with summary_csv.open('w', encoding='utf-8', newline='') as f:
-            writer = _csv.DictWriter(f, fieldnames=list(all_results[0].keys()))
-            writer.writeheader()
-            writer.writerows(all_results)
-        log.info('Comparison summary saved to: %s', summary_csv)
-
-    return 0
-
-
-# ============================================================================
-# Entry point
-# ============================================================================
-
-
-def main():
-    parser = argparse.ArgumentParser(
-        description='DIVIDEND HEIST バックテスト',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-戦略一覧:
-  A  利回り単純順        (yield高い順)
-  B  ボックス × 利回り   (yield × (0.5 + 0.5 × box信頼度))   [デフォルト]
-  C  Q75乖離率順         ((yield - Q75) / Q75)
-  D  多要素スコア         (0.4y + 0.2ROE + 0.2eq + 0.2box)
-  E  利回り × ROE        (yield × ROE / 10)
-
-使用例:
-  # B戦略のみ実行 (デフォルト)
-  python3 backtest.py
-
-  # 全戦略を1期間で比較
-  python3 backtest.py --compare --start 2024-01-01 --end 2025-12-31
-
-  # 全戦略を複数期間で比較 (おすすめ)
-  python3 backtest.py --multi-period
-
-  # カスタム期間を指定
-  python3 backtest.py --multi-period --periods "2021-01-01:2023-01-01,2023-01-01:2025-01-01"
-""",
-    )
-    parser.add_argument('--start', default='2021-04-01', help='開始日 YYYY-MM-DD')
-    parser.add_argument('--end', default='2026-04-30', help='終了日 YYYY-MM-DD')
-    parser.add_argument('--capital', type=float, default=10_000_000, help='初期資金 (円)')
-    parser.add_argument('--positions', type=int, default=20, help='最大保有銘柄数')
-    parser.add_argument('--no-cache', action='store_true', help='キャッシュを使わず再取得')
-    parser.add_argument(
-        '--strategy', default='B', choices=list(STRATEGIES.keys()),
-        help='単体実行する戦略 (A/B/C/D/E、デフォルト: B)',
-    )
-    parser.add_argument(
-        '--compare', action='store_true',
-        help='全戦略を比較実行し comparison.csv を出力 (1期間)',
-    )
-    parser.add_argument(
-        '--multi-period', action='store_true',
-        help='複数期間 × 全戦略を比較実行 (おすすめ。デフォルト期間: 2020-2022, 2022-2024, 2024-2026)',
-    )
-    parser.add_argument(
-        '--periods', default='',
-        help='--multi-period 用のカスタム期間 (例: "2021-01-01:2023-01-01,2023-01-01:2025-01-01")',
-    )
-    parser.add_argument(
-        '--sector-cap', type=float, default=0.0,
-        help='業種分散の上限比率 (0=なし, 0.25=25%%, 0.30=30%%, 0.40=40%%)',
-    )
-    parser.add_argument(
-        '--sector-cap-compare', action='store_true',
-        help='業種分散ルールの 4 パターン比較を実行 (現状/40%%/30%%/25%%、戦略 B 固定)',
-    )
-    parser.add_argument(
-        '--value-mode', default='none', choices=['none', 'and', 'score'],
-        help='PER/PBRバリュー割安ルール (none=現状, and=厳格, score=加点)',
-    )
-    parser.add_argument(
-        '--value-quantile', default='q25', choices=['q25', 'q50'],
-        help='バリュー割安の基準 (q25=下位25%, q50=過去中央値以下)',
-    )
-    parser.add_argument(
-        '--graham-mode', default='strict', choices=['strict', 'loose', 'off'],
-        help='グレアム指数の扱い (strict=22.5, loose=40, off=合否から外す)',
-    )
-    parser.add_argument(
-        '--value-compare', action='store_true',
-        help='PER/PBRバリュー割安の 3 パターン比較を実行 (現状/AND厳格/スコア加点、戦略 B 固定)',
-    )
-    args = parser.parse_args()
-
-    # SECTOR_CAP_RATIO を CLI 引数で上書き
-    global SECTOR_CAP_RATIO, VALUE_MODE, GRAHAM_MODE, VALUE_QUANTILE
-    SECTOR_CAP_RATIO = args.sector_cap
-    if SECTOR_CAP_RATIO > 0:
-        log.info('Sector diversification: cap=%.1f%% of total assets', SECTOR_CAP_RATIO * 100)
-    else:
-        log.info('Sector diversification: DISABLED')
-
-    # VALUE_MODE / VALUE_QUANTILE / GRAHAM_MODE を CLI 引数で上書き
-    VALUE_MODE = args.value_mode
-    VALUE_QUANTILE = args.value_quantile
-    GRAHAM_MODE = args.graham_mode
-    log.info('Value mode: %s / quantile: %s / graham: %s', VALUE_MODE, VALUE_QUANTILE, GRAHAM_MODE)
-
-    if args.value_compare:
-        return run_value_compare(args)
-    elif args.sector_cap_compare:
-        return run_sector_cap_compare(args)
-    elif args.multi_period:
-        return run_multi_period(args)
-    elif args.compare:
-        return run_compare(args)
-    else:
-        return run_backtest(args)
-
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     sys.exit(main())
