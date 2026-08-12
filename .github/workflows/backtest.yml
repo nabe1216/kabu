@@ -1,137 +1,95 @@
-name: Backtest
+name: backtest
 
+# Actions タブ → 左の backtest → 右の「Run workflow」
+# 結果は実行後の Summary 画面にそのまま表示されます。
+#
+# 株価の取得に時間がかかるため、取得したデータはキャッシュに残します。
+# 2回目以降は取得を飛ばして、ルールの比較だけを繰り返せます。
 on:
   workflow_dispatch:
     inputs:
-      mode:
-        description: '実行モード'
-        required: true
-        type: choice
-        options:
-          - 'multi-period (3期間で全戦略比較・おすすめ)'
-          - 'multi-b3 (全戦略×B3構成: グレアム緩和+過去中央値割安加点)'
-          - 'sector-cap-compare (業種分散4パターン比較・戦略B固定)'
-          - 'value-compare (PER/PBRバリュー3パターン比較・戦略B固定)'
-          - 'compare (1期間で全戦略比較)'
-          - 'B (ボックス × 利回り)'
-          - 'A (利回り単純順)'
-          - 'C (Q75乖離率順)'
-          - 'D (多要素スコア)'
-          - 'E (利回り × ROE)'
-        default: 'multi-period (3期間で全戦略比較・おすすめ)'
-      start_date:
-        description: '開始日 (YYYY-MM-DD) — multi-period/sector-cap-compare では無視される'
+      years:
+        description: "検証する年数"
         required: false
-        default: '2024-01-01'
-      end_date:
-        description: '終了日 (YYYY-MM-DD) — multi-period/sector-cap-compare では無視される'
+        default: "7"
+      only:
+        description: "比較するルール（空欄で全部）。例: fixed,tranche,dynamic"
         required: false
-        default: '2025-12-31'
-      periods:
-        description: 'multi-period のカスタム期間 (空欄ならデフォルト 2020-2022, 2022-2024, 2024-2026)'
+        default: ""
+      max_names:
+        description: "同時に持つ最大銘柄数"
         required: false
-        default: ''
-      sector_cap:
-        description: '業種分散の上限比率 (0=なし, 0.25/0.30/0.40)'
-        required: false
-        default: '0'
+        default: "15"
       capital:
-        description: '初期資金（円）'
-        required: true
-        default: '10000000'
-      positions:
-        description: '最大保有銘柄数'
-        required: true
-        default: '20'
+        description: "元本（円）"
+        required: false
+        default: "3000000"
+      limit:
+        description: "試し実行。先頭N銘柄だけ（0で全銘柄）"
+        required: false
+        default: "0"
+      refetch:
+        description: "株価を取り直す（true/false）。初回とデータ更新時のみ true"
+        required: false
+        default: "false"
+
+permissions:
+  contents: write
 
 jobs:
-  backtest:
+  run:
     runs-on: ubuntu-latest
-    timeout-minutes: 300  # sector-cap-compare は4回回るので長め
-
+    timeout-minutes: 90
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: "3.12"
 
-      - name: Install dependencies
-        run: |
-          pip install -r scripts/requirements.txt
+      - name: 依存関係をインストール
+        run: pip install --quiet numpy pandas requests
 
-      - name: Run backtest
+      # 取得済みの株価データを再利用する。週ごとに作り直す。
+      - name: キャッシュを復元
+        uses: actions/cache@v4
+        with:
+          path: data/backtest_cache.pkl
+          key: backtest-cache-${{ github.event.inputs.years || '7' }}-${{ github.run_id }}
+          restore-keys: |
+            backtest-cache-${{ github.event.inputs.years || '7' }}-
+
+      - name: バックテストを実行
         env:
           J_QUANTS_API_KEY: ${{ secrets.J_QUANTS_API_KEY }}
         run: |
-          cd scripts
-          MODE="${{ github.event.inputs.mode }}"
-          STRATEGY=$(echo "$MODE" | awk '{print $1}')
-          PERIODS_ARG=""
-          if [ -n "${{ github.event.inputs.periods }}" ]; then
-            PERIODS_ARG="--periods ${{ github.event.inputs.periods }}"
-          fi
+          set +e
+          python backtest.py \
+            --years "${{ github.event.inputs.years || '7' }}" \
+            --max-names "${{ github.event.inputs.max_names || '15' }}" \
+            --capital "${{ github.event.inputs.capital || '3000000' }}" \
+            --limit "${{ github.event.inputs.limit || '0' }}" \
+            ${{ github.event.inputs.only != '' && format('--only {0}', github.event.inputs.only) || '' }} \
+            ${{ github.event.inputs.refetch == 'true' && '--refetch' || '' }} > run.log 2>&1
+          code=$?
+          {
+            echo "## バックテスト結果"
+            echo ""
+            if [ $code -ne 0 ]; then echo "**失敗しました（終了コード $code）**"; fi
+            echo '```'
+            tail -c 14000 run.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          cat run.log
+          exit $code
 
-          if [ "$STRATEGY" = "value-compare" ]; then
-            python3 backtest.py --value-compare \
-              --capital ${{ github.event.inputs.capital }} \
-              --positions ${{ github.event.inputs.positions }} \
-              $PERIODS_ARG
-          elif [ "$STRATEGY" = "sector-cap-compare" ]; then
-            python3 backtest.py --sector-cap-compare \
-              --capital ${{ github.event.inputs.capital }} \
-              --positions ${{ github.event.inputs.positions }} \
-              $PERIODS_ARG
-          elif [ "$STRATEGY" = "multi-period" ]; then
-            python3 backtest.py --multi-period \
-              --sector-cap ${{ github.event.inputs.sector_cap }} \
-              --capital ${{ github.event.inputs.capital }} \
-              --positions ${{ github.event.inputs.positions }} \
-              $PERIODS_ARG
-          elif [ "$STRATEGY" = "multi-b3" ]; then
-            python3 backtest.py --multi-period \
-              --value-mode score --value-quantile q50 --graham-mode loose \
-              --sector-cap ${{ github.event.inputs.sector_cap }} \
-              --capital ${{ github.event.inputs.capital }} \
-              --positions ${{ github.event.inputs.positions }} \
-              $PERIODS_ARG
-          elif [ "$STRATEGY" = "compare" ]; then
-            python3 backtest.py --compare \
-              --sector-cap ${{ github.event.inputs.sector_cap }} \
-              --start ${{ github.event.inputs.start_date }} \
-              --end ${{ github.event.inputs.end_date }} \
-              --capital ${{ github.event.inputs.capital }} \
-              --positions ${{ github.event.inputs.positions }}
-          else
-            python3 backtest.py --strategy "$STRATEGY" \
-              --sector-cap ${{ github.event.inputs.sector_cap }} \
-              --start ${{ github.event.inputs.start_date }} \
-              --end ${{ github.event.inputs.end_date }} \
-              --capital ${{ github.event.inputs.capital }} \
-              --positions ${{ github.event.inputs.positions }}
-          fi
-
-      - name: Commit results
-        run: |
-          git config --global user.name 'github-actions[bot]'
-          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-          git add data/backtest/
-          if ! git diff --cached --quiet; then
-            git commit -m "chore: backtest ${{ github.event.inputs.mode }} ($(date -u +'%Y-%m-%dT%H:%M:%SZ'))"
-            # 長時間実行中にリモートが進んでいても push が弾かれないよう、
-            # 生成物 (data/backtest/) を退避 → 最新を取り込み → 戻して commit し直す
-            git pull --rebase --autostash origin main || {
-              git checkout --theirs data/backtest/ 2>/dev/null || true
-              git add data/backtest/ && git rebase --continue || true
-            }
-            git push
-          fi
-
-      - name: Upload as artifact
+      - name: 結果をダウンロードできるようにする
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: backtest-results
-          path: data/backtest/
-          retention-days: 30
+          name: backtest-result
+          path: |
+            data/backtest.csv
+            data/backtest.json
+            run.log
+          if-no-files-found: ignore
