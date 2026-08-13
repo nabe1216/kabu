@@ -1,0 +1,96 @@
+name: yield-backtest
+
+# 配当利回りルールの比較用。既存の backtest.yml（検証運用）とは別物です。
+# Actions タブ → 左の yield-backtest → 右の「Run workflow」
+# 結果は実行後の Summary 画面にそのまま表示されます。
+#
+# 株価の取得に時間がかかるため、取得したデータはキャッシュに残します。
+# 2回目以降は取得を飛ばして、ルールの比較だけを繰り返せます。
+on:
+  workflow_dispatch:
+    inputs:
+      years:
+        description: "検証する年数"
+        required: false
+        default: "7"
+      only:
+        description: "比較するルール（空欄で全部）。例: fixed,tranche,dynamic"
+        required: false
+        default: ""
+      max_names:
+        description: "同時に持つ最大銘柄数"
+        required: false
+        default: "15"
+      capital:
+        description: "元本（円）"
+        required: false
+        default: "3000000"
+      limit:
+        description: "試し実行。先頭N銘柄だけ（0で全銘柄）"
+        required: false
+        default: "0"
+      refetch:
+        description: "株価を取り直す（true/false）。初回とデータ更新時のみ true"
+        required: false
+        default: "false"
+
+permissions:
+  contents: write
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 依存関係をインストール
+        run: pip install --quiet numpy pandas requests
+
+      # 取得済みの株価データを再利用する。週ごとに作り直す。
+      - name: キャッシュを復元
+        uses: actions/cache@v4
+        with:
+          path: data/yield_backtest_cache.pkl
+          key: yield-backtest-cache-${{ github.event.inputs.years || '7' }}-${{ github.run_id }}
+          restore-keys: |
+            yield-backtest-cache-${{ github.event.inputs.years || '7' }}-
+
+      - name: バックテストを実行
+        env:
+          J_QUANTS_API_KEY: ${{ secrets.J_QUANTS_API_KEY }}
+        run: |
+          set +e
+          python yield_backtest.py \
+            --years "${{ github.event.inputs.years || '7' }}" \
+            --max-names "${{ github.event.inputs.max_names || '15' }}" \
+            --capital "${{ github.event.inputs.capital || '3000000' }}" \
+            --limit "${{ github.event.inputs.limit || '0' }}" \
+            ${{ github.event.inputs.only != '' && format('--only {0}', github.event.inputs.only) || '' }} \
+            ${{ github.event.inputs.refetch == 'true' && '--refetch' || '' }} > run.log 2>&1
+          code=$?
+          {
+            echo "## バックテスト結果"
+            echo ""
+            if [ $code -ne 0 ]; then echo "**失敗しました（終了コード $code）**"; fi
+            echo '```'
+            tail -c 14000 run.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          cat run.log
+          exit $code
+
+      - name: 結果をダウンロードできるようにする
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: yield-backtest-result
+          path: |
+            data/yield_backtest.csv
+            data/yield_backtest.json
+            run.log
+          if-no-files-found: ignore
