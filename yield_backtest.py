@@ -24,7 +24,7 @@
   cross      自分の過去比ではなく、その日の市場内順位で判定
 
 ■ 使い方
-  python yield_backtest.py --years 7            過去7年で全ルールを比較
+  python yield_backtest.py --years 2            直近2年で全ルールを比較
   python yield_backtest.py --only fixed,tranche 一部だけ比較
   python yield_backtest.py --limit 80           試し実行（80銘柄）
 """
@@ -106,6 +106,10 @@ PCT_FLOOR, PCT_CEIL = 50.0, 90.0
 # ══════════════════════════════════════════
 # データ取得
 # ══════════════════════════════════════════
+class RangeTooLong(Exception):
+    """指定した期間がプランの範囲を超えているときに投げる"""
+
+
 class JQ:
     def __init__(self, key: str):
         self.key = key
@@ -126,6 +130,9 @@ class JQ:
                         continue
                     if r.status_code in (401, 403):
                         sys.exit(f"認証に失敗しました（{r.status_code}）")
+                    if r.status_code == 400:
+                        # 期間が長すぎる場合にこれが返る。呼び出し側で短くして再試行する。
+                        raise RangeTooLong(r.text[:150])
                     r.raise_for_status()
                     break
                 except requests.RequestException:
@@ -167,6 +174,36 @@ def pdate(s: Any) -> date | None:
         return None
 
 
+# 取得できた年数を覚えておく。1銘柄目で分かれば以降は無駄な試行をしない。
+_ok_years: int | None = None
+FETCH_CANDIDATES = (5, 4, 3, 2)
+
+
+def fetch_bars(jq: JQ, code: str, want_years: int) -> list[dict]:
+    """株価を取得する。期間が長すぎて弾かれたら、自動的に短くして試す。
+
+    J-Quants は契約プランによって遡れる年数が決まっており、
+    それを超える期間を指定すると 400 が返ります。
+    どこまで遡れるかを実際に試して見つけます。
+    """
+    global _ok_years
+    today = date.today()
+    cands = [_ok_years] if _ok_years else \
+            [y for y in FETCH_CANDIDATES if y <= want_years] or [2]
+    for y in cands:
+        frm = (today - timedelta(days=365 * y + 30)).isoformat()
+        try:
+            rows = jq.get("/v2/equities/bars/daily",
+                          {"code": code, "from": frm, "to": today.isoformat()})
+            if _ok_years is None:
+                _ok_years = y
+                log.info("さかのぼれる期間: %d年（プランの上限に合わせました）", y)
+            return rows
+        except RangeTooLong:
+            continue
+    return []
+
+
 def fetch_all(jq: JQ, years: int, limit: int) -> dict:
     """株価と財務をまとめて取得する。時間がかかるのでキャッシュします。"""
     log.info("銘柄一覧を取得中…")
@@ -186,21 +223,18 @@ def fetch_all(jq: JQ, years: int, limit: int) -> dict:
         uni = uni[:limit]
     log.info("対象 %d銘柄", len(uni))
 
-    today = date.today()
-    frm = (today - timedelta(days=365 * (years + 5) + 60)).isoformat()
-    to = today.isoformat()
-
     store = {"universe": uni, "quotes": {}, "stmts": {}}
+    ok = 0
     for i, u in enumerate(uni, 1):
         time.sleep(API_SLEEP)
         try:
-            q = jq.get("/v2/equities/bars/daily",
-                       {"code": u["code"], "from": frm, "to": to})
+            q = fetch_bars(jq, u["code"], years + 3)
         except Exception as e:
             log.warning("株価取得失敗 %s: %s", u["code"], e)
             continue
         if not q:
             continue
+        ok += 1
         time.sleep(API_SLEEP)
         try:
             st = jq.get("/v2/fins/summary", {"code": u["code"]})
@@ -209,7 +243,10 @@ def fetch_all(jq: JQ, years: int, limit: int) -> dict:
         store["quotes"][u["code"]] = q
         store["stmts"][u["code"]] = st
         if i % 50 == 0:
-            log.info("  取得 %d/%d", i, len(uni))
+            log.info("  取得 %d/%d（成功 %d）", i, len(uni), ok)
+    if ok == 0:
+        sys.exit("株価を1銘柄も取得できませんでした。APIキーと契約プランをご確認ください。")
+    log.info("取得できた銘柄: %d / %d", ok, len(uni))
     return store
 
 
@@ -264,7 +301,7 @@ def dps_timeline(stmts: list[dict], px: pd.DataFrame) -> pd.DataFrame:
     return df.groupby("date", as_index=False)["dps"].last()
 
 
-def build_panel(store: dict, years: int) -> pd.DataFrame:
+def build_panel(store: dict, years: int, lookback: int = 36) -> pd.DataFrame:
     """月末ごとの「その時点で分かっていた」利回りの表を作る。"""
     frames = []
     for code, qrows in store["quotes"].items():
@@ -281,19 +318,21 @@ def build_panel(store: dict, years: int) -> pd.DataFrame:
 
         f = pd.DataFrame({"date": m.index, "code": code,
                           "price": m.values, "dps": d.values, "yield": y.values})
-        # 増配率（過去3年）。これも過去だけを見る
-        f["dps_growth"] = f["dps"].pct_change(36) * 100.0 / 3.0
+        # 増配率（過去2年）。これも過去だけを見る
+        f["dps_growth"] = f["dps"].pct_change(24) * 100.0 / 2.0
         frames.append(f.dropna(subset=["yield"]))
 
     if not frames:
         sys.exit("パネルを作れませんでした。データ取得をご確認ください。")
     panel = pd.concat(frames, ignore_index=True)
 
-    # 各時点で、過去5年ぶんの分布における自分の位置（未来は見ない）
+    # 各時点で、過去の分布における自分の位置（未来は見ない）。
+    # J-Quants で遡れるのが5年程度なので、分布は36か月で作る。
+    # 60か月にすると分布づくりだけでデータを使い切り、検証する期間が残らない。
     panel = panel.sort_values(["code", "date"])
     panel["pct_own"] = (
         panel.groupby("code")["yield"]
-        .transform(lambda s: s.rolling(60, min_periods=24)
+        .transform(lambda s: s.rolling(lookback, min_periods=max(12, lookback // 2))
                    .apply(lambda w: (w.iloc[-1] >= w[:-1]).mean() * 100, raw=False))
     )
     # その日の市場内での順位
@@ -437,7 +476,11 @@ def metrics(res: dict) -> dict:
 # ══════════════════════════════════════════
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--years", type=int, default=7, help="検証する年数")
+    ap.add_argument("--years", type=int, default=2,
+                    help="検証する年数。取得できるのが約5年なので、"
+                         "分布づくりに3年使い、残りが検証期間になります")
+    ap.add_argument("--lookback", type=int, default=36,
+                    help="利回り分布を作る月数（既定36＝3年）")
     ap.add_argument("--limit", type=int, default=0, help="試し実行。先頭N銘柄")
     ap.add_argument("--only", default="", help="比較するルールをカンマ区切りで指定")
     ap.add_argument("--capital", type=float, default=3_000_000)
@@ -460,7 +503,7 @@ def main() -> int:
         log.info("キャッシュに保存しました: %s", CACHE)
 
     log.info("パネルを作成中…")
-    panel = build_panel(store, args.years)
+    panel = build_panel(store, args.years, args.lookback)
     log.info("判定できる時点: %d件 / 銘柄 %d / 期間 %s〜%s",
              len(panel), panel["code"].nunique(),
              panel["date"].min().date(), panel["date"].max().date())
