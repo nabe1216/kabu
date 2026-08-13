@@ -10,9 +10,9 @@ on:
   workflow_dispatch:
     inputs:
       years:
-        description: "検証する年数"
+        description: "検証する年数（取得できるのが約5年なので2〜3が目安）"
         required: false
-        default: "7"
+        default: "2"
       only:
         description: "比較するルール（空欄で全部）。例: fixed,tranche,dynamic"
         required: false
@@ -56,9 +56,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: data/yield_backtest_cache.pkl
-          key: yield-backtest-cache-${{ github.event.inputs.years || '7' }}-${{ github.run_id }}
+          key: yield-backtest-cache-${{ github.event.inputs.years || '2' }}-${{ github.run_id }}
           restore-keys: |
-            yield-backtest-cache-${{ github.event.inputs.years || '7' }}-
+            yield-backtest-cache-${{ github.event.inputs.years || '2' }}-
 
       - name: バックテストを実行
         env:
@@ -66,7 +66,7 @@ jobs:
         run: |
           set +e
           python yield_backtest.py \
-            --years "${{ github.event.inputs.years || '7' }}" \
+            --years "${{ github.event.inputs.years || '2' }}" \
             --max-names "${{ github.event.inputs.max_names || '15' }}" \
             --capital "${{ github.event.inputs.capital || '3000000' }}" \
             --limit "${{ github.event.inputs.limit || '0' }}" \
