@@ -91,6 +91,34 @@ VARIANTS: dict[str, dict[str, Any]] = {
         "label": "市場内順位で判定",
         "entry": [75], "exit": [25], "cross": True,
     },
+    # ── 出口が来ない問題への対策 ──
+    "exit_median": {
+        "label": "Q75買い・Q50売り",
+        # Q25まで待つと株価がQ75/Q25倍まで上がる必要がある。
+        # 中央値で降りれば必要な上昇幅が半分以下になり、出口が現実的に来る。
+        "entry": [75], "exit": [50],
+    },
+    "exit_gain10": {
+        "label": "Q75買い・+10％で売り",
+        # 分布ではなく取得単価からの上昇率で降りる。
+        # 分布のどこで買っても出口までの距離が一定になる。
+        "entry": [75], "exit": [], "gain_exit": 0.10,
+    },
+    "exit_gain15": {
+        "label": "Q75買い・+15％で売り",
+        "entry": [75], "exit": [], "gain_exit": 0.15,
+    },
+    "rotate": {
+        "label": "入れ替え（枠が埋まったら弱いものと交換）",
+        # 枠が常に埋まっているなら、売りは「条件を満たしたら」ではなく
+        # 「もっと良い候補が現れたら」で起こすほうが自然。
+        # 横ばい相場では順位が入れ替わるので、自然に売買が増える。
+        "entry": [75], "exit": [25], "rotate": 15.0,
+    },
+    "rotate_median": {
+        "label": "入れ替え＋Q50売り",
+        "entry": [75], "exit": [50], "rotate": 15.0,
+    },
 }
 
 # 可変ルールの加減点。必要パーセンタイルを下げる＝買いやすくする。
@@ -361,72 +389,121 @@ def required_pct(base: float, row: pd.Series, dynamic: bool) -> float:
 
 def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
              max_names: int = 15) -> dict:
-    """月末ごとに判定して売買する。等金額・分割建玉。"""
-    entry, exits = cfg["entry"], cfg["exit"]
+    """月末ごとに判定して売買する。等金額・分割建玉。
+
+    出口は3通りを組み合わせられる。
+      exit       … 利回りの分位が下がったら降りる（従来）
+      gain_exit  … 取得単価から一定率上がったら降りる
+      rotate     … 枠が埋まっているとき、もっと良い候補と入れ替える
+    """
+    entry, exits = cfg["entry"], cfg.get("exit", [])
     dyn, cross = cfg.get("dynamic", False), cfg.get("cross", False)
+    gain_exit = cfg.get("gain_exit")
+    rotate = cfg.get("rotate")
     n_tr = len(entry)
 
     dates = sorted(panel["date"].unique())
     cash = capital
-    pos: dict[str, dict] = {}          # code -> {"units": n, "shares": [], "cost": x}
+    # code -> {"units": n, "lots": [(株数, 取得単価), ...]}
+    pos: dict[str, dict] = {}
     curve, trades = [], []
-    # 診断：可変ルールが実際に判定を変えた回数。
-    # 保有上限で先に枠が埋まると、閾値を緩めても結果が変わらない。
-    # 「効いていないのに複雑にしている」状態を見つけるために数える。
-    diag = {"adjusted": 0, "changed": 0, "full_slots": 0, "months": 0}
+    diag = {"adjusted": 0, "changed": 0, "full_slots": 0, "months": 0,
+            "opened": 0, "closed": 0, "hold_months": [], "rotations": 0}
+    opened_at: dict[str, int] = {}
 
-    # 市場全体の利回り水準（局面判定に使う）
     mkt = panel.groupby("date")["yield"].median()
     mkt_z = (mkt - mkt.rolling(36, min_periods=12).mean()) / \
             mkt.rolling(36, min_periods=12).std()
 
-    for dt in dates:
+    def value_of(day):
+        v = cash
+        for c, st in pos.items():
+            if c in day.index:
+                v += sum(sh for sh, _ in st["lots"]) * day.loc[c, "price"]
+        return v
+
+    for mi, dt in enumerate(dates):
         day = panel[panel["date"] == dt].set_index("code")
         day = day.assign(mkt_yield_z=float(mkt_z.get(dt, 0) or 0))
 
-        # ── 保有の評価と売り判定 ──
+        # ── 売り ──
         for code in list(pos.keys()):
             if code not in day.index:
                 continue
             row = day.loc[code]
-            p = row["pct_cross"] if cross else row["pct_own"]
             st = pos[code]
-            # 売り: 分位が exit を下回った段階数だけ手放す
-            want_units = n_tr - sum(1 for e in exits if p <= e)
-            while st["units"] > want_units and st["units"] > 0:
-                sh = st["shares"].pop()
-                cash += sh * row["price"]
-                trades.append({"code": code, "date": dt, "side": "sell",
-                               "price": row["price"], "shares": sh})
-                st["units"] -= 1
+            price = row["price"]
+
+            # 取得単価からの上昇率で降りる
+            if gain_exit is not None and st["lots"]:
+                cost = sum(sh * pr for sh, pr in st["lots"]) / \
+                       sum(sh for sh, _ in st["lots"])
+                if price / cost - 1 >= gain_exit:
+                    for sh, _ in st["lots"]:
+                        cash += sh * price
+                        trades.append({"code": code, "date": dt, "side": "sell",
+                                       "price": price, "shares": sh})
+                    st["lots"], st["units"] = [], 0
+
+            # 利回りの分位で降りる
+            if st["units"] > 0 and exits:
+                p = row["pct_cross"] if cross else row["pct_own"]
+                want = n_tr - sum(1 for e in exits if p <= e)
+                while st["units"] > want and st["units"] > 0:
+                    sh, _ = st["lots"].pop()
+                    cash += sh * price
+                    trades.append({"code": code, "date": dt, "side": "sell",
+                                   "price": price, "shares": sh})
+                    st["units"] -= 1
+
             if st["units"] == 0:
                 del pos[code]
+                diag["closed"] += 1
+                if code in opened_at:
+                    diag["hold_months"].append(mi - opened_at.pop(code))
 
-        # ── 買い判定 ──
-        total = cash + sum(sum(s["shares"]) * day.loc[c, "price"]
-                           for c, s in pos.items() if c in day.index)
-        unit_size = total / max_names / n_tr
-
-        cands = []
+        # ── 買い候補 ──
         diag["months"] += 1
+        cands = []
         for code, row in day.iterrows():
             p = row["pct_cross"] if cross else row["pct_own"]
             need = [required_pct(e, row, dyn) for e in entry]
             want = sum(1 for nd in need if p >= nd)
-            want_base = sum(1 for e in entry if p >= e)
             if dyn and need != list(map(float, entry)):
                 diag["adjusted"] += 1
-                if want != want_base:
+                if want != sum(1 for e in entry if p >= e):
                     diag["changed"] += 1
             have = pos.get(code, {}).get("units", 0)
             if want > have:
                 cands.append((p, code, want - have, row["price"]))
         cands.sort(reverse=True)
-        # 実際の制約は候補数ではなく保有枠。枠が埋まっていれば、
-        # 閾値をいくら緩めても新しい銘柄は入らない。
+
+        # ── 入れ替え：枠が埋まっているとき、弱い保有を良い候補と交換 ──
+        if rotate and len(pos) >= max_names and cands:
+            held = [(day.loc[c, "pct_cross"] if cross else day.loc[c, "pct_own"], c)
+                    for c in pos if c in day.index]
+            if held:
+                held.sort()
+                worst_p, worst_c = held[0]
+                best = next(((p, c) for p, c, _, _ in cands if c not in pos), None)
+                if best and best[0] - worst_p >= rotate:
+                    st = pos.pop(worst_c)
+                    pr = day.loc[worst_c, "price"]
+                    for sh, _ in st["lots"]:
+                        cash += sh * pr
+                        trades.append({"code": worst_c, "date": dt, "side": "sell",
+                                       "price": pr, "shares": sh})
+                    diag["closed"] += 1
+                    diag["rotations"] += 1
+                    if worst_c in opened_at:
+                        diag["hold_months"].append(mi - opened_at.pop(worst_c))
+
         if len(pos) >= max_names:
             diag["full_slots"] += 1
 
+        # ── 買い ──
+        total = value_of(day)
+        unit_size = total / max_names / n_tr
         for p, code, add, price in cands:
             if len(pos) >= max_names and code not in pos:
                 continue
@@ -437,15 +514,17 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                 if sh <= 0:
                     break
                 cash -= sh * price
-                st = pos.setdefault(code, {"units": 0, "shares": []})
-                st["shares"].append(sh)
+                st = pos.setdefault(code, {"units": 0, "lots": []})
+                if st["units"] == 0:
+                    diag["opened"] += 1
+                    opened_at[code] = mi
+                st["lots"].append((sh, price))
                 st["units"] += 1
                 trades.append({"code": code, "date": dt, "side": "buy",
                                "price": price, "shares": sh})
 
-        val = cash + sum(sum(s["shares"]) * day.loc[c, "price"]
-                         for c, s in pos.items() if c in day.index)
-        curve.append({"date": dt, "value": val, "cash": cash, "names": len(pos)})
+        curve.append({"date": dt, "value": value_of(day),
+                      "cash": cash, "names": len(pos)})
 
     return {"curve": pd.DataFrame(curve), "trades": pd.DataFrame(trades),
             "capital": capital, "diag": diag}
@@ -467,10 +546,17 @@ def metrics(res: dict) -> dict:
     d = res.get("diag", {})
     # 保有枠が埋まっていた月の割合。高いほど「閾値を緩めても効かない」状態。
     saturated = d["full_slots"] / d["months"] * 100 if d.get("months") else 0.0
+    # 出口の来やすさ。買った建玉のうち、何割が実際に手仕舞えたか。
+    opened, closed = d.get("opened", 0), d.get("closed", 0)
+    exit_rate = closed / opened * 100 if opened else 0.0
+    hold = d.get("hold_months", [])
+    avg_hold = float(np.mean(hold)) if hold else float("nan")
     return {"総リターン": total * 100, "年率": cagr * 100,
             "最大下落": dd * 100, "シャープ": sharpe,
             "売買回数": len(t), "平均保有銘柄": float(c["names"].mean()),
-            "判定変化": d.get("changed", 0), "枠飽和率": saturated}
+            "判定変化": d.get("changed", 0), "枠飽和率": saturated,
+            "決済率": exit_rate, "平均保有月数": avg_hold,
+            "入れ替え": d.get("rotations", 0)}
 
 
 # ══════════════════════════════════════════
@@ -528,13 +614,16 @@ def main() -> int:
     df = pd.DataFrame(rows).sort_values("年率", ascending=False)
     print(f"\n■ 比較結果（{panel['date'].min().date()} 〜 "
           f"{panel['date'].max().date()} / 元本 {args.capital:,.0f}円）\n")
-    print(f"{'ルール':<22}{'総リターン':>10}{'年率':>8}{'最大下落':>9}"
-          f"{'シャープ':>9}{'売買':>7}{'判定変化':>9}")
-    print("-" * 76)
+    print(f"{'ルール':<26}{'総':>8}{'年率':>7}{'最大下落':>9}{'シャープ':>9}"
+          f"{'売買':>6}{'決済率':>8}{'保有月数':>9}")
+    print("-" * 84)
     for _, x in df.iterrows():
-        print(f"{x['ルール']:<22}{x['総リターン']:>9.1f}%{x['年率']:>7.1f}%"
+        hold = "－" if pd.isna(x["平均保有月数"]) else f"{x['平均保有月数']:.1f}"
+        print(f"{x['ルール']:<26}{x['総リターン']:>7.1f}%{x['年率']:>6.1f}%"
               f"{x['最大下落']:>8.1f}%{x['シャープ']:>9.2f}"
-              f"{x['売買回数']:>7.0f}{x['判定変化']:>9.0f}")
+              f"{x['売買回数']:>6.0f}{x['決済率']:>7.0f}%{hold:>9}")
+    print("\n  決済率＝買った建玉のうち実際に売れた割合。低いほど「出口が来ない」状態。")
+    print("  保有月数＝売れたものの平均保有期間。")
 
     sat = df["枠飽和率"].mean()
     print(f"\n  枠飽和率 {sat:.0f}%（保有が上限 {args.max_names}銘柄 に達していた月の割合）")
