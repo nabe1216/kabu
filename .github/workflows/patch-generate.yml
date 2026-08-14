@@ -1,0 +1,82 @@
+name: patch-generate
+
+# generate.py の利回り分位の計算期間を 5年 → 3年 に変える一度きりの作業。
+# 手で編集する代わりに、この処理が自動で書き換えます。
+#
+# 目印の文字列が見つからない場合や、書き換え後に文法エラーが出た場合は
+# 何も変更せずに止まります。壊れる心配はありません。
+on:
+  workflow_dispatch:
+    inputs:
+      years:
+        description: "分位の計算に使う年数（3が推奨。出口が来なければ2）"
+        required: false
+        default: "3"
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: generate.py を書き換える
+        env:
+          YEARS: ${{ github.event.inputs.years || '3' }}
+        run: |
+          python - <<'PY'
+          import ast, os, sys
+          from pathlib import Path
+
+          years = int(os.environ.get("YEARS", "3"))
+          p = Path("scripts/generate.py")
+          s = p.read_text(encoding="utf-8")
+
+          if "YIELD_DISTRIBUTION_YEARS" in s:
+              print("すでに修正済みです。何もしません。")
+              sys.exit(0)
+
+          a1 = "YIELD_LOOKBACK_DAYS = YIELD_LOOKBACK_YEARS * 365 + 60  # 余裕を持って取得"
+          if s.count(a1) != 1:
+              sys.exit(f"目印1が {s.count(a1)} 箇所です。中止します。")
+          n1 = (a1 + "\n"
+                "# 分位（Q25/Q75）の計算に使う期間。取得期間より短くできる。\n"
+                f"YIELD_DISTRIBUTION_YEARS = {years}         # 出口が来ないときは 2 に下げる")
+          s = s.replace(a1, n1, 1)
+
+          a2 = ("    yields_sorted = sorted(yields)\n"
+                "    return {\n"
+                "        'q25': quantile(yields_sorted, 0.25),")
+          if s.count(a2) != 1:
+              sys.exit(f"目印2が {s.count(a2)} 箇所です。中止します。")
+          n2 = ("    # 分位の計算は直近 YIELD_DISTRIBUTION_YEARS 年ぶんだけを使う。\n"
+                "    # 期間が長いと分布が動かず、買ったあと売りシグナルが出にくくなる。\n"
+                "    # 表示用の history は全期間のまま残すので、チャートは変わらない。\n"
+                "    dist_months = YIELD_DISTRIBUTION_YEARS * 12\n"
+                "    yields_for_dist = yields[-dist_months:] if len(yields) > dist_months else yields\n"
+                "    yields_sorted = sorted(yields_for_dist)\n"
+                "    return {\n"
+                "        'q25': quantile(yields_sorted, 0.25),")
+          s = s.replace(a2, n2, 1)
+
+          ast.parse(s)
+          p.write_text(s, encoding="utf-8")
+          print(f"修正しました。分位の計算期間を {years} 年にしました。")
+          PY
+
+      - name: 保存する
+        run: |
+          if git diff --quiet -- scripts/generate.py; then
+            echo "変更なし。"
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add scripts/generate.py
+          git commit -m "分位の計算期間を短縮"
+          git push
