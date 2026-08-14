@@ -19,8 +19,14 @@ rotation_engine.py — 入れ替えルールの並走フォワードテスト
           本件 … 上記に加えて「入れ替え」
     買い  両方とも同じ（BUYシグナル・スクリーニング通過）
 
+■ 売買ルール（既存との違い）
+  売り … 緊急撤退／SELLシグナル に加えて
+         ・取得単価から +10％ で利益確定
+         ・新規で買えないとき、弱い保有を良い候補と入れ替え
+  買い … 既存と同じ（BUYシグナル・スクリーニング通過）
+
 ■ 入れ替えの判定
-  保有が上限に達しているとき、
+  新規で買えないとき（枠が埋まっている、または資金が足りない）、
   「候補の利回り分位」が「最も弱い保有の利回り分位」を
   ROTATE_MARGIN ポイント以上上回っていたら交換する。
   分位は results.json の yield_history から、その時点で計算する。
@@ -68,8 +74,17 @@ PORTFOLIO_STATE_PATH = DATA_DIR / 'portfolio_state.json'   # 比較表示用
 # バックテストでは 8 / 15 / 25 を試し、25 がどの設定でも劣らなかった。
 ROTATE_MARGIN = 25.0
 
-# 1日に入れ替える上限。多すぎる売買を防ぐ。
-MAX_ROTATIONS_PER_DAY = 2
+# 1か月に入れ替える上限。
+# バックテストは月末判定で「月2件まで」だったので、それに合わせる。
+# このエンジンは毎日走るので、日ごとの上限にすると売買が桁違いに増えてしまう。
+MAX_ROTATIONS_PER_MONTH = 2
+
+# 利益確定のライン。取得単価からこの率だけ上がったら降りる。
+# 入れ替えと併用するのが要点で、
+#   利確だけ … 下げ相場で一度も出口が来ない
+#   入れ替えだけ … 上げ相場で利益を伸ばしきれない
+# 実運用条件のバックテストでは、併用が年率20.7％・決済率76％で最良だった。
+GAIN_EXIT = 0.10
 
 # 分位を計算するのに最低限必要な履歴の本数
 MIN_YIELD_SAMPLES = 12
@@ -96,7 +111,7 @@ def yield_percentile(stock: dict[str, Any]) -> float | None:
 def init_state() -> dict[str, Any]:
     today_jst = datetime.now(timezone(timedelta(hours=9))).date().isoformat()
     return {
-        'rule': f'入れ替え（差{ROTATE_MARGIN:.0f}pt）',
+        'rule': f'入れ替え（差{ROTATE_MARGIN:.0f}pt）＋{GAIN_EXIT*100:.0f}％利確',
         'started_at': today_jst,
         'initial_cash': INITIAL_CASH,
         'cash': INITIAL_CASH,
@@ -115,6 +130,25 @@ def init_history() -> dict[str, Any]:
 
 
 # ────────────────────────────────── 入れ替え
+def rotations_this_month(history: dict[str, Any], today: date) -> int:
+    """今月すでに何回入れ替えたか。売買が増えすぎないよう上限を設ける。"""
+    ym = today.strftime('%Y-%m')
+    return sum(1 for t in history.get('trades', [])
+               if t.get('action') == 'SELL'
+               and str(t.get('reason', '')).startswith('ROTATION')
+               and str(t.get('date', ''))[:7] == ym)
+
+
+def can_buy_more(state: dict[str, Any], candidates: list[dict[str, Any]]) -> bool:
+    """いちばん良い候補を、いま新規で買えるか。"""
+    if not candidates:
+        return False
+    if len(state['holdings']) >= MAX_HOLDINGS:
+        return False
+    budget = TIER_BUDGET.get(candidates[0].get('tier', 'B'), TIER_BUDGET['B'])
+    return state['cash'] >= budget
+
+
 def do_rotations(
     state: dict[str, Any],
     history: dict[str, Any],
@@ -122,17 +156,28 @@ def do_rotations(
     candidates: list[dict[str, Any]],
     today: date,
 ) -> list[dict[str, Any]]:
-    """枠が埋まっているとき、弱い保有を良い候補と入れ替える。
+    """新規で買えないとき、弱い保有を良い候補と入れ替える。
 
     「条件を満たしたから売る」ではなく「もっと良いものが現れたから売る」。
     相対的な判断なので、上げ相場でも下げ相場でも同じように機能する。
+
+    発火条件は「枠が埋まったら」ではなく「新規で買えないとき」。
+    この運用は Tier 別予算が大きく、枠20に届く前に資金が尽きる。
+    枠だけを条件にすると、入れ替えが一度も起きない。
     """
     rotated: list[dict[str, Any]] = []
-    if len(state['holdings']) < MAX_HOLDINGS or not candidates:
+    if not candidates or not state['holdings']:
         return rotated
 
-    for _ in range(MAX_ROTATIONS_PER_DAY):
-        if len(state['holdings']) < MAX_HOLDINGS:
+    done = rotations_this_month(history, today)
+    remaining = MAX_ROTATIONS_PER_MONTH - done
+    if remaining <= 0:
+        log.info('今月はすでに%d回入れ替え済みのため見送ります', done)
+        return rotated
+
+    for _ in range(remaining):
+        # まだ普通に買えるなら、入れ替える必要はない
+        if can_buy_more(state, candidates):
             break
 
         # 保有のなかで最も分位が低いもの（＝割安さが薄れたもの）
@@ -312,7 +357,7 @@ def main() -> int:
     fixed = load_json(PORTFOLIO_STATE_PATH, {})
     if fixed:
         print(compare_line('固定Q75（既存）', fixed))
-    print(compare_line(f'入れ替え{ROTATE_MARGIN:.0f}pt', rot))
+    print(compare_line(f'入替{ROTATE_MARGIN:.0f}pt＋{GAIN_EXIT*100:.0f}%利確', rot))
     print(f"\n入れ替え回数（累計）: {rot.get('rotation_count', 0)}回")
     if fixed and fixed.get('started_at') != rot.get('started_at'):
         print('※ 開始日が違うため、単純比較はできません。'
