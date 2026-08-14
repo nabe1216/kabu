@@ -56,6 +56,24 @@ SCALE_TARGETS = {"TOPIX Core30", "TOPIX Large70", "TOPIX Mid400"}
 OUTDIR = Path("data")
 CACHE = OUTDIR / "yield_backtest_cache.pkl"
 
+# ══════════════════════════════════════════
+# 実運用の設定（portfolio_engine.py と同じ）
+#   これまでのバックテストは「等金額・8〜25銘柄」という簡略版だった。
+#   実際は Tier 別に予算が決まっていて、1000万では3〜4銘柄で資金が尽きる。
+#   その条件で各ルールがどうなるかを確かめるために用意する。
+# ══════════════════════════════════════════
+TIER_BUDGET = {"S": 4_000_000, "A": 2_000_000, "B": 1_000_000}
+
+# 累進配当銘柄（日経累進高配当株指数30 ＋ 宣言銘柄）
+PROGRESSIVE = {
+    "4272","4502","8593","4521","5938","4503","8439","7956","9364","3861",
+    "4042","4208","4528","8309","8725","4182","4205","7313","8252","1719",
+    "1928","4041","5020","8473","1870","3431","5201","3291","4183","8130",
+    "8058","8001","8031","8002","8053","9433","9434","8306","8316","8411",
+    "8766","8630","1605","5108","7203","7011","8801",
+}
+DOE = {"2502","7011","8595","6770"}
+
 
 # ══════════════════════════════════════════
 # 比較するルール
@@ -350,9 +368,78 @@ def dps_timeline(stmts: list[dict], px: pd.DataFrame) -> pd.DataFrame:
     return df.groupby("date", as_index=False)["dps"].last()
 
 
+def shares_outstanding(stmts: list[dict]) -> float | None:
+    """発行済株式数。ShOutFY があればそれ、無ければ 純利益÷EPS で逆算する。"""
+    fy = [x for x in stmts if x.get("CurPerType") in ("FY", "4Q")]
+    fy.sort(key=lambda x: str(x.get("CurPerEn", "")), reverse=True)
+    for x in fy:
+        v = fnum(x.get("ShOutFY"))
+        if v and v > 0:
+            return v
+    for x in fy:
+        np_, eps = fnum(x.get("NP")), fnum(x.get("EPS"))
+        if np_ and eps and eps > 0:
+            return np_ / eps
+    return None
+
+
+def fiscal_months(stmts: list[dict]) -> tuple[int | None, int | None]:
+    """決算月と中間配当の権利月（決算月の6か月前）を返す。"""
+    fy = [x for x in stmts if x.get("CurPerType") in ("FY", "4Q")]
+    fy.sort(key=lambda x: str(x.get("CurPerEn", "")), reverse=True)
+    for x in fy:
+        d = pdate(x.get("CurPerEn"))
+        if d:
+            return d.month, ((d.month - 6 - 1) % 12) + 1
+    return None, None
+
+
+def assign_tiers(store: dict, last_price: dict[str, float]) -> dict[str, str]:
+    """Tier を判定する（generate.py と同じ考え方）。
+
+      S … 累進配当/DOE銘柄 かつ 業界首位級
+      A … どちらか一方
+      B … それ以外
+    業界首位級 = TOPIX Core30 または 33業種内で時価総額TOP3。
+    """
+    mcap: dict[str, float] = {}
+    for u in store["universe"]:
+        code = u["code"]
+        sh = shares_outstanding(store["stmts"].get(code, []))
+        px = last_price.get(code)
+        if sh and px:
+            mcap[code] = px * sh
+
+    leaders = {u["code"] for u in store["universe"] if u.get("scale") == "TOPIX Core30"}
+    by_sector: dict[str, list[tuple[str, float]]] = {}
+    for u in store["universe"]:
+        c, s33 = u["code"], u.get("s33") or ""
+        if s33 and c in mcap:
+            by_sector.setdefault(s33, []).append((c, mcap[c]))
+    for s33, members in by_sector.items():
+        members.sort(key=lambda x: -x[1])
+        for c, _ in members[:3]:
+            leaders.add(c)
+
+    tiers = {}
+    for u in store["universe"]:
+        c = u["code"]
+        qual = c in PROGRESSIVE or c in DOE
+        lead = c in leaders
+        tiers[c] = "S" if (qual and lead) else ("A" if (qual or lead) else "B")
+    return tiers
+
+
 def build_panel(store: dict, years: int, lookback: int = 36) -> pd.DataFrame:
     """月末ごとの「その時点で分かっていた」利回りの表を作る。"""
     frames = []
+    last_price: dict[str, float] = {}
+    for code, qrows in store["quotes"].items():
+        px0 = quotes_to_df(qrows)
+        if not px0.empty:
+            last_price[code] = float(px0["close"].iloc[-1])
+    tiers = assign_tiers(store, last_price)
+
     for code, qrows in store["quotes"].items():
         px = quotes_to_df(qrows)
         if len(px) < 300:
@@ -365,8 +452,12 @@ def build_panel(store: dict, years: int, lookback: int = 36) -> pd.DataFrame:
         d = dps.set_index("date")["dps"].reindex(m.index, method="ffill")
         y = (d / m * 100.0).replace([np.inf, -np.inf], np.nan)
 
+        fm, im = fiscal_months(store["stmts"].get(code, []))
         f = pd.DataFrame({"date": m.index, "code": code,
                           "price": m.values, "dps": d.values, "yield": y.values})
+        f["tier"] = tiers.get(code, "B")
+        f["fiscal_month"] = fm if fm else 0
+        f["interim_month"] = im if im else 0
         # 増配率（過去2年）。これも過去だけを見る
         f["dps_growth"] = f["dps"].pct_change(24) * 100.0 / 2.0
         frames.append(f.dropna(subset=["yield"]))
@@ -409,7 +500,8 @@ def required_pct(base: float, row: pd.Series, dynamic: bool) -> float:
 
 
 def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
-             max_names: int = 15) -> dict:
+             max_names: int = 15, tier_budget: bool = False,
+             dividends: bool = False) -> dict:
     """月末ごとに判定して売買する。等金額・分割建玉。
 
     出口は3通りを組み合わせられる。
@@ -499,8 +591,19 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                 cands.append((p, code, want - have, row["price"]))
         cands.sort(reverse=True)
 
-        # ── 入れ替え：枠が埋まっているとき、弱い保有を良い候補と交換 ──
-        if rotate and len(pos) >= max_names and cands:
+        # ── 入れ替え ──
+        # 「枠が埋まったら」だけを条件にすると、資金が先に尽きる運用では
+        # 一度も発火しない。実際に効くのは「新規で買えないとき」なので、
+        # 枠が埋まっている場合と、資金が足りない場合の両方で検討する。
+        blocked = False
+        if rotate and cands:
+            if tier_budget:
+                _t = day.loc[cands[0][1], "tier"] if "tier" in day.columns else "B"
+                need_cash = TIER_BUDGET.get(_t, TIER_BUDGET["B"]) / n_tr
+            else:
+                need_cash = value_of(day) / max_names / n_tr
+            blocked = len(pos) >= max_names or cash < need_cash
+        if rotate and blocked and cands:
             held = [(day.loc[c, "pct_cross"] if cross else day.loc[c, "pct_own"], c)
                     for c in pos if c in day.index]
             if held:
@@ -522,16 +625,36 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
         if len(pos) >= max_names:
             diag["full_slots"] += 1
 
+        # ── 配当（権利月に 年間DPS ÷ 2 を受け取る）──
+        if dividends:
+            for code, st in pos.items():
+                if code not in day.index:
+                    continue
+                row = day.loc[code]
+                mth = pd.Timestamp(dt).month
+                for key in ("fiscal_month", "interim_month"):
+                    if int(row.get(key, 0) or 0) == mth and row["dps"] > 0:
+                        held = sum(sh for sh, _ in st["lots"])
+                        cash += row["dps"] * 0.5 * held
+                        diag["dividend"] = diag.get("dividend", 0) + row["dps"] * 0.5 * held
+
         # ── 買い ──
         total = value_of(day)
-        unit_size = total / max_names / n_tr
         for p, code, add, price in cands:
             if len(pos) >= max_names and code not in pos:
                 continue
+            # Tier別予算か、等金額か
+            if tier_budget:
+                tier = day.loc[code, "tier"] if "tier" in day.columns else "B"
+                unit_size = TIER_BUDGET.get(tier, TIER_BUDGET["B"]) / n_tr
+            else:
+                unit_size = total / max_names / n_tr
             for _ in range(add):
                 if cash < unit_size or unit_size < price:
                     break
-                sh = int(unit_size // price)
+                # 100株単位（実運用に合わせる）
+                sh = int(unit_size // price // 100) * 100 if tier_budget \
+                     else int(unit_size // price)
                 if sh <= 0:
                     break
                 cash -= sh * price
@@ -591,6 +714,8 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=0, help="試し実行。先頭N銘柄")
     ap.add_argument("--only", default="", help="比較するルールをカンマ区切りで指定")
     ap.add_argument("--capital", type=float, default=3_000_000)
+    ap.add_argument("--realistic", action="store_true",
+                    help="実運用と同じ条件で回す（1000万・Tier別予算・20銘柄・配当あり）")
     ap.add_argument("--max-names", type=int, default=15)
     ap.add_argument("--refetch", action="store_true", help="キャッシュを無視して取り直す")
     args = ap.parse_args()
@@ -609,6 +734,12 @@ def main() -> int:
         pd.to_pickle(store, CACHE)
         log.info("キャッシュに保存しました: %s", CACHE)
 
+    if args.realistic:
+        # 実運用と同じ条件に揃える
+        args.capital = 10_000_000
+        args.max_names = 20
+        log.info("実運用モード：元本1000万・Tier別予算・最大20銘柄・配当あり")
+
     log.info("パネルを作成中…")
     panel = build_panel(store, args.years, args.lookback)
     log.info("判定できる時点: %d件 / 銘柄 %d / 期間 %s〜%s",
@@ -622,7 +753,8 @@ def main() -> int:
             log.warning("未定義のルール: %s", name)
             continue
         cfg = VARIANTS[name]
-        res = simulate(panel, cfg, args.capital, args.max_names)
+        res = simulate(panel, cfg, args.capital, args.max_names,
+                       tier_budget=args.realistic, dividends=args.realistic)
         m = metrics(res)
         if m:
             rows.append({"ルール": cfg["label"], **m})
