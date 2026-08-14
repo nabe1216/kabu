@@ -76,6 +76,8 @@ BOX_ATR_MIN = 0.015                  # ATR/終値 ≥ 1.5%
 # --- シグナル判定（利回り分布） ---
 YIELD_LOOKBACK_YEARS = 5             # 過去5年の月次利回りで分布計算
 YIELD_LOOKBACK_DAYS = YIELD_LOOKBACK_YEARS * 365 + 60  # 余裕を持って取得
+# 分位（Q25/Q75）の計算に使う期間。取得期間より短くできる。
+YIELD_DISTRIBUTION_YEARS = 3         # 出口が来ないときは 2 に下げる
 
 # --- 撤退判定（緊急シグナル） ---
 EMERGENCY_DPS_DROP = -0.10           # DPS 10%超減配
@@ -592,7 +594,12 @@ def calculate_yield_distribution(
             'history': history,
         }
 
-    yields_sorted = sorted(yields)
+    # 分位の計算は直近 YIELD_DISTRIBUTION_YEARS 年ぶんだけを使う。
+    # 期間が長いと分布が動かず、買ったあと売りシグナルが出にくくなる。
+    # 表示用の history は全期間のまま残すので、チャートは変わらない。
+    dist_months = YIELD_DISTRIBUTION_YEARS * 12
+    yields_for_dist = yields[-dist_months:] if len(yields) > dist_months else yields
+    yields_sorted = sorted(yields_for_dist)
     return {
         'q25': quantile(yields_sorted, 0.25),
         'median': quantile(yields_sorted, 0.50),
