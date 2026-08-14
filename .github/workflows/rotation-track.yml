@@ -1,0 +1,56 @@
+name: rotation-track
+
+# 入れ替えルールの並走フォワードテスト。
+# 既存の「Generate Dividend Signals」が results.json を更新したあとに走ります。
+#
+# 既存のワークフローには一切手を入れていません。
+# 出力も data/rotation_state.json など別ファイルなので、
+# 既存のダッシュボード表示には影響しません。
+on:
+  schedule:
+    # 平日 20:15 JST（= 11:15 UTC）。既存の 19:30 JST 実行の後に回します。
+    - cron: "15 11 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  track:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 入れ替えトラックを更新
+        run: |
+          set +e
+          python scripts/rotation_engine.py > run.log 2>&1
+          code=$?
+          {
+            echo "## 入れ替えトラック"
+            echo ""
+            if [ $code -ne 0 ]; then echo "**失敗しました（終了コード $code）**"; fi
+            echo '```'
+            tail -c 8000 run.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          cat run.log
+          exit $code
+
+      - name: 記録を保存
+        if: success()
+        run: |
+          if git diff --quiet -- data/rotation_state.json data/rotation_history.json; then
+            echo "変化なし。コミットをスキップします。"
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/rotation_state.json data/rotation_history.json
+          git commit -m "chore: 入れ替えトラックを更新 ($(date -u +%Y-%m-%d))"
+          git push
