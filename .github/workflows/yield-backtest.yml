@@ -13,6 +13,10 @@ on:
         description: "検証する年数（取得できるのが約5年なので2〜3が目安）"
         required: false
         default: "2"
+      lookback:
+        description: "利回り分布を作る月数（既定36）。短くすると検証期間を前に伸ばせます"
+        required: false
+        default: "36"
       only:
         description: "比較するルール（空欄で全部）。例: fixed,tranche,dynamic"
         required: false
@@ -71,6 +75,7 @@ jobs:
           set +e
           python yield_backtest.py \
             --years "${{ github.event.inputs.years || '2' }}" \
+            --lookback "${{ github.event.inputs.lookback || '36' }}" \
             --max-names "${{ github.event.inputs.max_names || '15' }}" \
             --capital "${{ github.event.inputs.capital || '3000000' }}" \
             --limit "${{ github.event.inputs.limit || '0' }}" \
