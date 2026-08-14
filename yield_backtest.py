@@ -742,6 +742,10 @@ def main() -> int:
 
     log.info("パネルを作成中…")
     panel = build_panel(store, args.years, args.lookback)
+    if args.lookback < 24:
+        log.warning("利回り分布を%dか月で作っています。"
+                    "期間は前に伸びますが、分位の精度は落ちます。"
+                    "結果は割り引いて見てください。", args.lookback)
     log.info("判定できる時点: %d件 / 銘柄 %d / 期間 %s〜%s",
              len(panel), panel["code"].nunique(),
              panel["date"].min().date(), panel["date"].max().date())
