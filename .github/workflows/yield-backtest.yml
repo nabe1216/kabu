@@ -56,9 +56,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: data/yield_backtest_cache.pkl
-          key: yield-backtest-cache-${{ github.event.inputs.years || '2' }}-${{ github.run_id }}
+          key: yield-backtest-cache-v1-${{ github.run_id }}
           restore-keys: |
-            yield-backtest-cache-${{ github.event.inputs.years || '2' }}-
+            yield-backtest-cache-v1-
 
       - name: バックテストを実行
         env:
