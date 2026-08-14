@@ -29,6 +29,10 @@ on:
         description: "試し実行。先頭N銘柄だけ（0で全銘柄）"
         required: false
         default: "0"
+      realistic:
+        description: "実運用と同じ条件で回す（true/false）。1000万・Tier別予算・20銘柄・配当あり"
+        required: false
+        default: "true"
       refetch:
         description: "株価を取り直す（true/false）。初回とデータ更新時のみ true"
         required: false
@@ -71,6 +75,7 @@ jobs:
             --capital "${{ github.event.inputs.capital || '3000000' }}" \
             --limit "${{ github.event.inputs.limit || '0' }}" \
             ${{ github.event.inputs.only != '' && format('--only {0}', github.event.inputs.only) || '' }} \
+            ${{ github.event.inputs.realistic == 'true' && '--realistic' || '' }} \
             ${{ github.event.inputs.refetch == 'true' && '--refetch' || '' }} > run.log 2>&1
           code=$?
           {
