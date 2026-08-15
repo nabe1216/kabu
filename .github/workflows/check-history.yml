@@ -1,13 +1,8 @@
 name: check-history
 
-# 配当利回りの分位を、最大で何年ぶん作れるかを調べる。
-# 変更は何もしない。読み取りだけの調査用ワークフロー。
-#
-# 調べること
-#   1. J-Quants の株価が何年さかのぼれるか
-#   2. J-Quants の財務（配当）が何年さかのぼれるか
-#   3. Stooq の株価が何年さかのぼれるか（無料・登録不要）
-#   4. 上の組み合わせで、分位を最大何年ぶん作れるか
+# 株価をさかのぼれる正確な上限を突き止める。
+# 前回の調査で「7年は可・10年は不可」と分かったので、その間を詰める。
+# あわせて Stooq が使えるかを別の書き方で試す。
 on:
   workflow_dispatch:
 
@@ -19,160 +14,101 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - run: pip install --quiet requests
 
-      - name: 依存関係
-        run: pip install --quiet requests
-
-      - name: さかのぼれる年数を調べる
+      - name: 上限を詰める
         env:
           J_QUANTS_API_KEY: ${{ secrets.J_QUANTS_API_KEY }}
         run: |
           python - <<'PY'
-          import io, os, sys, time
+          import os, time
           from datetime import date, timedelta
           import requests
 
-          KEY = os.environ.get("J_QUANTS_API_KEY", "")
-          JQ = "https://api.jquants.com"
+          KEY = os.environ["J_QUANTS_API_KEY"]
           H = {"x-api-key": KEY}
-          UA = {"User-Agent": "history-probe/1.0"}
+          UA = {"User-Agent": "Mozilla/5.0 (probe)"}
           TODAY = date.today()
-          CODES = [("9432", "NTT"), ("8058", "三菱商事"), ("1928", "積水ハウス")]
           out = []
 
           def w(s=""):
-              out.append(s)
-              print(s)
+              out.append(s); print(s)
 
-          def jq(path, params):
-              rows, pk = [], None
-              while True:
-                  p = dict(params)
-                  if pk:
-                      p["pagination_key"] = pk
-                  r = requests.get(JQ + path, params=p, headers=H, timeout=60)
-                  if r.status_code != 200:
-                      raise RuntimeError(f"HTTP {r.status_code}: {r.text[:120]}")
-                  j = r.json()
-                  data = j.get("data")
-                  if data is None:
-                      data = next((v for k, v in j.items()
-                                   if k != "pagination_key" and isinstance(v, list)), [])
-                  rows.extend(data or [])
-                  pk = j.get("pagination_key")
-                  if not pk:
-                      return rows
-                  time.sleep(0.5)
-
-          w("## さかのぼれる年数の調査")
+          w("## 株価をさかのぼれる上限")
           w()
-
-          if not KEY:
-              w("J_QUANTS_API_KEY が空です。中止します。")
-              sys.exit(1)
-
-          # ── 1. 株価（J-Quants）──
-          w("### 1. J-Quants の株価")
-          w()
-          w("| 年数指定 | 結果 | 実際の最古日 |")
+          w("| 年数 | 結果 | 最古日 |")
           w("|---|---|---|")
-          jq_price_years = 0
-          jq_price_oldest = None
-          for y in (5, 7, 10, 15, 20):
+
+          best_years, best_oldest, err_full = 0, None, ""
+          for y in (7, 8, 9):
               frm = (TODAY - timedelta(days=365 * y + 30)).isoformat()
               try:
-                  rows = jq("/v2/equities/bars/daily",
-                            {"code": "9432", "from": frm, "to": TODAY.isoformat()})
-                  ds = sorted(str(r.get("Date", ""))[:10] for r in rows if r.get("Date"))
-                  oldest = ds[0] if ds else "—"
-                  w(f"| {y}年 | 取得できた（{len(rows):,}件） | {oldest} |")
+                  r = requests.get("https://api.jquants.com/v2/equities/bars/daily",
+                                   params={"code": "9432", "from": frm,
+                                           "to": TODAY.isoformat()},
+                                   headers=H, timeout=60)
+                  if r.status_code != 200:
+                      err_full = r.text
+                      w(f"| {y}年 | 弾かれた（HTTP {r.status_code}） | — |")
+                      break
+                  rows = r.json().get("data") or []
+                  ds = sorted(str(x.get("Date",""))[:10] for x in rows if x.get("Date"))
+                  w(f"| {y}年 | 取得できた（{len(rows):,}件） | {ds[0] if ds else '—'} |")
                   if ds:
-                      jq_price_years = y
-                      jq_price_oldest = oldest
+                      best_years, best_oldest = y, ds[0]
               except Exception as e:
-                  w(f"| {y}年 | 弾かれた | {str(e)[:60]} |")
+                  w(f"| {y}年 | 失敗 | {str(e)[:60]} |")
                   break
-              time.sleep(1)
+              time.sleep(1.5)
           w()
 
-          # ── 2. 財務（J-Quants）──
-          w("### 2. J-Quants の財務（配当データ）")
-          w()
-          w("期間指定なしで取得し、いちばん古い決算期を見る。")
-          w()
-          w("| 銘柄 | 件数 | 最古の決算期 | 最古の開示日 |")
-          w("|---|---|---|---|")
-          fin_oldest = []
-          for code, name in CODES:
-              try:
-                  rows = jq("/v2/fins/summary", {"code": code})
-                  pers = sorted(str(r.get("CurPerEn", ""))[:10] for r in rows if r.get("CurPerEn"))
-                  discs = sorted(str(r.get("DiscDate", ""))[:10] for r in rows if r.get("DiscDate"))
-                  po = pers[0] if pers else "—"
-                  do = discs[0] if discs else "—"
-                  w(f"| {code} {name} | {len(rows)} | {po} | {do} |")
-                  if pers:
-                      fin_oldest.append(pers[0])
-              except Exception as e:
-                  w(f"| {code} {name} | 失敗 | {str(e)[:50]} | |")
-              time.sleep(1)
-          w()
+          if err_full:
+              w("### 弾かれたときの返答（全文）")
+              w()
+              w("```")
+              w(err_full[:600])
+              w("```")
+              w()
 
-          # ── 3. Stooq ──
-          w("### 3. Stooq の株価（無料・登録不要）")
+          # ── Stooq を別の書き方で試す ──
+          w("### Stooq（無料の株価）を再確認")
           w()
-          w("| 銘柄 | 件数 | 最古日 |")
+          w("| 書き方 | 結果 | 最古日 |")
           w("|---|---|---|")
-          stooq_oldest = []
-          for code, name in CODES:
+          stooq_ok = None
+          for sym in ("9432.jp", "9432.JP", "9432.t"):
               try:
                   r = requests.get("https://stooq.com/q/d/l/",
-                                   params={"s": f"{code}.jp", "i": "d"},
-                                   headers=UA, timeout=60)
+                                   params={"s": sym, "i": "d"}, headers=UA, timeout=45)
                   lines = [x for x in r.text.strip().splitlines() if x]
-                  if len(lines) < 3 or not lines[0].lower().startswith("date"):
-                      w(f"| {code} {name} | 取得できず | — |")
-                      continue
-                  first = lines[1].split(",")[0]
-                  w(f"| {code} {name} | {len(lines)-1:,} | {first} |")
-                  stooq_oldest.append(first)
+                  if len(lines) > 2 and lines[0].lower().startswith("date"):
+                      first = lines[1].split(",")[0]
+                      w(f"| {sym} | 取得できた（{len(lines)-1:,}件） | {first} |")
+                      stooq_ok = first
+                  else:
+                      body = r.text.strip()[:40].replace("\n", " ")
+                      w(f"| {sym} | 取得できず（HTTP {r.status_code} / {body}） | — |")
               except Exception as e:
-                  w(f"| {code} {name} | 失敗 | {str(e)[:50]} |")
-              time.sleep(1)
+                  w(f"| {sym} | 失敗 | {str(e)[:40]} |")
+              time.sleep(1.5)
           w()
 
-          # ── 4. まとめ ──
-          def years_since(d):
-              try:
-                  y, m, _ = d.split("-")
-                  return round((TODAY - date(int(y), int(m), 1)).days / 365.25, 1)
-              except Exception:
-                  return 0.0
-
-          w("### 4. 結論")
+          w("### 結論")
           w()
-          if jq_price_oldest:
-              w(f"- J-Quants の株価 … {jq_price_oldest} まで（約 {years_since(jq_price_oldest)} 年）")
-          if fin_oldest:
-              o = max(fin_oldest)
-              w(f"- J-Quants の財務 … 最も新しくても {o} まで（約 {years_since(o)} 年）")
-          if stooq_oldest:
-              o = max(stooq_oldest)
-              w(f"- Stooq の株価 … 最も新しくても {o} まで（約 {years_since(o)} 年）")
-          w()
-          lim = []
-          if jq_price_oldest:
-              lim.append(years_since(jq_price_oldest))
-          if fin_oldest:
-              lim.append(years_since(max(fin_oldest)))
-          if lim:
-              w(f"**いまの構成（J-Quantsのみ）で作れる分位の最大 … 約 {min(lim)} 年**")
-          if stooq_oldest and fin_oldest:
-              alt = min(years_since(max(stooq_oldest)), years_since(max(fin_oldest)))
-              w(f"**Stooqの株価と組み合わせた場合の最大 … 約 {alt} 年**")
-          w()
-          w("※ 配当データが短ければ、株価をいくら長く取っても利回りは計算できません。")
-          w("　 上の2つの短いほうが上限になります。")
+          if best_oldest:
+              yrs = round((TODAY - date(*map(int, best_oldest.split("-")))).days / 365.25, 1)
+              w(f"- 株価は **{best_oldest}** まで（約 {yrs} 年）が上限")
+              w(f"- 配当データは 2016-09 まで（約10年）あるので、**株価が制約**")
+              w()
+              w(f"**分位に使える最大 … 約 {yrs} 年**")
+              w()
+              w(f"→ generate.py の設定を **{best_years}年** にできる（いまは3年）")
+          if stooq_ok:
+              w()
+              w(f"- Stooq も使えた（{stooq_ok} から）。株価をこちらに替えれば10年まで伸ばせる可能性あり")
+          else:
+              w()
+              w("- Stooq は GitHub の実行環境からは取得できず。株価はJ-Quantsのみで考える")
 
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
               f.write("\n".join(out) + "\n")
