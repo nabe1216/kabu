@@ -243,7 +243,7 @@ def pdate(s: Any) -> date | None:
 
 # 取得できた年数を覚えておく。1銘柄目で分かれば以降は無駄な試行をしない。
 _ok_years: int | None = None
-FETCH_CANDIDATES = (5, 4, 3, 2)
+FETCH_CANDIDATES = (9, 8, 7, 5, 4, 3, 2)   # 上限は9年（調査済み）
 
 
 def fetch_bars(jq: JQ, code: str, want_years: int) -> list[dict]:
@@ -295,7 +295,7 @@ def fetch_all(jq: JQ, years: int, limit: int) -> dict:
     for i, u in enumerate(uni, 1):
         time.sleep(API_SLEEP)
         try:
-            q = fetch_bars(jq, u["code"], years + 3)
+            q = fetch_bars(jq, u["code"], 9)   # いつでも上限まで取っておく
         except Exception as e:
             log.warning("株価取得失敗 %s: %s", u["code"], e)
             continue
@@ -711,6 +711,9 @@ def main() -> int:
                          "分布づくりに3年使い、残りが検証期間になります")
     ap.add_argument("--lookback", type=int, default=36,
                     help="利回り分布を作る月数（既定36＝3年）")
+    ap.add_argument("--sweep", default="",
+                    help="分位の期間を振って比較する。例: 12,24,36,48,60,72,84\n"
+                         "検証期間は --years で固定されるので、比較が成立する")
     ap.add_argument("--limit", type=int, default=0, help="試し実行。先頭N銘柄")
     ap.add_argument("--only", default="", help="比較するルールをカンマ区切りで指定")
     ap.add_argument("--capital", type=float, default=3_000_000)
@@ -749,6 +752,79 @@ def main() -> int:
     log.info("判定できる時点: %d件 / 銘柄 %d / 期間 %s〜%s",
              len(panel), panel["code"].nunique(),
              panel["date"].min().date(), panel["date"].max().date())
+
+    # ── 分位の期間を振って比べる ──
+    # 検証期間（--years）は固定したまま分位の長さだけを変えるので、
+    # 「順位が動いたのは期間のせいか設定のせいか」を切り分けられる。
+    if args.sweep:
+        lbs = [int(x) for x in args.sweep.split(",") if x.strip()]
+        names = [x.strip() for x in args.only.split(",") if x.strip()] or \
+                ["fixed", "rotate_wide", "rotate_gain10"]
+        log.info("分位の期間を %s か月で比較します（検証期間は共通）", lbs)
+
+        rows = []
+        for lb in lbs:
+            pn = build_panel(store, args.years, lb)
+            if pn.empty:
+                log.warning("分位%dか月：判定できる時点がありません", lb)
+                continue
+            span = f"{pn['date'].min().date()}〜{pn['date'].max().date()}"
+            for nm in names:
+                if nm not in VARIANTS:
+                    continue
+                m = metrics(simulate(pn, VARIANTS[nm], args.capital, args.max_names,
+                                     tier_budget=args.realistic,
+                                     dividends=args.realistic))
+                if m:
+                    rows.append({"分位": lb, "期間": span, "ルール": VARIANTS[nm]["label"],
+                                 "年率": m["年率"], "決済率": m["決済率"],
+                                 "最大下落": m["最大下落"], "シャープ": m["シャープ"],
+                                 "売買": m["売買回数"]})
+            log.info("  分位 %dか月 完了（%s）", lb, span)
+
+        if not rows:
+            print("比較できる結果がありませんでした。")
+            return 1
+        df = pd.DataFrame(rows)
+
+        print(f"\n■ 分位の期間を変えたときの比較")
+        print(f"　 検証期間はすべて共通： {df['期間'].iloc[0]}")
+        print(f"　 元本 {args.capital:,.0f}円 ／ 最大 {args.max_names}銘柄"
+              f"{' ／ 実運用条件' if args.realistic else ''}\n")
+
+        for metric, unit in [("年率", "%"), ("決済率", "%"), ("最大下落", "%")]:
+            piv = df.pivot(index="分位", columns="ルール", values=metric)
+            print(f"【{metric}】")
+            head = "分位      " + "".join(f"{c[:14]:>16}" for c in piv.columns)
+            print(head)
+            print("-" * len(head))
+            for lb, r in piv.iterrows():
+                line = f"{lb:>3}か月   " + "".join(f"{v:>15.1f}{unit}" for v in r.values)
+                print(line)
+            print()
+
+        # 期間の違いで結論が変わるかを判定する
+        piv = df.pivot(index="分位", columns="ルール", values="年率")
+        spread = float(piv.max().max() - piv.min().min())
+        best_by_lb = piv.idxmax(axis=1)
+        flipped = best_by_lb.nunique() > 1
+        print("【読み方】")
+        print(f"　 年率の最大と最小の差 … {spread:.1f}ポイント")
+        if flipped:
+            print("　 分位の長さによって、最も成績の良いルールが入れ替わっています。")
+            print("　 → 期間の選び方でルールの優劣が変わるということ。どれかを選ぶ根拠は弱い。")
+        else:
+            print(f"　 どの期間でも最良は同じルール（{best_by_lb.iloc[0]}）でした。")
+        if spread < 3.0:
+            print("　 差が小さいため、分位の期間は成績にほとんど影響していません。")
+            print("　 → 期間は好みで決めてよい、という結論になります。")
+        else:
+            print("　 差が大きいので、期間の選択は成績に影響します。")
+
+        OUTDIR.mkdir(parents=True, exist_ok=True)
+        df.to_csv(OUTDIR / "lookback_sweep.csv", index=False, encoding="utf-8-sig")
+        print(f"\n書き出しました: data/lookback_sweep.csv")
+        return 0
 
     names = [x.strip() for x in args.only.split(",") if x.strip()] or list(VARIANTS)
     rows = []
