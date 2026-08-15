@@ -1,0 +1,76 @@
+name: fix-label
+
+# ダッシュボードの「5Yレンジ」という表示を、実際の年数に合わせて直す。
+# データはすでに9年分になっているが、ラベルだけ古いまま残っている。
+on:
+  workflow_dispatch:
+    inputs:
+      years:
+        description: "表示する年数（generate.py の設定に合わせる）"
+        required: false
+        default: "9"
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: index.html の表示を直す
+        env:
+          YEARS: ${{ github.event.inputs.years || '9' }}
+        run: |
+          python - <<'PY'
+          import os, re, sys
+          from pathlib import Path
+
+          years = os.environ.get("YEARS", "9")
+          p = Path("index.html")
+          s = before = p.read_text(encoding="utf-8")
+
+          # 「5Yレンジ」「5Y レンジ」「5年レンジ」などを一括で直す
+          pats = [
+              (re.compile(r"\d+\s*Y\s*レンジ"), f"{years}Yレンジ"),
+              (re.compile(r"過去\s*\d+\s*年の利回り"), f"過去{years}年の利回り"),
+              (re.compile(r"\d+\s*年レンジ"), f"{years}年レンジ"),
+          ]
+          hits = []
+          for pat, rep in pats:
+              found = pat.findall(s)
+              if found:
+                  hits.append(f"{pat.pattern} … {len(found)}箇所")
+                  s = pat.sub(rep, s)
+
+          if s == before:
+              print("直す対象が見つかりませんでした。")
+              print("index.html の中で年数を表示している箇所を探して、手動で直してください。")
+              sys.exit(0)
+
+          p.write_text(s, encoding="utf-8")
+          print(f"{years}年 に直しました：")
+          for h in hits:
+              print("  " + h)
+
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
+              f.write(f"## 表示を {years}年 に修正\n\n")
+              for h in hits:
+                  f.write(f"- {h}\n")
+          PY
+
+      - name: 保存する
+        run: |
+          if git diff --quiet -- index.html; then
+            echo "変更なし。"
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add index.html
+          git commit -m "表示の年数を修正"
+          git push
