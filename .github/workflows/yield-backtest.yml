@@ -13,6 +13,10 @@ on:
         description: "検証する年数（取得できるのが約5年なので2〜3が目安）"
         required: false
         default: "2"
+      sweep:
+        description: "分位の期間を振って比較（例: 12,24,36,48,60,72,84）。空欄なら通常の比較"
+        required: false
+        default: ""
       lookback:
         description: "利回り分布を作る月数（既定36）。短くすると検証期間を前に伸ばせます"
         required: false
@@ -76,6 +80,7 @@ jobs:
           python yield_backtest.py \
             --years "${{ github.event.inputs.years || '2' }}" \
             --lookback "${{ github.event.inputs.lookback || '36' }}" \
+            ${{ github.event.inputs.sweep != '' && format('--sweep {0}', github.event.inputs.sweep) || '' }} \
             --max-names "${{ github.event.inputs.max_names || '15' }}" \
             --capital "${{ github.event.inputs.capital || '3000000' }}" \
             --limit "${{ github.event.inputs.limit || '0' }}" \
@@ -102,5 +107,6 @@ jobs:
           path: |
             data/yield_backtest.csv
             data/yield_backtest.json
+            data/lookback_sweep.csv
             run.log
           if-no-files-found: ignore
