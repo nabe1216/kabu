@@ -467,12 +467,15 @@ def build_panel(store: dict, years: int, lookback: int = 36) -> pd.DataFrame:
     panel = pd.concat(frames, ignore_index=True)
 
     # 各時点で、過去の分布における自分の位置（未来は見ない）。
+    # min_periods は lookback と同じにする。半分で計算を許すと
+    # 「36か月の分位」と言いながら実際は18か月で出している、という
+    # ラベルと中身の食い違いが起きるため。
     # J-Quants で遡れるのが5年程度なので、分布は36か月で作る。
     # 60か月にすると分布づくりだけでデータを使い切り、検証する期間が残らない。
     panel = panel.sort_values(["code", "date"])
     panel["pct_own"] = (
         panel.groupby("code")["yield"]
-        .transform(lambda s: s.rolling(lookback, min_periods=max(12, lookback // 2))
+        .transform(lambda s: s.rolling(lookback, min_periods=lookback)   # 窓を満たすまで計算しない
                    .apply(lambda w: (w.iloc[-1] >= w[:-1]).mean() * 100, raw=False))
     )
     # その日の市場内での順位
@@ -787,8 +790,16 @@ def main() -> int:
             return 1
         df = pd.DataFrame(rows)
 
+        spans = df.groupby("分位")["期間"].first()
+        aligned = spans.nunique() == 1
         print(f"\n■ 分位の期間を変えたときの比較")
-        print(f"　 検証期間はすべて共通： {df['期間'].iloc[0]}")
+        if aligned:
+            print(f"　 検証期間はすべて共通： {spans.iloc[0]}")
+        else:
+            print("　 **検証期間がそろっていません。比較として成立していません。**")
+            for lb, sp in spans.items():
+                print(f"　   分位{lb:>3}か月 … {sp}")
+            print("　 株価が足りない可能性があります。--refetch で取り直してください。")
         print(f"　 元本 {args.capital:,.0f}円 ／ 最大 {args.max_names}銘柄"
               f"{' ／ 実運用条件' if args.realistic else ''}\n")
 
@@ -808,7 +819,14 @@ def main() -> int:
         spread = float(piv.max().max() - piv.min().min())
         best_by_lb = piv.idxmax(axis=1)
         flipped = best_by_lb.nunique() > 1
+        piv_e = df.pivot(index="分位", columns="ルール", values="決済率")
+        dup = piv_e.duplicated(keep=False)
         print("【読み方】")
+        if dup.any():
+            same = list(piv_e.index[dup])
+            print(f"　 分位 {same} の結果が同一です。")
+            print("　 → その長さぶんの株価が無く、同じ範囲を見ている可能性が高い。")
+            print("　   --refetch で取り直したうえで、もう一度お試しください。")
         print(f"　 年率の最大と最小の差 … {spread:.1f}ポイント")
         if flipped:
             print("　 分位の長さによって、最も成績の良いルールが入れ替わっています。")
