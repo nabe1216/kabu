@@ -768,10 +768,12 @@ def main() -> int:
                          "検証期間は --years で固定されるので、比較が成立する")
     ap.add_argument("--limit", type=int, default=0, help="試し実行。先頭N銘柄")
     ap.add_argument("--only", default="", help="比較するルールをカンマ区切りで指定")
-    ap.add_argument("--capital", type=float, default=3_000_000)
+    ap.add_argument("--capital", type=float, default=0,
+                    help="元本。未指定なら通常300万・実運用モードで1000万")
     ap.add_argument("--realistic", action="store_true",
                     help="実運用と同じ条件で回す（1000万・Tier別予算・20銘柄・配当あり）")
-    ap.add_argument("--max-names", type=int, default=15)
+    ap.add_argument("--max-names", type=int, default=0,
+                    help="同時に持つ最大銘柄数。未指定なら通常15・実運用モードで20")
     ap.add_argument("--refetch", action="store_true", help="キャッシュを無視して取り直す")
     args = ap.parse_args()
 
@@ -789,11 +791,15 @@ def main() -> int:
         pd.to_pickle(store, CACHE)
         log.info("キャッシュに保存しました: %s", CACHE)
 
+    # 未指定のときだけ既定値を入れる。
+    # ここで無条件に上書きすると、実運用モードで銘柄数を変えても効かなくなる。
+    if args.capital <= 0:
+        args.capital = 10_000_000 if args.realistic else 3_000_000
+    if args.max_names <= 0:
+        args.max_names = 20 if args.realistic else 15
     if args.realistic:
-        # 実運用と同じ条件に揃える
-        args.capital = 10_000_000
-        args.max_names = 20
-        log.info("実運用モード：元本1000万・Tier別予算・最大20銘柄・配当あり")
+        log.info("実運用モード：元本%s万・Tier別予算・最大%d銘柄・配当あり",
+                 f"{int(args.capital/10000):,}", args.max_names)
 
     log.info("パネルを作成中…")
     panel = build_panel(store, args.years, args.lookback)
