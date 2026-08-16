@@ -13,6 +13,10 @@ on:
         description: "検証する年数（取得できるのが約5年なので2〜3が目安）"
         required: false
         default: "2"
+      diagnose_tier:
+        description: "Tier判定の中身を調べる（true/false）。売買はしません"
+        required: false
+        default: "false"
       sweep:
         description: "分位の期間を振って比較（例: 12,24,36,48,60,72,84）。空欄なら通常の比較"
         required: false
@@ -81,6 +85,7 @@ jobs:
             --years "${{ github.event.inputs.years || '2' }}" \
             --lookback "${{ github.event.inputs.lookback || '36' }}" \
             ${{ github.event.inputs.sweep != '' && format('--sweep {0}', github.event.inputs.sweep) || '' }} \
+            ${{ github.event.inputs.diagnose_tier == 'true' && '--diagnose-tier' || '' }} \
             --max-names "${{ github.event.inputs.max_names || '0' }}" \
             --capital "${{ github.event.inputs.capital || '0' }}" \
             --limit "${{ github.event.inputs.limit || '0' }}" \
