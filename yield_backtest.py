@@ -158,6 +158,36 @@ VARIANTS: dict[str, dict[str, Any]] = {
         "label": "入れ替え（差25pt・慎重）",
         "entry": [75], "exit": [25], "rotate": 25.0,
     },
+    # ── 中央値を起点にした段階買い ──
+    # Q75は9年分布では遠すぎるので、中央値から積み増していく形にする。
+    "med_tranche": {
+        "label": "中央値から3分割（Q50/65/80）",
+        "entry": [50, 65, 80], "exit": [40, 25, 10],
+    },
+    "med_tranche_gain": {
+        "label": "中央値3分割＋10％利確",
+        "entry": [50, 65, 80], "exit": [], "gain_exit": 0.10,
+    },
+    "med_gain_rotate": {
+        "label": "中央値買い＋10％利確＋入れ替え",
+        "entry": [50], "exit": [30], "gain_exit": 0.10, "rotate": 25.0,
+    },
+    # ── 平均値を起点にした段階買い ──
+    # 「平均より上か」を、標準偏差いくつぶん離れているかで測る。
+    # 順位ではなく距離を見るので、分布が偏っているときに違いが出る。
+    "mean_tranche": {
+        "label": "平均から3分割（0/+0.5σ/+1σ）",
+        "measure": "z", "entry": [0.0, 0.5, 1.0], "exit": [-0.3, -0.7, -1.2],
+    },
+    "mean_tranche_gain": {
+        "label": "平均3分割＋10％利確",
+        "measure": "z", "entry": [0.0, 0.5, 1.0], "exit": [], "gain_exit": 0.10,
+    },
+    "mean_gain_rotate": {
+        "label": "平均買い＋10％利確＋入れ替え",
+        "measure": "z", "entry": [0.0], "exit": [-0.5],
+        "gain_exit": 0.10, "rotate": 0.6,
+    },
 }
 
 # 可変ルールの加減点。必要パーセンタイルを下げる＝買いやすくする。
@@ -481,6 +511,16 @@ def build_panel(store: dict, years: int, lookback: int = 36) -> pd.DataFrame:
     # その日の市場内での順位
     panel["pct_cross"] = panel.groupby("date")["yield"].rank(pct=True) * 100.0
 
+    # 平均値からの離れ具合（zスコア）。
+    # パーセンタイルは順位しか見ないが、こちらは「どれだけ離れているか」を測る。
+    # 過去だけを使うため、当日を除いた窓で平均と標準偏差を出す。
+    def _z(s: pd.Series) -> pd.Series:
+        past = s.shift(1)
+        m = past.rolling(lookback - 1, min_periods=lookback - 1).mean()
+        sd = past.rolling(lookback - 1, min_periods=lookback - 1).std()
+        return (s - m) / sd.replace(0, np.nan)
+    panel["zscore"] = panel.groupby("code")["yield"].transform(_z)
+
     start = panel["date"].max() - pd.DateOffset(years=years)
     return panel[panel["date"] >= start].dropna(subset=["pct_own"]).reset_index(drop=True)
 
@@ -514,6 +554,15 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
     """
     entry, exits = cfg["entry"], cfg.get("exit", [])
     dyn, cross = cfg.get("dynamic", False), cfg.get("cross", False)
+    # measure: "pct"（パーセンタイル）か "z"（平均から何σ離れているか）
+    measure = cfg.get("measure", "pct")
+
+    def level(row):
+        """割安さの指標。大きいほど割安。"""
+        if measure == "z":
+            v = row.get("zscore")
+            return float(v) if v is not None and not pd.isna(v) else -99.0
+        return row["pct_cross"] if cross else row["pct_own"]
     gain_exit = cfg.get("gain_exit")
     rotate = cfg.get("rotate")
     n_tr = len(entry)
@@ -563,7 +612,7 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
 
             # 利回りの分位で降りる
             if st["units"] > 0 and exits:
-                p = row["pct_cross"] if cross else row["pct_own"]
+                p = level(row)
                 want = n_tr - sum(1 for e in exits if p <= e)
                 while st["units"] > want and st["units"] > 0:
                     sh, _ = st["lots"].pop()
@@ -582,10 +631,11 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
         diag["months"] += 1
         cands = []
         for code, row in day.iterrows():
-            p = row["pct_cross"] if cross else row["pct_own"]
-            need = [required_pct(e, row, dyn) for e in entry]
+            p = level(row)
+            need = [required_pct(e, row, dyn) if measure == "pct" else e
+                    for e in entry]
             want = sum(1 for nd in need if p >= nd)
-            if dyn and need != list(map(float, entry)):
+            if dyn and measure == "pct" and need != list(map(float, entry)):
                 diag["adjusted"] += 1
                 if want != sum(1 for e in entry if p >= e):
                     diag["changed"] += 1
@@ -607,8 +657,7 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                 need_cash = value_of(day) / max_names / n_tr
             blocked = len(pos) >= max_names or cash < need_cash
         if rotate and blocked and cands:
-            held = [(day.loc[c, "pct_cross"] if cross else day.loc[c, "pct_own"], c)
-                    for c in pos if c in day.index]
+            held = [(level(day.loc[c]), c) for c in pos if c in day.index]
             if held:
                 held.sort()
                 worst_p, worst_c = held[0]
