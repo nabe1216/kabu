@@ -201,6 +201,31 @@ VARIANTS: dict[str, dict[str, Any]] = {
         "entry": [50, 65, 80], "exit": [],
         "gain_exit_by_tier": {"S": 0.20, "A": 0.15, "B": 0.10},
     },
+    # ── Tier S をどこまで引っぱれるか ──
+    # 質の高い銘柄は+20％より伸びる余地があるのでは、という検証。
+    # 上げすぎると出口が来なくなるので、決済率も併せて見る。
+    "tier_s30": {
+        "label": "Tier別利確（S30％/A20％/B10％）",
+        "entry": [50, 65, 80], "exit": [],
+        "gain_exit_by_tier": {"S": 0.30, "A": 0.20, "B": 0.10},
+    },
+    "tier_s40": {
+        "label": "Tier別利確（S40％/A25％/B12％）",
+        "entry": [50, 65, 80], "exit": [],
+        "gain_exit_by_tier": {"S": 0.40, "A": 0.25, "B": 0.12},
+    },
+    "tier_s_hold": {
+        "label": "Sは利確しない（A15％/B10％）",
+        # 99 は事実上「到達しない」＝ S は利確で売らない、の意味
+        "entry": [50, 65, 80], "exit": [],
+        "gain_exit_by_tier": {"S": 99.0, "A": 0.15, "B": 0.10},
+    },
+    "tier_s_hold_rot": {
+        "label": "Sは利確せず・入れ替えあり",
+        "entry": [50, 65, 80], "exit": [],
+        "gain_exit_by_tier": {"S": 99.0, "A": 0.15, "B": 0.10},
+        "rotate": 25.0,
+    },
     "keep_progressive": {
         "label": "利確10％。累進配当銘柄は利確しない",
         "entry": [50, 65, 80], "exit": [], "gain_exit": 0.10,
