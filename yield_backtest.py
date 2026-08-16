@@ -896,7 +896,8 @@ def main() -> int:
                     rows.append({"分位": lb, "期間": span, "ルール": VARIANTS[nm]["label"],
                                  "年率": m["年率"], "決済率": m["決済率"],
                                  "最大下落": m["最大下落"], "シャープ": m["シャープ"],
-                                 "売買": m["売買回数"]})
+                                 "売買": m["売買回数"],
+                                 "平均保有銘柄": m["平均保有銘柄"]})
             log.info("  分位 %dか月 完了（%s）", lb, span)
 
         if not rows:
@@ -917,7 +918,8 @@ def main() -> int:
         print(f"　 元本 {args.capital:,.0f}円 ／ 最大 {args.max_names}銘柄"
               f"{' ／ 実運用条件' if args.realistic else ''}\n")
 
-        for metric, unit in [("年率", "%"), ("決済率", "%"), ("最大下落", "%")]:
+        for metric, unit in [("年率", "%"), ("決済率", "%"), ("最大下落", "%"),
+                             ("平均保有銘柄", "銘柄")]:
             piv = df.pivot(index="分位", columns="ルール", values=metric)
             print(f"【{metric}】")
             head = "分位      " + "".join(f"{c[:14]:>16}" for c in piv.columns)
@@ -935,7 +937,15 @@ def main() -> int:
         flipped = best_by_lb.nunique() > 1
         piv_e = df.pivot(index="分位", columns="ルール", values="決済率")
         dup = piv_e.duplicated(keep=False)
+        held = df["平均保有銘柄"].mean()
         print("【読み方】")
+        print(f"　 平均保有銘柄 … {held:.1f}（上限 {args.max_names}銘柄）")
+        if held < args.max_names * 0.6:
+            print("　 上限まで届いていません。資金が先に尽きているので、")
+            print("　 上限を上げ下げしても結果は変わりません。")
+            print("　 銘柄数を変えて試すなら、上限ではなく元本を動かしてください。")
+        else:
+            print("　 上限が実際に効いています。この銘柄数での結果として読めます。")
         if dup.any():
             same = list(piv_e.index[dup])
             print(f"　 分位 {same} の結果が同一です。")
