@@ -629,7 +629,12 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
     pos: dict[str, dict] = {}
     curve, trades = [], []
     diag = {"adjusted": 0, "changed": 0, "full_slots": 0, "months": 0,
-            "opened": 0, "closed": 0, "hold_months": [], "rotations": 0}
+            "opened": 0, "closed": 0, "hold_months": [], "rotations": 0,
+            # Tierごとに「建てた数」と「どこまで含み益が伸びたか」を記録する。
+            # 利確ラインを変えても結果が動かないとき、
+            # そもそもその銘柄を持っていないのか、
+            # 持っていても伸びていないのかを切り分けるため。
+            "tier_opened": {}, "tier_peak": []}
     opened_at: dict[str, int] = {}
 
     mkt = panel.groupby("date")["yield"].median()
@@ -706,6 +711,10 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                     st["units"] -= 1
 
             if st["units"] == 0:
+                if st.get("sh_sum"):
+                    avg = st["cost_sum"] / st["sh_sum"]
+                    diag["tier_peak"].append(
+                        (st.get("tier", "B"), st.get("peak", avg) / avg - 1))
                 del pos[code]
                 diag["closed"] += 1
                 if code in opened_at:
@@ -798,6 +807,11 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                 if st["units"] == 0:
                     diag["opened"] += 1
                     opened_at[code] = mi
+                    tg = day.loc[code, "tier"] if "tier" in day.columns else "B"
+                    diag["tier_opened"][tg] = diag["tier_opened"].get(tg, 0) + 1
+                st["tier"] = day.loc[code, "tier"] if "tier" in day.columns else "B"
+                st["cost_sum"] = st.get("cost_sum", 0.0) + sh * price
+                st["sh_sum"] = st.get("sh_sum", 0) + sh
                 st["lots"].append((sh, price))
                 st["units"] += 1
                 trades.append({"code": code, "date": dt, "side": "buy",
@@ -805,6 +819,12 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
 
         curve.append({"date": dt, "value": value_of(day),
                       "cash": cash, "names": len(pos)})
+
+    # 期末に残っている建玉も、到達した含み益として記録しておく
+    for code, st in pos.items():
+        if st.get("sh_sum"):
+            avg = st["cost_sum"] / st["sh_sum"]
+            diag["tier_peak"].append((st.get("tier", "B"), st.get("peak", avg) / avg - 1))
 
     return {"curve": pd.DataFrame(curve), "trades": pd.DataFrame(trades),
             "capital": capital, "diag": diag}
@@ -1022,6 +1042,35 @@ def main() -> int:
         print(f"{x['ルール']:<26}{x['総リターン']:>7.1f}%{x['年率']:>6.1f}%"
               f"{x['最大下落']:>8.1f}%{x['シャープ']:>9.2f}"
               f"{x['売買回数']:>6.0f}{x['決済率']:>7.0f}%{hold:>9}")
+    # ── Tier別の内訳（1つ目のルールについて）──
+    first = VARIANTS[names[0]]
+    d0 = simulate(panel, first, args.capital, args.max_names,
+                  tier_budget=args.realistic, dividends=args.realistic)["diag"]
+    tp = d0.get("tier_peak", [])
+    if tp:
+        print(f"\n■ Tier別の内訳（{first['label']} の場合）\n")
+        print(f"{'Tier':<6}{'建玉数':>7}{'平均の到達益':>13}"
+              f"{'+10%到達':>10}{'+20%到達':>10}{'+30%到達':>10}{'+40%到達':>10}")
+        print("-" * 70)
+        for t in ("S", "A", "B"):
+            g = [x for tt, x in tp if tt == t]
+            if not g:
+                print(f"{t:<6}{0:>7}{'—':>13}{'—':>10}{'—':>10}{'—':>10}{'—':>10}")
+                continue
+            n = len(g)
+            print(f"{t:<6}{n:>7}{np.mean(g)*100:>12.1f}%"
+                  f"{sum(1 for x in g if x >= 0.10)/n*100:>9.0f}%"
+                  f"{sum(1 for x in g if x >= 0.20)/n*100:>9.0f}%"
+                  f"{sum(1 for x in g if x >= 0.30)/n*100:>9.0f}%"
+                  f"{sum(1 for x in g if x >= 0.40)/n*100:>9.0f}%")
+        print("\n  到達益＝建てたあと、含み益が最大でどこまで伸びたか。")
+        print("  ここが利確ラインに届いていなければ、その設定は結果に効かない。")
+        # ユニバース全体のTier構成も出す
+        if "tier" in panel.columns:
+            comp = panel.groupby("code")["tier"].first().value_counts()
+            print("\n  対象銘柄のTier構成： " +
+                  " / ".join(f"{k} {v}銘柄" for k, v in comp.items()))
+
     print("\n  決済率＝買った建玉のうち実際に売れた割合。低いほど「出口が来ない」状態。")
     print("  保有月数＝売れたものの平均保有期間。")
 
