@@ -26,13 +26,13 @@ on:
         required: false
         default: ""
       max_names:
-        description: "同時に持つ最大銘柄数"
+        description: "同時に持つ最大銘柄数。空欄なら通常15・実運用モードで20"
         required: false
-        default: "15"
+        default: ""
       capital:
-        description: "元本（円）"
+        description: "元本（円）。空欄なら通常300万・実運用モードで1000万"
         required: false
-        default: "3000000"
+        default: ""
       limit:
         description: "試し実行。先頭N銘柄だけ（0で全銘柄）"
         required: false
@@ -81,8 +81,8 @@ jobs:
             --years "${{ github.event.inputs.years || '2' }}" \
             --lookback "${{ github.event.inputs.lookback || '36' }}" \
             ${{ github.event.inputs.sweep != '' && format('--sweep {0}', github.event.inputs.sweep) || '' }} \
-            --max-names "${{ github.event.inputs.max_names || '15' }}" \
-            --capital "${{ github.event.inputs.capital || '3000000' }}" \
+            --max-names "${{ github.event.inputs.max_names || '0' }}" \
+            --capital "${{ github.event.inputs.capital || '0' }}" \
             --limit "${{ github.event.inputs.limit || '0' }}" \
             ${{ github.event.inputs.only != '' && format('--only {0}', github.event.inputs.only) || '' }} \
             ${{ github.event.inputs.realistic == 'true' && '--realistic' || '' }} \
