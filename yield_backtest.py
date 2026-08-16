@@ -867,6 +867,8 @@ def main() -> int:
                          "分布づくりに3年使い、残りが検証期間になります")
     ap.add_argument("--lookback", type=int, default=36,
                     help="利回り分布を作る月数（既定36＝3年）")
+    ap.add_argument("--diagnose-tier", action="store_true",
+                    help="Tier判定の中身を調べて表示する（売買はしない）")
     ap.add_argument("--sweep", default="",
                     help="分位の期間を振って比較する。例: 12,24,36,48,60,72,84\n"
                          "検証期間は --years で固定されるので、比較が成立する")
@@ -904,6 +906,69 @@ def main() -> int:
     if args.realistic:
         log.info("実運用モード：元本%s万・Tier別予算・最大%d銘柄・配当あり",
                  f"{int(args.capital/10000):,}", args.max_names)
+
+    # ── Tier判定の診断 ──
+    if args.diagnose_tier:
+        uni = store["universe"]
+        print(f"\n■ Tier判定の内訳（対象 {len(uni)}銘柄）\n")
+
+        # 1. 規模区分の値が期待どおり入っているか
+        from collections import Counter
+        sc = Counter((u.get("scale") or "(空)") for u in uni)
+        print("【規模区分（ScaleCat）の内訳】")
+        for k, v in sc.most_common():
+            print(f"  {k!r:<24}{v:>5}銘柄")
+
+        # 2. 業種コードが入っているか
+        s33 = Counter(1 if (u.get("s33") or "") else 0 for u in uni)
+        print(f"\n【業種コード（S33）】 入っている {s33.get(1,0)}銘柄 / "
+              f"空 {s33.get(0,0)}銘柄")
+        sample = [u for u in uni if u.get("s33")][:3]
+        if sample:
+            print("  例: " + ", ".join(f"{u['code']}→{u['s33']!r}" for u in sample))
+
+        # 3. 累進配当リストがユニバースに何社いるか
+        codes = {u["code"] for u in uni}
+        prog_in = sorted((PROGRESSIVE | DOE) & codes)
+        print(f"\n【累進配当・DOE】 リスト{len(PROGRESSIVE | DOE)}社中、"
+              f"対象に {len(prog_in)}社")
+        print("  " + ", ".join(prog_in[:20]) + (" …" if len(prog_in) > 20 else ""))
+
+        # 4. 業界首位級の判定結果
+        last_price = {}
+        for code, qrows in store["quotes"].items():
+            px = quotes_to_df(qrows)
+            if not px.empty:
+                last_price[code] = float(px["close"].iloc[-1])
+        core30 = {u["code"] for u in uni if u.get("scale") == "TOPIX Core30"}
+        print(f"\n【業界首位級】")
+        print(f"  TOPIX Core30 と判定 … {len(core30)}銘柄")
+        mcap = {}
+        for u in uni:
+            sh = shares_outstanding(store["stmts"].get(u["code"], []))
+            px = last_price.get(u["code"])
+            if sh and px:
+                mcap[u["code"]] = px * sh
+        print(f"  時価総額を出せた   … {len(mcap)}銘柄 / {len(uni)}")
+
+        tiers = assign_tiers(store, last_price)
+        tc = Counter(tiers.values())
+        print(f"\n【Tier判定の結果】 " +
+              " / ".join(f"{k} {tc.get(k,0)}銘柄" for k in ("S", "A", "B")))
+        if tc.get("S", 0) == 0:
+            print("\n  Sが0社です。次のどれかが原因です。")
+            if not core30:
+                print("  → 規模区分の文字列が想定と違い、業界首位級を判定できていない。")
+            if not mcap:
+                print("  → 発行済株式数が取れず、時価総額で業種上位を出せていない。")
+            if not prog_in:
+                print("  → 累進配当リストの銘柄コードが対象と一致していない。")
+            if core30 and prog_in:
+                ov = sorted(core30 & (PROGRESSIVE | DOE))
+                print(f"  → Core30と累進配当の重なりが {len(ov)}社。")
+                if ov:
+                    print("    " + ", ".join(ov))
+        return 0
 
     log.info("パネルを作成中…")
     panel = build_panel(store, args.years, args.lookback)
