@@ -183,6 +183,29 @@ VARIANTS: dict[str, dict[str, Any]] = {
         "label": "平均3分割＋10％利確",
         "measure": "z", "entry": [0.0, 0.5, 1.0], "exit": [], "gain_exit": 0.10,
     },
+    # ── 伸びる銘柄を持ち続けるための売り方 ──
+    # 一律+10％で切ると、まだ上がる銘柄まで手放してしまう。
+    # 「いつ降りるか」を変えた4案を並べて比べる。
+    "hold_if_cheap": {
+        "label": "利確10％。ただし中央値より安ければ持つ",
+        "entry": [50, 65, 80], "exit": [], "gain_exit": 0.10,
+        "gain_hold_above": 50.0,
+    },
+    "trail_run": {
+        "label": "+10％で見張り開始・高値から7％下げたら売り",
+        "entry": [50, 65, 80], "exit": [],
+        "trail_arm": 0.10, "trail": 0.07,
+    },
+    "gain_by_tier": {
+        "label": "Tier別利確（S20％/A15％/B10％）",
+        "entry": [50, 65, 80], "exit": [],
+        "gain_exit_by_tier": {"S": 0.20, "A": 0.15, "B": 0.10},
+    },
+    "keep_progressive": {
+        "label": "利確10％。累進配当銘柄は利確しない",
+        "entry": [50, 65, 80], "exit": [], "gain_exit": 0.10,
+        "keep_progressive": True, "rotate": 25.0,
+    },
     "mean_gain_rotate": {
         "label": "平均買い＋10％利確＋入れ替え",
         "measure": "z", "entry": [0.0], "exit": [-0.5],
@@ -486,6 +509,9 @@ def build_panel(store: dict, years: int, lookback: int = 36) -> pd.DataFrame:
         f = pd.DataFrame({"date": m.index, "code": code,
                           "price": m.values, "dps": d.values, "yield": y.values})
         f["tier"] = tiers.get(code, "B")
+        # 累進配当・DOE銘柄は「減配しにくい」と宣言している。
+        # 利確の扱いを変えるかどうかを試せるようにフラグを持たせる。
+        f["progressive"] = (code in PROGRESSIVE) or (code in DOE)
         f["fiscal_month"] = fm if fm else 0
         f["interim_month"] = im if im else 0
         # 増配率（過去2年）。これも過去だけを見る
@@ -564,6 +590,11 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
             return float(v) if v is not None and not pd.isna(v) else -99.0
         return row["pct_cross"] if cross else row["pct_own"]
     gain_exit = cfg.get("gain_exit")
+    gain_by_tier = cfg.get("gain_exit_by_tier")     # Tierごとに利確ラインを変える
+    hold_above = cfg.get("gain_hold_above")         # まだ割安なら利確を見送る
+    keep_prog = cfg.get("keep_progressive", False)  # 累進配当銘柄は利確しない
+    trail_arm = cfg.get("trail_arm")                # この率まで上がったら見張り開始
+    trail = cfg.get("trail")                        # 高値からこの率下げたら売る
     rotate = cfg.get("rotate")
     n_tr = len(entry)
 
@@ -599,11 +630,39 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
             st = pos[code]
             price = row["price"]
 
-            # 取得単価からの上昇率で降りる
-            if gain_exit is not None and st["lots"]:
+            # ── 利益が乗ったときの降り方 ──
+            if st["lots"]:
                 cost = sum(sh * pr for sh, pr in st["lots"]) / \
                        sum(sh for sh, _ in st["lots"])
-                if price / cost - 1 >= gain_exit:
+                gain = price / cost - 1
+                st["peak"] = max(st.get("peak", price), price)
+
+                # 利確ライン。Tier別の指定があればそちらを優先する。
+                thr = None
+                if gain_by_tier:
+                    thr = gain_by_tier.get(row.get("tier", "B"))
+                elif gain_exit is not None:
+                    thr = gain_exit
+
+                # まだ割安なら利確を見送る、という判断も試せるようにする。
+                # 「+10％だが過去の中央値よりまだ安い」なら伸びしろが残っている、
+                # という考え方。
+                skip = False
+                if hold_above is not None and level(row) >= hold_above:
+                    skip = True
+                if keep_prog and bool(row.get("progressive")):
+                    skip = True
+
+                sold = False
+                if thr is not None and not skip and gain >= thr:
+                    sold = True
+                # 高値からの下落で降りる（伸びるだけ伸ばしてから降りる）
+                elif trail is not None and trail_arm is not None:
+                    if st["peak"] / cost - 1 >= trail_arm and \
+                       price <= st["peak"] * (1 - trail):
+                        sold = True
+
+                if sold:
                     for sh, _ in st["lots"]:
                         cash += sh * price
                         trades.append({"code": code, "date": dt, "side": "sell",
@@ -710,7 +769,7 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                 if sh <= 0:
                     break
                 cash -= sh * price
-                st = pos.setdefault(code, {"units": 0, "lots": []})
+                st = pos.setdefault(code, {"units": 0, "lots": [], "peak": price})
                 if st["units"] == 0:
                     diag["opened"] += 1
                     opened_at[code] = mi
