@@ -247,6 +247,14 @@ VARIANTS: dict[str, dict[str, Any]] = {
         "entry_by_tier": {"S": [30, 45, 60], "A": [40, 55, 70], "B": [50, 65, 80]},
         "exit": [], "gain_exit_by_tier": {"S": 99.0, "A": 0.15, "B": 0.10},
     },
+    # ── いま実際に動いているルール（比較の土台）──
+    # portfolio_engine.py と同じ：Q75で全額買い、Q25で売り、Tier順に拾う。
+    # これを測らないと「どれだけ良くなるのか」が分からない。
+    "current_live": {
+        "label": "★現行ルール（Q75買い・Q25売り・Tier順）",
+        "entry": [75], "exit": [25], "priority": "tier",
+    },
+
     # ── Tier順に拾う（実運用の portfolio_engine と同じ優先順位）──
     "tier_first": {
         "label": "Tier順で拾う（S→A→B）",
