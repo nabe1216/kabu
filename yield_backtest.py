@@ -363,7 +363,10 @@ def fetch_all(jq: JQ, years: int, limit: int) -> dict:
         if code:
             uni.append({"code": code,
                         "name": row.get("CoName", "") or row.get("CoNameEn", ""),
-                        "sector": row.get("S33Nm", "")})
+                        "sector": row.get("S33Nm", ""),
+                        # 業界首位級の判定に使う。以前ここが抜けていて
+                        # Tier S が1社も出ない状態になっていた。
+                        "scale": row.get("ScaleCat", "")})
     if limit:
         uni = uni[:limit]
     log.info("対象 %d銘柄", len(uni))
@@ -491,9 +494,9 @@ def assign_tiers(store: dict, last_price: dict[str, float]) -> dict[str, str]:
     leaders = {u["code"] for u in store["universe"] if u.get("scale") == "TOPIX Core30"}
     by_sector: dict[str, list[tuple[str, float]]] = {}
     for u in store["universe"]:
-        c, s33 = u["code"], u.get("s33") or ""
-        if s33 and c in mcap:
-            by_sector.setdefault(s33, []).append((c, mcap[c]))
+        c, sec = u["code"], u.get("sector") or ""
+        if sec and c in mcap:
+            by_sector.setdefault(sec, []).append((c, mcap[c]))
     for s33, members in by_sector.items():
         members.sort(key=lambda x: -x[1])
         for c, _ in members[:3]:
@@ -920,12 +923,12 @@ def main() -> int:
             print(f"  {k!r:<24}{v:>5}銘柄")
 
         # 2. 業種コードが入っているか
-        s33 = Counter(1 if (u.get("s33") or "") else 0 for u in uni)
-        print(f"\n【業種コード（S33）】 入っている {s33.get(1,0)}銘柄 / "
-              f"空 {s33.get(0,0)}銘柄")
-        sample = [u for u in uni if u.get("s33")][:3]
+        sec = Counter(1 if (u.get("sector") or "") else 0 for u in uni)
+        print(f"\n【業種名（S33Nm）】 入っている {sec.get(1,0)}銘柄 / "
+              f"空 {sec.get(0,0)}銘柄")
+        sample = [u for u in uni if u.get("sector")][:3]
         if sample:
-            print("  例: " + ", ".join(f"{u['code']}→{u['s33']!r}" for u in sample))
+            print("  例: " + ", ".join(f"{u['code']}→{u['sector']!r}" for u in sample))
 
         # 3. 累進配当リストがユニバースに何社いるか
         codes = {u["code"] for u in uni}
@@ -969,6 +972,30 @@ def main() -> int:
                 if ov:
                     print("    " + ", ".join(ov))
         return 0
+
+    # 古いキャッシュには規模区分が入っていない。
+    # 株価を取り直すと20分かかるので、銘柄一覧だけを引き直して補う（数秒）。
+    if store.get("universe") and not any(u.get("scale") for u in store["universe"]):
+        key = os.environ.get("J_QUANTS_API_KEY")
+        if key:
+            log.info("キャッシュに規模区分がありません。銘柄一覧だけ取り直します…")
+            try:
+                info = JQ(key).get("/v2/equities/master", {})
+                by_code = {}
+                for row in info:
+                    by_code[norm_code(row.get("Code", ""))] = (
+                        row.get("ScaleCat", ""), row.get("S33Nm", ""))
+                n = 0
+                for u in store["universe"]:
+                    sc, sn = by_code.get(u["code"], ("", ""))
+                    if sc:
+                        u["scale"] = sc
+                        u["sector"] = u.get("sector") or sn
+                        n += 1
+                log.info("  %d銘柄に規模区分を補いました", n)
+                pd.to_pickle(store, CACHE)
+            except Exception as e:
+                log.warning("銘柄一覧の取り直しに失敗: %s", e)
 
     log.info("パネルを作成中…")
     panel = build_panel(store, args.years, args.lookback)
