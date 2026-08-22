@@ -226,6 +226,45 @@ VARIANTS: dict[str, dict[str, Any]] = {
         "gain_exit_by_tier": {"S": 99.0, "A": 0.15, "B": 0.10},
         "rotate": 25.0,
     },
+    # ── S銘柄の買い場を逃さないための案 ──
+    # S（累進配当×業界首位）は上昇しやすく、9年分位では割高判定になって
+    # ほとんど買えない。Tierごとに買いの基準をずらして拾いにいく。
+    "s_loose": {
+        "label": "S緩め（S:Q30/45/60・A:Q40/55/70・B:Q50/65/80）",
+        "entry": [50, 65, 80],
+        "entry_by_tier": {"S": [30, 45, 60], "A": [40, 55, 70], "B": [50, 65, 80]},
+        "exit": [], "gain_exit_by_tier": {"S": 0.20, "A": 0.15, "B": 0.10},
+    },
+    "s_loose_wide": {
+        "label": "S大幅緩め（S:Q20/35/50・A:Q35/50/65・B:Q50/65/80）",
+        "entry": [50, 65, 80],
+        "entry_by_tier": {"S": [20, 35, 50], "A": [35, 50, 65], "B": [50, 65, 80]},
+        "exit": [], "gain_exit_by_tier": {"S": 0.20, "A": 0.15, "B": 0.10},
+    },
+    "s_loose_hold": {
+        "label": "S緩め・Sは利確しない",
+        "entry": [50, 65, 80],
+        "entry_by_tier": {"S": [30, 45, 60], "A": [40, 55, 70], "B": [50, 65, 80]},
+        "exit": [], "gain_exit_by_tier": {"S": 99.0, "A": 0.15, "B": 0.10},
+    },
+    # ── Tier順に拾う（実運用の portfolio_engine と同じ優先順位）──
+    "tier_first": {
+        "label": "Tier順で拾う（S→A→B）",
+        "entry": [50, 65, 80], "exit": [], "priority": "tier",
+        "gain_exit_by_tier": {"S": 0.20, "A": 0.15, "B": 0.10},
+    },
+    "tier_first_loose": {
+        "label": "Tier順＋S緩め（S:Q30/45/60）",
+        "entry": [50, 65, 80], "priority": "tier",
+        "entry_by_tier": {"S": [30, 45, 60], "A": [40, 55, 70], "B": [50, 65, 80]},
+        "exit": [], "gain_exit_by_tier": {"S": 0.20, "A": 0.15, "B": 0.10},
+    },
+    "tier_first_hold": {
+        "label": "Tier順＋S緩め・Sは利確しない",
+        "entry": [50, 65, 80], "priority": "tier",
+        "entry_by_tier": {"S": [30, 45, 60], "A": [40, 55, 70], "B": [50, 65, 80]},
+        "exit": [], "gain_exit_by_tier": {"S": 99.0, "A": 0.15, "B": 0.10},
+    },
     "keep_progressive": {
         "label": "利確10％。累進配当銘柄は利確しない",
         "entry": [50, 65, 80], "exit": [], "gain_exit": 0.10,
@@ -610,6 +649,14 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
     dyn, cross = cfg.get("dynamic", False), cfg.get("cross", False)
     # measure: "pct"（パーセンタイル）か "z"（平均から何σ離れているか）
     measure = cfg.get("measure", "pct")
+    # Tierごとに買いの基準を変える。
+    # 質の高い銘柄（S）は多少の割高を許容しないと、買い場が来ないため。
+    entry_by_tier = cfg.get("entry_by_tier")
+
+    def entry_for(row):
+        if entry_by_tier:
+            return entry_by_tier.get(row.get("tier", "B"), entry)
+        return entry
 
     def level(row):
         """割安さの指標。大きいほど割安。"""
@@ -705,7 +752,7 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
             # 利回りの分位で降りる
             if st["units"] > 0 and exits:
                 p = level(row)
-                want = n_tr - sum(1 for e in exits if p <= e)
+                want = len(entry_for(row)) - sum(1 for e in exits if p <= e)
                 while st["units"] > want and st["units"] > 0:
                     sh, _ = st["lots"].pop()
                     cash += sh * price
@@ -728,17 +775,27 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
         cands = []
         for code, row in day.iterrows():
             p = level(row)
+            ent = entry_for(row)
             need = [required_pct(e, row, dyn) if measure == "pct" else e
-                    for e in entry]
+                    for e in ent]
             want = sum(1 for nd in need if p >= nd)
-            if dyn and measure == "pct" and need != list(map(float, entry)):
+            if dyn and measure == "pct" and need != list(map(float, ent)):
                 diag["adjusted"] += 1
-                if want != sum(1 for e in entry if p >= e):
+                if want != sum(1 for e in ent if p >= e):
                     diag["changed"] += 1
             have = pos.get(code, {}).get("units", 0)
             if want > have:
-                cands.append((p, code, want - have, row["price"]))
-        cands.sort(reverse=True)
+                cands.append((p, code, want - have, row["price"],
+                              row.get("tier", "B")))
+        # 並べ替え方。
+        #   pct  … 割安な順（既定）。ただしS銘柄は割安度が低く出るため、
+        #          Bに枠を先取りされてSが永久に買えなくなる。
+        #   tier … Tier順（S→A→B）。実運用の portfolio_engine と同じ優先順位。
+        if cfg.get("priority") == "tier":
+            _ord = {"S": 0, "A": 1, "B": 2}
+            cands.sort(key=lambda x: (_ord.get(x[4], 9), -x[0]))
+        else:
+            cands.sort(key=lambda x: -x[0])
 
         # ── 入れ替え ──
         # 「枠が埋まったら」だけを条件にすると、資金が先に尽きる運用では
@@ -757,7 +814,7 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
             if held:
                 held.sort()
                 worst_p, worst_c = held[0]
-                best = next(((p, c) for p, c, _, _ in cands if c not in pos), None)
+                best = next(((p, c) for p, c, _, _, _ in cands if c not in pos), None)
                 if best and best[0] - worst_p >= rotate:
                     st = pos.pop(worst_c)
                     pr = day.loc[worst_c, "price"]
@@ -788,15 +845,16 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
 
         # ── 買い ──
         total = value_of(day)
-        for p, code, add, price in cands:
+        for p, code, add, price, _tier in cands:
             if len(pos) >= max_names and code not in pos:
                 continue
             # Tier別予算か、等金額か
+            nt = len(entry_for(day.loc[code])) if entry_by_tier else n_tr
             if tier_budget:
                 tier = day.loc[code, "tier"] if "tier" in day.columns else "B"
-                unit_size = TIER_BUDGET.get(tier, TIER_BUDGET["B"]) / n_tr
+                unit_size = TIER_BUDGET.get(tier, TIER_BUDGET["B"]) / nt
             else:
-                unit_size = total / max_names / n_tr
+                unit_size = total / max_names / nt
             for _ in range(add):
                 if cash < unit_size or unit_size < price:
                     break
