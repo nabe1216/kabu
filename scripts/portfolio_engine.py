@@ -43,6 +43,29 @@ TIER_BUDGET = {
     'B': 1_000_000,  # 100万円
 }
 
+# 目標保有銘柄数。1銘柄あたりの予算はここから逆算する。
+# 固定額（S400万＝資産の40%）だと3銘柄で資金が尽き、
+# 上限20銘柄が機能していなかったため、総資産に対する比率に変えた。
+TARGET_HOLDINGS = 15
+
+# Tierごとの重み。質が高いほど厚く持つ。
+TIER_WEIGHT = {'S': 2.0, 'A': 1.5, 'B': 1.0}
+
+
+def tier_budget(state: dict, tier: str) -> int:
+    """1銘柄あたりの予算を、総資産に対する比率で決める。
+
+        予算 = 総資産 ÷ 目標保有数 × （Tierの重み ÷ 重みの平均）
+
+    総資産に連動するので、資産が増えれば1銘柄あたりも自動で増える。
+    目標15銘柄なら S約8.9% / A約6.7% / B約4.4% の配分になる。
+    """
+    total = state.get('total_value') or \
+        state.get('initial_cash', INITIAL_CASH)
+    avg_w = sum(TIER_WEIGHT.values()) / len(TIER_WEIGHT)
+    w = TIER_WEIGHT.get(tier, 1.0)
+    return int(total / TARGET_HOLDINGS * (w / avg_w))
+
 # === LINE 通知設定 (GitHub Secretsから読み込み) ===
 LINE_CHANNEL_TOKEN = os.environ.get('LINE_CHANNEL_TOKEN', '')
 
@@ -328,7 +351,7 @@ def buy_stock(
     """新規購入"""
     code = stock['code']
     tier = stock.get('tier', 'B')
-    budget = TIER_BUDGET.get(tier, TIER_BUDGET['B'])
+    budget = tier_budget(state, tier)
 
     # 利用可能キャッシュが予算未満なら見送り
     if state['cash'] < budget:
