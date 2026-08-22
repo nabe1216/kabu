@@ -290,6 +290,36 @@ VARIANTS: dict[str, dict[str, Any]] = {
         "tier_weight": {"S": 3.0, "A": 1.5, "B": 1.0},
     },
 
+    # ── 税金の繰り延べを測るための版 ──
+    # 売らなければ譲渡益課税が発生しない。
+    # 「どこまでが繰延の効果か」を切り分けるために、
+    # 買い方は現行のまま、売らない Tier だけを変えて並べる。
+    "live15_holdS": {
+        "label": "現行の買い方＋予算15＋Sは売らない",
+        "entry": [75], "exit": [25], "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S"],
+    },
+    "live15_holdSA": {
+        "label": "現行の買い方＋予算15＋SとAは売らない",
+        "entry": [75], "exit": [25], "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S", "A"],
+    },
+    "live15_holdall": {
+        "label": "買うだけで売らない（比較の基準）",
+        "entry": [75], "exit": [25], "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S", "A", "B"],
+    },
+    "med15_holdS": {
+        "label": "中央値3分割＋予算15＋Sは売らない",
+        "entry": [50, 65, 80], "exit": [], "priority": "tier",
+        "gain_exit_by_tier": {"S": 99.0, "A": 0.15, "B": 0.10},
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S"],
+    },
+
     # ── 予算も買いの基準も変えた版 ──
     "full_new15": {
         "label": "中央値3分割＋Tier別利確＋予算15銘柄ぶん",
@@ -732,6 +762,9 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
     gain_by_tier = cfg.get("gain_exit_by_tier")     # Tierごとに利確ラインを変える
     hold_above = cfg.get("gain_hold_above")         # まだ割安なら利確を見送る
     keep_prog = cfg.get("keep_progressive", False)  # 累進配当銘柄は利確しない
+    # 売らない Tier。売却しなければ課税されないので、税金が繰り延べられる。
+    # 「塩漬け」が税制上どれだけ有利かを測るために用意する。
+    hold_tiers = set(cfg.get("hold_tiers", []))
     trail_arm = cfg.get("trail_arm")                # この率まで上がったら見張り開始
     trail = cfg.get("trail")                        # 高値からこの率下げたら売る
     rotate = cfg.get("rotate")
@@ -781,6 +814,8 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
             row = day.loc[code]
             st = pos[code]
             price = row["price"]
+            if hold_tiers and row.get("tier", "B") in hold_tiers:
+                continue          # この Tier は売らない
 
             # ── 利益が乗ったときの降り方 ──
             if st["lots"]:
@@ -1373,8 +1408,11 @@ def main() -> int:
                    "years": args.years, "results": df.to_dict("records")},
                   f, ensure_ascii=False, indent=2)
     print(f"\n書き出しました: data/yield_backtest.csv, data/yield_backtest.json")
-    print("\n※ 過去の成績であり、将来の結果を保証するものではありません。"
-          "\n※ 手数料・税金・約定のずれは含めていません。実際の成績はこれより下がります。")
+    print("\n※ 過去の成績であり、将来の結果を保証するものではありません。")
+    if args.tax > 0 or args.slip_bps > 0 or args.fee_bps > 0:
+        print("※ 手数料・税金・約定のずれを含めた数字です。")
+    else:
+        print("※ 手数料・税金・約定のずれは含めていません。実際の成績はこれより下がります。")
     return 0
 
 
