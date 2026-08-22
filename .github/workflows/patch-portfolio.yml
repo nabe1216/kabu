@@ -1,0 +1,133 @@
+name: patch-portfolio
+
+# portfolio_engine.py の「1銘柄あたりの予算」を、固定額から比率に変える。
+#
+# なぜ変えるか
+#   固定額（S400万＝資産の40%）だと、S2件＋A1件で1000万を使い切り、
+#   上限20銘柄が一度も機能していなかった。
+#   バックテストでは、買いの基準を変えずに予算だけ下げたところ
+#   最大下落が17.3%→7.5%に半減し、年率も19.8%→23.1%に改善した。
+#
+# 目印が見つからない場合や、書き換え後に文法エラーが出た場合は
+# 何も保存せずに止まる。元に戻すときはコミット履歴から。
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "目標保有銘柄数（15が推奨）"
+        required: false
+        default: "15"
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: portfolio_engine.py を書き換える
+        env:
+          TARGET: ${{ github.event.inputs.target || '15' }}
+        run: |
+          python - <<'PY'
+          import ast, os, re, sys
+          from pathlib import Path
+
+          target = int(os.environ.get("TARGET", "15"))
+          p = Path("scripts/portfolio_engine.py")
+          s = before = p.read_text(encoding="utf-8")
+          log = []
+
+          if "TARGET_HOLDINGS" in s:
+              m = re.search(r"^TARGET_HOLDINGS\s*=\s*(\d+)", s, re.M)
+              if m and int(m.group(1)) != target:
+                  s = re.sub(r"^TARGET_HOLDINGS\s*=\s*\d+",
+                             f"TARGET_HOLDINGS = {target}", s, count=1, flags=re.M)
+                  log.append(f"目標保有銘柄数 … {m.group(1)} → {target}")
+              else:
+                  print("すでに適用済みで、目標数も同じです。何もしません。")
+                  sys.exit(0)
+          else:
+              a1 = ("TIER_BUDGET = {\n"
+                    "    'S': 4_000_000,  # 400万円\n"
+                    "    'A': 2_000_000,  # 200万円\n"
+                    "    'B': 1_000_000,  # 100万円\n"
+                    "}")
+              if s.count(a1) != 1:
+                  sys.exit(f"目印1が {s.count(a1)} 箇所です。中止します。")
+
+              add = [
+                  "",
+                  "",
+                  "# 目標保有銘柄数。1銘柄あたりの予算はここから逆算する。",
+                  "# 固定額（S400万＝資産の40%）だと3銘柄で資金が尽き、",
+                  "# 上限20銘柄が機能していなかったため、総資産に対する比率に変えた。",
+                  f"TARGET_HOLDINGS = {target}",
+                  "",
+                  "# Tierごとの重み。質が高いほど厚く持つ。",
+                  "TIER_WEIGHT = {'S': 2.0, 'A': 1.5, 'B': 1.0}",
+                  "",
+                  "",
+                  "def tier_budget(state: dict, tier: str) -> int:",
+                  '    """1銘柄あたりの予算を、総資産に対する比率で決める。',
+                  "",
+                  "        予算 = 総資産 ÷ 目標保有数 × （Tierの重み ÷ 重みの平均）",
+                  "",
+                  "    総資産に連動するので、資産が増えれば1銘柄あたりも自動で増える。",
+                  "    目標15銘柄なら S約8.9% / A約6.7% / B約4.4% の配分になる。",
+                  '    """',
+                  "    total = state.get('total_value') or \\",
+                  "        state.get('initial_cash', INITIAL_CASH)",
+                  "    avg_w = sum(TIER_WEIGHT.values()) / len(TIER_WEIGHT)",
+                  "    w = TIER_WEIGHT.get(tier, 1.0)",
+                  "    return int(total / TARGET_HOLDINGS * (w / avg_w))",
+              ]
+              s = s.replace(a1, a1 + "\n".join(add), 1)
+              log.append(f"1銘柄あたりの予算を総資産比に変更（目標{target}銘柄）")
+
+              a2 = "    budget = TIER_BUDGET.get(tier, TIER_BUDGET['B'])"
+              if s.count(a2) != 1:
+                  sys.exit(f"目印2が {s.count(a2)} 箇所です。中止します。")
+              s = s.replace(a2, "    budget = tier_budget(state, tier)", 1)
+              log.append("buy_stock の予算計算を差し替え")
+
+          if s == before:
+              print("変更はありませんでした。")
+              sys.exit(0)
+
+          ast.parse(s)
+          p.write_text(s, encoding="utf-8")
+          for x in log:
+              print(x)
+
+          tot = 10_000_000
+          w = {"S": 2.0, "A": 1.5, "B": 1.0}
+          avg = sum(w.values()) / 3
+          lines = ["## portfolio_engine.py の変更", ""]
+          lines += [f"- {x}" for x in log]
+          lines += ["", f"総資産 {tot:,}円・目標 {target}銘柄 のときの1銘柄あたり：", ""]
+          for t, ww in w.items():
+              u = int(tot / target * (ww / avg))
+              lines.append(f"- Tier {t} … {u:,}円（総資産の {u/tot*100:.1f}%）")
+              print(f"  Tier {t}: {u:,}円")
+          lines += ["", "次に「Generate Dividend Signals」を手動実行してください。"]
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
+              f.write("\n".join(lines) + "\n")
+          PY
+
+      - name: 保存する
+        run: |
+          if git diff --quiet -- scripts/portfolio_engine.py; then
+            echo "変更なし。"
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add scripts/portfolio_engine.py
+          git commit -m "1銘柄あたりの予算を総資産比に変更"
+          git push
