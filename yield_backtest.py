@@ -255,6 +255,32 @@ VARIANTS: dict[str, dict[str, Any]] = {
         "entry": [75], "exit": [25], "priority": "tier",
     },
 
+    # ── 予算配分だけを変えた版（買いの基準は現行のまま）──
+    # 1銘柄あたりの比重を下げると、それだけで分散が効くのかを見る。
+    "live_budget15": {
+        "label": "現行の買い方＋予算を15銘柄ぶんに",
+        "entry": [75], "exit": [25], "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+    },
+    "live_budget20": {
+        "label": "現行の買い方＋予算を20銘柄ぶんに",
+        "entry": [75], "exit": [25], "priority": "tier",
+        "budget_weighted": True, "target_names": 20,
+    },
+    # ── 予算も買いの基準も変えた版 ──
+    "full_new15": {
+        "label": "中央値3分割＋Tier別利確＋予算15銘柄ぶん",
+        "entry": [50, 65, 80], "exit": [], "priority": "tier",
+        "gain_exit_by_tier": {"S": 0.20, "A": 0.15, "B": 0.10},
+        "budget_weighted": True, "target_names": 15,
+    },
+    "full_new15_hold": {
+        "label": "上記＋Sは利確しない",
+        "entry": [50, 65, 80], "exit": [], "priority": "tier",
+        "gain_exit_by_tier": {"S": 99.0, "A": 0.15, "B": 0.10},
+        "budget_weighted": True, "target_names": 15,
+    },
+
     # ── Tier順に拾う（実運用の portfolio_engine と同じ優先順位）──
     "tier_first": {
         "label": "Tier順で拾う（S→A→B）",
@@ -660,6 +686,12 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
     # Tierごとに買いの基準を変える。
     # 質の高い銘柄（S）は多少の割高を許容しないと、買い場が来ないため。
     entry_by_tier = cfg.get("entry_by_tier")
+    # 予算の決め方。
+    #   固定額 … S400万/A200万/B100万（現行）。1000万では3〜5銘柄で尽きる。
+    #   比率   … 総資産 ÷ 目標銘柄数 × Tierの重み。資産が増えれば自動で広がる。
+    weighted = cfg.get("budget_weighted", False)
+    target_n = cfg.get("target_names", 15)
+    tw = cfg.get("tier_weight", {"S": 2.0, "A": 1.5, "B": 1.0})
 
     def entry_for(row):
         if entry_by_tier:
@@ -858,8 +890,13 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                 continue
             # Tier別予算か、等金額か
             nt = len(entry_for(day.loc[code])) if entry_by_tier else n_tr
-            if tier_budget:
-                tier = day.loc[code, "tier"] if "tier" in day.columns else "B"
+            tier = day.loc[code, "tier"] if "tier" in day.columns else "B"
+            if weighted:
+                # 総資産に対する比率で決める。重みの平均で割って、
+                # 目標銘柄数ぶんに収まるようにする。
+                avg_w = sum(tw.values()) / len(tw)
+                unit_size = total / target_n * (tw.get(tier, 1.0) / avg_w) / nt
+            elif tier_budget:
                 unit_size = TIER_BUDGET.get(tier, TIER_BUDGET["B"]) / nt
             else:
                 unit_size = total / max_names / nt
