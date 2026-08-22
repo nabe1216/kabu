@@ -41,6 +41,18 @@ on:
         description: "試し実行。先頭N銘柄だけ（0で全銘柄）"
         required: false
         default: "0"
+      tax:
+        description: "譲渡益と配当への税率（％）。特定口座なら 20.315、無視するなら 0"
+        required: false
+        default: "20.315"
+      slip_bps:
+        description: "約定のずれ（bps）。10 で片道0.1％"
+        required: false
+        default: "10"
+      fee_bps:
+        description: "手数料（bps）。無料コースなら 0"
+        required: false
+        default: "0"
       realistic:
         description: "実運用と同じ条件で回す（true/false）。1000万・Tier別予算・20銘柄・配当あり"
         required: false
@@ -84,6 +96,9 @@ jobs:
           python yield_backtest.py \
             --years "${{ github.event.inputs.years || '2' }}" \
             --lookback "${{ github.event.inputs.lookback || '36' }}" \
+            --tax "${{ github.event.inputs.tax || '20.315' }}" \
+            --slip-bps "${{ github.event.inputs.slip_bps || '10' }}" \
+            --fee-bps "${{ github.event.inputs.fee_bps || '0' }}" \
             ${{ github.event.inputs.sweep != '' && format('--sweep {0}', github.event.inputs.sweep) || '' }} \
             ${{ github.event.inputs.diagnose_tier == 'true' && '--diagnose-tier' || '' }} \
             --max-names "${{ github.event.inputs.max_names || '0' }}" \
