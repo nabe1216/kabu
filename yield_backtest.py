@@ -1331,6 +1331,46 @@ def main() -> int:
             rows.append({"ルール": cfg["label"], **m})
             log.info("  %s 完了", cfg["label"])
 
+    # ── 比較の基準：対象銘柄を等金額で買って持ち続けた場合 ──
+    # ルールが本当に価値を生んでいるのか、それとも相場が上がっただけなのか。
+    # 銘柄選択も売買判断も一切しない場合の成績を出して並べる。
+    def buy_and_hold(pn: pd.DataFrame, tax_rate: float) -> dict | None:
+        dts = sorted(pn["date"].unique())
+        if len(dts) < 12:
+            return None
+        first = pn[pn["date"] == dts[0]].set_index("code")
+        codes = list(first.index)
+        if not codes:
+            return None
+        # 初日に等金額で買い、あとは何もしない
+        w = 1.0 / len(codes)
+        base_px = first["price"].to_dict()
+        vals, div_total = [], 0.0
+        for dt in dts:
+            day = pn[pn["date"] == dt].set_index("code")
+            v = 0.0
+            for c in codes:
+                if c in day.index and base_px.get(c):
+                    v += w * day.loc[c, "price"] / base_px[c]
+                    m = pd.Timestamp(dt).month
+                    for key in ("fiscal_month", "interim_month"):
+                        if int(day.loc[c].get(key, 0) or 0) == m and day.loc[c, "dps"] > 0:
+                            g = w * (day.loc[c, "dps"] * 0.5) / base_px[c]
+                            div_total += g * (1 - tax_rate)
+                else:
+                    v += w        # 上場廃止などは取得時の値で据え置く
+            vals.append(v + div_total)
+        arr = np.array(vals)
+        yrs = max((pd.Timestamp(dts[-1]) - pd.Timestamp(dts[0])).days / 365.25, 0.5)
+        dd = float((1 - arr / np.maximum.accumulate(arr)).max())
+        r = pd.Series(arr).pct_change().dropna()
+        return {"総リターン": (arr[-1] - 1) * 100,
+                "年率": (arr[-1] ** (1 / yrs) - 1) * 100,
+                "最大下落": dd * 100,
+                "シャープ": float(r.mean() / r.std() * np.sqrt(12)) if r.std() > 0 else 0.0}
+
+    bh = buy_and_hold(panel, args.tax / 100.0)
+
     if not rows:
         print("結果がありません。")
         return 1
@@ -1388,6 +1428,22 @@ def main() -> int:
         print(f"\n  条件： 約定のずれ 片道{args.slip_bps:.0f}bps ／ "
               f"手数料 片道{args.fee_bps:.0f}bps ／ 税率{args.tax:.3f}％")
         print("  ※ 税金は譲渡益と配当にかかります。損は繰り越して相殺しています。")
+
+    if bh:
+        print(f"\n■ 比較の基準：対象{panel['code'].nunique()}銘柄を等金額で買って持ち続けた場合\n")
+        print(f"  総リターン {bh['総リターン']:>7.1f}%   年率 {bh['年率']:>5.1f}%   "
+              f"最大下落 {bh['最大下落']:>5.1f}%   シャープ {bh['シャープ']:.2f}")
+        best = df["年率"].max()
+        diff = best - bh["年率"]
+        print(f"\n  最良のルールとの差 … {diff:+.1f}ポイント")
+        if diff < 1.0:
+            print("  ルールで選んでも、全部買って持つのと変わりません。")
+            print("  → この期間の成績は、銘柄選択ではなく相場そのものによるものです。")
+        elif diff < 3.0:
+            print("  差はわずかです。銘柄選択の効果は限定的とみるべきです。")
+        else:
+            print("  基準を明確に上回っています。銘柄選択に意味があったと言えます。")
+        print("  ※ 基準は初日に等金額で買って放置した場合。配当は課税後で加算しています。")
 
     print("\n  決済率＝買った建玉のうち実際に売れた割合。低いほど「出口が来ない」状態。")
     print("  保有月数＝売れたものの平均保有期間。")
