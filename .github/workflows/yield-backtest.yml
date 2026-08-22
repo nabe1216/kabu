@@ -41,6 +41,10 @@ on:
         description: "試し実行。先頭N銘柄だけ（0で全銘柄）"
         required: false
         default: "0"
+      universe:
+        description: "対象。core＝大型〜中型（489社）、prime＝プライム全銘柄（約1600社・取得に70分前後）"
+        required: false
+        default: "core"
       tax:
         description: "譲渡益と配当への税率（％）。特定口座なら 20.315、無視するなら 0"
         required: false
@@ -68,7 +72,7 @@ permissions:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
 
@@ -96,6 +100,7 @@ jobs:
           python yield_backtest.py \
             --years "${{ github.event.inputs.years || '2' }}" \
             --lookback "${{ github.event.inputs.lookback || '36' }}" \
+            --universe "${{ github.event.inputs.universe || 'core' }}" \
             --tax "${{ github.event.inputs.tax || '20.315' }}" \
             --slip-bps "${{ github.event.inputs.slip_bps || '10' }}" \
             --fee-bps "${{ github.event.inputs.fee_bps || '0' }}" \
