@@ -320,6 +320,20 @@ VARIANTS: dict[str, dict[str, Any]] = {
         "hold_tiers": ["S"],
     },
 
+    # ── 減配したら手放すかどうかの比較 ──
+    "live15_holdS_cut": {
+        "label": "Sは売らない＋減配したら手放す",
+        "entry": [75], "exit": [25], "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S"], "exit_on_cut": True,
+    },
+    "live15_holdall_cut": {
+        "label": "売らない＋減配だけ手放す",
+        "entry": [75], "exit": [25], "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True,
+    },
+
     # ── 予算も買いの基準も変えた版 ──
     "full_new15": {
         "label": "中央値3分割＋Tier別利確＋予算15銘柄ぶん",
@@ -475,7 +489,8 @@ def fetch_bars(jq: JQ, code: str, want_years: int) -> list[dict]:
     return []
 
 
-def fetch_all(jq: JQ, years: int, limit: int) -> dict:
+def fetch_all(jq: JQ, years: int, limit: int,
+              scale_filter: bool = True) -> dict:
     """株価と財務をまとめて取得する。時間がかかるのでキャッシュします。"""
     log.info("銘柄一覧を取得中…")
     info = jq.get("/v2/equities/master", {})
@@ -483,7 +498,10 @@ def fetch_all(jq: JQ, years: int, limit: int) -> dict:
     for row in info:
         if row.get("Mkt") != MARKET_PRIME:
             continue
-        if (row.get("ScaleCat") or "") not in SCALE_TARGETS:
+        # 大型〜中型に絞ると、業績が崩れて中小型に落ちた会社が
+        # 最初から入らない（生き残りだけを見ることになる）。
+        # prime を選べば、その偏りが減る。
+        if scale_filter and (row.get("ScaleCat") or "") not in SCALE_TARGETS:
             continue
         code = norm_code(row.get("Code", ""))
         if code:
@@ -666,6 +684,10 @@ def build_panel(store: dict, years: int, lookback: int = 36) -> pd.DataFrame:
         # 累進配当・DOE銘柄は「減配しにくい」と宣言している。
         # 利確の扱いを変えるかどうかを試せるようにフラグを持たせる。
         f["progressive"] = (code in PROGRESSIVE) or (code in DOE)
+        # 減配の検知。直近1年の最高額を下回ったら減配とみなす。
+        # 配当利回りで割安さを測る戦略では、減配は「買った根拠が消える」出来事。
+        prev_max = f["dps"].rolling(12, min_periods=2).max().shift(1)
+        f["dps_cut"] = (f["dps"] < prev_max * 0.999).fillna(False)
         f["fiscal_month"] = fm if fm else 0
         f["interim_month"] = im if im else 0
         # 増配率（過去2年）。これも過去だけを見る
@@ -765,6 +787,8 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
     # 売らない Tier。売却しなければ課税されないので、税金が繰り延べられる。
     # 「塩漬け」が税制上どれだけ有利かを測るために用意する。
     hold_tiers = set(cfg.get("hold_tiers", []))
+    # 減配したら手放すか。実運用の「緊急撤退」に相当する。
+    exit_on_cut = cfg.get("exit_on_cut", False)
     trail_arm = cfg.get("trail_arm")                # この率まで上がったら見張り開始
     trail = cfg.get("trail")                        # 高値からこの率下げたら売る
     rotate = cfg.get("rotate")
@@ -814,6 +838,35 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
             row = day.loc[code]
             st = pos[code]
             price = row["price"]
+            # 減配は「売らない Tier」でも例外として手放す
+            if exit_on_cut and bool(row.get("dps_cut")) and st["lots"]:
+                for sh, pr in st["lots"]:
+                    eff = price * (1 - slip) * (1 - fee)
+                    cash += sh * eff
+                    gain = (eff - pr) * sh
+                    if tax_rate > 0:
+                        if gain > 0:
+                            taxable = max(0.0, gain - loss_pool)
+                            loss_pool = max(0.0, loss_pool - gain)
+                            t = taxable * tax_rate
+                            cash -= t
+                            diag["tax"] = diag.get("tax", 0.0) + t
+                        else:
+                            loss_pool += -gain
+                    diag["fee"] = diag.get("fee", 0.0) + sh * price * (slip + fee)
+                    trades.append({"code": code, "date": dt, "side": "sell",
+                                   "price": eff, "shares": sh})
+                diag["cut_exits"] = diag.get("cut_exits", 0) + 1
+                if st.get("sh_sum"):
+                    avg = st["cost_sum"] / st["sh_sum"]
+                    diag["tier_peak"].append(
+                        (st.get("tier", "B"), st.get("peak", avg) / avg - 1))
+                del pos[code]
+                diag["closed"] += 1
+                if code in opened_at:
+                    diag["hold_months"].append(mi - opened_at.pop(code))
+                continue
+
             if hold_tiers and row.get("tier", "B") in hold_tiers:
                 continue          # この Tier は売らない
 
@@ -1081,6 +1134,9 @@ def main() -> int:
     ap.add_argument("--only", default="", help="比較するルールをカンマ区切りで指定")
     ap.add_argument("--capital", type=float, default=0,
                     help="元本。未指定なら通常300万・実運用モードで1000万")
+    ap.add_argument("--universe", choices=["core", "prime"], default="core",
+                    help="core＝大型〜中型（既定）、prime＝プライム全銘柄。"
+                         "prime にすると中小型に落ちた会社も入り、偏りが減る")
     ap.add_argument("--slip-bps", type=float, default=0.0,
                     help="約定のずれ（bps）。10なら片道0.1％")
     ap.add_argument("--fee-bps", type=float, default=0.0,
@@ -1104,7 +1160,9 @@ def main() -> int:
         if not key:
             log.error("J_QUANTS_API_KEY が設定されていません")
             return 2
-        store = fetch_all(JQ(key), args.years, args.limit)
+        store = fetch_all(JQ(key), args.years, args.limit,
+                          scale_filter=(args.universe == "core"))
+        store["universe_mode"] = args.universe
         pd.to_pickle(store, CACHE)
         log.info("キャッシュに保存しました: %s", CACHE)
 
@@ -1204,6 +1262,13 @@ def main() -> int:
                 pd.to_pickle(store, CACHE)
             except Exception as e:
                 log.warning("銘柄一覧の取り直しに失敗: %s", e)
+
+    mode = store.get("universe_mode", "core")
+    if mode != args.universe:
+        log.warning("キャッシュは「%s」で作られています。"
+                    "「%s」で見たい場合は取り直してください（--refetch）。",
+                    mode, args.universe)
+    log.info("対象の種類: %s（%d銘柄）", mode, len(store.get("universe", [])))
 
     log.info("パネルを作成中…")
     panel = build_panel(store, args.years, args.lookback)
@@ -1445,6 +1510,7 @@ def main() -> int:
             print("  基準を明確に上回っています。銘柄選択に意味があったと言えます。")
         print("  ※ 基準は初日に等金額で買って放置した場合。配当は課税後で加算しています。")
 
+    cut = d0.get("cut_exits", 0) if "d0" in dir() else 0
     print("\n  決済率＝買った建玉のうち実際に売れた割合。低いほど「出口が来ない」状態。")
     print("  保有月数＝売れたものの平均保有期間。")
 
