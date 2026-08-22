@@ -267,6 +267,29 @@ VARIANTS: dict[str, dict[str, Any]] = {
         "entry": [75], "exit": [25], "priority": "tier",
         "budget_weighted": True, "target_names": 20,
     },
+    "live_budget10": {
+        "label": "現行の買い方＋予算を10銘柄ぶんに",
+        "entry": [75], "exit": [25], "priority": "tier",
+        "budget_weighted": True, "target_names": 10,
+    },
+    "live_budget25": {
+        "label": "現行の買い方＋予算を25銘柄ぶんに",
+        "entry": [75], "exit": [25], "priority": "tier",
+        "budget_weighted": True, "target_names": 25,
+    },
+    "live_budget15_flat": {
+        "label": "予算15銘柄・Tier重みなし（均等）",
+        "entry": [75], "exit": [25], "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "tier_weight": {"S": 1.0, "A": 1.0, "B": 1.0},
+    },
+    "live_budget15_strong": {
+        "label": "予算15銘柄・Sを厚く（S3.0/A1.5/B1.0）",
+        "entry": [75], "exit": [25], "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "tier_weight": {"S": 3.0, "A": 1.5, "B": 1.0},
+    },
+
     # ── 予算も買いの基準も変えた版 ──
     "full_new15": {
         "label": "中央値3分割＋Tier別利確＋予算15銘柄ぶん",
@@ -671,7 +694,8 @@ def required_pct(base: float, row: pd.Series, dynamic: bool) -> float:
 
 def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
              max_names: int = 15, tier_budget: bool = False,
-             dividends: bool = False) -> dict:
+             dividends: bool = False, slip_bps: float = 0.0,
+             fee_bps: float = 0.0, tax_rate: float = 0.0) -> dict:
     """月末ごとに判定して売買する。等金額・分割建玉。
 
     出口は3通りを組み合わせられる。
@@ -712,6 +736,14 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
     trail = cfg.get("trail")                        # 高値からこの率下げたら売る
     rotate = cfg.get("rotate")
     n_tr = len(entry)
+
+    # 売買にかかる費用。
+    #   slip … 約定のずれ。成行で買えば少し高く、売れば少し安くなる。
+    #   fee  … 手数料。
+    #   tax  … 譲渡益と配当への課税。損は繰り越して相殺する（損益通算）。
+    slip = slip_bps / 10000.0
+    fee = fee_bps / 10000.0
+    loss_pool = 0.0        # 相殺できる損失の残り
 
     dates = sorted(panel["date"].unique())
     cash = capital
@@ -783,10 +815,22 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                         sold = True
 
                 if sold:
-                    for sh, _ in st["lots"]:
-                        cash += sh * price
+                    for sh, pr in st["lots"]:
+                        eff = price * (1 - slip) * (1 - fee)
+                        cash += sh * eff
+                        gain = (eff - pr) * sh
+                        if tax_rate > 0:
+                            if gain > 0:
+                                taxable = max(0.0, gain - loss_pool)
+                                loss_pool = max(0.0, loss_pool - gain)
+                                t = taxable * tax_rate
+                                cash -= t
+                                diag["tax"] = diag.get("tax", 0.0) + t
+                            else:
+                                loss_pool += -gain
+                        diag["fee"] = diag.get("fee", 0.0) + sh * price * (slip + fee)
                         trades.append({"code": code, "date": dt, "side": "sell",
-                                       "price": price, "shares": sh})
+                                       "price": eff, "shares": sh})
                     st["lots"], st["units"] = [], 0
 
             # 利回りの分位で降りる
@@ -794,10 +838,22 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                 p = level(row)
                 want = len(entry_for(row)) - sum(1 for e in exits if p <= e)
                 while st["units"] > want and st["units"] > 0:
-                    sh, _ = st["lots"].pop()
-                    cash += sh * price
+                    sh, pr = st["lots"].pop()
+                    eff = price * (1 - slip) * (1 - fee)
+                    cash += sh * eff
+                    gain = (eff - pr) * sh
+                    if tax_rate > 0:
+                        if gain > 0:
+                            taxable = max(0.0, gain - loss_pool)
+                            loss_pool = max(0.0, loss_pool - gain)
+                            t = taxable * tax_rate
+                            cash -= t
+                            diag["tax"] = diag.get("tax", 0.0) + t
+                        else:
+                            loss_pool += -gain
+                    diag["fee"] = diag.get("fee", 0.0) + sh * price * (slip + fee)
                     trades.append({"code": code, "date": dt, "side": "sell",
-                                   "price": price, "shares": sh})
+                                   "price": eff, "shares": sh})
                     st["units"] -= 1
 
             if st["units"] == 0:
@@ -857,9 +913,11 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                 best = next(((p, c) for p, c, _, _, _ in cands if c not in pos), None)
                 if best and best[0] - worst_p >= rotate:
                     st = pos.pop(worst_c)
-                    pr = day.loc[worst_c, "price"]
-                    for sh, _ in st["lots"]:
+                    pr0 = day.loc[worst_c, "price"]
+                    pr = pr0 * (1 - slip) * (1 - fee)
+                    for sh, _c in st["lots"]:
                         cash += sh * pr
+                        diag["fee"] = diag.get("fee", 0.0) + sh * pr0 * (slip + fee)
                         trades.append({"code": worst_c, "date": dt, "side": "sell",
                                        "price": pr, "shares": sh})
                     diag["closed"] += 1
@@ -880,8 +938,11 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                 for key in ("fiscal_month", "interim_month"):
                     if int(row.get(key, 0) or 0) == mth and row["dps"] > 0:
                         held = sum(sh for sh, _ in st["lots"])
-                        cash += row["dps"] * 0.5 * held
-                        diag["dividend"] = diag.get("dividend", 0) + row["dps"] * 0.5 * held
+                        gross = row["dps"] * 0.5 * held
+                        net = gross * (1 - tax_rate)
+                        cash += net
+                        diag["dividend"] = diag.get("dividend", 0) + net
+                        diag["tax"] = diag.get("tax", 0.0) + (gross - net)
 
         # ── 買い ──
         total = value_of(day)
@@ -908,7 +969,9 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                      else int(unit_size // price)
                 if sh <= 0:
                     break
-                cash -= sh * price
+                buy_eff = price * (1 + slip) * (1 + fee)
+                cash -= sh * buy_eff
+                diag["fee"] = diag.get("fee", 0.0) + sh * price * (slip + fee)
                 st = pos.setdefault(code, {"units": 0, "lots": [], "peak": price})
                 if st["units"] == 0:
                     diag["opened"] += 1
@@ -916,9 +979,9 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                     tg = day.loc[code, "tier"] if "tier" in day.columns else "B"
                     diag["tier_opened"][tg] = diag["tier_opened"].get(tg, 0) + 1
                 st["tier"] = day.loc[code, "tier"] if "tier" in day.columns else "B"
-                st["cost_sum"] = st.get("cost_sum", 0.0) + sh * price
+                st["cost_sum"] = st.get("cost_sum", 0.0) + sh * buy_eff
                 st["sh_sum"] = st.get("sh_sum", 0) + sh
-                st["lots"].append((sh, price))
+                st["lots"].append((sh, buy_eff))
                 st["units"] += 1
                 trades.append({"code": code, "date": dt, "side": "buy",
                                "price": price, "shares": sh})
@@ -961,6 +1024,7 @@ def metrics(res: dict) -> dict:
             "最大下落": dd * 100, "シャープ": sharpe,
             "売買回数": len(t), "平均保有銘柄": float(c["names"].mean()),
             "判定変化": d.get("changed", 0), "枠飽和率": saturated,
+            "費用": d.get("fee", 0.0), "税金": d.get("tax", 0.0),
             "決済率": exit_rate, "平均保有月数": avg_hold,
             "入れ替え": d.get("rotations", 0)}
 
@@ -982,6 +1046,12 @@ def main() -> int:
     ap.add_argument("--only", default="", help="比較するルールをカンマ区切りで指定")
     ap.add_argument("--capital", type=float, default=0,
                     help="元本。未指定なら通常300万・実運用モードで1000万")
+    ap.add_argument("--slip-bps", type=float, default=0.0,
+                    help="約定のずれ（bps）。10なら片道0.1％")
+    ap.add_argument("--fee-bps", type=float, default=0.0,
+                    help="手数料（bps）。主要ネット証券の現物は無料コースあり")
+    ap.add_argument("--tax", type=float, default=0.0,
+                    help="譲渡益と配当への税率（％）。日本の特定口座なら20.315")
     ap.add_argument("--realistic", action="store_true",
                     help="実運用と同じ条件で回す（1000万・Tier別予算・20銘柄・配当あり）")
     ap.add_argument("--max-names", type=int, default=0,
@@ -1131,7 +1201,9 @@ def main() -> int:
                     continue
                 m = metrics(simulate(pn, VARIANTS[nm], args.capital, args.max_names,
                                      tier_budget=args.realistic,
-                                     dividends=args.realistic))
+                                     dividends=args.realistic,
+                                     slip_bps=args.slip_bps, fee_bps=args.fee_bps,
+                                     tax_rate=args.tax / 100.0))
                 if m:
                     rows.append({"分位": lb, "期間": span, "ルール": VARIANTS[nm]["label"],
                                  "年率": m["年率"], "決済率": m["決済率"],
@@ -1216,7 +1288,9 @@ def main() -> int:
             continue
         cfg = VARIANTS[name]
         res = simulate(panel, cfg, args.capital, args.max_names,
-                       tier_budget=args.realistic, dividends=args.realistic)
+                       tier_budget=args.realistic, dividends=args.realistic,
+                       slip_bps=args.slip_bps, fee_bps=args.fee_bps,
+                       tax_rate=args.tax / 100.0)
         m = metrics(res)
         if m:
             rows.append({"ルール": cfg["label"], **m})
@@ -1240,7 +1314,9 @@ def main() -> int:
     # ── Tier別の内訳（1つ目のルールについて）──
     first = VARIANTS[names[0]]
     d0 = simulate(panel, first, args.capital, args.max_names,
-                  tier_budget=args.realistic, dividends=args.realistic)["diag"]
+                  tier_budget=args.realistic, dividends=args.realistic,
+                  slip_bps=args.slip_bps, fee_bps=args.fee_bps,
+                  tax_rate=args.tax / 100.0)["diag"]
     tp = d0.get("tier_peak", [])
     if tp:
         print(f"\n■ Tier別の内訳（{first['label']} の場合）\n")
@@ -1265,6 +1341,18 @@ def main() -> int:
             comp = panel.groupby("code")["tier"].first().value_counts()
             print("\n  対象銘柄のTier構成： " +
                   " / ".join(f"{k} {v}銘柄" for k, v in comp.items()))
+
+    if args.tax > 0 or args.slip_bps > 0 or args.fee_bps > 0:
+        print(f"\n■ 費用の内訳（元本 {args.capital:,.0f}円に対して）\n")
+        print(f"{'ルール':<30}{'手数料+ずれ':>14}{'税金':>13}{'合計':>13}{'元本比':>9}")
+        print("-" * 80)
+        for _, x in df.iterrows():
+            tot = x["費用"] + x["税金"]
+            print(f"{x['ルール'][:28]:<30}{x['費用']:>13,.0f}円{x['税金']:>12,.0f}円"
+                  f"{tot:>12,.0f}円{tot/args.capital*100:>8.1f}%")
+        print(f"\n  条件： 約定のずれ 片道{args.slip_bps:.0f}bps ／ "
+              f"手数料 片道{args.fee_bps:.0f}bps ／ 税率{args.tax:.3f}％")
+        print("  ※ 税金は譲渡益と配当にかかります。損は繰り越して相殺しています。")
 
     print("\n  決済率＝買った建玉のうち実際に売れた割合。低いほど「出口が来ない」状態。")
     print("  保有月数＝売れたものの平均保有期間。")
