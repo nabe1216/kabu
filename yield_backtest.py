@@ -957,6 +957,8 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
             row = day.loc[code]
             st = pos[code]
             price = row["price"]
+            st["peak"] = max(st.get("peak", price), price)
+
             # 減配は「売らない Tier」でも例外として手放す
             if exit_on_cut and bool(row.get("dps_cut")) and st["lots"]:
                 for sh, pr in st["lots"]:
@@ -990,6 +992,11 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                 if code in opened_at:
                     diag["hold_months"].append(mi - opened_at.pop(code))
                 continue
+
+            # 高値の記録は、売る売らないに関わらず必ず更新する。
+            # ここより後ろに置くと、売らない Tier は買った日の値のまま止まり、
+            # 到達益が常に0近くになってしまう。
+            st["peak"] = max(st.get("peak", price), price)
 
             if hold_tiers and row.get("tier", "B") in hold_tiers:
                 continue          # この Tier は売らない
