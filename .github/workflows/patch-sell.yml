@@ -1,0 +1,138 @@
+name: patch-sell
+
+# portfolio_engine.py の売却判定を切り替える。
+#
+# なぜ変えるか
+#   条件を総当たりで100回検証した結果、
+#   「売らない」が現行ルールを95％の条件で上回った。
+#   売る判断そのものが、税引後では価値を生んでいなかった。
+#
+#   none      … 売らない（推奨）。緊急撤退も行わない
+#   emergency … 減配や業績急変のときだけ売る
+#   all       … 現行どおり（緊急撤退＋SELLシグナル）
+#
+# 目印が見つからない場合や文法エラーが出た場合は何も保存せずに止まる。
+# 元に戻すときはコミット履歴から、または all を指定して再実行。
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "売却の方針。none＝売らない / emergency＝緊急時のみ / all＝現行どおり"
+        required: false
+        default: "none"
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: portfolio_engine.py を書き換える
+        env:
+          MODE: ${{ github.event.inputs.mode || 'none' }}
+        run: |
+          python - <<'PY'
+          import ast, os, re, sys
+          from pathlib import Path
+
+          mode = os.environ.get("MODE", "none")
+          if mode not in ("none", "emergency", "all"):
+              sys.exit(f"mode は none / emergency / all のいずれかです（指定: {mode}）")
+
+          p = Path("scripts/portfolio_engine.py")
+          s = before = p.read_text(encoding="utf-8")
+          log = []
+
+          if "SELL_MODE" in s:
+              m = re.search(r"^SELL_MODE\s*=\s*'(\w+)'", s, re.M)
+              cur = m.group(1) if m else "?"
+              if cur == mode:
+                  print(f"すでに {mode} です。何もしません。")
+                  sys.exit(0)
+              s = re.sub(r"^SELL_MODE\s*=\s*'\w+'",
+                         f"SELL_MODE = '{mode}'", s, count=1, flags=re.M)
+              log.append(f"売却の方針 … {cur} → {mode}")
+          else:
+              # 1. 設定を足す
+              a1 = "MAX_HOLDINGS = 20"
+              if s.count(a1) != 1:
+                  sys.exit(f"目印1が {s.count(a1)} 箇所です。中止します。")
+              add = [
+                  "",
+                  "",
+                  "# 売却の方針。",
+                  "#   none      … 売らない。含み益に課税されず、複利で回り続ける",
+                  "#   emergency … 減配や業績急変のときだけ売る",
+                  "#   all       … 緊急撤退＋SELLシグナル（もとの動き）",
+                  "#",
+                  "# 条件を総当たりで100回検証したところ、",
+                  "# 「売らない」が現行を95％の条件で上回った。",
+                  "# 売る判断そのものが税引後では価値を生んでいなかったため none にする。",
+                  f"SELL_MODE = '{mode}'",
+              ]
+              s = s.replace(a1, a1 + "\n".join(add), 1)
+              log.append(f"売却の方針を {mode} に設定")
+
+              # 2. 判定を差し替える
+              a2 = ("        sell_reason = None\n"
+                    "        if stock.get('emergency_exit'):\n"
+                    "            reasons = stock.get('emergency_reasons', [])\n"
+                    "            sell_reason = 'EMERGENCY_EXIT: ' + "
+                    "(' / '.join(reasons) if reasons else 'unspecified')\n"
+                    "        elif stock.get('signal') == 'SELL':\n"
+                    "            sell_reason = 'SELL_SIGNAL'")
+              if s.count(a2) != 1:
+                  sys.exit(f"目印2が {s.count(a2)} 箇所です。中止します。")
+              n2 = "\n".join([
+                  "        sell_reason = None",
+                  "        if SELL_MODE != 'none':",
+                  "            if stock.get('emergency_exit'):",
+                  "                reasons = stock.get('emergency_reasons', [])",
+                  "                sell_reason = 'EMERGENCY_EXIT: ' + \\",
+                  "                    (' / '.join(reasons) if reasons "
+                  "else 'unspecified')",
+                  "            elif SELL_MODE == 'all' and "
+                  "stock.get('signal') == 'SELL':",
+                  "                sell_reason = 'SELL_SIGNAL'",
+              ])
+              s = s.replace(a2, n2, 1)
+              log.append("売却判定を差し替え")
+
+          if s == before:
+              print("変更はありませんでした。")
+              sys.exit(0)
+
+          ast.parse(s)
+          p.write_text(s, encoding="utf-8")
+          for x in log:
+              print(x)
+
+          desc = {"none": "売りません（緊急撤退も行いません）",
+                  "emergency": "減配や業績急変のときだけ売ります",
+                  "all": "緊急撤退とSELLシグナルで売ります（もとの動き）"}
+          lines = ["## portfolio_engine.py の変更", ""]
+          lines += [f"- {x}" for x in log]
+          lines += ["", f"**{mode}** … {desc[mode]}", "",
+                    "次に「Generate Dividend Signals」を手動実行してください。", "",
+                    "戻したいときは、このワークフローを all で再実行してください。"]
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
+              f.write("\n".join(lines) + "\n")
+          PY
+
+      - name: 保存する
+        run: |
+          if git diff --quiet -- scripts/portfolio_engine.py; then
+            echo "変更なし。"
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add scripts/portfolio_engine.py
+          git commit -m "売却の方針を変更"
+          git push
