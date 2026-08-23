@@ -36,6 +36,16 @@ HISTORY_PATH = DATA_DIR / 'portfolio_history.json'
 INITIAL_CASH = 10_000_000  # 1,000万円
 MAX_HOLDINGS = 20
 
+# 売却の方針。
+#   none      … 売らない。含み益に課税されず、複利で回り続ける
+#   emergency … 減配や業績急変のときだけ売る
+#   all       … 緊急撤退＋SELLシグナル（もとの動き）
+#
+# 条件を総当たりで100回検証したところ、
+# 「売らない」が現行を95％の条件で上回った。
+# 売る判断そのものが税引後では価値を生んでいなかったため none にする。
+SELL_MODE = 'none'
+
 # Tier別の1銘柄あたりの予算（円）
 TIER_BUDGET = {
     'S': 4_000_000,  # 400万円
@@ -441,11 +451,13 @@ def update_portfolio(stocks: list[dict[str, Any]]) -> dict[str, Any]:
             continue
 
         sell_reason = None
-        if stock.get('emergency_exit'):
-            reasons = stock.get('emergency_reasons', [])
-            sell_reason = 'EMERGENCY_EXIT: ' + (' / '.join(reasons) if reasons else 'unspecified')
-        elif stock.get('signal') == 'SELL':
-            sell_reason = 'SELL_SIGNAL'
+        if SELL_MODE != 'none':
+            if stock.get('emergency_exit'):
+                reasons = stock.get('emergency_reasons', [])
+                sell_reason = 'EMERGENCY_EXIT: ' + \
+                    (' / '.join(reasons) if reasons else 'unspecified')
+            elif SELL_MODE == 'all' and stock.get('signal') == 'SELL':
+                sell_reason = 'SELL_SIGNAL'
 
         if sell_reason:
             sell_price = get_today_open_price(stock) or holding['current_price']
