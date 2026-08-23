@@ -377,6 +377,40 @@ VARIANTS: dict[str, dict[str, Any]] = {
                          "cheap_dd": -10.0, "rich_dd": -3.0},
     },
 
+    # ── 安定性を高めるための制約 ──
+    # 年率ではなく「ばらつきの小ささ」「最悪のときのマシさ」を狙う。
+    "stable_sector3": {
+        "label": "Sは売らない＋減配撤退＋1業種3銘柄まで",
+        "entry": [75], "exit": [25], "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S"], "exit_on_cut": True, "max_per_sector": 3,
+    },
+    "stable_sector2": {
+        "label": "同上・1業種2銘柄まで",
+        "entry": [75], "exit": [25], "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S"], "exit_on_cut": True, "max_per_sector": 2,
+    },
+    "stable_cash20": {
+        "label": "Sは売らない＋減配撤退＋現金2割を残す",
+        "entry": [75], "exit": [25], "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S"], "exit_on_cut": True, "cash_floor": 0.20,
+    },
+    "stable_wide": {
+        "label": "Sは売らない＋減配撤退＋目標25銘柄",
+        "entry": [75], "exit": [25], "priority": "tier",
+        "budget_weighted": True, "target_names": 25,
+        "hold_tiers": ["S"], "exit_on_cut": True,
+    },
+    "stable_all": {
+        "label": "業種3・現金2割・25銘柄をすべて",
+        "entry": [75], "exit": [25], "priority": "tier",
+        "budget_weighted": True, "target_names": 25,
+        "hold_tiers": ["S"], "exit_on_cut": True,
+        "max_per_sector": 3, "cash_floor": 0.20,
+    },
+
     # ── 予算も買いの基準も変えた版 ──
     "full_new15": {
         "label": "中央値3分割＋Tier別利確＋予算15銘柄ぶん",
@@ -760,6 +794,7 @@ def build_panel(store: dict, years: int, lookback: int = 36) -> pd.DataFrame:
             last_price[code] = float(px0["close"].iloc[-1])
     tiers = assign_tiers(store, last_price)
     names_by_code = {u["code"]: u.get("name", u["code"]) for u in store["universe"]}
+    sector_by_code = {u["code"]: u.get("sector", "") for u in store["universe"]}
 
     for code, qrows in store["quotes"].items():
         px = quotes_to_df(qrows)
@@ -778,6 +813,7 @@ def build_panel(store: dict, years: int, lookback: int = 36) -> pd.DataFrame:
                           "price": m.values, "dps": d.values, "yield": y.values})
         f["tier"] = tiers.get(code, "B")
         f["name"] = names_by_code.get(code, code)
+        f["sector"] = sector_by_code.get(code, "")
         # 累進配当・DOE銘柄は「減配しにくい」と宣言している。
         # 利確の扱いを変えるかどうかを試せるようにフラグを持たせる。
         f["progressive"] = (code in PROGRESSIVE) or (code in DOE)
@@ -906,6 +942,11 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
     # 「暴落を待つ」戦略は、待っている間の取り逃がしが本体なので、
     # 効いているかどうかは全期間で確かめる必要がある。
     regime = cfg.get("regime_scale")      # 例 {"cheap":1.5, "rich":0.5}
+    # 同じ業種を何銘柄まで持つか。
+    # 業種が偏ると、その業種の逆風で一斉に沈む。分散の実効性を上げるための制約。
+    max_sector = cfg.get("max_per_sector")
+    # 総資産のうち、常に現金で残しておく割合。下落の受け止めに使う。
+    cash_floor = cfg.get("cash_floor", 0.0)
     trail_arm = cfg.get("trail_arm")                # この率まで上がったら見張り開始
     trail = cfg.get("trail")                        # 高値からこの率下げたら売る
     rotate = cfg.get("rotate")
@@ -1183,13 +1224,28 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
         total = value_of(day)
         # まだ解放されていない資金は使えない
         usable = cash
+        if cash_floor > 0:
+            usable = max(0.0, usable - total * cash_floor)
         if ramp > 0:
             released = min(1.0, (mi + 1) / ramp)
             reserved = capital * (1.0 - released)
             usable = max(0.0, cash - reserved)
+        # いま何をどの業種で持っているか
+        sec_count = {}
+        if max_sector:
+            for c in pos:
+                if c in day.index:
+                    sc = day.loc[c].get("sector", "")
+                    sec_count[sc] = sec_count.get(sc, 0) + 1
+
         for p, code, add, price, _tier in cands:
             if len(pos) >= max_names and code not in pos:
                 continue
+            if max_sector and code not in pos:
+                sc = day.loc[code].get("sector", "")
+                if sec_count.get(sc, 0) >= max_sector:
+                    diag["sector_blocked"] = diag.get("sector_blocked", 0) + 1
+                    continue
             # Tier別予算か、等金額か
             nt = len(entry_for(day.loc[code])) if entry_by_tier else n_tr
             rs = 1.0
@@ -1238,6 +1294,9 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                 if st["units"] == 0:
                     diag["opened"] += 1
                     opened_at[code] = mi
+                    if max_sector:
+                        _sc = day.loc[code].get("sector", "")
+                        sec_count[_sc] = sec_count.get(_sc, 0) + 1
                     tg = day.loc[code, "tier"] if "tier" in day.columns else "B"
                     diag["tier_opened"][tg] = diag["tier_opened"].get(tg, 0) + 1
                     diag.setdefault("trade_log", []).append({
@@ -1740,6 +1799,24 @@ def main() -> int:
             print(f"{lab[:32]:<34}{w:>4}/{n:<3}{rate*100:>7.0f}%"
                   f"{ar:>9.1f}%{ad:>+9.1f}pt")
 
+        # ── 1-B. 安定性で見る ──
+        # 年率の高さではなく「条件が変わってもブレないか」「最悪でどこまで沈むか」。
+        # 同じ数字を別の軸で読み直しているだけで、追加の検証はしていない。
+        print("\n【安定性で見る】\n")
+        print(f"{'ルール':<32}{'最悪の年率':>11}{'年率のばらつき':>14}"
+              f"{'最大下落の平均':>14}{'最悪の下落':>11}")
+        print("-" * 84)
+        st_rows = []
+        for lab, g in gf.groupby("ルール"):
+            st_rows.append((g["年率"].min(), lab, g["年率"].std(),
+                            g["最大下落"].mean(), g["最大下落"].max()))
+        for worst, lab, sd, ddm, ddw in sorted(st_rows, reverse=True):
+            print(f"{lab[:30]:<32}{worst:>10.1f}%{sd:>13.1f}pt"
+                  f"{ddm:>13.1f}%{ddw:>10.1f}%")
+        print("\n  最悪の年率 … 80通りの条件のうち、いちばん悪かったときの成績。")
+        print("  ばらつき … 条件によって成績がどれだけ振れるか。小さいほど読みやすい。")
+        print("  安定を求めるなら、平均の高さより「最悪」と「ばらつき」を見る。")
+
         # ── 2. ルール同士の勝敗 ──
         piv = gf.pivot_table(index=["期間", "資金投入", "利回り足切り"],
                              columns="ルール", values="年率")
@@ -1790,6 +1867,23 @@ def main() -> int:
                 found = True
         if not found:
             print("  ありません。どの比較も条件次第で入れ替わります。")
+
+        # 安定性の観点での最良
+        best_worst = max(st_rows)          # 最悪の年率がいちばんマシなもの
+        best_sd = min(st_rows, key=lambda x: x[2])
+        best_dd = min(st_rows, key=lambda x: x[3])
+        print("\n【安定を優先するなら】\n")
+        print(f"  最悪のときがいちばんマシ … {best_worst[1][:30]}"
+              f"（最悪 {best_worst[0]:.1f}％）")
+        print(f"  条件によるブレが最小   … {best_sd[1][:30]}"
+              f"（ばらつき {best_sd[2]:.1f}pt）")
+        print(f"  下落がいちばん浅い     … {best_dd[1][:30]}"
+              f"（平均 {best_dd[3]:.1f}％）")
+        names_top = {best_worst[1], best_sd[1], best_dd[1]}
+        if len(names_top) == 1:
+            print("\n  3つとも同じルールでした。安定性では明確に優れています。")
+        else:
+            print("\n  3つの観点で最良が分かれています。何を重視するかで選ぶことになります。")
 
         print("\n【決められなかったこと】\n")
         undecided = False
@@ -2024,6 +2118,9 @@ def main() -> int:
             print("  基準を明確に上回っています。銘柄選択に意味があったと言えます。")
         print("  ※ 基準は初日に等金額で買って放置した場合。配当は課税後で加算しています。")
 
+    sb = d0.get("sector_blocked", 0)
+    if sb:
+        print(f"\n  業種の上限で見送った回数： {sb}回")
     rm = d0.get("regime_months", {})
     if rm:
         tot_ = sum(rm.values())
