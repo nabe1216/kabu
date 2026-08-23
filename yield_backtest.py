@@ -857,7 +857,8 @@ def required_pct(base: float, row: pd.Series, dynamic: bool) -> float:
 def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
              max_names: int = 15, tier_budget: bool = False,
              dividends: bool = False, slip_bps: float = 0.0,
-             fee_bps: float = 0.0, tax_rate: float = 0.0) -> dict:
+             fee_bps: float = 0.0, tax_rate: float = 0.0,
+             ramp: int = 0, min_yield_override: float | None = None) -> dict:
     """月末ごとに判定して売買する。等金額・分割建玉。
 
     出口は3通りを組み合わせられる。
@@ -899,7 +900,8 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
     hold_tiers = set(cfg.get("hold_tiers", []))
     # 減配したら手放すか。実運用の「緊急撤退」に相当する。
     exit_on_cut = cfg.get("exit_on_cut", False)
-    min_yield = cfg.get("min_yield", 0.0)
+    min_yield = cfg.get("min_yield", 0.0) if min_yield_override is None \
+        else float(min_yield_override)
     # 市場全体が割安なときに厚く、割高なときに薄く買う。
     # 「暴落を待つ」戦略は、待っている間の取り逃がしが本体なので、
     # 効いているかどうかは全期間で確かめる必要がある。
@@ -913,6 +915,13 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
     #   slip … 約定のずれ。成行で買えば少し高く、売れば少し安くなる。
     #   fee  … 手数料。
     #   tax  … 譲渡益と配当への課税。損は繰り越して相殺する（損益通算）。
+    # 資金を何か月かけて入れるか。
+    # 0 なら初日に全額が使える。バックテストの初日は
+    # 「その時点で条件を満たす銘柄をまとめて買う」状態になりやすく、
+    # 結果が初日の一括購入に支配されてしまう。
+    # ramp を指定すると、毎月 1/ramp ずつしか使えないようにする。
+    ramp = max(0, int(ramp))
+
     slip = slip_bps / 10000.0
     fee = fee_bps / 10000.0
     loss_pool = 0.0        # 相殺できる損失の残り
@@ -1172,6 +1181,12 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
 
         # ── 買い ──
         total = value_of(day)
+        # まだ解放されていない資金は使えない
+        usable = cash
+        if ramp > 0:
+            released = min(1.0, (mi + 1) / ramp)
+            reserved = capital * (1.0 - released)
+            usable = max(0.0, cash - reserved)
         for p, code, add, price, _tier in cands:
             if len(pos) >= max_names and code not in pos:
                 continue
@@ -1208,7 +1223,7 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                 unit_size = total / max_names / nt
             unit_size *= rs
             for _ in range(add):
-                if cash < unit_size or unit_size < price:
+                if usable < unit_size or unit_size < price:
                     break
                 # 100株単位（実運用に合わせる）
                 sh = int(unit_size // price // 100) * 100 if tier_budget \
@@ -1217,6 +1232,7 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                     break
                 buy_eff = price * (1 + slip) * (1 + fee)
                 cash -= sh * buy_eff
+                usable -= sh * buy_eff
                 diag["fee"] = diag.get("fee", 0.0) + sh * price * (slip + fee)
                 st = pos.setdefault(code, {"units": 0, "lots": [], "peak": price})
                 if st["units"] == 0:
@@ -1341,6 +1357,19 @@ def main() -> int:
     ap.add_argument("--only", default="", help="比較するルールをカンマ区切りで指定")
     ap.add_argument("--capital", type=float, default=0,
                     help="元本。未指定なら通常300万・実運用モードで1000万")
+    ap.add_argument("--grid", action="store_true",
+                    help="条件を総当たりで組み合わせて検証し、"
+                         "どの条件でも成り立つ結論だけを取り出す")
+    ap.add_argument("--grid-ramp", default="0,12",
+                    help="総当たりで試す資金投入の月数（カンマ区切り）")
+    ap.add_argument("--grid-min-yield", default="0,3",
+                    help="総当たりで試す利回り足切り（カンマ区切り）")
+    ap.add_argument("--grid-window", type=int, default=4,
+                    help="総当たりで使う窓の年数")
+    ap.add_argument("--ramp", type=int, default=0,
+                    help="資金を何か月かけて入れるか。0なら初日に全額。"
+                         "12なら毎月1/12ずつ。初日の一括購入に結果が"
+                         "支配されるのを防ぐ")
     ap.add_argument("--show-trades", action="store_true",
                     help="建玉の明細を表示する（どの銘柄をいつ買ったか）")
     ap.add_argument("--walk", type=int, default=0,
@@ -1401,6 +1430,11 @@ def main() -> int:
 
     # 窓をずらす検証では、データ全体を使わないと窓を作れない。
     # 「検証する年数」で先に切ってしまうと窓が1つしかできないため上書きする。
+    if args.grid and args.years < args.grid_window + 2:
+        log.info("総当たり検証のため、対象期間を最大まで広げます（%d年→9年）",
+                 args.years)
+        args.years = 9
+
     if args.walk > 0 and args.years < args.walk + 2:
         log.info("窓をずらす検証のため、対象期間を最大まで広げます（%d年→9年）",
                  args.years)
@@ -1504,6 +1538,9 @@ def main() -> int:
                     mode, args.universe)
     log.info("対象の種類: %s（%d銘柄）", mode, len(store.get("universe", [])))
 
+    if args.ramp > 0:
+        log.info("資金を %dか月かけて入れます（初日の一括購入を避けます）", args.ramp)
+
     log.info("パネルを作成中…")
     panel = build_panel(store, args.years, args.lookback)
     if args.lookback < 24:
@@ -1537,7 +1574,7 @@ def main() -> int:
                                      tier_budget=args.realistic,
                                      dividends=args.realistic,
                                      slip_bps=args.slip_bps, fee_bps=args.fee_bps,
-                                     tax_rate=args.tax / 100.0))
+                                     tax_rate=args.tax / 100.0, ramp=args.ramp))
                 if m:
                     rows.append({"分位": lb, "期間": span, "ルール": VARIANTS[nm]["label"],
                                  "年率": m["年率"], "決済率": m["決済率"],
@@ -1619,6 +1656,164 @@ def main() -> int:
             v.setdefault("min_yield", args.min_yield)
         log.info("利回り %.1f％ 未満の銘柄は買わない設定で回します", args.min_yield)
 
+    # ══════════════════════════════════════════
+    # 総当たり検証
+    #   条件を1つずつ変えて試すと、そのたびに読み違いが起きる。
+    #   （期間と分位を同時に変えた、窓の欄が空欄だった、など）
+    #   ここでは条件をすべて機械的に組み合わせて回し、
+    #   「どの条件でも成り立った結論」だけを取り出す。
+    # ══════════════════════════════════════════
+    if args.grid:
+        ramps = [int(x) for x in str(args.grid_ramp).split(",") if x.strip() != ""]
+        mys = [float(x) for x in str(args.grid_min_yield).split(",") if x.strip() != ""]
+        nm = [x.strip() for x in args.only.split(",") if x.strip()] or \
+             ["current_live", "live_budget15", "live15_holdS", "live15_holdall"]
+        nm = [n for n in nm if n in VARIANTS]
+
+        # 窓：4年の窓を1年ずつずらしたもの＋全期間
+        wl = args.grid_window
+        d0_, d1_ = panel["date"].min(), panel["date"].max()
+        wins = []
+        st_ = d1_ - pd.DateOffset(years=wl)
+        while st_ >= d0_:
+            wins.append((st_, d1_ if not wins else st_ + pd.DateOffset(years=wl)))
+            st_ = st_ - pd.DateOffset(years=1)
+        wins = [(a, a + pd.DateOffset(years=wl)) for a, _ in wins]
+        wins.reverse()
+        wins.append((d0_, d1_))          # 全期間も1通りとして加える
+
+        total = len(ramps) * len(mys) * len(wins)
+        log.info("総当たり：資金投入%d通り × 利回り足切り%d通り × 期間%d通り = %d条件"
+                 " × ルール%d = %d回",
+                 len(ramps), len(mys), len(wins), total, len(nm), total * len(nm))
+
+        rows_, done = [], 0
+        for a, b in wins:
+            sub = panel[(panel["date"] >= a) & (panel["date"] <= b)]
+            if sub["date"].nunique() < 24:
+                continue
+            span = f"{a.date()}〜{b.date()}"
+            for rp in ramps:
+                for my in mys:
+                    bh_ = buy_and_hold(sub, args.tax / 100.0)
+                    base_r = bh_["年率"] if bh_ else float("nan")
+                    for n_ in nm:
+                        m_ = metrics(simulate(
+                            sub, VARIANTS[n_], args.capital, args.max_names,
+                            tier_budget=args.realistic, dividends=args.realistic,
+                            slip_bps=args.slip_bps, fee_bps=args.fee_bps,
+                            tax_rate=args.tax / 100.0, ramp=rp,
+                            min_yield_override=my))
+                        if m_:
+                            rows_.append({
+                                "期間": span, "資金投入": rp, "利回り足切り": my,
+                                "ルール": VARIANTS[n_]["label"],
+                                "年率": m_["年率"], "最大下落": m_["最大下落"],
+                                "シャープ": m_["シャープ"], "決済率": m_["決済率"],
+                                "基準": base_r, "基準差": m_["年率"] - base_r})
+                    done += 1
+                    if done % 5 == 0 or done == total:
+                        log.info("  %d/%d 条件が完了", done, total)
+
+        if not rows_:
+            print("結果がありません。")
+            return 1
+        gf = pd.DataFrame(rows_)
+        n_cond = gf.groupby(["期間", "資金投入", "利回り足切り"]).ngroups
+
+        print(f"\n■ 総当たり検証（{n_cond}条件 × {len(nm)}ルール）\n")
+        print(f"　 期間 {len(wins)}通り ／ 資金投入 {ramps} か月 ／ "
+              f"利回り足切り {mys} ％")
+        print(f"　 元本 {args.capital:,.0f}円 ／ 税率{args.tax:.3f}％ ／ "
+              f"約定のずれ 片道{args.slip_bps:.0f}bps\n")
+
+        # ── 1. 基準に勝った割合 ──
+        print("【全部買って放置に勝った割合】\n")
+        print(f"{'ルール':<34}{'勝ち':>8}{'割合':>8}{'平均年率':>10}{'平均の差':>10}")
+        print("-" * 72)
+        agg = []
+        for lab, g in gf.groupby("ルール"):
+            w = int((g["基準差"] > 0).sum())
+            agg.append((w / len(g), lab, w, len(g), g["年率"].mean(),
+                        g["基準差"].mean()))
+        for rate, lab, w, n, ar, ad in sorted(agg, reverse=True):
+            print(f"{lab[:32]:<34}{w:>4}/{n:<3}{rate*100:>7.0f}%"
+                  f"{ar:>9.1f}%{ad:>+9.1f}pt")
+
+        # ── 2. ルール同士の勝敗 ──
+        piv = gf.pivot_table(index=["期間", "資金投入", "利回り足切り"],
+                             columns="ルール", values="年率")
+        cols = list(piv.columns)
+        print(f"\n【ルール同士の勝敗（縦が横を上回った割合）】\n")
+        print(" " * 26 + "".join(f"{c[:10]:>12}" for c in cols))
+        print("-" * (26 + 12 * len(cols)))
+        for a_ in cols:
+            line = f"{a_[:24]:<26}"
+            for b_ in cols:
+                if a_ == b_:
+                    line += f"{'—':>12}"
+                else:
+                    line += f"{(piv[a_] > piv[b_]).mean()*100:>11.0f}%"
+            print(line)
+
+        # ── 3. 条件そのものの影響 ──
+        print("\n【条件による違い（全ルール平均）】\n")
+        for key, unit in [("資金投入", "か月"), ("利回り足切り", "％")]:
+            print(f"  {key}")
+            for v, g in gf.groupby(key):
+                print(f"    {v}{unit:<4} 平均年率 {g['年率'].mean():>5.1f}%   "
+                      f"基準との差 {g['基準差'].mean():>+5.1f}pt")
+            print()
+
+        # ── 4. 堅い結論だけを取り出す ──
+        print("【条件を変えても崩れなかった結論】\n")
+        found = False
+        for a_ in cols:
+            for b_ in cols:
+                if a_ >= b_:
+                    continue
+                r = (piv[a_] > piv[b_]).mean()
+                if r >= 0.85:
+                    print(f"  ○ 「{a_[:26]}」は「{b_[:26]}」を "
+                          f"{r*100:.0f}％ の条件で上回った")
+                    found = True
+                elif r <= 0.15:
+                    print(f"  ○ 「{b_[:26]}」は「{a_[:26]}」を "
+                          f"{(1-r)*100:.0f}％ の条件で上回った")
+                    found = True
+        for rate, lab, w, n, ar, ad in agg:
+            if rate >= 0.85:
+                print(f"  ○ 「{lab[:26]}」は基準を {rate*100:.0f}％ の条件で上回った")
+                found = True
+            elif rate <= 0.15:
+                print(f"  ○ 「{lab[:26]}」は基準に {(1-rate)*100:.0f}％ の条件で負けた")
+                found = True
+        if not found:
+            print("  ありません。どの比較も条件次第で入れ替わります。")
+
+        print("\n【決められなかったこと】\n")
+        undecided = False
+        for a_ in cols:
+            for b_ in cols:
+                if a_ >= b_:
+                    continue
+                r = (piv[a_] > piv[b_]).mean()
+                if 0.35 <= r <= 0.65:
+                    print(f"  × 「{a_[:24]}」と「{b_[:24]}」 … "
+                          f"{r*100:.0f}％ 対 {(1-r)*100:.0f}％")
+                    undecided = True
+        if not undecided:
+            print("  ありません。")
+
+        print("\n  ※ 85％以上で一貫していれば「堅い」、"
+              "35〜65％なら「決められない」としています。")
+        print("  ※ 条件は互いに重なる期間を含むため、完全に独立ではありません。")
+
+        OUTDIR.mkdir(parents=True, exist_ok=True)
+        gf.to_csv(OUTDIR / "grid.csv", index=False, encoding="utf-8-sig")
+        print(f"\n書き出しました: data/grid.csv（{len(gf)}行）")
+        return 0
+
     # ── 期間をずらして何度も検証する ──
     # ひとつの期間だけで良く見えるのは、たまたまかもしれない。
     # 窓を1年ずつずらして、どの期間でも同じ結論になるかを確かめる。
@@ -1650,7 +1845,7 @@ def main() -> int:
                                       tier_budget=args.realistic,
                                       dividends=args.realistic,
                                       slip_bps=args.slip_bps, fee_bps=args.fee_bps,
-                                      tax_rate=args.tax / 100.0))
+                                      tax_rate=args.tax / 100.0, ramp=args.ramp))
                 if m_:
                     rows_.append({"窓": f"{a.date()}〜{b.date()}",
                                   "ルール": VARIANTS[n_]["label"],
@@ -1719,7 +1914,7 @@ def main() -> int:
         res = simulate(panel, cfg, args.capital, args.max_names,
                        tier_budget=args.realistic, dividends=args.realistic,
                        slip_bps=args.slip_bps, fee_bps=args.fee_bps,
-                       tax_rate=args.tax / 100.0)
+                       tax_rate=args.tax / 100.0, ramp=args.ramp)
         m = metrics(res)
         if m:
             rows.append({"ルール": cfg["label"], **m})
@@ -1748,7 +1943,7 @@ def main() -> int:
     d0 = simulate(panel, first, args.capital, args.max_names,
                   tier_budget=args.realistic, dividends=args.realistic,
                   slip_bps=args.slip_bps, fee_bps=args.fee_bps,
-                  tax_rate=args.tax / 100.0)["diag"]
+                  tax_rate=args.tax / 100.0, ramp=args.ramp)["diag"]
     # 建玉の明細。どの銘柄をいつ買って、いくらまで伸びたかを見る。
     if args.show_trades:
         tl = d0.get("trade_log", [])
