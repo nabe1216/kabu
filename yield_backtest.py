@@ -434,6 +434,10 @@ PCT_FLOOR, PCT_CEIL = 50.0, 90.0
 # ══════════════════════════════════════════
 # データ取得
 # ══════════════════════════════════════════
+class NotAllowed(Exception):
+    """契約プランに含まれない、または認証が通らないときに投げる"""
+
+
 class RangeTooLong(Exception):
     """指定した期間がプランの範囲を超えているときに投げる"""
 
@@ -457,7 +461,9 @@ class JQ:
                         time.sleep(2 ** (attempt + 1))
                         continue
                     if r.status_code in (401, 403):
-                        sys.exit(f"認証に失敗しました（{r.status_code}）")
+                        # 契約プランに含まれない項目でも403が返る。
+                        # 呼び出し側で「使えない」と扱えるよう例外にする。
+                        raise NotAllowed(f"{r.status_code} {r.text[:120]}")
                     if r.status_code == 400:
                         # 期間が長すぎる場合にこれが返る。呼び出し側で短くして再試行する。
                         raise RangeTooLong(r.text[:150])
@@ -494,6 +500,8 @@ def fetch_topix(jq: "JQ", years: int = 9) -> pd.DataFrame:
     for path, params in paths:
         try:
             rows = jq.get(path, params)
+        except NotAllowed:
+            continue      # 契約に含まれない。次の経路を試す
         except Exception:
             continue
         if not rows:
@@ -510,7 +518,8 @@ def fetch_topix(jq: "JQ", years: int = 9) -> pd.DataFrame:
         if len(out) > 100:
             log.info("TOPIX を取得しました（%s / %d日分）", path, len(out))
             return out
-    log.warning("TOPIX を取得できませんでした。指数との比較は省略します。")
+    log.warning("TOPIX を取得できませんでした（契約プランに含まれない可能性）。"
+                "指数との比較と、指数を使う判定は省略します。")
     return pd.DataFrame()
 
 
@@ -571,7 +580,10 @@ def fetch_all(jq: JQ, years: int, limit: int,
               scale_filter: bool = True) -> dict:
     """株価と財務をまとめて取得する。時間がかかるのでキャッシュします。"""
     log.info("銘柄一覧を取得中…")
-    info = jq.get("/v2/equities/master", {})
+    try:
+        info = jq.get("/v2/equities/master", {})
+    except NotAllowed as e:
+        sys.exit(f"認証に失敗しました（{e}）。APIキーをご確認ください。")
     uni = []
     for row in info:
         if row.get("Mkt") != MARKET_PRIME:
@@ -1679,6 +1691,16 @@ def main() -> int:
         wf.to_csv(OUTDIR / "walk_forward.csv", index=False, encoding="utf-8-sig")
         print(f"\n書き出しました: data/walk_forward.csv")
         return 0
+
+    # TOPIX が無いのに指数を使うルールを選んでいたら、はっきり知らせる
+    _no_tpx = ("topix" not in panel.columns) or panel["topix"].isna().all()
+    if _no_tpx:
+        _sel = [x.strip() for x in args.only.split(",") if x.strip()] or list(VARIANTS)
+        _uses = [n for n in _sel if n in VARIANTS
+                 and (VARIANTS[n].get("regime_scale") or {}).get("use") == "topix"]
+        if _uses:
+            log.warning("TOPIX が無いため、次のルールは判定材料がなく"
+                        "通常と同じ動きになります: %s", ", ".join(_uses))
 
     names = [x.strip() for x in args.only.split(",") if x.strip()] or list(VARIANTS)
     rows = []
