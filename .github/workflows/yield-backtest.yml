@@ -41,12 +41,28 @@ on:
         description: "試し実行。先頭N銘柄だけ（0で全銘柄）"
         required: false
         default: "0"
+      grid:
+        description: "条件を総当たりで検証する（true/false）。どの条件でも成り立つ結論だけを取り出します"
+        required: false
+        default: "false"
+      grid_ramp:
+        description: "総当たりで試す資金投入の月数（カンマ区切り）"
+        required: false
+        default: "0,12"
+      grid_min_yield:
+        description: "総当たりで試す利回り足切り（カンマ区切り）"
+        required: false
+        default: "0,3"
       walk:
         description: "この年数の窓を1年ずつずらして何度も検証（例: 4）。空欄なら通常の比較"
         required: false
         default: ""
       min_yield:
         description: "この利回り（％）未満は買わない。実運用のスクリーニング相当。0で無効"
+        required: false
+        default: "0"
+      ramp:
+        description: "資金を何か月かけて入れるか。0なら初日に全額、12なら毎月1/12ずつ"
         required: false
         default: "0"
       show_trades:
@@ -114,6 +130,10 @@ jobs:
             --lookback "${{ github.event.inputs.lookback || '36' }}" \
             --universe "${{ github.event.inputs.universe || 'core' }}" \
             --min-yield "${{ github.event.inputs.min_yield || '0' }}" \
+            --ramp "${{ github.event.inputs.ramp || '0' }}" \
+            ${{ github.event.inputs.grid == 'true' && '--grid' || '' }} \
+            --grid-ramp "${{ github.event.inputs.grid_ramp || '0,12' }}" \
+            --grid-min-yield "${{ github.event.inputs.grid_min_yield || '0,3' }}" \
             ${{ github.event.inputs.walk != '' && format('--walk {0}', github.event.inputs.walk) || '' }} \
             ${{ github.event.inputs.show_trades == 'true' && '--show-trades' || '' }} \
             --tax "${{ github.event.inputs.tax || '20.315' }}" \
@@ -149,5 +169,6 @@ jobs:
             data/yield_backtest.json
             data/lookback_sweep.csv
             data/walk_forward.csv
+            data/grid.csv
             run.log
           if-no-files-found: ignore
