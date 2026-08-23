@@ -1245,6 +1245,13 @@ def main() -> int:
         args.capital = 10_000_000 if args.realistic else 3_000_000
     if args.max_names <= 0:
         args.max_names = 20 if args.realistic else 15
+    # 窓をずらす検証では、データ全体を使わないと窓を作れない。
+    # 「検証する年数」で先に切ってしまうと窓が1つしかできないため上書きする。
+    if args.walk > 0 and args.years < args.walk + 2:
+        log.info("窓をずらす検証のため、対象期間を最大まで広げます（%d年→9年）",
+                 args.years)
+        args.years = 9
+
     if args.realistic:
         log.info("実運用モード：元本%s万・Tier別予算・最大%d銘柄・配当あり",
                  f"{int(args.capital/10000):,}", args.max_names)
