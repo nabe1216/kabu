@@ -70,6 +70,17 @@
       "price": 4594.0,
       "amount": 1837600.0,
       "reason": "BUY_SIGNAL"
+    },
+    {
+      "date": "2026-08-23",
+      "action": "BUY",
+      "code": "4540",
+      "name": "ツムラ",
+      "tier": "B",
+      "qty": 100,
+      "price": 3745.0,
+      "amount": 374500.0,
+      "reason": "BUY_SIGNAL"
     }
   ],
   "daily_snapshots": [
@@ -612,6 +623,16 @@
       "realized_pl": 52800.0,
       "dividend_total": 31200,
       "holdings_count": 4
+    },
+    {
+      "date": "2026-08-23",
+      "cash": 310050.0,
+      "holdings_value": 10035300.0,
+      "total_value": 10376550.0,
+      "unrealized_pl": 261350.0,
+      "realized_pl": 52800.0,
+      "dividend_total": 31200,
+      "holdings_count": 5
     }
   ],
   "dividends": [

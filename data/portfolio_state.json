@@ -1,7 +1,7 @@
 {
   "started_at": "2026-06-28",
   "initial_cash": 10000000,
-  "cash": 684550.0,
+  "cash": 310050.0,
   "holdings": [
     {
       "code": "8801",
@@ -50,12 +50,24 @@
       "value": 1875600.0,
       "unrealized_pl": 38000.0,
       "unrealized_pl_pct": 2.07
+    },
+    {
+      "code": "4540",
+      "name": "ツムラ",
+      "tier": "B",
+      "qty": 100,
+      "buy_date": "2026-08-23",
+      "buy_price": 3745.0,
+      "current_price": 3767.0,
+      "value": 376700.0,
+      "unrealized_pl": 2200.0,
+      "unrealized_pl_pct": 0.59
     }
   ],
-  "total_value": 10374350.0,
-  "total_invested": 11260650.0,
+  "total_value": 10376550.0,
+  "total_invested": 11635150.0,
   "realized_pl": 52800.0,
   "dividend_received": 31200,
-  "last_updated": "2026-08-22",
-  "holdings_value": 9658600.0
+  "last_updated": "2026-08-23",
+  "holdings_value": 10035300.0
 }
