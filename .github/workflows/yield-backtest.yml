@@ -41,6 +41,18 @@ on:
         description: "試し実行。先頭N銘柄だけ（0で全銘柄）"
         required: false
         default: "0"
+      walk:
+        description: "この年数の窓を1年ずつずらして何度も検証（例: 4）。空欄なら通常の比較"
+        required: false
+        default: ""
+      min_yield:
+        description: "この利回り（％）未満は買わない。実運用のスクリーニング相当。0で無効"
+        required: false
+        default: "0"
+      show_trades:
+        description: "建玉の明細を表示する（true/false）"
+        required: false
+        default: "false"
       universe:
         description: "対象。core＝大型〜中型（489社）、prime＝プライム全銘柄（約1600社・取得に70分前後）"
         required: false
@@ -101,6 +113,9 @@ jobs:
             --years "${{ github.event.inputs.years || '2' }}" \
             --lookback "${{ github.event.inputs.lookback || '36' }}" \
             --universe "${{ github.event.inputs.universe || 'core' }}" \
+            --min-yield "${{ github.event.inputs.min_yield || '0' }}" \
+            ${{ github.event.inputs.walk != '' && format('--walk {0}', github.event.inputs.walk) || '' }} \
+            ${{ github.event.inputs.show_trades == 'true' && '--show-trades' || '' }} \
             --tax "${{ github.event.inputs.tax || '20.315' }}" \
             --slip-bps "${{ github.event.inputs.slip_bps || '10' }}" \
             --fee-bps "${{ github.event.inputs.fee_bps || '0' }}" \
@@ -133,5 +148,6 @@ jobs:
             data/yield_backtest.csv
             data/yield_backtest.json
             data/lookback_sweep.csv
+            data/walk_forward.csv
             run.log
           if-no-files-found: ignore
