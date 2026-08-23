@@ -664,6 +664,7 @@ def build_panel(store: dict, years: int, lookback: int = 36) -> pd.DataFrame:
         if not px0.empty:
             last_price[code] = float(px0["close"].iloc[-1])
     tiers = assign_tiers(store, last_price)
+    names_by_code = {u["code"]: u.get("name", u["code"]) for u in store["universe"]}
 
     for code, qrows in store["quotes"].items():
         px = quotes_to_df(qrows)
@@ -681,6 +682,7 @@ def build_panel(store: dict, years: int, lookback: int = 36) -> pd.DataFrame:
         f = pd.DataFrame({"date": m.index, "code": code,
                           "price": m.values, "dps": d.values, "yield": y.values})
         f["tier"] = tiers.get(code, "B")
+        f["name"] = names_by_code.get(code, code)
         # 累進配当・DOE銘柄は「減配しにくい」と宣言している。
         # 利確の扱いを変えるかどうかを試せるようにフラグを持たせる。
         f["progressive"] = (code in PROGRESSIVE) or (code in DOE)
@@ -789,6 +791,7 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
     hold_tiers = set(cfg.get("hold_tiers", []))
     # 減配したら手放すか。実運用の「緊急撤退」に相当する。
     exit_on_cut = cfg.get("exit_on_cut", False)
+    min_yield = cfg.get("min_yield", 0.0)
     trail_arm = cfg.get("trail_arm")                # この率まで上がったら見張り開始
     trail = cfg.get("trail")                        # 高値からこの率下げたら売る
     rotate = cfg.get("rotate")
@@ -859,8 +862,13 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                 diag["cut_exits"] = diag.get("cut_exits", 0) + 1
                 if st.get("sh_sum"):
                     avg = st["cost_sum"] / st["sh_sum"]
-                    diag["tier_peak"].append(
-                        (st.get("tier", "B"), st.get("peak", avg) / avg - 1))
+                    g_ = st.get("peak", avg) / avg - 1
+                    diag["tier_peak"].append((st.get("tier", "B"), g_))
+                    for e_ in reversed(diag.get("trade_log", [])):
+                        if e_["code"] == code and e_["result"] == "保有中":
+                            e_["peak_gain"] = g_
+                            e_["result"] = "売却"
+                            break
                 del pos[code]
                 diag["closed"] += 1
                 if code in opened_at:
@@ -947,8 +955,13 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
             if st["units"] == 0:
                 if st.get("sh_sum"):
                     avg = st["cost_sum"] / st["sh_sum"]
-                    diag["tier_peak"].append(
-                        (st.get("tier", "B"), st.get("peak", avg) / avg - 1))
+                    g_ = st.get("peak", avg) / avg - 1
+                    diag["tier_peak"].append((st.get("tier", "B"), g_))
+                    for e_ in reversed(diag.get("trade_log", [])):
+                        if e_["code"] == code and e_["result"] == "保有中":
+                            e_["peak_gain"] = g_
+                            e_["result"] = "売却"
+                            break
                 del pos[code]
                 diag["closed"] += 1
                 if code in opened_at:
@@ -958,6 +971,8 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
         diag["months"] += 1
         cands = []
         for code, row in day.iterrows():
+            if min_yield > 0 and row.get("yield", 0) < min_yield:
+                continue        # 利回りが低すぎる銘柄は最初から除く
             p = level(row)
             ent = entry_for(row)
             need = [required_pct(e, row, dyn) if measure == "pct" else e
@@ -1066,6 +1081,11 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                     opened_at[code] = mi
                     tg = day.loc[code, "tier"] if "tier" in day.columns else "B"
                     diag["tier_opened"][tg] = diag["tier_opened"].get(tg, 0) + 1
+                    diag.setdefault("trade_log", []).append({
+                        "tier": tg, "code": code,
+                        "name": day.loc[code].get("name", code),
+                        "date": str(pd.Timestamp(dt).date())[:7],
+                        "price": price, "peak_gain": 0.0, "result": "保有中"})
                 st["tier"] = day.loc[code, "tier"] if "tier" in day.columns else "B"
                 st["cost_sum"] = st.get("cost_sum", 0.0) + sh * buy_eff
                 st["sh_sum"] = st.get("sh_sum", 0) + sh
@@ -1081,7 +1101,12 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
     for code, st in pos.items():
         if st.get("sh_sum"):
             avg = st["cost_sum"] / st["sh_sum"]
-            diag["tier_peak"].append((st.get("tier", "B"), st.get("peak", avg) / avg - 1))
+            g_ = st.get("peak", avg) / avg - 1
+            diag["tier_peak"].append((st.get("tier", "B"), g_))
+            for e_ in reversed(diag.get("trade_log", [])):
+                if e_["code"] == code and e_["result"] == "保有中":
+                    e_["peak_gain"] = g_
+                    break
 
     return {"curve": pd.DataFrame(curve), "trades": pd.DataFrame(trades),
             "capital": capital, "diag": diag}
@@ -1117,6 +1142,45 @@ def metrics(res: dict) -> dict:
             "入れ替え": d.get("rotations", 0)}
 
 
+# ── 比較の基準：対象銘柄を等金額で買って持ち続けた場合 ──
+# ルールが本当に価値を生んでいるのか、それとも相場が上がっただけなのか。
+# 銘柄選択も売買判断も一切しない場合の成績を出して並べる。
+def buy_and_hold(pn: pd.DataFrame, tax_rate: float) -> dict | None:
+    dts = sorted(pn["date"].unique())
+    if len(dts) < 12:
+        return None
+    first = pn[pn["date"] == dts[0]].set_index("code")
+    codes = list(first.index)
+    if not codes:
+        return None
+    # 初日に等金額で買い、あとは何もしない
+    w = 1.0 / len(codes)
+    base_px = first["price"].to_dict()
+    vals, div_total = [], 0.0
+    for dt in dts:
+        day = pn[pn["date"] == dt].set_index("code")
+        v = 0.0
+        for c in codes:
+            if c in day.index and base_px.get(c):
+                v += w * day.loc[c, "price"] / base_px[c]
+                m = pd.Timestamp(dt).month
+                for key in ("fiscal_month", "interim_month"):
+                    if int(day.loc[c].get(key, 0) or 0) == m and day.loc[c, "dps"] > 0:
+                        g = w * (day.loc[c, "dps"] * 0.5) / base_px[c]
+                        div_total += g * (1 - tax_rate)
+            else:
+                v += w        # 上場廃止などは取得時の値で据え置く
+        vals.append(v + div_total)
+    arr = np.array(vals)
+    yrs = max((pd.Timestamp(dts[-1]) - pd.Timestamp(dts[0])).days / 365.25, 0.5)
+    dd = float((1 - arr / np.maximum.accumulate(arr)).max())
+    r = pd.Series(arr).pct_change().dropna()
+    return {"総リターン": (arr[-1] - 1) * 100,
+            "年率": (arr[-1] ** (1 / yrs) - 1) * 100,
+            "最大下落": dd * 100,
+            "シャープ": float(r.mean() / r.std() * np.sqrt(12)) if r.std() > 0 else 0.0}
+
+
 # ══════════════════════════════════════════
 def main() -> int:
     ap = argparse.ArgumentParser()
@@ -1134,6 +1198,15 @@ def main() -> int:
     ap.add_argument("--only", default="", help="比較するルールをカンマ区切りで指定")
     ap.add_argument("--capital", type=float, default=0,
                     help="元本。未指定なら通常300万・実運用モードで1000万")
+    ap.add_argument("--show-trades", action="store_true",
+                    help="建玉の明細を表示する（どの銘柄をいつ買ったか）")
+    ap.add_argument("--walk", type=int, default=0,
+                    help="この年数の窓を1年ずつずらして何度も検証する。"
+                         "例: 4 なら 2019-2023、2020-2024… と繰り返す。"
+                         "特定の期間がたまたま良かっただけかを見分けられる")
+    ap.add_argument("--min-yield", type=float, default=0.0,
+                    help="この利回り（％）を下回る銘柄は買わない。"
+                         "実運用のスクリーニングに相当する部分")
     ap.add_argument("--universe", choices=["core", "prime"], default="core",
                     help="core＝大型〜中型（既定）、prime＝プライム全銘柄。"
                          "prime にすると中小型に落ちた会社も入り、偏りが減る")
@@ -1380,6 +1453,91 @@ def main() -> int:
         print(f"\n書き出しました: data/lookback_sweep.csv")
         return 0
 
+    if args.min_yield > 0:
+        for v in VARIANTS.values():
+            v.setdefault("min_yield", args.min_yield)
+        log.info("利回り %.1f％ 未満の銘柄は買わない設定で回します", args.min_yield)
+
+    # ── 期間をずらして何度も検証する ──
+    # ひとつの期間だけで良く見えるのは、たまたまかもしれない。
+    # 窓を1年ずつずらして、どの期間でも同じ結論になるかを確かめる。
+    if args.walk > 0:
+        nm = [x.strip() for x in args.only.split(",") if x.strip()] or \
+             ["current_live", "live15_holdS", "live15_holdall"]
+        d0_, d1_ = panel["date"].min(), panel["date"].max()
+        wins = []
+        st_ = d1_ - pd.DateOffset(years=args.walk)
+        while st_ >= d0_:
+            wins.append((st_, st_ + pd.DateOffset(years=args.walk)))
+            st_ = st_ - pd.DateOffset(years=1)
+        wins.reverse()
+        if not wins:
+            print("窓を作れません。--walk を短くしてください。")
+            return 1
+        log.info("%d年の窓を %d通り試します", args.walk, len(wins))
+
+        rows_ = []
+        for a, b in wins:
+            sub = panel[(panel["date"] >= a) & (panel["date"] <= b)]
+            if sub["date"].nunique() < args.walk * 10:
+                continue
+            bh_ = buy_and_hold(sub, args.tax / 100.0)
+            for n_ in nm:
+                if n_ not in VARIANTS:
+                    continue
+                m_ = metrics(simulate(sub, VARIANTS[n_], args.capital, args.max_names,
+                                      tier_budget=args.realistic,
+                                      dividends=args.realistic,
+                                      slip_bps=args.slip_bps, fee_bps=args.fee_bps,
+                                      tax_rate=args.tax / 100.0))
+                if m_:
+                    rows_.append({"窓": f"{a.date()}〜{b.date()}",
+                                  "ルール": VARIANTS[n_]["label"],
+                                  "年率": m_["年率"], "最大下落": m_["最大下落"]})
+            if bh_:
+                rows_.append({"窓": f"{a.date()}〜{b.date()}",
+                              "ルール": "（基準）全部買って放置",
+                              "年率": bh_["年率"], "最大下落": bh_["最大下落"]})
+            log.info("  %s 完了", a.date())
+
+        if not rows_:
+            print("結果がありません。")
+            return 1
+        wf = pd.DataFrame(rows_)
+        for metric in ("年率", "最大下落"):
+            piv = wf.pivot(index="窓", columns="ルール", values=metric)
+            print(f"\n【{metric}】（{args.walk}年の窓を1年ずつずらして）\n")
+            head = "窓                     " + "".join(f"{c[:16]:>18}" for c in piv.columns)
+            print(head)
+            print("-" * min(len(head), 160))
+            for w_, r_ in piv.iterrows():
+                print(f"{w_:<23}" + "".join(f"{v:>17.1f}%" for v in r_.values))
+            print()
+
+        piv = wf.pivot(index="窓", columns="ルール", values="年率")
+        base_col = next((c for c in piv.columns if c.startswith("（基準）")), None)
+        print("【読み方】")
+        if base_col is not None:
+            for c in piv.columns:
+                if c == base_col:
+                    continue
+                win = (piv[c] > piv[base_col]).sum()
+                print(f"  {c[:28]:<30}基準を上回った窓 … {win}/{len(piv)}")
+            print("\n  すべての窓で上回っていれば、期間に依存しない優位と言えます。")
+            print("  半分程度なら、たまたま良い期間があっただけかもしれません。")
+        best = piv.drop(columns=[base_col] if base_col else []).idxmax(axis=1)
+        print(f"\n  窓ごとの最良ルール … {best.nunique()}種類")
+        if best.nunique() == 1:
+            print(f"  どの窓でも同じルールが最良でした（{best.iloc[0]}）。")
+        else:
+            print("  窓によって最良のルールが入れ替わっています。")
+            print("  → ひとつを選ぶ根拠は弱いということです。")
+
+        OUTDIR.mkdir(parents=True, exist_ok=True)
+        wf.to_csv(OUTDIR / "walk_forward.csv", index=False, encoding="utf-8-sig")
+        print(f"\n書き出しました: data/walk_forward.csv")
+        return 0
+
     names = [x.strip() for x in args.only.split(",") if x.strip()] or list(VARIANTS)
     rows = []
     for name in names:
@@ -1396,45 +1554,8 @@ def main() -> int:
             rows.append({"ルール": cfg["label"], **m})
             log.info("  %s 完了", cfg["label"])
 
-    # ── 比較の基準：対象銘柄を等金額で買って持ち続けた場合 ──
-    # ルールが本当に価値を生んでいるのか、それとも相場が上がっただけなのか。
-    # 銘柄選択も売買判断も一切しない場合の成績を出して並べる。
-    def buy_and_hold(pn: pd.DataFrame, tax_rate: float) -> dict | None:
-        dts = sorted(pn["date"].unique())
-        if len(dts) < 12:
-            return None
-        first = pn[pn["date"] == dts[0]].set_index("code")
-        codes = list(first.index)
-        if not codes:
-            return None
-        # 初日に等金額で買い、あとは何もしない
-        w = 1.0 / len(codes)
-        base_px = first["price"].to_dict()
-        vals, div_total = [], 0.0
-        for dt in dts:
-            day = pn[pn["date"] == dt].set_index("code")
-            v = 0.0
-            for c in codes:
-                if c in day.index and base_px.get(c):
-                    v += w * day.loc[c, "price"] / base_px[c]
-                    m = pd.Timestamp(dt).month
-                    for key in ("fiscal_month", "interim_month"):
-                        if int(day.loc[c].get(key, 0) or 0) == m and day.loc[c, "dps"] > 0:
-                            g = w * (day.loc[c, "dps"] * 0.5) / base_px[c]
-                            div_total += g * (1 - tax_rate)
-                else:
-                    v += w        # 上場廃止などは取得時の値で据え置く
-            vals.append(v + div_total)
-        arr = np.array(vals)
-        yrs = max((pd.Timestamp(dts[-1]) - pd.Timestamp(dts[0])).days / 365.25, 0.5)
-        dd = float((1 - arr / np.maximum.accumulate(arr)).max())
-        r = pd.Series(arr).pct_change().dropna()
-        return {"総リターン": (arr[-1] - 1) * 100,
-                "年率": (arr[-1] ** (1 / yrs) - 1) * 100,
-                "最大下落": dd * 100,
-                "シャープ": float(r.mean() / r.std() * np.sqrt(12)) if r.std() > 0 else 0.0}
-
     bh = buy_and_hold(panel, args.tax / 100.0)
+
 
     if not rows:
         print("結果がありません。")
@@ -1457,6 +1578,19 @@ def main() -> int:
                   tier_budget=args.realistic, dividends=args.realistic,
                   slip_bps=args.slip_bps, fee_bps=args.fee_bps,
                   tax_rate=args.tax / 100.0)["diag"]
+    # 建玉の明細。どの銘柄をいつ買って、いくらまで伸びたかを見る。
+    if args.show_trades:
+        tl = d0.get("trade_log", [])
+        if tl:
+            print(f"\n■ 建玉の明細（{first['label']} の場合・最大40件）\n")
+            print(f"{'Tier':<6}{'コード':<8}{'銘柄':<18}{'買った月':<12}"
+                  f"{'取得単価':>10}{'到達益':>9}{'結果':>9}")
+            print("-" * 74)
+            for x in tl[:40]:
+                print(f"{x['tier']:<6}{x['code']:<8}{str(x['name'])[:16]:<18}"
+                      f"{x['date']:<12}{x['price']:>10,.0f}{x['peak_gain']*100:>8.1f}%"
+                      f"{x['result']:>9}")
+
     tp = d0.get("tier_peak", [])
     if tp:
         print(f"\n■ Tier別の内訳（{first['label']} の場合）\n")
