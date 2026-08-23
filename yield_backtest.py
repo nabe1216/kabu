@@ -334,6 +334,49 @@ VARIANTS: dict[str, dict[str, Any]] = {
         "hold_tiers": ["S", "A", "B"], "exit_on_cut": True,
     },
 
+    # ── 市場全体の状態で買う量を変える ──
+    # 市場の利回り中央値が過去3年平均より高い＝全体が安い、と判断して厚く買う。
+    # 逆に低いときは薄く買い、現金を残す。
+    "regime_mild": {
+        "label": "市場が安いとき厚く（1.5倍/0.7倍）",
+        "entry": [75], "exit": [25], "priority": "tier",
+        "budget_weighted": True, "target_names": 15, "hold_tiers": ["S"],
+        "regime_scale": {"cheap": 1.5, "rich": 0.7,
+                         "cheap_z": 0.5, "rich_z": -0.5},
+    },
+    "regime_strong": {
+        "label": "市場が安いとき厚く（2.5倍/0.3倍）",
+        "entry": [75], "exit": [25], "priority": "tier",
+        "budget_weighted": True, "target_names": 15, "hold_tiers": ["S"],
+        "regime_scale": {"cheap": 2.5, "rich": 0.3,
+                         "cheap_z": 0.5, "rich_z": -0.5},
+    },
+    "regime_wait": {
+        "label": "安いときだけ買う（3倍/買わない）",
+        "entry": [75], "exit": [25], "priority": "tier",
+        "budget_weighted": True, "target_names": 15, "hold_tiers": ["S"],
+        "regime_scale": {"cheap": 3.0, "rich": 0.0,
+                         "cheap_z": 0.3, "rich_z": 0.0},
+    },
+
+    # ── TOPIX の下落率で買う量を変える ──
+    # 「高値から15％下げたら暴落」という素直な定義。
+    # 利回り中央値より直感的で、指数だけ見れば判断できる。
+    "topix_dd15": {
+        "label": "TOPIXが高値から15％安で厚く（2倍/0.7倍）",
+        "entry": [75], "exit": [25], "priority": "tier",
+        "budget_weighted": True, "target_names": 15, "hold_tiers": ["S"],
+        "regime_scale": {"use": "topix", "cheap": 2.0, "rich": 0.7,
+                         "cheap_dd": -15.0, "rich_dd": -3.0},
+    },
+    "topix_dd10": {
+        "label": "TOPIXが高値から10％安で厚く（1.5倍/0.8倍）",
+        "entry": [75], "exit": [25], "priority": "tier",
+        "budget_weighted": True, "target_names": 15, "hold_tiers": ["S"],
+        "regime_scale": {"use": "topix", "cheap": 1.5, "rich": 0.8,
+                         "cheap_dd": -10.0, "rich_dd": -3.0},
+    },
+
     # ── 予算も買いの基準も変えた版 ──
     "full_new15": {
         "label": "中央値3分割＋Tier別利確＋予算15銘柄ぶん",
@@ -434,6 +477,41 @@ class JQ:
             if not pk:
                 return rows
             time.sleep(API_SLEEP)
+
+
+def fetch_topix(jq: "JQ", years: int = 9) -> pd.DataFrame:
+    """TOPIX の日次終値を取る。
+
+    V2 での項目名が確かめられていないため、考えられる経路を順に試す。
+    取れなければ空を返し、呼び出し側で「なし」として扱う。
+    """
+    today = date.today()
+    frm = (today - timedelta(days=365 * years + 30)).isoformat()
+    to = today.isoformat()
+    paths = [("/v2/indices/topix", {"from": frm, "to": to}),
+             ("/v2/markets/indices/topix", {"from": frm, "to": to}),
+             ("/v1/indices/topix", {"from": frm, "to": to})]
+    for path, params in paths:
+        try:
+            rows = jq.get(path, params)
+        except Exception:
+            continue
+        if not rows:
+            continue
+        df = pd.DataFrame(rows)
+        dcol = next((c for c in df.columns if c.lower() in ("date", "d")), None)
+        ccol = next((c for c in df.columns
+                     if c.lower() in ("close", "c", "closeprice")), None)
+        if not dcol or not ccol:
+            continue
+        out = pd.DataFrame({"date": pd.to_datetime(df[dcol]),
+                            "close": pd.to_numeric(df[ccol], errors="coerce")})
+        out = out.dropna().sort_values("date").reset_index(drop=True)
+        if len(out) > 100:
+            log.info("TOPIX を取得しました（%s / %d日分）", path, len(out))
+            return out
+    log.warning("TOPIX を取得できませんでした。指数との比較は省略します。")
+    return pd.DataFrame()
 
 
 def norm_code(c: str) -> str:
@@ -539,6 +617,11 @@ def fetch_all(jq: JQ, years: int, limit: int,
     if ok == 0:
         sys.exit("株価を1銘柄も取得できませんでした。APIキーと契約プランをご確認ください。")
     log.info("取得できた銘柄: %d / %d", ok, len(uni))
+    try:
+        store["topix"] = fetch_topix(jq)
+    except Exception as e:
+        log.warning("TOPIX の取得に失敗: %s", e)
+        store["topix"] = pd.DataFrame()
     return store
 
 
@@ -725,6 +808,19 @@ def build_panel(store: dict, years: int, lookback: int = 36) -> pd.DataFrame:
         return (s - m) / sd.replace(0, np.nan)
     panel["zscore"] = panel.groupby("code")["yield"].transform(_z)
 
+    # TOPIX が高値から何％下げているか。暴落局面の判定に使う。
+    # 過去12か月の高値と比べるので、未来の情報は入らない。
+    tpx = store.get("topix")
+    if isinstance(tpx, pd.DataFrame) and not tpx.empty:
+        tm = tpx.set_index("date")["close"].resample("ME").last().dropna()
+        peak = tm.rolling(12, min_periods=3).max()
+        dd = (tm / peak - 1.0) * 100.0
+        panel["topix"] = panel["date"].map(tm)
+        panel["mkt_dd"] = panel["date"].map(dd)
+    else:
+        panel["topix"] = np.nan
+        panel["mkt_dd"] = np.nan
+
     start = panel["date"].max() - pd.DateOffset(years=years)
     return panel[panel["date"] >= start].dropna(subset=["pct_own"]).reset_index(drop=True)
 
@@ -792,6 +888,10 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
     # 減配したら手放すか。実運用の「緊急撤退」に相当する。
     exit_on_cut = cfg.get("exit_on_cut", False)
     min_yield = cfg.get("min_yield", 0.0)
+    # 市場全体が割安なときに厚く、割高なときに薄く買う。
+    # 「暴落を待つ」戦略は、待っている間の取り逃がしが本体なので、
+    # 効いているかどうかは全期間で確かめる必要がある。
+    regime = cfg.get("regime_scale")      # 例 {"cheap":1.5, "rich":0.5}
     trail_arm = cfg.get("trail_arm")                # この率まで上がったら見張り開始
     trail = cfg.get("trail")                        # 高値からこの率下げたら売る
     rotate = cfg.get("rotate")
@@ -819,9 +919,13 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
             "tier_opened": {}, "tier_peak": []}
     opened_at: dict[str, int] = {}
 
+    # 市場全体がどれだけ割安か。全銘柄の利回り中央値を、
+    # 過去3年の平均と比べて何σ離れているかで測る。
+    # 当日を含めると未来の情報が混ざるので、1期ずらしてから平均を取る。
     mkt = panel.groupby("date")["yield"].median()
-    mkt_z = (mkt - mkt.rolling(36, min_periods=12).mean()) / \
-            mkt.rolling(36, min_periods=12).std()
+    _past = mkt.shift(1)
+    mkt_z = (mkt - _past.rolling(36, min_periods=12).mean()) / \
+            _past.rolling(36, min_periods=12).std()
 
     def value_of(day):
         v = cash
@@ -1054,6 +1158,25 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                 continue
             # Tier別予算か、等金額か
             nt = len(entry_for(day.loc[code])) if entry_by_tier else n_tr
+            rs = 1.0
+            if regime:
+                if regime.get("use") == "topix":
+                    # TOPIX が高値から何％下げているかで判断する
+                    v = day.iloc[0].get("mkt_dd")
+                    v = float(v) if v is not None and not pd.isna(v) else 0.0
+                    if v <= regime.get("cheap_dd", -15.0):
+                        rs = regime.get("cheap", 1.0)
+                    elif v >= regime.get("rich_dd", -3.0):
+                        rs = regime.get("rich", 1.0)
+                else:
+                    z = float(day.iloc[0].get("mkt_yield_z", 0) or 0)
+                    if z >= regime.get("cheap_z", 0.5):
+                        rs = regime.get("cheap", 1.0)
+                    elif z <= regime.get("rich_z", -0.5):
+                        rs = regime.get("rich", 1.0)
+                diag.setdefault("regime_months", {})
+                k = "割安" if rs > 1 else ("割高" if rs < 1 else "普通")
+                diag["regime_months"][k] = diag["regime_months"].get(k, 0) + 1
             tier = day.loc[code, "tier"] if "tier" in day.columns else "B"
             if weighted:
                 # 総資産に対する比率で決める。重みの平均で割って、
@@ -1064,6 +1187,7 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                 unit_size = TIER_BUDGET.get(tier, TIER_BUDGET["B"]) / nt
             else:
                 unit_size = total / max_names / nt
+            unit_size *= rs
             for _ in range(add):
                 if cash < unit_size or unit_size < price:
                     break
@@ -1245,6 +1369,17 @@ def main() -> int:
         args.capital = 10_000_000 if args.realistic else 3_000_000
     if args.max_names <= 0:
         args.max_names = 20 if args.realistic else 15
+    # キャッシュに TOPIX が無ければ、指数だけ取り直す（数秒）。
+    if store.get("topix") is None or (isinstance(store.get("topix"), pd.DataFrame)
+                                      and store["topix"].empty):
+        key = os.environ.get("J_QUANTS_API_KEY")
+        if key:
+            try:
+                store["topix"] = fetch_topix(JQ(key))
+                pd.to_pickle(store, CACHE)
+            except Exception as e:
+                log.warning("TOPIX の取得に失敗: %s", e)
+
     # 窓をずらす検証では、データ全体を使わないと窓を作れない。
     # 「検証する年数」で先に切ってしまうと窓が1つしかできないため上書きする。
     if args.walk > 0 and args.years < args.walk + 2:
@@ -1635,6 +1770,20 @@ def main() -> int:
               f"手数料 片道{args.fee_bps:.0f}bps ／ 税率{args.tax:.3f}％")
         print("  ※ 税金は譲渡益と配当にかかります。損は繰り越して相殺しています。")
 
+    # TOPIX との比較
+    if "topix" in panel.columns and panel["topix"].notna().any():
+        tp = panel.groupby("date")["topix"].first().dropna()
+        if len(tp) > 12:
+            yrs_ = max((tp.index[-1] - tp.index[0]).days / 365.25, 0.5)
+            tot_ = tp.iloc[-1] / tp.iloc[0] - 1
+            dd_ = float((1 - tp / tp.cummax()).max())
+            print(f"\n■ TOPIX（指数のみ・配当を含まず）\n")
+            print(f"  総リターン {tot_*100:>7.1f}%   "
+                  f"年率 {((1+tot_)**(1/yrs_)-1)*100:>5.1f}%   "
+                  f"最大下落 {dd_*100:>5.1f}%")
+            print("  ※ 指数は配当を含みません。ルールの数字は配当込みなので、")
+            print("    公平に比べるには指数側に年2％前後を足して見てください。")
+
     if bh:
         print(f"\n■ 比較の基準：対象{panel['code'].nunique()}銘柄を等金額で買って持ち続けた場合\n")
         print(f"  総リターン {bh['総リターン']:>7.1f}%   年率 {bh['年率']:>5.1f}%   "
@@ -1651,6 +1800,11 @@ def main() -> int:
             print("  基準を明確に上回っています。銘柄選択に意味があったと言えます。")
         print("  ※ 基準は初日に等金額で買って放置した場合。配当は課税後で加算しています。")
 
+    rm = d0.get("regime_months", {})
+    if rm:
+        tot_ = sum(rm.values())
+        print("\n  市場の状態の内訳： " +
+              " / ".join(f"{k} {v}か月（{v/tot_*100:.0f}％）" for k, v in rm.items()))
     cut = d0.get("cut_exits", 0) if "d0" in dir() else 0
     print("\n  決済率＝買った建玉のうち実際に売れた割合。低いほど「出口が来ない」状態。")
     print("  保有月数＝売れたものの平均保有期間。")
