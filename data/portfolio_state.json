@@ -10,10 +10,10 @@
       "qty": 2700,
       "buy_date": "2026-06-28",
       "buy_price": 1451.5,
-      "current_price": 1513.0,
-      "value": 4085100.0,
-      "unrealized_pl": 166050.0,
-      "unrealized_pl_pct": 4.24
+      "current_price": 1513.5,
+      "value": 4086450.0,
+      "unrealized_pl": 167400.0,
+      "unrealized_pl_pct": 4.27
     },
     {
       "code": "6902",
@@ -22,10 +22,10 @@
       "qty": 1000,
       "buy_date": "2026-06-28",
       "buy_price": 1879.5,
-      "current_price": 1940.5,
-      "value": 1940500.0,
-      "unrealized_pl": 61000.0,
-      "unrealized_pl_pct": 3.25
+      "current_price": 1921.5,
+      "value": 1921500.0,
+      "unrealized_pl": 42000.0,
+      "unrealized_pl_pct": 2.23
     },
     {
       "code": "8439",
@@ -34,10 +34,10 @@
       "qty": 700,
       "buy_date": "2026-06-28",
       "buy_price": 2519.0,
-      "current_price": 2545.5,
-      "value": 1781850.0,
-      "unrealized_pl": 18550.0,
-      "unrealized_pl_pct": 1.05
+      "current_price": 2584.5,
+      "value": 1809150.0,
+      "unrealized_pl": 45850.0,
+      "unrealized_pl_pct": 2.6
     },
     {
       "code": "1925",
@@ -46,10 +46,10 @@
       "qty": 400,
       "buy_date": "2026-07-08",
       "buy_price": 4594.0,
-      "current_price": 4700.0,
-      "value": 1880000.0,
-      "unrealized_pl": 42400.0,
-      "unrealized_pl_pct": 2.31
+      "current_price": 4709.0,
+      "value": 1883600.0,
+      "unrealized_pl": 46000.0,
+      "unrealized_pl_pct": 2.5
     },
     {
       "code": "4540",
@@ -58,16 +58,16 @@
       "qty": 100,
       "buy_date": "2026-08-23",
       "buy_price": 3745.0,
-      "current_price": 3771.0,
-      "value": 377100.0,
-      "unrealized_pl": 2600.0,
-      "unrealized_pl_pct": 0.69
+      "current_price": 3783.0,
+      "value": 378300.0,
+      "unrealized_pl": 3800.0,
+      "unrealized_pl_pct": 1.01
     }
   ],
-  "total_value": 10405800.0,
+  "total_value": 10420250.0,
   "total_invested": 11635150.0,
   "realized_pl": 52800.0,
   "dividend_received": 31200,
-  "last_updated": "2026-08-24",
-  "holdings_value": 10064550.0
+  "last_updated": "2026-08-25",
+  "holdings_value": 10079000.0
 }
