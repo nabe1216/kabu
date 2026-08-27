@@ -377,6 +377,34 @@ VARIANTS: dict[str, dict[str, Any]] = {
                          "cheap_dd": -10.0, "rich_dd": -3.0},
     },
 
+    # ── 部分利確（現金も入り、残りは走り続ける）──
+    # 全部売ると税金を一度に払い、伸びしろも失う。
+    # 一部だけ売れば、その中間を取れるのではないか、という検証。
+    "half20": {
+        "label": "20％上がるたびに半分売る",
+        "entry": [75], "exit": [], "priority": "tier",
+        "budget_weighted": True, "target_names": 15, "exit_on_cut": True,
+        "partial_gain": {"threshold": 0.20, "fraction": 0.5},
+    },
+    "half30": {
+        "label": "30％上がるたびに半分売る",
+        "entry": [75], "exit": [], "priority": "tier",
+        "budget_weighted": True, "target_names": 15, "exit_on_cut": True,
+        "partial_gain": {"threshold": 0.30, "fraction": 0.5},
+    },
+    "third20": {
+        "label": "20％上がるたびに3分の1売る",
+        "entry": [75], "exit": [], "priority": "tier",
+        "budget_weighted": True, "target_names": 15, "exit_on_cut": True,
+        "partial_gain": {"threshold": 0.20, "fraction": 0.34},
+    },
+    "half50": {
+        "label": "50％上がるたびに半分売る",
+        "entry": [75], "exit": [], "priority": "tier",
+        "budget_weighted": True, "target_names": 15, "exit_on_cut": True,
+        "partial_gain": {"threshold": 0.50, "fraction": 0.5},
+    },
+
     # ── 安定性を高めるための制約 ──
     # 年率ではなく「ばらつきの小ささ」「最悪のときのマシさ」を狙う。
     "stable_sector3": {
@@ -936,7 +964,13 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
     hold_tiers = set(cfg.get("hold_tiers", []))
     # 減配したら手放すか。実運用の「緊急撤退」に相当する。
     exit_on_cut = cfg.get("exit_on_cut", False)
-    min_yield = cfg.get("min_yield", 0.0) if min_yield_override is None \
+    min_yield = cfg.get("min_yield", 0.0)
+    # 部分利確。上がったら「一部だけ」売る。
+    #   threshold … 何％上がったら売るか（前回売った値段からの上昇率）
+    #   fraction  … そのとき何割を売るか
+    # 全部売ると税金を一度に払い、伸びしろも失う。
+    # 一部だけなら現金も入り、残りは走り続ける。
+    partial = cfg.get("partial_gain") if min_yield_override is None \
         else float(min_yield_override)
     # 市場全体が割安なときに厚く、割高なときに薄く買う。
     # 「暴落を待つ」戦略は、待っている間の取り逃がしが本体なので、
@@ -1053,6 +1087,48 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
 
             if hold_tiers and row.get("tier", "B") in hold_tiers:
                 continue          # この Tier は売らない
+
+            # ── 部分利確 ──
+            if partial and st["lots"]:
+                shs = sum(sh for sh, _ in st["lots"])
+                cost0 = sum(sh * pr for sh, pr in st["lots"]) / shs if shs else 0
+                base = st.get("last_partial") or cost0
+                if base > 0 and price >= base * (1 + partial["threshold"]):
+                    want = int(shs * partial.get("fraction", 0.5) // 100) * 100
+                    left = want
+                    newlots = []
+                    for sh, pr in st["lots"]:
+                        if left <= 0:
+                            newlots.append((sh, pr))
+                            continue
+                        take = min(sh, left)
+                        eff = price * (1 - slip) * (1 - fee)
+                        cash += take * eff
+                        g = (eff - pr) * take
+                        diag["realized"] += g
+                        if tax_rate > 0:
+                            if g > 0:
+                                taxable = max(0.0, g - loss_pool)
+                                loss_pool = max(0.0, loss_pool - g)
+                                t = taxable * tax_rate
+                                cash -= t
+                                diag["tax"] = diag.get("tax", 0.0) + t
+                            else:
+                                loss_pool += -g
+                        diag["fee"] = diag.get("fee", 0.0) + take * price * (slip + fee)
+                        trades.append({"code": code, "date": dt, "side": "sell",
+                                       "price": eff, "shares": take})
+                        left -= take
+                        if sh - take > 0:
+                            newlots.append((sh - take, pr))
+                    if want > 0 and left < want:
+                        st["lots"] = newlots
+                        st["last_partial"] = price
+                        diag["partial_sells"] = diag.get("partial_sells", 0) + 1
+                        if not st["lots"]:
+                            st["units"] = 0
+                        else:
+                            st["units"] = max(1, len(st["lots"]))
 
             # ── 利益が乗ったときの降り方 ──
             if st["lots"]:
