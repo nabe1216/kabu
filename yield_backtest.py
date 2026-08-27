@@ -974,6 +974,8 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
     curve, trades = [], []
     diag = {"adjusted": 0, "changed": 0, "full_slots": 0, "months": 0,
             "opened": 0, "closed": 0, "hold_months": [], "rotations": 0,
+            # 売却して確定した損益（税引後）。含み益とは別に集計する。
+            "realized": 0.0,
             # Tierごとに「建てた数」と「どこまで含み益が伸びたか」を記録する。
             # 利確ラインを変えても結果が動かないとき、
             # そもそもその銘柄を持っていないのか、
@@ -1025,6 +1027,7 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                         else:
                             loss_pool += -gain
                     diag["fee"] = diag.get("fee", 0.0) + sh * price * (slip + fee)
+                    diag["realized"] += gain
                     trades.append({"code": code, "date": dt, "side": "sell",
                                    "price": eff, "shares": sh})
                 diag["cut_exits"] = diag.get("cut_exits", 0) + 1
@@ -1098,6 +1101,7 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                             else:
                                 loss_pool += -gain
                         diag["fee"] = diag.get("fee", 0.0) + sh * price * (slip + fee)
+                        diag["realized"] += gain
                         trades.append({"code": code, "date": dt, "side": "sell",
                                        "price": eff, "shares": sh})
                     st["lots"], st["units"] = [], 0
@@ -1121,6 +1125,7 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                         else:
                             loss_pool += -gain
                     diag["fee"] = diag.get("fee", 0.0) + sh * price * (slip + fee)
+                    diag["realized"] += gain
                     trades.append({"code": code, "date": dt, "side": "sell",
                                    "price": eff, "shares": sh})
                     st["units"] -= 1
@@ -1194,6 +1199,7 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                     for sh, _c in st["lots"]:
                         cash += sh * pr
                         diag["fee"] = diag.get("fee", 0.0) + sh * pr0 * (slip + fee)
+                        diag["realized"] += (pr - _c) * sh
                         trades.append({"code": worst_c, "date": dt, "side": "sell",
                                        "price": pr, "shares": sh})
                     diag["closed"] += 1
@@ -1315,6 +1321,15 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
         curve.append({"date": dt, "value": value_of(day),
                       "cash": cash, "names": len(pos)})
 
+    # 期末に残っている含み損益（まだ確定していない分）
+    unreal = 0.0
+    last_day = panel[panel["date"] == dates[-1]].set_index("code") if dates else None
+    for code, st in pos.items():
+        if last_day is not None and code in last_day.index and st.get("sh_sum"):
+            avg = st["cost_sum"] / st["sh_sum"]
+            unreal += (last_day.loc[code, "price"] - avg) * st["sh_sum"]
+    diag["unrealized"] = unreal
+
     # 期末に残っている建玉も、到達した含み益として記録しておく
     for code, st in pos.items():
         if st.get("sh_sum"):
@@ -1356,6 +1371,9 @@ def metrics(res: dict) -> dict:
             "売買回数": len(t), "平均保有銘柄": float(c["names"].mean()),
             "判定変化": d.get("changed", 0), "枠飽和率": saturated,
             "費用": d.get("fee", 0.0), "税金": d.get("tax", 0.0),
+            "確定損益": d.get("realized", 0.0) + d.get("dividend", 0.0),
+            "売却益": d.get("realized", 0.0), "配当": d.get("dividend", 0.0),
+            "含み損益": d.get("unrealized", 0.0),
             "決済率": exit_rate, "平均保有月数": avg_hold,
             "入れ替え": d.get("rotations", 0)}
 
@@ -2127,6 +2145,21 @@ def main() -> int:
         print("\n  市場の状態の内訳： " +
               " / ".join(f"{k} {v}か月（{v/tot_*100:.0f}％）" for k, v in rm.items()))
     cut = d0.get("cut_exits", 0) if "d0" in dir() else 0
+    print(f"\n■ 損益の内訳（元本 {args.capital:,.0f}円）\n")
+    print(f"{'ルール':<28}{'売却益':>12}{'配当':>11}{'確定した分':>13}"
+          f"{'含み益':>12}{'確定の年率':>11}")
+    print("-" * 90)
+    yrs_ = max((panel["date"].max() - panel["date"].min()).days / 365.25, 0.5)
+    for _, x in df.iterrows():
+        conf = x["確定損益"]
+        cy = ((args.capital + conf) / args.capital) ** (1 / yrs_) - 1
+        print(f"{x['ルール'][:26]:<28}{x['売却益']:>11,.0f}円{x['配当']:>10,.0f}円"
+              f"{conf:>12,.0f}円{x['含み損益']:>11,.0f}円{cy*100:>10.1f}%")
+    print("\n  売却益と配当は税引後。確定した分＝売却益＋配当。")
+    print("  含み益は、まだ売っていない建玉の評価上の損益。")
+    print("  ※ 売らない戦略ほど「確定した分」は小さくなる。")
+    print("    これは成績が悪いのではなく、利益を確定させていないだけ。")
+
     print("\n  決済率＝買った建玉のうち実際に売れた割合。低いほど「出口が来ない」状態。")
     print("  保有月数＝売れたものの平均保有期間。")
 
