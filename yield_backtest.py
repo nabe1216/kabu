@@ -964,13 +964,15 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
     hold_tiers = set(cfg.get("hold_tiers", []))
     # 減配したら手放すか。実運用の「緊急撤退」に相当する。
     exit_on_cut = cfg.get("exit_on_cut", False)
-    min_yield = cfg.get("min_yield", 0.0)
     # 部分利確。上がったら「一部だけ」売る。
     #   threshold … 何％上がったら売るか（前回売った値段からの上昇率）
     #   fraction  … そのとき何割を売るか
     # 全部売ると税金を一度に払い、伸びしろも失う。
     # 一部だけなら現金も入り、残りは走り続ける。
-    partial = cfg.get("partial_gain") if min_yield_override is None \
+    partial = cfg.get("partial_gain")
+    # 利回りの足切り。総当たりでは条件ごとに差し替えるので、
+    # 指定があればそちらを優先する。
+    min_yield = cfg.get("min_yield", 0.0) if min_yield_override is None \
         else float(min_yield_override)
     # 市場全体が割安なときに厚く、割高なときに薄く買う。
     # 「暴落を待つ」戦略は、待っている間の取り逃がしが本体なので、
