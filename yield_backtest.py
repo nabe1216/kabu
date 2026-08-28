@@ -377,6 +377,36 @@ VARIANTS: dict[str, dict[str, Any]] = {
                          "cheap_dd": -10.0, "rich_dd": -3.0},
     },
 
+    # ── S は持ち続け、A と B の扱いだけ変える ──
+    # 中核（S）は税金を繰り延べて複利で回し、周辺（A・B）で現金を作る、
+    # という組み合わせ。売らない良さと、現金が入る安心を両立できるか。
+    "holdS_ab_half50": {
+        "label": "Sは持つ・AとBは50％で半分売る",
+        "entry": [75], "exit": [], "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S"], "exit_on_cut": True,
+        "partial_gain": {"threshold": 0.50, "fraction": 0.5},
+    },
+    "holdS_ab_half30": {
+        "label": "Sは持つ・AとBは30％で半分売る",
+        "entry": [75], "exit": [], "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S"], "exit_on_cut": True,
+        "partial_gain": {"threshold": 0.30, "fraction": 0.5},
+    },
+    "holdS_ab_gain20": {
+        "label": "Sは持つ・AとBは20％で全部売る",
+        "entry": [75], "exit": [], "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S"], "exit_on_cut": True, "gain_exit": 0.20,
+    },
+    "holdSA_cut": {
+        "label": "SとAは持つ・BだけQ25で売る",
+        "entry": [75], "exit": [25], "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S", "A"], "exit_on_cut": True,
+    },
+
     # ── 部分利確（現金も入り、残りは走り続ける）──
     # 全部売ると税金を一度に払い、伸びしろも失う。
     # 一部だけ売れば、その中間を取れるのではないか、という検証。
