@@ -1,0 +1,99 @@
+name: patch-yield
+
+# generate.py の「利回りの足切り」を変える。
+#
+# なぜ変えるか
+#   総当たり検証で、基準との差が
+#     0％ +2.2pt ／ 2％ +3.3pt ／ 3％ +5.2pt ／ 4％ +6.5pt ／ 5％ +5.4pt ／ 6％ +3.4pt
+#   ときれいな山型になり、4％が最適だった。
+#   厳しくするほど質は上がるが、上げすぎると候補が減って分散が効かなくなる。
+#
+# 目印が見つからない場合や文法エラーが出た場合は何も保存せずに止まる。
+# 戻すときは、このワークフローを 3 で再実行するか、コミット履歴から。
+on:
+  workflow_dispatch:
+    inputs:
+      value:
+        description: "利回りの足切り（％）。検証では4.0が最適だった"
+        required: false
+        default: "4.0"
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: generate.py を書き換える
+        env:
+          VALUE: ${{ github.event.inputs.value || '4.0' }}
+        run: |
+          python - <<'PY'
+          import ast, os, re, sys
+          from pathlib import Path
+
+          val = float(os.environ.get("VALUE", "4.0"))
+          p = Path("scripts/generate.py")
+          s = before = p.read_text(encoding="utf-8")
+
+          # 定数名の候補を順に試す。見つからなければ手がかりを表示して止める。
+          pats = [r"^(MIN_YIELD\s*=\s*)([\d.]+)",
+                  r"^(MIN_DIV_YIELD\s*=\s*)([\d.]+)",
+                  r"^(YIELD_MIN\s*=\s*)([\d.]+)"]
+          hit = None
+          for pat in pats:
+              m = re.search(pat, s, re.M)
+              if m:
+                  hit = (pat, m.group(2))
+                  break
+
+          if not hit:
+              print("利回りの足切りを表す定数が見つかりませんでした。")
+              print("候補になりそうな行を表示します：\n")
+              for i, ln in enumerate(s.split("\n"), 1):
+                  low = ln.lower()
+                  if ("yield" in low and "=" in ln and not ln.strip().startswith("#")
+                          and len(ln) < 120):
+                      print(f"  {i:>5}: {ln.rstrip()}")
+              sys.exit("中止しました。上の一覧から定数名を教えてください。")
+
+          pat, old = hit
+          if abs(float(old) - val) < 1e-9:
+              print(f"すでに {val} です。何もしません。")
+              sys.exit(0)
+
+          s = re.sub(pat, lambda m: f"{m.group(1)}{val}", s, count=1, flags=re.M)
+          ast.parse(s)
+          p.write_text(s, encoding="utf-8")
+          name = pat.split(r"\s")[0].lstrip("^(")
+          print(f"{name} … {old} → {val}")
+
+          lines = ["## generate.py の変更", "",
+                   f"- 利回りの足切り … **{old}％ → {val}％**", "",
+                   "総当たり検証での基準との差：", "",
+                   "| 足切り | 基準との差 |", "|---|---|",
+                   "| 0％ | +2.2pt |", "| 2％ | +3.3pt |", "| 3％ | +5.2pt |",
+                   "| **4％** | **+6.5pt** |", "| 5％ | +5.4pt |", "| 6％ | +3.4pt |",
+                   "", "次に「Generate Dividend Signals」を手動実行してください。", "",
+                   "戻すときは、このワークフローを 3 で再実行してください。"]
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
+              f.write("\n".join(lines) + "\n")
+          PY
+
+      - name: 保存する
+        run: |
+          if git diff --quiet -- scripts/generate.py; then
+            echo "変更なし。"
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add scripts/generate.py
+          git commit -m "利回りの足切りを変更"
+          git push
