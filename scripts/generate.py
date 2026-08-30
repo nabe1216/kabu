@@ -74,10 +74,10 @@ BOX_TOUCH_MIN = 1                    # 上下それぞれ1回以上
 BOX_ATR_MIN = 0.015                  # ATR/終値 ≥ 1.5%
 
 # --- シグナル判定（利回り分布） ---
-YIELD_LOOKBACK_YEARS = 9             # 過去5年の月次利回りで分布計算
+YIELD_LOOKBACK_YEARS = 3             # 過去5年の月次利回りで分布計算
 YIELD_LOOKBACK_DAYS = YIELD_LOOKBACK_YEARS * 365 + 60  # 余裕を持って取得
 # 分位（Q25/Q75）の計算に使う期間。取得期間より短くできる。
-YIELD_DISTRIBUTION_YEARS = 9         # 出口が来ないときは 2 に下げる
+YIELD_DISTRIBUTION_YEARS = 3         # 出口が来ないときは 2 に下げる
 
 # --- 撤退判定（緊急シグナル） ---
 EMERGENCY_DPS_DROP = -0.10           # DPS 10%超減配
