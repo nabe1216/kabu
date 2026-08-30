@@ -377,6 +377,33 @@ VARIANTS: dict[str, dict[str, Any]] = {
                          "cheap_dd": -10.0, "rich_dd": -3.0},
     },
 
+    # ── 買い増しを許す ──
+    # さらに下がったところで買い増すと平均取得単価が下がるが、
+    # 1銘柄への比重が増える。分散と取得単価のどちらを取るか。
+    "holdS_addon": {
+        "label": "Sは持つ＋買い増しを許す（最大3回）",
+        "entry": [75], "exit": [25], "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S"], "exit_on_cut": True,
+        "add_on": True, "add_on_max": 3,
+    },
+
+    # ── Tier の重みを変える ──
+    "holdS_wS3": {
+        "label": "Sは持つ＋Sを厚く（S3.0/A1.5/B1.0）",
+        "entry": [75], "exit": [25], "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "tier_weight": {"S": 3.0, "A": 1.5, "B": 1.0},
+        "hold_tiers": ["S"], "exit_on_cut": True,
+    },
+    "holdS_wFlat": {
+        "label": "Sは持つ＋重みなし（均等）",
+        "entry": [75], "exit": [25], "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "tier_weight": {"S": 1.0, "A": 1.0, "B": 1.0},
+        "hold_tiers": ["S"], "exit_on_cut": True,
+    },
+
     # ── S は持ち続け、A と B の扱いだけ変える ──
     # 中核（S）は税金を繰り延べて複利で回し、周辺（A・B）で現金を作る、
     # という組み合わせ。売らない良さと、現金が入る安心を両立できるか。
@@ -1000,6 +1027,11 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
     # 全部売ると税金を一度に払い、伸びしろも失う。
     # 一部だけなら現金も入り、残りは走り続ける。
     partial = cfg.get("partial_gain")
+    # 買い増しを許すか。既定は1銘柄1回まで。
+    # さらに下がったところで買い増すと、平均取得単価が下がる代わりに
+    # 1銘柄への比重が増える。効くかどうかは検証で判断する。
+    add_on = cfg.get("add_on", False)
+    add_on_max = cfg.get("add_on_max", 3)
     # 利回りの足切り。総当たりでは条件ごとに差し替えるので、
     # 指定があればそちらを優先する。
     min_yield = cfg.get("min_yield", 0.0) if min_yield_override is None \
@@ -1268,7 +1300,7 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                 diag["adjusted"] += 1
                 if want != sum(1 for e in ent if p >= e):
                     diag["changed"] += 1
-            have = pos.get(code, {}).get("units", 0)
+            have = 0 if add_on else pos.get(code, {}).get("units", 0)
             if want > have:
                 cands.append((p, code, want - have, row["price"],
                               row.get("tier", "B")))
@@ -1355,6 +1387,10 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
         for p, code, add, price, _tier in cands:
             if len(pos) >= max_names and code not in pos:
                 continue
+            if add_on and code in pos:
+                # 買い増しは回数を制限する
+                if len(pos[code].get("lots", [])) >= add_on_max:
+                    continue
             if max_sector and code not in pos:
                 sc = day.loc[code].get("sector", "")
                 if sec_count.get(sc, 0) >= max_sector:
@@ -1549,6 +1585,10 @@ def main() -> int:
                     help="総当たりで試す資金投入の月数（カンマ区切り）")
     ap.add_argument("--grid-min-yield", default="0,3",
                     help="総当たりで試す利回り足切り（カンマ区切り）")
+    ap.add_argument("--grid-lookback", default="24",
+                    help="総当たりで試す分位の月数（カンマ区切り）。例: 24,60")
+    ap.add_argument("--grid-max-names", default="20",
+                    help="総当たりで試す保有上限（カンマ区切り）。例: 20,30")
     ap.add_argument("--grid-window", type=int, default=4,
                     help="総当たりで使う窓の年数")
     ap.add_argument("--ramp", type=int, default=0,
@@ -1803,7 +1843,7 @@ def main() -> int:
         spread = float(piv.max().max() - piv.min().min())
         best_by_lb = piv.idxmax(axis=1)
         flipped = best_by_lb.nunique() > 1
-        piv_e = df.pivot(index="分位", columns="ルール", values="決済率")
+        piv_e = gf.pivot_table(index=cond_cols, columns="ルール", values="決済率")
         dup = piv_e.duplicated(keep=False)
         held = df["平均保有銘柄"].mean()
         print("【読み方】")
@@ -1851,6 +1891,8 @@ def main() -> int:
     if args.grid:
         ramps = [int(x) for x in str(args.grid_ramp).split(",") if x.strip() != ""]
         mys = [float(x) for x in str(args.grid_min_yield).split(",") if x.strip() != ""]
+        lbs_ = [int(x) for x in str(args.grid_lookback).split(",") if x.strip() != ""]
+        mxs_ = [int(x) for x in str(args.grid_max_names).split(",") if x.strip() != ""]
         nm = [x.strip() for x in args.only.split(",") if x.strip()] or \
              ["current_live", "live_budget15", "live15_holdS", "live15_holdall"]
         nm = [n for n in nm if n in VARIANTS]
@@ -1867,24 +1909,39 @@ def main() -> int:
         wins.reverse()
         wins.append((d0_, d1_))          # 全期間も1通りとして加える
 
-        total = len(ramps) * len(mys) * len(wins)
-        log.info("総当たり：資金投入%d通り × 利回り足切り%d通り × 期間%d通り = %d条件"
-                 " × ルール%d = %d回",
-                 len(ramps), len(mys), len(wins), total, len(nm), total * len(nm))
+        total = len(ramps) * len(mys) * len(wins) * len(lbs_) * len(mxs_)
+        log.info("総当たり：期間%d × 資金投入%d × 足切り%d × 分位%d × 保有上限%d"
+                 " = %d条件 × ルール%d = %d回",
+                 len(wins), len(ramps), len(mys), len(lbs_), len(mxs_),
+                 total, len(nm), total * len(nm))
+        if total * len(nm) > 400:
+            log.warning("%d回は時間がかかります（目安 %d分）。"
+                        "条件を減らすことも検討してください。",
+                        total * len(nm), int(total * len(nm) * 0.12))
 
         rows_, done = [], 0
-        for a, b in wins:
-            sub = panel[(panel["date"] >= a) & (panel["date"] <= b)]
+        panels = {}
+        for lb_ in lbs_:
+            # 分位の期間ごとにパネルを作り直す（重いので一度だけ）
+            panels[lb_] = build_panel(store, args.years, lb_) if lb_ != args.lookback \
+                else panel
+            log.info("  分位%dか月のパネル … %d件", lb_, len(panels[lb_]))
+
+        for lb_ in lbs_:
+          pnl = panels[lb_]
+          for a, b in wins:
+            sub = pnl[(pnl["date"] >= a) & (pnl["date"] <= b)]
             if sub["date"].nunique() < 24:
                 continue
             span = f"{a.date()}〜{b.date()}"
-            for rp in ramps:
+            for mx_ in mxs_:
+              for rp in ramps:
                 for my in mys:
                     bh_ = buy_and_hold(sub, args.tax / 100.0)
                     base_r = bh_["年率"] if bh_ else float("nan")
                     for n_ in nm:
                         m_ = metrics(simulate(
-                            sub, VARIANTS[n_], args.capital, args.max_names,
+                            sub, VARIANTS[n_], args.capital, mx_,
                             tier_budget=args.realistic, dividends=args.realistic,
                             slip_bps=args.slip_bps, fee_bps=args.fee_bps,
                             tax_rate=args.tax / 100.0, ramp=rp,
@@ -1892,6 +1949,7 @@ def main() -> int:
                         if m_:
                             rows_.append({
                                 "期間": span, "資金投入": rp, "利回り足切り": my,
+                                "分位": lb_, "保有上限": mx_,
                                 "ルール": VARIANTS[n_]["label"],
                                 "年率": m_["年率"], "最大下落": m_["最大下落"],
                                 "シャープ": m_["シャープ"], "決済率": m_["決済率"],
@@ -1904,7 +1962,8 @@ def main() -> int:
             print("結果がありません。")
             return 1
         gf = pd.DataFrame(rows_)
-        n_cond = gf.groupby(["期間", "資金投入", "利回り足切り"]).ngroups
+        cond_cols = ["期間", "資金投入", "利回り足切り", "分位", "保有上限"]
+        n_cond = gf.groupby(cond_cols).ngroups
 
         print(f"\n■ 総当たり検証（{n_cond}条件 × {len(nm)}ルール）\n")
         print(f"　 期間 {len(wins)}通り ／ 資金投入 {ramps} か月 ／ "
@@ -1944,8 +2003,7 @@ def main() -> int:
         print("  安定を求めるなら、平均の高さより「最悪」と「ばらつき」を見る。")
 
         # ── 2. ルール同士の勝敗 ──
-        piv = gf.pivot_table(index=["期間", "資金投入", "利回り足切り"],
-                             columns="ルール", values="年率")
+        piv = gf.pivot_table(index=cond_cols, columns="ルール", values="年率")
         cols = list(piv.columns)
         print(f"\n【ルール同士の勝敗（縦が横を上回った割合）】\n")
         print(" " * 26 + "".join(f"{c[:10]:>12}" for c in cols))
@@ -1961,7 +2019,8 @@ def main() -> int:
 
         # ── 3. 条件そのものの影響 ──
         print("\n【条件による違い（全ルール平均）】\n")
-        for key, unit in [("資金投入", "か月"), ("利回り足切り", "％")]:
+        for key, unit in [("資金投入", "か月"), ("利回り足切り", "％"),
+                          ("分位", "か月"), ("保有上限", "銘柄")]:
             print(f"  {key}")
             for v, g in gf.groupby(key):
                 print(f"    {v}{unit:<4} 平均年率 {g['年率'].mean():>5.1f}%   "
