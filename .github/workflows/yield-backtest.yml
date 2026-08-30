@@ -49,6 +49,14 @@ on:
         description: "総当たりで試す資金投入の月数（カンマ区切り）"
         required: false
         default: "0,12"
+      grid_lookback:
+        description: "総当たりで試す分位の月数（カンマ区切り）。例: 24,60"
+        required: false
+        default: "24"
+      grid_max_names:
+        description: "総当たりで試す保有上限（カンマ区切り）。例: 20,30"
+        required: false
+        default: "20"
       grid_min_yield:
         description: "総当たりで試す利回り足切り（カンマ区切り）"
         required: false
@@ -134,6 +142,8 @@ jobs:
             ${{ github.event.inputs.grid == 'true' && '--grid' || '' }} \
             --grid-ramp "${{ github.event.inputs.grid_ramp || '0,12' }}" \
             --grid-min-yield "${{ github.event.inputs.grid_min_yield || '0,3' }}" \
+            --grid-lookback "${{ github.event.inputs.grid_lookback || '24' }}" \
+            --grid-max-names "${{ github.event.inputs.grid_max_names || '20' }}" \
             ${{ github.event.inputs.walk != '' && format('--walk {0}', github.event.inputs.walk) || '' }} \
             ${{ github.event.inputs.show_trades == 'true' && '--show-trades' || '' }} \
             --tax "${{ github.event.inputs.tax || '20.315' }}" \
