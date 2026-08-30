@@ -44,7 +44,7 @@ MAX_HOLDINGS = 20
 # 条件を総当たりで100回検証したところ、
 # 「売らない」が現行を95％の条件で上回った。
 # 売る判断そのものが税引後では価値を生んでいなかったため none にする。
-SELL_MODE = 'none'
+SELL_MODE = 'emergency'
 
 # Tier別の1銘柄あたりの予算（円）
 TIER_BUDGET = {
