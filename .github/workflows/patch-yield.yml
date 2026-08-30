@@ -43,7 +43,8 @@ jobs:
           s = before = p.read_text(encoding="utf-8")
 
           # 定数名の候補を順に試す。見つからなければ手がかりを表示して止める。
-          pats = [r"^(MIN_YIELD\s*=\s*)([\d.]+)",
+          pats = [r"^(MIN_YIELD_THRESHOLD\s*=\s*)([\d.]+)",
+                  r"^(MIN_YIELD\s*=\s*)([\d.]+)",
                   r"^(MIN_DIV_YIELD\s*=\s*)([\d.]+)",
                   r"^(YIELD_MIN\s*=\s*)([\d.]+)"]
           hit = None
@@ -69,6 +70,11 @@ jobs:
               sys.exit(0)
 
           s = re.sub(pat, lambda m: f"{m.group(1)}{val}", s, count=1, flags=re.M)
+
+          # 行末のコメントも実態に合わせる
+          s = re.sub(r"(^MIN_YIELD_THRESHOLD\s*=\s*[\d.]+\s*)#.*$",
+                     lambda m: f"{m.group(1)}# 最低利回り ≧ {val}%",
+                     s, count=1, flags=re.M)
           ast.parse(s)
           p.write_text(s, encoding="utf-8")
           name = pat.split(r"\s")[0].lstrip("^(")
