@@ -10,10 +10,10 @@
       "qty": 2700,
       "buy_date": "2026-06-28",
       "buy_price": 1451.5,
-      "current_price": 1540.0,
-      "value": 4158000.0,
-      "unrealized_pl": 238950.0,
-      "unrealized_pl_pct": 6.1
+      "current_price": 1522.5,
+      "value": 4110750.0,
+      "unrealized_pl": 191700.0,
+      "unrealized_pl_pct": 4.89
     },
     {
       "code": "6902",
@@ -22,10 +22,10 @@
       "qty": 1000,
       "buy_date": "2026-06-28",
       "buy_price": 1879.5,
-      "current_price": 1915.5,
-      "value": 1915500.0,
-      "unrealized_pl": 36000.0,
-      "unrealized_pl_pct": 1.92
+      "current_price": 1935.0,
+      "value": 1935000.0,
+      "unrealized_pl": 55500.0,
+      "unrealized_pl_pct": 2.95
     },
     {
       "code": "8439",
@@ -34,10 +34,10 @@
       "qty": 700,
       "buy_date": "2026-06-28",
       "buy_price": 2519.0,
-      "current_price": 2696.5,
-      "value": 1887550.0,
-      "unrealized_pl": 124250.0,
-      "unrealized_pl_pct": 7.05
+      "current_price": 2695.0,
+      "value": 1886500.0,
+      "unrealized_pl": 123200.0,
+      "unrealized_pl_pct": 6.99
     },
     {
       "code": "1925",
@@ -46,10 +46,10 @@
       "qty": 400,
       "buy_date": "2026-07-08",
       "buy_price": 4594.0,
-      "current_price": 4716.0,
-      "value": 1886400.0,
-      "unrealized_pl": 48800.0,
-      "unrealized_pl_pct": 2.66
+      "current_price": 4680.0,
+      "value": 1872000.0,
+      "unrealized_pl": 34400.0,
+      "unrealized_pl_pct": 1.87
     },
     {
       "code": "4540",
@@ -58,16 +58,16 @@
       "qty": 100,
       "buy_date": "2026-08-23",
       "buy_price": 3745.0,
-      "current_price": 3784.0,
-      "value": 378400.0,
-      "unrealized_pl": 3900.0,
-      "unrealized_pl_pct": 1.04
+      "current_price": 3782.0,
+      "value": 378200.0,
+      "unrealized_pl": 3700.0,
+      "unrealized_pl_pct": 0.99
     }
   ],
-  "total_value": 10567100.0,
+  "total_value": 10523700.0,
   "total_invested": 11635150.0,
   "realized_pl": 52800.0,
   "dividend_received": 31200,
   "last_updated": "2026-08-31",
-  "holdings_value": 10225850.0
+  "holdings_value": 10182450.0
 }
