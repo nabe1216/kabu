@@ -404,6 +404,55 @@ VARIANTS: dict[str, dict[str, Any]] = {
         "hold_tiers": ["S"], "exit_on_cut": True,
     },
 
+    # ── 買いの閾値を振る ──
+    # 分位を9年→3年、足切りを3％→4％に変えたのに、
+    # 「どこまで安ければ買うか」だけが当初のQ75のまま検証されていなかった。
+    # 3つは互いに影響し合うので、他を変えたならここも確かめる必要がある。
+    #   Q60 … 過去3年の上位40％に入れば買う（買いやすい）
+    #   Q85 … 上位15％に入らないと買わない（厳しい）
+    "entryQ60": {
+        "label": "Q60で買う・Sは売らない＋減配撤退",
+        "entry": [60], "exit": [25], "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S"], "exit_on_cut": True,
+    },
+    "entryQ65": {
+        "label": "Q65で買う・Sは売らない＋減配撤退",
+        "entry": [65], "exit": [25], "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S"], "exit_on_cut": True,
+    },
+    "entryQ70": {
+        "label": "Q70で買う・Sは売らない＋減配撤退",
+        "entry": [70], "exit": [25], "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S"], "exit_on_cut": True,
+    },
+    "entryQ75": {
+        "label": "Q75で買う・Sは売らない＋減配撤退",
+        "entry": [75], "exit": [25], "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S"], "exit_on_cut": True,
+    },
+    "entryQ80": {
+        "label": "Q80で買う・Sは売らない＋減配撤退",
+        "entry": [80], "exit": [25], "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S"], "exit_on_cut": True,
+    },
+    "entryQ85": {
+        "label": "Q85で買う・Sは売らない＋減配撤退",
+        "entry": [85], "exit": [25], "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S"], "exit_on_cut": True,
+    },
+    "entryQ90": {
+        "label": "Q90で買う・Sは売らない＋減配撤退",
+        "entry": [90], "exit": [25], "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S"], "exit_on_cut": True,
+    },
+
     # ── S は持ち続け、A と B の扱いだけ変える ──
     # 中核（S）は税金を繰り延べて複利で回し、周辺（A・B）で現金を作る、
     # という組み合わせ。売らない良さと、現金が入る安心を両立できるか。
