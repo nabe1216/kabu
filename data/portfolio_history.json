@@ -703,6 +703,16 @@
       "realized_pl": 52800.0,
       "dividend_total": 31200,
       "holdings_count": 5
+    },
+    {
+      "date": "2026-09-01",
+      "cash": 471400.0,
+      "holdings_value": 10182450.0,
+      "total_value": 10846400.0,
+      "unrealized_pl": 408500.0,
+      "realized_pl": 52800.0,
+      "dividend_total": 192550,
+      "holdings_count": 5
     }
   ],
   "dividends": [
@@ -714,6 +724,51 @@
       "dps": 26.0,
       "shares": 1200,
       "amount": 31200
+    },
+    {
+      "date": "2026-09-01",
+      "code": "8801",
+      "name": "三井不動産",
+      "type": "interim",
+      "dps": 18.5,
+      "shares": 2700,
+      "amount": 49950
+    },
+    {
+      "date": "2026-09-01",
+      "code": "6902",
+      "name": "デンソー",
+      "type": "interim",
+      "dps": 37.0,
+      "shares": 1000,
+      "amount": 37000
+    },
+    {
+      "date": "2026-09-01",
+      "code": "8439",
+      "name": "東京センチュリー",
+      "type": "interim",
+      "dps": 45.0,
+      "shares": 700,
+      "amount": 31500
+    },
+    {
+      "date": "2026-09-01",
+      "code": "1925",
+      "name": "大和ハウス工業",
+      "type": "interim",
+      "dps": 87.5,
+      "shares": 400,
+      "amount": 35000
+    },
+    {
+      "date": "2026-09-01",
+      "code": "4540",
+      "name": "ツムラ",
+      "type": "interim",
+      "dps": 79.0,
+      "shares": 100,
+      "amount": 7900
     }
   ]
 }

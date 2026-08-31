@@ -1,7 +1,7 @@
 {
   "started_at": "2026-06-28",
   "initial_cash": 10000000,
-  "cash": 310050.0,
+  "cash": 471400.0,
   "holdings": [
     {
       "code": "8801",
@@ -64,10 +64,10 @@
       "unrealized_pl_pct": 0.99
     }
   ],
-  "total_value": 10523700.0,
+  "total_value": 10846400.0,
   "total_invested": 11635150.0,
   "realized_pl": 52800.0,
-  "dividend_received": 31200,
-  "last_updated": "2026-08-31",
+  "dividend_received": 192550,
+  "last_updated": "2026-09-01",
   "holdings_value": 10182450.0
 }
