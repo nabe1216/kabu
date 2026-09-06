@@ -41,6 +41,26 @@ on:
         description: "試し実行。先頭N銘柄だけ（0で全銘柄）"
         required: false
         default: "0"
+      range_test:
+        description: "レンジ（ボックス）売買を検証する（true/false）。下限で買い上限で売る形を日次で回します"
+        required: false
+        default: "false"
+      range_win:
+        description: "レンジを測る日数（既定60営業日）"
+        required: false
+        default: "60"
+      range_width:
+        description: "レンジとみなす値幅。0.08,0.20 なら8〜20％"
+        required: false
+        default: "0.08,0.20"
+      range_touch:
+        description: "下限からの買い幅と上限からの売り幅。0.02,0.02 なら±2％以内"
+        required: false
+        default: "0.02,0.02"
+      range_stop:
+        description: "下限を何％割ったら諦めるか。0なら諦めない"
+        required: false
+        default: "0"
       grid:
         description: "条件を総当たりで検証する（true/false）。どの条件でも成り立つ結論だけを取り出します"
         required: false
@@ -139,6 +159,11 @@ jobs:
             --universe "${{ github.event.inputs.universe || 'core' }}" \
             --min-yield "${{ github.event.inputs.min_yield || '0' }}" \
             --ramp "${{ github.event.inputs.ramp || '0' }}" \
+            ${{ github.event.inputs.range_test == 'true' && '--range-test' || '' }} \
+            --range-win "${{ github.event.inputs.range_win || '60' }}" \
+            --range-width "${{ github.event.inputs.range_width || '0.08,0.20' }}" \
+            --range-touch "${{ github.event.inputs.range_touch || '0.02,0.02' }}" \
+            --range-stop "${{ github.event.inputs.range_stop || '0' }}" \
             ${{ github.event.inputs.grid == 'true' && '--grid' || '' }} \
             --grid-ramp "${{ github.event.inputs.grid_ramp || '0,12' }}" \
             --grid-min-yield "${{ github.event.inputs.grid_min_yield || '0,3' }}" \
@@ -180,5 +205,7 @@ jobs:
             data/lookback_sweep.csv
             data/walk_forward.csv
             data/grid.csv
+            data/range_test.csv
+            data/range_trades.csv
             run.log
           if-no-files-found: ignore
