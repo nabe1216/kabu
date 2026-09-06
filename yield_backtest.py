@@ -1839,14 +1839,10 @@ def main() -> int:
                     help="レンジ（ボックス）売買を検証する。"
                          "下限で買い・上限で売る形を日次で回し、"
                          "「売らない」戦略と同じ土俵で比べる")
-    ap.add_argument("--range-win", type=int, default=60,
-                    help="レンジを測る日数（既定60営業日）")
-    ap.add_argument("--range-width", default="0.08,0.20",
-                    help="レンジとみなす値幅の範囲。0.08,0.20 なら8〜20％")
-    ap.add_argument("--range-touch", default="0.02,0.02",
-                    help="下限からの買い幅と、上限からの売り幅")
-    ap.add_argument("--range-stop", type=float, default=0.0,
-                    help="下限を何％割ったら諦めるか。0なら諦めない")
+    ap.add_argument("--range-opts", default="60,0.08,0.20,0.02,0.02,0",
+                    help="レンジの設定をまとめて指定する。"
+                         "「日数,幅の下限,幅の上限,買い幅,売り幅,諦める幅」の順。"
+                         "例: 60,0.08,0.20,0.02,0.02,0")
     ap.add_argument("--grid", action="store_true",
                     help="条件を総当たりで組み合わせて検証し、"
                          "どの条件でも成り立つ結論だけを取り出す")
@@ -2156,9 +2152,29 @@ def main() -> int:
     #   「売らない」戦略と同じ費用条件で比べる。
     # ══════════════════════════════════════════
     if args.range_test:
-        wmin, wmax = [float(x) for x in str(args.range_width).split(",")]
-        b_at, s_at = [float(x) for x in str(args.range_touch).split(",")]
-        stop = args.range_stop if args.range_stop > 0 else None
+        # 「日数,幅の下限,幅の上限,買い幅,売り幅,諦める幅」を読む。
+        # 足りない分は既定値で補う。
+        _d = [60.0, 0.08, 0.20, 0.02, 0.02, 0.0]
+        _v = [x.strip() for x in str(args.range_opts).split(",")]
+        # 2番目以降は割合。1より大きければ百分率とみなして直す。
+        for _i, _x in enumerate(_v[:6]):
+            if _x:
+                try:
+                    _f = float(_x)
+                    if _i >= 1 and _f > 1.0:
+                        _f = _f / 100.0      # 8 と書かれたら 0.08
+                    _d[_i] = _f
+                except ValueError:
+                    sys.exit(f"レンジの設定「{args.range_opts}」を読めません。"
+                             "「60,0.08,0.20,0.02,0.02,0」の形で指定してください。")
+        args.range_win = int(_d[0])
+        wmin, wmax, b_at, s_at = _d[1], _d[2], _d[3], _d[4]
+        # 「5」と書かれたら5％、「0.05」と書かれても5％として扱う。
+        # 1より大きい値は百分率とみなす。
+        _st = _d[5]
+        if _st > 1.0:
+            _st = _st / 100.0
+        stop = _st if _st > 0 else None
 
         log.info("レンジ売買の検証：%d営業日で判定 ／ 値幅 %.0f〜%.0f％ ／ "
                  "下限+%.0f％で買い・上限−%.0f％で売り",
