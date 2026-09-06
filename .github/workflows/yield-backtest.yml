@@ -37,30 +37,14 @@ on:
         description: "元本（円）。空欄なら通常300万・実運用モードで1000万"
         required: false
         default: ""
-      limit:
-        description: "試し実行。先頭N銘柄だけ（0で全銘柄）"
-        required: false
-        default: "0"
       range_test:
         description: "レンジ（ボックス）売買を検証する（true/false）。下限で買い上限で売る形を日次で回します"
         required: false
         default: "false"
-      range_win:
-        description: "レンジを測る日数（既定60営業日）"
+      range_opts:
+        description: "レンジの設定。「日数,幅の下限,幅の上限,買い幅,売り幅,諦める幅」の順。既定 60,0.08,0.20,0.02,0.02,0"
         required: false
-        default: "60"
-      range_width:
-        description: "レンジとみなす値幅。0.08,0.20 なら8〜20％"
-        required: false
-        default: "0.08,0.20"
-      range_touch:
-        description: "下限からの買い幅と上限からの売り幅。0.02,0.02 なら±2％以内"
-        required: false
-        default: "0.02,0.02"
-      range_stop:
-        description: "下限を何％割ったら諦めるか。0なら諦めない"
-        required: false
-        default: "0"
+        default: "60,0.08,0.20,0.02,0.02,0"
       grid:
         description: "条件を総当たりで検証する（true/false）。どの条件でも成り立つ結論だけを取り出します"
         required: false
@@ -160,10 +144,7 @@ jobs:
             --min-yield "${{ github.event.inputs.min_yield || '0' }}" \
             --ramp "${{ github.event.inputs.ramp || '0' }}" \
             ${{ github.event.inputs.range_test == 'true' && '--range-test' || '' }} \
-            --range-win "${{ github.event.inputs.range_win || '60' }}" \
-            --range-width "${{ github.event.inputs.range_width || '0.08,0.20' }}" \
-            --range-touch "${{ github.event.inputs.range_touch || '0.02,0.02' }}" \
-            --range-stop "${{ github.event.inputs.range_stop || '0' }}" \
+            --range-opts "${{ github.event.inputs.range_opts || '60,0.08,0.20,0.02,0.02,0' }}" \
             ${{ github.event.inputs.grid == 'true' && '--grid' || '' }} \
             --grid-ramp "${{ github.event.inputs.grid_ramp || '0,12' }}" \
             --grid-min-yield "${{ github.event.inputs.grid_min_yield || '0,3' }}" \
@@ -174,11 +155,8 @@ jobs:
             --tax "${{ github.event.inputs.tax || '20.315' }}" \
             --slip-bps "${{ github.event.inputs.slip_bps || '10' }}" \
             --fee-bps "${{ github.event.inputs.fee_bps || '0' }}" \
-            ${{ github.event.inputs.sweep != '' && format('--sweep {0}', github.event.inputs.sweep) || '' }} \
-            ${{ github.event.inputs.diagnose_tier == 'true' && '--diagnose-tier' || '' }} \
             --max-names "${{ github.event.inputs.max_names || '0' }}" \
             --capital "${{ github.event.inputs.capital || '0' }}" \
-            --limit "${{ github.event.inputs.limit || '0' }}" \
             ${{ github.event.inputs.only != '' && format('--only {0}', github.event.inputs.only) || '' }} \
             ${{ github.event.inputs.realistic == 'true' && '--realistic' || '' }} \
             ${{ github.event.inputs.refetch == 'true' && '--refetch' || '' }} > run.log 2>&1
