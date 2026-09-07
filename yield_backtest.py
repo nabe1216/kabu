@@ -404,6 +404,36 @@ VARIANTS: dict[str, dict[str, Any]] = {
         "hold_tiers": ["S"], "exit_on_cut": True,
     },
 
+    # ── 高配当で買い、レンジの上限で一度降りる ──
+    # 土台は「Sは売らない＋減配撤退」のまま。
+    # そこに「レンジの中にいて上限まで来たら降りる」を足す。
+    # 外れても持ち続けるだけなので、失敗しても元の戦略に戻るだけ。
+    "swing_full": {
+        "label": "高配当＋レンジ上限で全部降りる",
+        "entry": [75], "exit": [], "priority": "tier",
+        "budget_weighted": True, "target_names": 15, "exit_on_cut": True,
+        "range_exit": {"fraction": 1.0, "min_gain": 0.0},
+    },
+    "swing_half": {
+        "label": "高配当＋レンジ上限で半分だけ降りる",
+        "entry": [75], "exit": [], "priority": "tier",
+        "budget_weighted": True, "target_names": 15, "exit_on_cut": True,
+        "range_exit": {"fraction": 0.5, "min_gain": 0.0},
+    },
+    "swing_gain3": {
+        "label": "高配当＋レンジ上限（3％以上の益があるときだけ）",
+        "entry": [75], "exit": [], "priority": "tier",
+        "budget_weighted": True, "target_names": 15, "exit_on_cut": True,
+        "range_exit": {"fraction": 1.0, "min_gain": 0.03},
+    },
+    "swing_holdS": {
+        "label": "高配当＋レンジ上限（SはそのままAとBだけ降りる）",
+        "entry": [75], "exit": [], "priority": "tier",
+        "budget_weighted": True, "target_names": 15, "exit_on_cut": True,
+        "hold_tiers": ["S"],
+        "range_exit": {"fraction": 1.0, "min_gain": 0.0},
+    },
+
     # ── 買いの閾値を振る ──
     # 分位を9年→3年、足切りを3％→4％に変えたのに、
     # 「どこまで安ければ買うか」だけが当初のQ75のまま検証されていなかった。
@@ -918,6 +948,44 @@ def assign_tiers(store: dict, last_price: dict[str, float]) -> dict[str, str]:
     return tiers
 
 
+def add_range_columns(store: dict, panel: pd.DataFrame, win: int,
+                      w_min: float, w_max: float, sell_at: float) -> pd.DataFrame:
+    """「その月のうちにレンジ上限へ届いたか、いくらで届いたか」を足す。
+
+    月次のパネルだと、ひと月のあいだの往復が見えない。
+    そこで日次で上限到達を調べ、月ごとに最初に届いた値段を記録する。
+    レンジの上下は前日までの終値から決めるので、未来の情報は入らない。
+    """
+    top_px, in_box = {}, {}
+    for code, rows in store["quotes"].items():
+        px = quotes_to_df(rows)
+        if px.empty or len(px) < win + 20:
+            continue
+        sr = px.set_index("date")["close"]
+        prev = sr.shift(1)
+        hi = prev.rolling(win, min_periods=win).max()
+        lo = prev.rolling(win, min_periods=win).min()
+        width = (hi - lo) / lo
+        ok = (width >= w_min) & (width <= w_max)
+        hit = ok & (sr >= hi * (1 - sell_at))
+        if not hit.any():
+            continue
+        # 月ごとに、最初に届いた日の値段
+        df = pd.DataFrame({"px": sr, "hit": hit, "ok": ok})
+        df["m"] = df.index.to_period("M")
+        for m, g in df[df["hit"]].groupby("m"):
+            top_px[(code, m)] = float(g["px"].iloc[0])
+        for m, g in df.groupby("m"):
+            in_box[(code, m)] = bool(g["ok"].any())
+
+    panel = panel.copy()
+    mp = panel["date"].dt.to_period("M")
+    keys = list(zip(panel["code"], mp))
+    panel["box_top_px"] = [top_px.get(k, np.nan) for k in keys]
+    panel["in_box"] = [in_box.get(k, False) for k in keys]
+    return panel
+
+
 def build_panel(store: dict, years: int, lookback: int = 36) -> pd.DataFrame:
     """月末ごとの「その時点で分かっていた」利回りの表を作る。"""
     frames = []
@@ -1076,6 +1144,10 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
     # 全部売ると税金を一度に払い、伸びしろも失う。
     # 一部だけなら現金も入り、残りは走り続ける。
     partial = cfg.get("partial_gain")
+    # レンジの上限に届いたら降りる。
+    # 土台は「売らない」戦略のまま、その上に往復を乗せる形。
+    # 外れてレンジを割っても、ただ持ち続けるだけで損失にはならない。
+    range_exit = cfg.get("range_exit")
     # 買い増しを許すか。既定は1銘柄1回まで。
     # さらに下がったところで買い増すと、平均取得単価が下がる代わりに
     # 1銘柄への比重が増える。効くかどうかは検証で判断する。
@@ -1200,6 +1272,53 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
 
             if hold_tiers and row.get("tier", "B") in hold_tiers:
                 continue          # この Tier は売らない
+
+            # ── レンジの上限で降りる ──
+            # 高配当のルールで買った銘柄が、たまたまレンジの中にいて
+            # 上限まで来たら、そこで一度降りる。下がればまた買い直せる。
+            tp = row.get("box_top_px")
+            if range_exit and st["lots"] and tp is not None and not pd.isna(tp):
+                sell_px = float(tp)
+                shs = sum(sh for sh, _ in st["lots"])
+                cost0 = sum(sh * pr for sh, pr in st["lots"]) / shs if shs else 0
+                # 取得より上でなければ降りない（安値で投げない）
+                if sell_px > cost0 * (1 + range_exit.get("min_gain", 0.0)):
+                    frac = range_exit.get("fraction", 1.0)
+                    want = int(shs * frac // 100) * 100 if frac < 1.0 else shs
+                    left, newlots = want, []
+                    for sh, pr in st["lots"]:
+                        if left <= 0:
+                            newlots.append((sh, pr)); continue
+                        take = min(sh, left)
+                        eff = sell_px * (1 - slip) * (1 - fee)
+                        cash += take * eff
+                        g = (eff - pr) * take
+                        diag["realized"] += g
+                        if tax_rate > 0:
+                            if g > 0:
+                                taxable = max(0.0, g - loss_pool)
+                                loss_pool = max(0.0, loss_pool - g)
+                                t = taxable * tax_rate
+                                cash -= t
+                                diag["tax"] = diag.get("tax", 0.0) + t
+                            else:
+                                loss_pool += -g
+                        diag["fee"] = diag.get("fee", 0.0) + take * sell_px * (slip + fee)
+                        trades.append({"code": code, "date": dt, "side": "sell",
+                                       "price": eff, "shares": take})
+                        left -= take
+                        if sh - take > 0:
+                            newlots.append((sh - take, pr))
+                    if want > 0 and left < want:
+                        diag["range_sells"] = diag.get("range_sells", 0) + 1
+                        st["lots"] = newlots
+                        if not st["lots"]:
+                            del pos[code]
+                            diag["closed"] += 1
+                            if code in opened_at:
+                                diag["hold_months"].append(mi - opened_at.pop(code))
+                            continue
+                        st["units"] = max(1, len(st["lots"]))
 
             # ── 部分利確 ──
             if partial and st["lots"]:
@@ -1835,6 +1954,9 @@ def main() -> int:
     ap.add_argument("--only", default="", help="比較するルールをカンマ区切りで指定")
     ap.add_argument("--capital", type=float, default=0,
                     help="元本。未指定なら通常300万・実運用モードで1000万")
+    ap.add_argument("--range-swing", action="store_true",
+                    help="高配当で買った銘柄を、レンジの上限で一度降りる形を検証する。"
+                         "土台は売らない戦略のまま、その上に往復を乗せる")
     ap.add_argument("--range-test", action="store_true",
                     help="レンジ（ボックス）売買を検証する。"
                          "下限で買い・上限で売る形を日次で回し、"
@@ -2033,6 +2155,24 @@ def main() -> int:
 
     log.info("パネルを作成中…")
     panel = build_panel(store, args.years, args.lookback)
+
+    # レンジ往復の検証では、月の途中で上限に届いたかを見る必要がある
+    if args.range_swing:
+        _d = [60.0, 0.08, 0.20, 0.02, 0.02, 0.0]
+        for _i, _x in enumerate([x.strip() for x in
+                                 str(args.range_opts).split(",")][:6]):
+            if _x:
+                _f = float(_x)
+                if _i >= 1 and _f > 1.0:
+                    _f = _f / 100.0
+                _d[_i] = _f
+        log.info("レンジ判定：%d営業日 ／ 値幅 %.0f〜%.0f％ ／ 上限−%.0f％で降りる",
+                 int(_d[0]), _d[1] * 100, _d[2] * 100, _d[4] * 100)
+        panel = add_range_columns(store, panel, int(_d[0]), _d[1], _d[2], _d[4])
+        _n = panel["box_top_px"].notna().sum()
+        _b = panel["in_box"].sum()
+        log.info("  レンジの中にいた時点 %d件 ／ うち上限に届いた %d件（%.1f％）",
+                 _b, _n, _n / max(_b, 1) * 100)
     if args.lookback < 24:
         log.warning("利回り分布を%dか月で作っています。"
                     "期間は前に伸びますが、分位の精度は落ちます。"
@@ -2723,6 +2863,9 @@ def main() -> int:
             print("  基準を明確に上回っています。銘柄選択に意味があったと言えます。")
         print("  ※ 基準は初日に等金額で買って放置した場合。配当は課税後で加算しています。")
 
+    rs = d0.get("range_sells", 0)
+    if rs:
+        print(f"\n  レンジ上限で降りた回数： {rs}回")
     sb = d0.get("sector_blocked", 0)
     if sb:
         print(f"\n  業種の上限で見送った回数： {sb}回")
