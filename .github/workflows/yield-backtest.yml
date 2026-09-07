@@ -37,8 +37,12 @@ on:
         description: "元本（円）。空欄なら通常300万・実運用モードで1000万"
         required: false
         default: ""
+      range_swing:
+        description: "高配当で買った銘柄をレンジ上限で一度降りる形を検証（true/false）。土台は売らない戦略のまま"
+        required: false
+        default: "false"
       range_test:
-        description: "レンジ（ボックス）売買を検証する（true/false）。下限で買い上限で売る形を日次で回します"
+        description: "レンジ売買だけを単独で検証する（true/false）"
         required: false
         default: "false"
       range_opts:
@@ -143,6 +147,7 @@ jobs:
             --universe "${{ github.event.inputs.universe || 'core' }}" \
             --min-yield "${{ github.event.inputs.min_yield || '0' }}" \
             --ramp "${{ github.event.inputs.ramp || '0' }}" \
+            ${{ github.event.inputs.range_swing == 'true' && '--range-swing' || '' }} \
             ${{ github.event.inputs.range_test == 'true' && '--range-test' || '' }} \
             --range-opts "${{ github.event.inputs.range_opts || '60,0.08,0.20,0.02,0.02,0' }}" \
             ${{ github.event.inputs.grid == 'true' && '--grid' || '' }} \
