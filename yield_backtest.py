@@ -404,6 +404,24 @@ VARIANTS: dict[str, dict[str, Any]] = {
         "hold_tiers": ["S"], "exit_on_cut": True,
     },
 
+    # ── Tier分けに価値があるか ──
+    # S/A/B を判定して S 優先で買う仕組みが、成績に寄与しているのか。
+    # 利回り順に買うだけでも同じなら、Tier判定は不要な複雑さ。
+    "no_tier": {
+        "label": "Tierを使わず利回り順に買う・減配撤退",
+        "entry": [75], "exit": [], "priority": "pct",
+        "budget_weighted": True, "target_names": 15,
+        "tier_weight": {"S": 1.0, "A": 1.0, "B": 1.0},
+        "exit_on_cut": True,
+    },
+    "no_tier_random": {
+        "label": "Tierを使わず銘柄コード順に買う・減配撤退",
+        "entry": [75], "exit": [], "priority": "code",
+        "budget_weighted": True, "target_names": 15,
+        "tier_weight": {"S": 1.0, "A": 1.0, "B": 1.0},
+        "exit_on_cut": True,
+    },
+
     # ── 高配当で買い、レンジの上限で一度降りる ──
     # 土台は「Sは売らない＋減配撤退」のまま。
     # そこに「レンジの中にいて上限まで来たら降りる」を足す。
@@ -1479,6 +1497,10 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
         if cfg.get("priority") == "tier":
             _ord = {"S": 0, "A": 1, "B": 2}
             cands.sort(key=lambda x: (_ord.get(x[4], 9), -x[0]))
+        elif cfg.get("priority") == "code":
+            # 銘柄コード順。判断を一切入れない並べ方。
+            # これと差がなければ「順番を考えること」に価値がない。
+            cands.sort(key=lambda x: x[1])
         else:
             cands.sort(key=lambda x: -x[0])
 
