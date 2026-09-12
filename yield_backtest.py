@@ -404,6 +404,40 @@ VARIANTS: dict[str, dict[str, Any]] = {
         "hold_tiers": ["S"], "exit_on_cut": True,
     },
 
+    # ── 中核を厚く持ち、二軍だけ往復する ──
+    # S（累進配当かつ業界首位）はレンジになりにくく上に抜けやすい。
+    # B はレンジに収まりやすい。性質で扱いを分ける。
+    "swing_B_only": {
+        "label": "SとAは持つ・Bだけレンジ往復",
+        "entry": [75], "exit": [], "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S", "A"], "exit_on_cut": True,
+        "range_exit": {"fraction": 1.0, "min_gain": 0.0},
+    },
+    "swing_B_only_wS3": {
+        "label": "SとAは持つ・Bだけ往復＋Sを厚く（S3.0）",
+        "entry": [75], "exit": [], "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "tier_weight": {"S": 3.0, "A": 1.5, "B": 1.0},
+        "hold_tiers": ["S", "A"], "exit_on_cut": True,
+        "range_exit": {"fraction": 1.0, "min_gain": 0.0},
+    },
+    "swing_B_only_wS4": {
+        "label": "SとAは持つ・Bだけ往復＋Sをさらに厚く（S4.0）",
+        "entry": [75], "exit": [], "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "tier_weight": {"S": 4.0, "A": 1.5, "B": 1.0},
+        "hold_tiers": ["S", "A"], "exit_on_cut": True,
+        "range_exit": {"fraction": 1.0, "min_gain": 0.0},
+    },
+    "holdSA_noswing_wS3": {
+        "label": "SとAは持つ・往復なし＋Sを厚く（比較用）",
+        "entry": [75], "exit": [25], "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "tier_weight": {"S": 3.0, "A": 1.5, "B": 1.0},
+        "hold_tiers": ["S", "A"], "exit_on_cut": True,
+    },
+
     # ── Tier分けに価値があるか ──
     # S/A/B を判定して S 優先で買う仕組みが、成績に寄与しているのか。
     # 利回り順に買うだけでも同じなら、Tier判定は不要な複雑さ。
