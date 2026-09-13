@@ -3,10 +3,10 @@
 
 その日の results.json を読み、実運用と同じルールで配分する。
   ・スクリーニングを通過している
-  ・BUYシグナル（現在利回り ≧ 過去3年分布のQ75）
+  ・BUYシグナル（現在利回り >= 過去3年分布のQ75）
   ・緊急撤退に当たっていない
-  ・Tier順（S→A→B）、同Tier内は利回りの高い順
-  ・1銘柄の予算 ＝ 金額 ÷ 15 × （Tierの重み ÷ 平均）
+  ・Tier順（S->A->B）、同Tier内は利回りの高い順
+  ・1銘柄の予算 = 金額 ÷ 15 × （Tierの重み ÷ 平均）
   ・100株単位に切り捨て
 
 相場を読んで買い控えることはしない（検証で11案すべて失敗したため）。
@@ -41,10 +41,17 @@ def load_results() -> dict:
 
 
 def pick(data: dict) -> tuple[list, dict]:
-    """買いの候補を、実運用と同じ順番で並べて返す。"""
+    """買いの候補を、実運用と同じ順番で並べて返す。
+
+    results.json には分位の順位ではなく、
+    yield_q25 / yield_median / yield_q75 という実際の利回りが入っている。
+    「Q75以上」は current_yield >= yield_q75 で判定する。
+    """
     rows = data.get("stocks") or data.get("results") or []
+    min_yield = float(data.get("thresholds", {}).get("min_yield") or 0)
     stat = {"全体": len(rows), "スクリーニング通過": 0, "BUY": 0,
-            "緊急撤退で除外": 0, "価格なし": 0}
+            "緊急撤退で除外": 0, "価格なし": 0,
+            "足切り未満で除外": 0, "Q75未満で除外": 0}
     cands = []
     for r in rows:
         if not r.get("screening_pass", r.get("pass", False)):
@@ -60,13 +67,28 @@ def pick(data: dict) -> tuple[list, dict]:
         if not px or px <= 0:
             stat["価格なし"] += 1
             continue
+        cy = float(r.get("current_yield") or 0)
+        q75 = float(r.get("yield_q75") or 0)
+        q25 = float(r.get("yield_q25") or 0)
+
+        # 安全装置：足切りを下回るものは、通過扱いでも買わない
+        if cy < min_yield:
+            stat["足切り未満で除外"] += 1
+            continue
+        # 安全装置：Q75に届いていないものも買わない
+        if q75 > 0 and cy < q75:
+            stat["Q75未満で除外"] += 1
+            continue
+
         cands.append({
             "code": str(r.get("code", "")),
             "name": r.get("name", ""),
-            "tier": r.get("tier", "B"),
+            "tier": r.get("tier") or r.get("core_type") or "B",
             "price": float(px),
-            "yield": float(r.get("current_yield") or r.get("yield") or 0),
-            "pct": float(r.get("yield_percentile") or r.get("percentile") or 0),
+            "yield": cy,
+            "q75": q75,
+            "q25": q25,
+            "sample": int(r.get("yield_sample_n") or 0),
             "sector": r.get("sector", ""),
         })
     order = {"S": 0, "A": 1, "B": 2}
@@ -123,7 +145,11 @@ def allocate(cands: list, budget: float, target: int = TARGET_HOLDINGS,
     # 端数が余ったら、上位の銘柄から買い増して埋める。
     # 1銘柄が予算の2倍を超えないようにして、集中しすぎを防ぐ。
     if plan and cash > 0:
+        # 候補が少ないときは、1銘柄あたりの上限を緩めて使い切る。
+        # ただし総額の3分の1を超える集中は避ける。
         cap = budget / target * 2.0
+        if len(plan) < target:
+            cap = max(cap, min(budget / max(len(plan), 1), budget / 3))
         for _ in range(50):
             bought = False
             for p_ in plan:
@@ -162,15 +188,16 @@ def main() -> int:
     th = data.get("thresholds", {})
 
     out = []
-    out.append(f"# 配分案 — {yen(args.amount)}")
+    out.append(f"# 配分案 - {yen(args.amount)}")
     out.append("")
     out.append(f"判定日：{gen}")
     if th:
-        out.append(f"設定：利回り {th.get('min_yield', '?')}％以上 ／ "
-                   f"分位 {data.get('yield_sample_n', '?')}か月")
+        _sn = next((c["sample"] for c in cands if c.get("sample")), None)
+        _s = f" ／ 分位 {_sn}か月" if _sn else ""
+        out.append(f"設定：利回り {th.get('min_yield', '?')}％以上{_s}")
     out.append("")
 
-    # ── 候補の絞り込み過程 ──
+    # -- 候補の絞り込み過程 --
     out.append("## 候補の絞り込み")
     out.append("")
     out.append("| 段階 | 件数 |")
@@ -179,7 +206,11 @@ def main() -> int:
     out.append(f"| スクリーニング通過 | {stat['スクリーニング通過']} |")
     out.append(f"| うち BUYシグナル | {stat['BUY']} |")
     if stat["緊急撤退で除外"]:
-        out.append(f"| 緊急撤退で除外 | −{stat['緊急撤退で除外']} |")
+        out.append(f"| 緊急撤退で除外 | -{stat['緊急撤退で除外']} |")
+    if stat["足切り未満で除外"]:
+        out.append(f"| 利回りが足切り未満で除外 | -{stat['足切り未満で除外']} |")
+    if stat["Q75未満で除外"]:
+        out.append(f"| Q75に届かず除外 | -{stat['Q75未満で除外']} |")
     out.append(f"| **買える候補** | **{len(cands)}** |")
     out.append("")
 
@@ -205,23 +236,28 @@ def main() -> int:
         print("\n".join(out))
         return 0
 
-    # ── 配分案 ──
+    # -- 配分案 --
     used = args.amount - left
     out.append("## 買う銘柄")
     out.append("")
-    out.append("| Tier | コード | 銘柄 | 利回り | 分位 | 株価 | 株数 | 金額 |")
-    out.append("|---|---|---|---|---|---|---|---|")
+    out.append("| Tier | コード | 銘柄 | 利回り | Q75 | 割安度 | 株価 | 株数 | 金額 |")
+    out.append("|---|---|---|---|---|---|---|---|---|")
     for p in plan:
+        gap = (p["yield"] / p["q75"] - 1) * 100 if p["q75"] > 0 else 0
         out.append(f"| {p['tier']} | {p['code']} | {p['name'][:14]} | "
-                   f"{p['yield']:.2f}％ | Q{p['pct']:.0f} | "
+                   f"{p['yield']:.2f}％ | {p['q75']:.2f}％ | "
+                   f"+{gap:.0f}％ | "
                    f"{p['price']:,.0f} | {p['shares']:,}株 | "
                    f"{p['cost']:,.0f}円 |")
     out.append("")
     out.append(f"**合計 {yen(used)}（{used / args.amount * 100:.0f}％）"
                f" ／ 残り {yen(left)}**")
     out.append("")
+    out.append("*割安度=現在の利回りが、過去3年のQ75を何％上回っているか。"
+               "大きいほど安い。*")
+    out.append("")
 
-    # ── 業種の内訳 ──
+    # -- 業種の内訳 --
     sec = {}
     for p in plan:
         sec[p["sector"] or "（不明）"] = sec.get(p["sector"] or "（不明）", 0) \
@@ -244,11 +280,13 @@ def main() -> int:
                        "筋が通ります。")
             out.append("")
 
-    # ── 使い切れなかった場合 ──
+    # -- 使い切れなかった場合 --
     if left > args.amount * 0.05:
         out.append("## 残った資金について")
         out.append("")
-        if len(cands) <= len(plan):
+        if len(plan) >= args.max_names:
+            out.append(f"上限（{args.max_names}銘柄）に達したため、残りました。")
+        elif len(cands) <= len(plan):
             out.append(f"**条件を満たす銘柄が{len(cands)}件しかありませんでした。**")
             out.append("")
             out.append("相場が悪いからではなく、"
@@ -256,15 +294,35 @@ def main() -> int:
             out.append("")
             out.append("翌営業日以降、新しい候補が出たときに回してください。")
         else:
-            out.append("上限（20銘柄）に達したため、残りました。")
+            out.append("予算の枠に対して株価が高く、端数が残りました。")
         out.append("")
         out.append("> 検証では、**まとまった資金は早めに入れたほうが"
                    "成績が良い**と出ています")
-        out.append("> （初日一括 +5.3pt ／ 2年かけて分割 −0.6pt）。")
+        out.append("> （初日一括 +5.3pt ／ 2年かけて分割 -0.6pt）。")
         out.append("> **意図的に温存する理由はありません。**")
         out.append("")
 
-    # ── 注意 ──
+    # -- 銘柄数が少ないときの注意 --
+    if len(plan) < 5:
+        out.append("## 銘柄数が少ないことについて")
+        out.append("")
+        top = max(p["cost"] for p in plan) / used * 100
+        out.append(f"**{len(plan)}銘柄しか買えていません。"
+                   f"1銘柄に最大{top:.0f}％が集中しています。**")
+        out.append("")
+        out.append("検証では、1銘柄への集中が大きいと最大下落が深くなりました"
+                   "（固定額で3銘柄だけ持っていたときは17.3％）。")
+        out.append("")
+        out.append("**全額を今日入れる必要はありません。**")
+        out.append("数日から数週間に分けて、候補が増えたときに買い足すほうが"
+                   "分散が効きます。")
+        out.append("")
+        out.append("> ただし、何か月も待つのは逆効果です"
+                   "（2年かけて分割すると優位が消えます）。")
+        out.append("> **数週間のうちに入れ終える**のが目安です。")
+        out.append("")
+
+    # -- 注意 --
     out.append("---")
     out.append("")
     out.append("**発注前に確認してください**")
