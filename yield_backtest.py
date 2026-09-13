@@ -405,6 +405,31 @@ VARIANTS: dict[str, dict[str, Any]] = {
         "hold_tiers": ["S"], "exit_on_cut": True,
     },
 
+    # ── 外部要因が逆風の業種を避ける ──
+    # 金利が下降局面なら銀行を買わない、原油が下降局面なら資源を買わない、
+    # 円高局面なら輸出関連を買わない。判定は前月までの値だけで行う。
+    "factor_skip": {
+        "label": "逆風の業種は買わない",
+        "entry": [75], "exit": [], "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S"], "exit_on_cut": True,
+        "factor_rule": {"mode": "skip"},
+    },
+    "factor_thin": {
+        "label": "逆風の業種は半分の金額で買う",
+        "entry": [75], "exit": [], "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S"], "exit_on_cut": True,
+        "factor_rule": {"mode": "thin", "thin": 0.5},
+    },
+    "factor_thin30": {
+        "label": "逆風の業種は3割の金額で買う",
+        "entry": [75], "exit": [], "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S"], "exit_on_cut": True,
+        "factor_rule": {"mode": "thin", "thin": 0.3},
+    },
+
     # ── 中核を厚く持ち、二軍だけ往復する ──
     # S（累進配当かつ業界首位）はレンジになりにくく上に抜けやすい。
     # B はレンジに収まりやすい。性質で扱いを分ける。
@@ -793,6 +818,29 @@ def _fetch_csv(url: str) -> pd.DataFrame:
         return pd.read_csv(io.StringIO(r.read().decode("utf-8", "ignore")))
 
 
+# 33業種のうち、外部要因に強く反応するもの。
+# 「どの業種がどの要因に反応するか」は自分で決めるしかないため、
+# 後付けにならないよう、一般に知られている対応だけを使う。
+SECTOR_FACTOR = {
+    # 金利が上がると利ざやが広がる
+    "rate": ["銀行業", "保険業", "証券、商品先物取引業", "その他金融業"],
+    # 資源価格に直結する
+    "oil": ["鉱業", "石油・石炭製品", "卸売業", "海運業"],
+    # 円安が追い風になる（海外売上の比率が高い）
+    "fx": ["輸送用機器", "電気機器", "精密機器", "機械"],
+}
+
+
+def factor_trend(sr: pd.Series, win: int = 6) -> pd.Series:
+    """その指標が上向きか下向きかを、月ごとに返す。
+
+    前月までの値だけを使う（当月を含めると後出しになる）。
+    win か月前と比べて上なら +1、下なら −1。
+    """
+    prev = sr.shift(1)
+    return np.sign(prev - prev.shift(win)).fillna(0)
+
+
 def fetch_markets() -> dict:
     """外部の市場データを取る。取れなかったものは入らない。
 
@@ -820,6 +868,13 @@ def fetch_markets() -> dict:
                  d["date"].min().date(), d["date"].max().date())
     except Exception as e:
         log.warning("VIX を取得できませんでした（%s）", e)
+    try:
+        fx = fetch_fx()
+        if not fx.empty:
+            out["usdjpy"] = fx.set_index("date")["usdjpy"]
+    except Exception as e:
+        log.warning("ドル円を取得できませんでした（%s）", e)
+
     for key, (jname, _note, url) in OTHER_SRC.items():
         try:
             d = _fetch_csv(url)
@@ -1100,6 +1155,26 @@ def assign_tiers(store: dict, last_price: dict[str, float]) -> dict[str, str]:
     return tiers
 
 
+def add_factor_columns(panel: pd.DataFrame, mk: dict,
+                       win: int = 6) -> pd.DataFrame:
+    """外部要因が追い風か逆風かを、月ごとにパネルへ足す。
+
+    前月までの値だけで判定するので、後出しにはならない。
+    """
+    panel = panel.copy()
+    src = {"rate": "us10y", "oil": "brent", "fx": "usdjpy"}
+    for fac, key in src.items():
+        sr = mk.get(key)
+        col = f"trend_{fac}"
+        if sr is None or (hasattr(sr, "empty") and sr.empty):
+            panel[col] = 0.0
+            continue
+        m = sr.resample("ME").last().dropna()
+        tr = factor_trend(m, win)
+        panel[col] = panel["date"].map(tr).fillna(0.0)
+    return panel
+
+
 def add_range_columns(store: dict, panel: pd.DataFrame, win: int,
                       w_min: float, w_max: float, sell_at: float) -> pd.DataFrame:
     """「その月のうちにレンジ上限へ届いたか、いくらで届いたか」を足す。
@@ -1300,6 +1375,11 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
     # 土台は「売らない」戦略のまま、その上に往復を乗せる形。
     # 外れてレンジを割っても、ただ持ち続けるだけで損失にはならない。
     range_exit = cfg.get("range_exit")
+    # 外部要因が逆風の業種を、どう扱うか。
+    #   skip  … 買わない
+    #   thin  … 薄く買う（倍率を指定）
+    # 追い風か逆風かは、前月までの値だけで判定している。
+    factor_rule = cfg.get("factor_rule")
     # 買い増しを許すか。既定は1銘柄1回まで。
     # さらに下がったところで買い増すと、平均取得単価が下がる代わりに
     # 1銘柄への比重が増える。効くかどうかは検証で判断する。
@@ -1721,6 +1801,25 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                     diag["sector_blocked"] = diag.get("sector_blocked", 0) + 1
                     continue
             # Tier別予算か、等金額か
+            # 外部要因が逆風の業種を避ける／薄くする
+            f_scale = 1.0
+            if factor_rule:
+                _sec = day.loc[code].get("sector", "")
+                for _fac, _secs in SECTOR_FACTOR.items():
+                    if _sec not in _secs:
+                        continue
+                    _t = float(day.iloc[0].get(f"trend_{_fac}", 0) or 0)
+                    if _t < 0:      # 逆風
+                        mode = factor_rule.get("mode", "skip")
+                        if mode == "skip":
+                            f_scale = 0.0
+                        else:
+                            f_scale = min(f_scale, factor_rule.get("thin", 0.5))
+                        diag["factor_blocked"] = diag.get("factor_blocked", 0) + 1
+                        break
+            if f_scale <= 0:
+                continue
+
             nt = len(entry_for(day.loc[code])) if entry_by_tier else n_tr
             rs = 1.0
             if regime:
@@ -1751,7 +1850,7 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                 unit_size = TIER_BUDGET.get(tier, TIER_BUDGET["B"]) / nt
             else:
                 unit_size = total / max_names / nt
-            unit_size *= rs
+            unit_size *= rs * f_scale
             for _ in range(add):
                 if usable < unit_size or unit_size < price:
                     break
@@ -2112,6 +2211,11 @@ def main() -> int:
     ap.add_argument("--only", default="", help="比較するルールをカンマ区切りで指定")
     ap.add_argument("--capital", type=float, default=0,
                     help="元本。未指定なら通常300万・実運用モードで1000万")
+    ap.add_argument("--factor-test", action="store_true",
+                    help="外部要因（金利・原油・為替）が逆風の業種を"
+                         "避ける形を検証する")
+    ap.add_argument("--factor-win", type=int, default=6,
+                    help="何か月前と比べて上向き／下向きを判定するか")
     ap.add_argument("--fx-test", action="store_true",
                     help="ドル円との関係を調べる。成績のどれだけが"
                          "円安に支えられていたかを切り分ける")
@@ -2316,6 +2420,17 @@ def main() -> int:
 
     log.info("パネルを作成中…")
     panel = build_panel(store, args.years, args.lookback)
+
+    # 外部要因を使う検証では、追い風か逆風かをパネルに足す
+    if args.factor_test:
+        _mk = fetch_markets()
+        panel = add_factor_columns(panel, _mk, args.factor_win)
+        for _f, _n in [("rate", "米金利"), ("oil", "原油"), ("fx", "ドル円")]:
+            _c = panel.groupby("date")[f"trend_{_f}"].first()
+            _up = int((_c > 0).sum())
+            _dn = int((_c < 0).sum())
+            log.info("  %s … 追い風 %dか月 / 逆風 %dか月（%dか月前と比較）",
+                     _n, _up, _dn, args.factor_win)
 
     # レンジ往復の検証では、月の途中で上限に届いたかを見る必要がある
     if args.range_swing:
