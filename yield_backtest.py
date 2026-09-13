@@ -35,6 +35,7 @@ import argparse
 import json
 import logging
 import os
+import io
 import sys
 import time
 from datetime import date, datetime, timedelta, timezone
@@ -733,6 +734,38 @@ class JQ:
             if not pk:
                 return rows
             time.sleep(API_SLEEP)
+
+
+# 為替は公開データセットから取る（J-Quantsの契約には含まれないため）
+FX_URL = ("https://raw.githubusercontent.com/datasets/exchange-rates/"
+          "main/data/daily.csv")
+
+
+def fetch_fx() -> pd.DataFrame:
+    """ドル円の日次を取る。取れなければ空を返す。
+
+    2020〜2026年は円安が大きく進んだ時期で、
+    高配当バリュー株（商社・銀行・輸出）はその恩恵を受けている可能性がある。
+    成績のどれだけが円安由来かを切り分けるために使う。
+    """
+    try:
+        import urllib.request
+        with urllib.request.urlopen(FX_URL, timeout=60) as r:
+            raw = r.read().decode("utf-8", "ignore")
+        df = pd.read_csv(io.StringIO(raw))
+        jp = df[df["Country"].astype(str).str.contains("Japan", case=False,
+                                                       na=False)].copy()
+        if jp.empty:
+            raise ValueError("日本の行が見つかりません")
+        jp["date"] = pd.to_datetime(jp["Date"])
+        jp["usdjpy"] = pd.to_numeric(jp["Exchange rate"], errors="coerce")
+        jp = jp.dropna(subset=["usdjpy"]).sort_values("date")
+        log.info("ドル円を取得しました（%d日分 / %s〜%s）", len(jp),
+                 jp["date"].min().date(), jp["date"].max().date())
+        return jp[["date", "usdjpy"]].reset_index(drop=True)
+    except Exception as e:
+        log.warning("ドル円を取得できませんでした（%s）。為替の分析は省略します。", e)
+        return pd.DataFrame()
 
 
 def fetch_topix(jq: "JQ", years: int = 9) -> pd.DataFrame:
@@ -1987,7 +2020,9 @@ def buy_and_hold(pn: pd.DataFrame, tax_rate: float) -> dict | None:
     yrs = max((pd.Timestamp(dts[-1]) - pd.Timestamp(dts[0])).days / 365.25, 0.5)
     dd = float((1 - arr / np.maximum.accumulate(arr)).max())
     r = pd.Series(arr).pct_change().dropna()
-    return {"総リターン": (arr[-1] - 1) * 100,
+    return {"curve": pd.DataFrame({"date": pd.to_datetime(dts),
+                                  "value": arr * 1.0}),
+            "総リターン": (arr[-1] - 1) * 100,
             "年率": (arr[-1] ** (1 / yrs) - 1) * 100,
             "最大下落": dd * 100,
             "シャープ": float(r.mean() / r.std() * np.sqrt(12)) if r.std() > 0 else 0.0}
@@ -2010,6 +2045,9 @@ def main() -> int:
     ap.add_argument("--only", default="", help="比較するルールをカンマ区切りで指定")
     ap.add_argument("--capital", type=float, default=0,
                     help="元本。未指定なら通常300万・実運用モードで1000万")
+    ap.add_argument("--fx-test", action="store_true",
+                    help="ドル円との関係を調べる。成績のどれだけが"
+                         "円安に支えられていたかを切り分ける")
     ap.add_argument("--range-swing", action="store_true",
                     help="高配当で買った銘柄を、レンジの上限で一度降りる形を検証する。"
                          "土台は売らない戦略のまま、その上に往復を乗せる")
@@ -2341,6 +2379,109 @@ def main() -> int:
         for v in VARIANTS.values():
             v.setdefault("min_yield", args.min_yield)
         log.info("利回り %.1f％ 未満の銘柄は買わない設定で回します", args.min_yield)
+
+    # ══════════════════════════════════════════
+    # 為替（ドル円）との関係を調べる
+    #   2020〜2026年は円安が大きく進んだ時期。
+    #   高配当バリュー株（商社・銀行・輸出）はその恩恵を受けている可能性がある。
+    #   成績のどれだけが円安由来かを切り分ける。
+    # ══════════════════════════════════════════
+    if args.fx_test:
+        fx = fetch_fx()
+        if fx.empty:
+            print("ドル円を取得できませんでした。")
+            return 1
+
+        fxm = fx.set_index("date")["usdjpy"].resample("ME").last().dropna()
+        nm = [x.strip() for x in args.only.split(",") if x.strip()] or \
+             ["live15_holdS_cut", "live15_holdall", "current_live"]
+        nm = [n for n in nm if n in VARIANTS]
+
+        runs = []
+        for n_ in nm:
+            r = simulate(panel, VARIANTS[n_], args.capital, args.max_names,
+                         tier_budget=args.realistic, dividends=args.realistic,
+                         slip_bps=args.slip_bps, fee_bps=args.fee_bps,
+                         tax_rate=args.tax / 100.0, ramp=args.ramp,
+                         min_yield_override=args.min_yield or None)
+            if r.get("curve") is not None and not r["curve"].empty:
+                runs.append((VARIANTS[n_]["label"], r))
+        bh = buy_and_hold(panel, args.tax / 100.0)
+        if bh and bh.get("curve") is not None:
+            runs.append(("（基準）全部買って放置", bh))
+
+        d0, d1 = panel["date"].min(), panel["date"].max()
+        f0 = float(fxm[fxm.index <= d0].iloc[-1]) if (fxm.index <= d0).any() \
+            else float(fxm.iloc[0])
+        f1 = float(fxm[fxm.index <= d1].iloc[-1]) if (fxm.index <= d1).any() \
+            else float(fxm.iloc[-1])
+        yrs_ = max((d1 - d0).days / 365.25, 0.5)
+
+        print(f"\n■ 為替（ドル円）との関係"
+              f"（{d0.date()} 〜 {d1.date()}）\n")
+        print(f"  期初 {f0:.1f}円 → 期末 {f1:.1f}円 "
+              f"（{(f1 / f0 - 1) * 100:+.1f}％ / 年率 "
+              f"{((f1 / f0) ** (1 / yrs_) - 1) * 100:+.1f}％）")
+
+        # ── 月次の連動を見る ──
+        print("\n【月ごとの動きが、どれだけ為替と連動しているか】\n")
+        print(f"{'ルール':<32}{'相関':>8}{'円安月の平均':>14}{'円高月の平均':>14}{'差':>9}")
+        print("-" * 80)
+        fx_ret = fxm.pct_change().dropna()
+        for lab, r in runs:
+            c = r["curve"].set_index("date")["value"]
+            pr = c.pct_change().dropna()
+            j = pd.concat([pr.rename("p"), fx_ret.rename("f")], axis=1).dropna()
+            if len(j) < 12:
+                continue
+            corr = j["p"].corr(j["f"])
+            up = j[j["f"] > 0]["p"].mean() * 100
+            dn = j[j["f"] <= 0]["p"].mean() * 100
+            print(f"{lab[:30]:<32}{corr:>8.2f}{up:>13.2f}%{dn:>13.2f}%"
+                  f"{up - dn:>+8.2f}pt")
+
+        print("\n  相関 … +1に近いほど為替と同じ動き、0なら無関係、−1なら逆。")
+        print("  円安月／円高月 … その月の資産の増え方の平均。")
+        print("  差が大きいほど、成績が円安に支えられていたことになる。")
+
+        # ── 円安の期間と、そうでない期間で分ける ──
+        print("\n【円安が進んだ期間と、そうでない期間で分ける】\n")
+        # 12か月前と比べて円安かどうかで月を分類する
+        fx_yoy = (fxm / fxm.shift(12) - 1).dropna()
+        weak = set(fx_yoy[fx_yoy > 0.05].index)      # 1年で5％以上の円安
+        strong = set(fx_yoy[fx_yoy < -0.05].index)   # 1年で5％以上の円高
+        print(f"  円安の月 {len(weak)}か月 ／ 円高の月 {len(strong)}か月 ／ "
+              f"その他 {len(fx_yoy) - len(weak) - len(strong)}か月\n")
+        print(f"{'ルール':<32}{'円安期の年率':>14}{'円高・横ばい期の年率':>20}{'差':>10}")
+        print("-" * 80)
+        for lab, r in runs:
+            c = r["curve"].set_index("date")["value"]
+            pr = c.pct_change().dropna()
+            w = pr[pr.index.isin(weak)]
+            o = pr[~pr.index.isin(weak)]
+            if len(w) < 6 or len(o) < 6:
+                continue
+            wa = ((1 + w.mean()) ** 12 - 1) * 100
+            oa = ((1 + o.mean()) ** 12 - 1) * 100
+            print(f"{lab[:30]:<32}{wa:>13.1f}%{oa:>19.1f}%{wa - oa:>+9.1f}pt")
+
+        print("\n  円安期 … 1年前と比べて5％以上の円安だった月。")
+        print("  差が大きいほど、円安局面でだけ成績が出ていたことになる。")
+        print("  ※ 月ごとの平均を年率に直しているため、"
+              "通常の年率とは一致しません。")
+
+        print("\n【読み方】\n")
+        print("  ルールと基準の「差」を比べてください。")
+        print("  両方とも同じだけ円安に支えられているなら、"
+              "それは相場全体の話であって、")
+        print("  このルール固有の弱点ではありません。")
+        print("  ルールだけ差が大きいなら、"
+              "円安に依存した銘柄に偏っていることになります。")
+
+        OUTDIR.mkdir(parents=True, exist_ok=True)
+        fx.to_csv(OUTDIR / "usdjpy.csv", index=False, encoding="utf-8-sig")
+        print("\n書き出しました: data/usdjpy.csv")
+        return 0
 
     # ══════════════════════════════════════════
     # レンジ売買の検証
