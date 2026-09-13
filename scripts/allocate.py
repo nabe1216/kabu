@@ -106,14 +106,20 @@ def fit_target(cands: list, budget: float, target: int) -> int:
     if not cands:
         return target
     avg_w = sum(TIER_WEIGHT.values()) / len(TIER_WEIGHT)
-    top = cands[:max(3, min(8, len(cands)))]
+    # 候補が目標より少ないなら、そもそも候補の数に合わせる
+    target = min(target, max(len(cands), 1))
+    # 上位から順に、何銘柄まで実際に買えるかを数える
+    want = min(len(cands), target)
     for t in range(target, 0, -1):
+        cash = budget
         ok = 0
-        for c in top:
+        for c in cands:
             unit = budget / t * (TIER_WEIGHT.get(c["tier"], 1.0) / avg_w)
-            if int(unit // c["price"] // 100) * 100 > 0:
+            sh = int(min(unit, cash) // c["price"] // 100) * 100
+            if sh > 0:
+                cash -= sh * c["price"]
                 ok += 1
-        if ok >= min(3, len(top)):
+        if ok >= want:
             return t
     return 1
 
@@ -141,6 +147,24 @@ def allocate(cands: list, budget: float, target: int = TARGET_HOLDINGS,
         cash -= cost
         plan.append({**c, "shares": shares, "cost": cost,
                      "budget": unit})
+
+    # 予算が小さく、1〜2銘柄しか買えなかった場合。
+    # Tier順・利回り順のままだと株価の高い銘柄で使い切ってしまう。
+    # 100株の値段が安い順に組み直して、持てる銘柄数を増やす。
+    if len(plan) < 3 and len(cands) > len(plan):
+        by_price = sorted(cands, key=lambda x: x["price"])
+        alt, cash2 = [], budget
+        for c in by_price:
+            if len(alt) >= max_names:
+                break
+            cost = c["price"] * 100
+            if cost > cash2:
+                continue
+            cash2 -= cost
+            alt.append({**c, "shares": 100, "cost": cost,
+                        "budget": budget / max(target, 1)})
+        if len(alt) > len(plan):
+            plan, cash = alt, cash2
 
     # 端数が余ったら、上位の銘柄から買い増して埋める。
     # 1銘柄が予算の2倍を超えないようにして、集中しすぎを防ぐ。
@@ -238,6 +262,12 @@ def main() -> int:
 
     # -- 配分案 --
     used = args.amount - left
+    if len(plan) >= 2 and plan != sorted(
+            plan, key=lambda x: ({"S": 0, "A": 1, "B": 2}.get(x["tier"], 9),
+                                 -x["yield"])):
+        out.append("金額が小さいため、**1単元の値段が安い順**に組んで"
+                   "銘柄数を増やしました。")
+        out.append("")
     out.append("## 買う銘柄")
     out.append("")
     out.append("| Tier | コード | 銘柄 | 利回り | Q75 | 割安度 | 株価 | 株数 | 金額 |")
