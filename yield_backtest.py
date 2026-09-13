@@ -405,6 +405,38 @@ VARIANTS: dict[str, dict[str, Any]] = {
         "hold_tiers": ["S"], "exit_on_cut": True,
     },
 
+    # ── 質（Tier）で入れ替える ──
+    # B ばかり持っているときに S が買い候補になったら入れ替えるべきか。
+    # 売却益に20.315％の税金がかかるので、それを取り戻せるかが問われる。
+    "swap_2step": {
+        "label": "2段階上なら入れ替え（B→S のみ）",
+        "entry": [75], "exit": [], "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S"], "exit_on_cut": True,
+        "swap_tier": {"min_gap": 2, "max_year": 4},
+    },
+    "swap_1step": {
+        "label": "1段階上なら入れ替え（B→A も）",
+        "entry": [75], "exit": [], "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S"], "exit_on_cut": True,
+        "swap_tier": {"min_gap": 1, "max_year": 4},
+    },
+    "swap_2step_win": {
+        "label": "2段階上＋含み益のときだけ入れ替え",
+        "entry": [75], "exit": [], "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S"], "exit_on_cut": True,
+        "swap_tier": {"min_gap": 2, "max_year": 4, "only_win": True},
+    },
+    "swap_2step_rare": {
+        "label": "2段階上＋年2回まで",
+        "entry": [75], "exit": [], "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S"], "exit_on_cut": True,
+        "swap_tier": {"min_gap": 2, "max_year": 2},
+    },
+
     # ── 外部要因が逆風の業種を避ける ──
     # 金利が下降局面なら銀行を買わない、原油が下降局面なら資源を買わない、
     # 円高局面なら輸出関連を買わない。判定は前月までの値だけで行う。
@@ -1401,6 +1433,11 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
     trail_arm = cfg.get("trail_arm")                # この率まで上がったら見張り開始
     trail = cfg.get("trail")                        # 高値からこの率下げたら売る
     rotate = cfg.get("rotate")
+    # 質（Tier）で入れ替える。
+    #   min_gap  … Tierが何段階上なら入れ替えるか（1ならB→A、2ならB→S）
+    #   only_win … 含み益が出ている銘柄だけ手放す（損切りしない）
+    #   max_year … 1年あたりの入れ替え回数の上限
+    swap_tier = cfg.get("swap_tier")
     n_tr = len(entry)
 
     # 売買にかかる費用。
@@ -1742,14 +1779,83 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                     pr = pr0 * (1 - slip) * (1 - fee)
                     for sh, _c in st["lots"]:
                         cash += sh * pr
+                        _g = (pr - _c) * sh
+                        diag["realized"] += _g
+                        # 入れ替えでも売却益には課税される。
+                        # ここが抜けていると、入れ替えが不当に有利に出る。
+                        if tax_rate > 0:
+                            if _g > 0:
+                                _tx = max(0.0, _g - loss_pool)
+                                loss_pool = max(0.0, loss_pool - _g)
+                                _t2 = _tx * tax_rate
+                                cash -= _t2
+                                diag["tax"] = diag.get("tax", 0.0) + _t2
+                            else:
+                                loss_pool += -_g
                         diag["fee"] = diag.get("fee", 0.0) + sh * pr0 * (slip + fee)
-                        diag["realized"] += (pr - _c) * sh
                         trades.append({"code": worst_c, "date": dt, "side": "sell",
                                        "price": pr, "shares": sh})
                     diag["closed"] += 1
                     diag["rotations"] += 1
                     if worst_c in opened_at:
                         diag["hold_months"].append(mi - opened_at.pop(worst_c))
+
+        # ── 質で入れ替える ──
+        # いま持っている中でいちばん質の低い銘柄を、
+        # より質の高い買い候補と入れ替える。
+        # 売却益に課税されるので、それを取り戻せるかが問われる。
+        if swap_tier and cands:
+            _ord2 = {"S": 0, "A": 1, "B": 2}
+            _cap = swap_tier.get("max_year", 4) * max(mi / 12.0, 0.1)
+            if diag.get("tier_swaps", 0) < _cap:
+                # 買える候補のうち、いちばん質が高いもの
+                best = None
+                for _p, _c, _a, _px, _t in cands:
+                    if _c in pos:
+                        continue
+                    if best is None or _ord2.get(_t, 9) < _ord2.get(best[2], 9):
+                        best = (_p, _c, _t, _px)
+                # 保有のうち、いちばん質が低いもの
+                worst = None
+                for _c in pos:
+                    if _c not in day.index:
+                        continue
+                    _t = day.loc[_c].get("tier", "B")
+                    if worst is None or _ord2.get(_t, 9) > _ord2.get(worst[1], 9):
+                        worst = (_c, _t)
+                if best and worst:
+                    _gap = _ord2.get(worst[1], 9) - _ord2.get(best[2], 9)
+                    if _gap >= swap_tier.get("min_gap", 1):
+                        _st = pos[worst[0]]
+                        _shs = sum(sh for sh, _ in _st["lots"])
+                        _avg = (sum(sh * pr for sh, pr in _st["lots"]) / _shs
+                                if _shs else 0)
+                        _px0 = day.loc[worst[0], "price"]
+                        _win = _px0 > _avg
+                        if (not swap_tier.get("only_win")) or _win:
+                            _pr = _px0 * (1 - slip) * (1 - fee)
+                            for sh, _c0 in _st["lots"]:
+                                cash += sh * _pr
+                                _g = (_pr - _c0) * sh
+                                diag["realized"] += _g
+                                if tax_rate > 0:
+                                    if _g > 0:
+                                        _tx = max(0.0, _g - loss_pool)
+                                        loss_pool = max(0.0, loss_pool - _g)
+                                        _t2 = _tx * tax_rate
+                                        cash -= _t2
+                                        diag["tax"] = diag.get("tax", 0.0) + _t2
+                                    else:
+                                        loss_pool += -_g
+                                diag["fee"] = diag.get("fee", 0.0) + sh * _px0 * (slip + fee)
+                                trades.append({"code": worst[0], "date": dt,
+                                               "side": "sell", "price": _pr,
+                                               "shares": sh})
+                            del pos[worst[0]]
+                            diag["closed"] += 1
+                            diag["tier_swaps"] = diag.get("tier_swaps", 0) + 1
+                            if worst[0] in opened_at:
+                                diag["hold_months"].append(mi - opened_at.pop(worst[0]))
 
         if len(pos) >= max_names:
             diag["full_slots"] += 1
@@ -3341,6 +3447,9 @@ def main() -> int:
             print("  基準を明確に上回っています。銘柄選択に意味があったと言えます。")
         print("  ※ 基準は初日に等金額で買って放置した場合。配当は課税後で加算しています。")
 
+    ts = d0.get("tier_swaps", 0)
+    if ts:
+        print(f"\n  質で入れ替えた回数： {ts}回")
     rs = d0.get("range_sells", 0)
     if rs:
         print(f"\n  レンジ上限で降りた回数： {rs}回")
