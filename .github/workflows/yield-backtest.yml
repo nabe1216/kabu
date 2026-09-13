@@ -13,10 +13,6 @@ on:
         description: "検証する年数（取得できるのが約5年なので2〜3が目安）"
         required: false
         default: "2"
-      sweep:
-        description: "分位の期間を振って比較（例: 12,24,36,48,60,72,84）。空欄なら通常の比較"
-        required: false
-        default: ""
       lookback:
         description: "利回り分布を作る月数（既定36）。短くすると検証期間を前に伸ばせます"
         required: false
@@ -33,6 +29,10 @@ on:
         description: "元本（円）。空欄なら通常300万・実運用モードで1000万"
         required: false
         default: ""
+      factor_test:
+        description: "外部要因（金利・原油・為替）が逆風の業種を避ける形を検証（true/false）"
+        required: false
+        default: "false"
       fx_test:
         description: "ドル円との関係を調べる（true/false）。成績のどれだけが円安に支えられていたかを切り分けます"
         required: false
@@ -147,6 +147,7 @@ jobs:
             --universe "${{ github.event.inputs.universe || 'core' }}" \
             --min-yield "${{ github.event.inputs.min_yield || '0' }}" \
             --ramp "${{ github.event.inputs.ramp || '0' }}" \
+            ${{ github.event.inputs.factor_test == 'true' && '--factor-test' || '' }} \
             ${{ github.event.inputs.fx_test == 'true' && '--fx-test' || '' }} \
             ${{ github.event.inputs.range_swing == 'true' && '--range-swing' || '' }} \
             ${{ github.event.inputs.range_test == 'true' && '--range-test' || '' }} \
