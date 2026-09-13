@@ -2428,10 +2428,12 @@ def main() -> int:
         print(f"{'ルール':<32}{'相関':>8}{'円安月の平均':>14}{'円高月の平均':>14}{'差':>9}")
         print("-" * 80)
         fx_ret = fxm.pct_change().dropna()
+        fx_ret = fx_ret[(fx_ret.index >= d0) & (fx_ret.index <= d1)]
         for lab, r in runs:
             c = r["curve"].set_index("date")["value"]
             pr = c.pct_change().dropna()
-            j = pd.concat([pr.rename("p"), fx_ret.rename("f")], axis=1).dropna()
+            j = pd.concat([pr.rename("p"), fx_ret.rename("f")],
+                          axis=1, sort=True).dropna()
             if len(j) < 12:
                 continue
             corr = j["p"].corr(j["f"])
@@ -2447,7 +2449,9 @@ def main() -> int:
         # ── 円安の期間と、そうでない期間で分ける ──
         print("\n【円安が進んだ期間と、そうでない期間で分ける】\n")
         # 12か月前と比べて円安かどうかで月を分類する
+        # 検証期間だけに絞る（絞らないと1971年からの全期間を数えてしまう）
         fx_yoy = (fxm / fxm.shift(12) - 1).dropna()
+        fx_yoy = fx_yoy[(fx_yoy.index >= d0) & (fx_yoy.index <= d1)]
         weak = set(fx_yoy[fx_yoy > 0.05].index)      # 1年で5％以上の円安
         strong = set(fx_yoy[fx_yoy < -0.05].index)   # 1年で5％以上の円高
         print(f"  円安の月 {len(weak)}か月 ／ 円高の月 {len(strong)}か月 ／ "
