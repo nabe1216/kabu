@@ -1,0 +1,40 @@
+name: 配分案をつくる
+
+# 投資できる金額を入れると、買うべき銘柄と株数を出す。
+# その日の results.json を読み、実運用と同じルールで配分する。
+#
+# 相場を読んで買い控えることはしない。
+# 検証で「相場に応じて動く」案は11通り試し、11通りとも成績が落ちたため。
+# 使い切れないのは「条件を満たす銘柄が足りないとき」だけ。
+on:
+  workflow_dispatch:
+    inputs:
+      amount:
+        description: "投資できる金額（円）。例: 3000000"
+        required: true
+        default: "1000000"
+      target:
+        description: "目標保有銘柄数。空欄なら15（金額が小さい場合は自動で減ります）"
+        required: false
+        default: "15"
+      max_names:
+        description: "同時に持つ最大銘柄数。空欄なら20"
+        required: false
+        default: "20"
+
+jobs:
+  allocate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 配分案をつくる
+        run: |
+          python scripts/allocate.py \
+            --amount "${{ github.event.inputs.amount }}" \
+            --target "${{ github.event.inputs.target || '15' }}" \
+            --max-names "${{ github.event.inputs.max_names || '20' }}"
