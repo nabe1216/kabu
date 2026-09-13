@@ -472,6 +472,50 @@ VARIANTS: dict[str, dict[str, Any]] = {
                       "only_loss": True, "avoid_div_months": 3},
     },
 
+    # ── 十分に上がり、利回りも下がった銘柄を、質の高い銘柄に乗り換える ──
+    # 少額の利確ではなく、ある程度の含み益が出ていて、
+    # かつ利回りが下がって割高側に入った銘柄だけを対象にする。
+    "swap_ripe20": {
+        "label": "含み益20％以上＋Q25以下を S/A に乗り換え",
+        "entry": [75], "exit": [], "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S"], "exit_on_cut": True,
+        "swap_tier": {"min_gap": 1, "max_year": 6,
+                      "min_gain": 0.20, "max_pct": 25},
+    },
+    "swap_ripe30": {
+        "label": "含み益30％以上＋Q25以下を S/A に乗り換え",
+        "entry": [75], "exit": [], "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S"], "exit_on_cut": True,
+        "swap_tier": {"min_gap": 1, "max_year": 6,
+                      "min_gain": 0.30, "max_pct": 25},
+    },
+    "swap_ripe50": {
+        "label": "含み益50％以上＋Q25以下を S/A に乗り換え",
+        "entry": [75], "exit": [], "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S"], "exit_on_cut": True,
+        "swap_tier": {"min_gap": 1, "max_year": 6,
+                      "min_gain": 0.50, "max_pct": 25},
+    },
+    "swap_ripe20_med": {
+        "label": "含み益20％以上＋中央値以下を S/A に乗り換え",
+        "entry": [75], "exit": [], "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S"], "exit_on_cut": True,
+        "swap_tier": {"min_gap": 1, "max_year": 6,
+                      "min_gain": 0.20, "max_pct": 50},
+    },
+    "swap_ripe20_nodiv": {
+        "label": "含み益20％以上＋Q25以下＋権利月は避ける",
+        "entry": [75], "exit": [], "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S"], "exit_on_cut": True,
+        "swap_tier": {"min_gap": 1, "max_year": 6, "min_gain": 0.20,
+                      "max_pct": 25, "avoid_div_months": 3},
+    },
+
     # ── 外部要因が逆風の業種を避ける ──
     # 金利が下降局面なら銀行を買わない、原油が下降局面なら資源を買わない、
     # 円高局面なら輸出関連を買わない。判定は前月までの値だけで行う。
@@ -1874,11 +1918,26 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                         _ms = [((m - _cm) % 12) for m in (_fm, _im) if m]
                         _near = min(_ms) if _ms else 99
 
+                        _gain = (_px0 / _avg - 1) if _avg > 0 else 0.0
+                        _lvl = level(day.loc[worst[0]])
+
                         _ok = True
+                        # 含み益がこの率以上あること（少額の利確を避ける）
+                        _mg = swap_tier.get("min_gain")
+                        if _mg is not None and _gain < _mg:
+                            _ok = False
+                            diag["swap_skip_gain"] = diag.get("swap_skip_gain", 0) + 1
+                        # 利回りが下がっていること（分位がこの値以下＝割高側）
+                        _mp = swap_tier.get("max_pct")
+                        if _mp is not None and _lvl > _mp:
+                            _ok = False
+                            diag["swap_skip_pct"] = diag.get("swap_skip_pct", 0) + 1
                         if swap_tier.get("only_win") and not _win:
                             _ok = False          # 含み益のときだけ
                         if swap_tier.get("only_loss") and _win:
                             _ok = False          # 含み損のときだけ（税金がかからない）
+                        if _ok is False:
+                            pass
                         _avoid = swap_tier.get("avoid_div_months", 0)
                         if _avoid and _near <= _avoid:
                             _ok = False          # 権利月が近いので見送る
@@ -3499,6 +3558,12 @@ def main() -> int:
         print("  ※ 基準は初日に等金額で買って放置した場合。配当は課税後で加算しています。")
 
     ts = d0.get("tier_swaps", 0)
+    _sk = []
+    if d0.get("swap_skip_gain"): _sk.append(f"含み益が足りず {d0['swap_skip_gain']}回")
+    if d0.get("swap_skip_pct"): _sk.append(f"まだ割安で {d0['swap_skip_pct']}回")
+    if d0.get("swap_skipped_div"): _sk.append(f"権利月が近く {d0['swap_skipped_div']}回")
+    if _sk:
+        print(f"\n  入れ替えの見送り： " + " ／ ".join(_sk))
     if ts or d0.get("swap_skipped_div"):
         print(f"\n  質で入れ替えた回数： {ts}回"
               + (f"（権利月が近く見送り {d0['swap_skipped_div']}回）"
