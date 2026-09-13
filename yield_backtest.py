@@ -768,6 +768,48 @@ def fetch_fx() -> pd.DataFrame:
         return pd.DataFrame()
 
 
+SP500_URL = ("https://raw.githubusercontent.com/datasets/s-and-p-500/"
+             "main/data/data.csv")
+VIX_URL = ("https://raw.githubusercontent.com/datasets/finance-vix/"
+           "main/data/vix-daily.csv")
+
+
+def _fetch_csv(url: str) -> pd.DataFrame:
+    import urllib.request
+    with urllib.request.urlopen(url, timeout=60) as r:
+        return pd.read_csv(io.StringIO(r.read().decode("utf-8", "ignore")))
+
+
+def fetch_markets() -> dict:
+    """外部の市場データを取る。取れなかったものは入らない。
+
+    S&P500 … 米国株の影響を切り分ける
+    VIX    … 恐怖指数。市場が不安なときに上がる。暴落局面の代用になる
+    """
+    out = {}
+    try:
+        d = _fetch_csv(SP500_URL)
+        d["date"] = pd.to_datetime(d["Date"], errors="coerce")
+        d["sp500"] = pd.to_numeric(d["SP500"], errors="coerce")
+        d = d.dropna(subset=["date", "sp500"]).sort_values("date")
+        out["sp500"] = d.set_index("date")["sp500"]
+        log.info("S&P500 を取得しました（%d件 / %s〜%s）", len(d),
+                 d["date"].min().date(), d["date"].max().date())
+    except Exception as e:
+        log.warning("S&P500 を取得できませんでした（%s）", e)
+    try:
+        d = _fetch_csv(VIX_URL)
+        d["date"] = pd.to_datetime(d["DATE"], errors="coerce")
+        d["vix"] = pd.to_numeric(d["CLOSE"], errors="coerce")
+        d = d.dropna(subset=["date", "vix"]).sort_values("date")
+        out["vix"] = d.set_index("date")["vix"]
+        log.info("VIX（恐怖指数）を取得しました（%d件 / %s〜%s）", len(d),
+                 d["date"].min().date(), d["date"].max().date())
+    except Exception as e:
+        log.warning("VIX を取得できませんでした（%s）", e)
+    return out
+
+
 def fetch_topix(jq: "JQ", years: int = 9) -> pd.DataFrame:
     """TOPIX の日次終値を取る。
 
@@ -2474,6 +2516,59 @@ def main() -> int:
         print("  ※ 月ごとの平均を年率に直しているため、"
               "通常の年率とは一致しません。")
 
+        # ── S&P500 と VIX（恐怖指数）との関係 ──
+        mk = fetch_markets()
+        for key, jname, note in [
+            ("sp500", "S&P500", "米国株の影響を切り分ける"),
+            ("vix", "VIX（恐怖指数）", "市場が不安なときに上がる。暴落局面の代用"),
+        ]:
+            sr = mk.get(key)
+            if sr is None or sr.empty:
+                continue
+            m = sr.resample("ME").last().dropna()
+            m = m[(m.index >= d0) & (m.index <= d1)]
+            if len(m) < 18:
+                log.warning("%s は検証期間の重なりが %dか月しかないため省略します",
+                            jname, len(m))
+                continue
+
+            print(f"\n■ {jname} との関係（{note}）\n")
+            print(f"  期初 {m.iloc[0]:.1f} → 期末 {m.iloc[-1]:.1f}"
+                  f"（{(m.iloc[-1] / m.iloc[0] - 1) * 100:+.1f}％）")
+
+            if key == "vix":
+                # 恐怖指数が高い月＝市場が不安な月
+                hi = set(m[m >= m.median()].index)
+                l1, l2 = "不安が強い月", "落ち着いた月"
+            else:
+                ret = m.pct_change().dropna()
+                hi = set(ret[ret > 0].index)
+                l1, l2 = "米国株が上げた月", "下げた月"
+
+            print(f"\n{'ルール':<32}{'相関':>8}{l1:>15}{l2:>15}{'差':>10}")
+            print("-" * 82)
+            base_gap = None
+            ref = m.pct_change().dropna()
+            for lab, r in runs:
+                c = r["curve"].set_index("date")["value"]
+                pr = c.pct_change().dropna()
+                j = pd.concat([pr.rename("p"), ref.rename("f")],
+                              axis=1, sort=True).dropna()
+                if len(j) < 12:
+                    continue
+                corr = j["p"].corr(j["f"])
+                a = pr[pr.index.isin(hi)].mean() * 100
+                b = pr[~pr.index.isin(hi)].mean() * 100
+                if lab.startswith("（基準）"):
+                    base_gap = a - b
+                print(f"{lab[:30]:<32}{corr:>8.2f}{a:>14.2f}%{b:>14.2f}%"
+                      f"{a - b:>+9.2f}pt")
+
+            if key == "vix" and base_gap is not None:
+                print("\n  VIXが高い＝暴落や不安の局面。")
+                print("  そこでの成績が基準より良ければ、"
+                      "「暴落に強い」という主張の裏づけになる。")
+
         print("\n【読み方】\n")
         print("  ルールと基準の「差」を比べてください。")
         print("  両方とも同じだけ円安に支えられているなら、"
@@ -2484,7 +2579,10 @@ def main() -> int:
 
         OUTDIR.mkdir(parents=True, exist_ok=True)
         fx.to_csv(OUTDIR / "usdjpy.csv", index=False, encoding="utf-8-sig")
-        print("\n書き出しました: data/usdjpy.csv")
+        for k, sr in mk.items():
+            sr.to_frame(k).to_csv(OUTDIR / f"{k}.csv", encoding="utf-8-sig")
+        print("\n書き出しました: data/usdjpy.csv" +
+              "".join(f", data/{k}.csv" for k in mk))
         return 0
 
     # ══════════════════════════════════════════
