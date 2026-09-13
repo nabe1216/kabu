@@ -2508,10 +2508,8 @@ def main() -> int:
             corr = j["p"].corr(j["f"])
             up = j[j["f"] > 0]["p"].mean() * 100
             dn = j[j["f"] <= 0]["p"].mean() * 100
-            if lab.startswith("（基準）"):
-                gaps.setdefault("ドル円（円安）", [None, None])[1] = up - dn
-            elif "減配したら手放す" in lab:
-                gaps.setdefault("ドル円（円安）", [None, None])[0] = up - dn
+            key_ = "（基準）" if lab.startswith("（基準）") else lab
+            gaps.setdefault("ドル円（円安）", {})[key_] = up - dn
             print(f"{lab[:30]:<32}{corr:>8.2f}{up:>13.2f}%{dn:>13.2f}%"
                   f"{up - dn:>+8.2f}pt")
 
@@ -2593,12 +2591,12 @@ def main() -> int:
                 b = pr[~pr.index.isin(hi)].mean() * 100
                 if lab.startswith("（基準）"):
                     base_gap = a - b
-                elif "減配したら手放す" in lab:
-                    gaps.setdefault(jname, [None, None])[0] = a - b
+                elif not lab.startswith("（基準）"):
+                    gaps.setdefault(jname, {})[lab] = a - b
                 print(f"{lab[:30]:<32}{corr:>8.2f}{a:>14.2f}%{b:>14.2f}%"
                       f"{a - b:>+9.2f}pt")
-            if jname in gaps and base_gap is not None:
-                gaps[jname][1] = base_gap
+            if base_gap is not None:
+                gaps.setdefault(jname, {})["（基準）"] = base_gap
 
             if key == "vix" and base_gap is not None:
                 print("\n  VIXが高い＝暴落や不安の局面。")
@@ -2607,22 +2605,33 @@ def main() -> int:
 
         # ── 外部要因のまとめ ──
         if gaps:
-            print("\n■ 外部要因のまとめ（依存の度合い）\n")
-            names = list(gaps.keys())
-            print(f"{'要因':<20}{'ルール':>10}{'基準':>10}{'差':>10}  判定")
-            print("-" * 70)
-            for nm in names:
-                a, b = gaps[nm]
-                if a is None or b is None:
-                    continue
-                d_ = a - b
-                verdict = ("依存が強い" if d_ > 0.8 else
-                           "市場並み" if d_ > -0.4 else "耐性あり")
-                print(f"{nm[:18]:<20}{a:>+9.2f}pt{b:>+9.2f}pt{d_:>+9.2f}pt"
-                      f"  {verdict}")
-            print("\n  「差」＝ルールの差 − 基準の差。")
-            print("  プラスが大きいほど、その要因に市場平均以上に依存している。")
-            print("  マイナスなら、市場平均より耐性がある。")
+            print("\n■ 外部要因への依存（基準を引いた値）\n")
+            labs = [l for l, _ in runs if not l.startswith("（基準）")]
+            facs = list(gaps.keys())
+            hdr = f"{'ルール':<30}" + "".join(f"{f[:8]:>11}" for f in facs)
+            print(hdr)
+            print("-" * min(len(hdr) + 10, 130))
+            tot = {}
+            for lab in labs:
+                line = f"{lab[:28]:<30}"
+                ssum = 0.0
+                for f in facs:
+                    g = gaps.get(f, {})
+                    if lab in g and "（基準）" in g:
+                        d_ = g[lab] - g["（基準）"]
+                        ssum += d_
+                        line += f"{d_:>+10.2f}"
+                    else:
+                        line += f"{'—':>11}"
+                tot[lab] = ssum
+                print(line)
+            print("\n  各数字＝そのルールの差 − 基準の差。")
+            print("  プラスが大きいほど、その要因に市場平均以上に依存している。\n")
+            print(f"{'ルール':<30}{'依存の合計':>14}")
+            print("-" * 46)
+            for lab, v in sorted(tot.items(), key=lambda x: x[1]):
+                print(f"{lab[:28]:<30}{v:>+13.2f}pt")
+            print("\n  合計が小さいほど、外部要因に振り回されにくい。")
 
         print("\n【読み方】\n")
         print("  ルールと基準の「差」を比べてください。")
