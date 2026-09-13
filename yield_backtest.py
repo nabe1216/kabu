@@ -773,6 +773,19 @@ SP500_URL = ("https://raw.githubusercontent.com/datasets/s-and-p-500/"
 VIX_URL = ("https://raw.githubusercontent.com/datasets/finance-vix/"
            "main/data/vix-daily.csv")
 
+# 金利・商品。列名がまちまちなので、日付以外の最初の数値列を使う。
+OTHER_SRC = {
+    "us10y": ("米10年金利", "銀行株が動く。期間中 0.7％→4.6％",
+              "https://raw.githubusercontent.com/datasets/"
+              "bond-yields-us-10y/main/data/monthly.csv"),
+    "brent": ("原油（ブレント）", "商社・エネルギー株が動く",
+              "https://raw.githubusercontent.com/datasets/"
+              "oil-prices/main/data/brent-daily.csv"),
+    "gold": ("金", "不安のときに買われる。株と逆に動きやすい",
+             "https://raw.githubusercontent.com/datasets/"
+             "gold-prices/main/data/monthly.csv"),
+}
+
 
 def _fetch_csv(url: str) -> pd.DataFrame:
     import urllib.request
@@ -807,6 +820,18 @@ def fetch_markets() -> dict:
                  d["date"].min().date(), d["date"].max().date())
     except Exception as e:
         log.warning("VIX を取得できませんでした（%s）", e)
+    for key, (jname, _note, url) in OTHER_SRC.items():
+        try:
+            d = _fetch_csv(url)
+            dc = next(c for c in d.columns if "date" in c.lower())
+            vc = next(c for c in d.columns if c != dc)
+            d[dc] = pd.to_datetime(d[dc], errors="coerce")
+            d[vc] = pd.to_numeric(d[vc], errors="coerce")
+            d = d.dropna(subset=[dc, vc]).sort_values(dc)
+            out[key] = d.set_index(dc)[vc]
+            log.info("%s を取得しました（%d件）", jname, len(d))
+        except Exception as e:
+            log.warning("%s を取得できませんでした（%s）", jname, e)
     return out
 
 
@@ -2465,6 +2490,8 @@ def main() -> int:
               f"（{(f1 / f0 - 1) * 100:+.1f}％ / 年率 "
               f"{((f1 / f0) ** (1 / yrs_) - 1) * 100:+.1f}％）")
 
+        gaps = {}      # 要因名 -> [ルールの差, 基準の差]
+
         # ── 月次の連動を見る ──
         print("\n【月ごとの動きが、どれだけ為替と連動しているか】\n")
         print(f"{'ルール':<32}{'相関':>8}{'円安月の平均':>14}{'円高月の平均':>14}{'差':>9}")
@@ -2481,6 +2508,10 @@ def main() -> int:
             corr = j["p"].corr(j["f"])
             up = j[j["f"] > 0]["p"].mean() * 100
             dn = j[j["f"] <= 0]["p"].mean() * 100
+            if lab.startswith("（基準）"):
+                gaps.setdefault("ドル円（円安）", [None, None])[1] = up - dn
+            elif "減配したら手放す" in lab:
+                gaps.setdefault("ドル円（円安）", [None, None])[0] = up - dn
             print(f"{lab[:30]:<32}{corr:>8.2f}{up:>13.2f}%{dn:>13.2f}%"
                   f"{up - dn:>+8.2f}pt")
 
@@ -2516,12 +2547,13 @@ def main() -> int:
         print("  ※ 月ごとの平均を年率に直しているため、"
               "通常の年率とは一致しません。")
 
-        # ── S&P500 と VIX（恐怖指数）との関係 ──
+        # ── 他の市場との関係 ──
         mk = fetch_markets()
-        for key, jname, note in [
-            ("sp500", "S&P500", "米国株の影響を切り分ける"),
-            ("vix", "VIX（恐怖指数）", "市場が不安なときに上がる。暴落局面の代用"),
-        ]:
+        _tgt = [("sp500", "S&P500", "米国株の影響を切り分ける"),
+                ("vix", "VIX（恐怖指数）",
+                 "市場が不安なときに上がる。暴落局面の代用")]
+        _tgt += [(k, n, nt) for k, (n, nt, _u) in OTHER_SRC.items()]
+        for key, jname, note in _tgt:
             sr = mk.get(key)
             if sr is None or sr.empty:
                 continue
@@ -2543,7 +2575,7 @@ def main() -> int:
             else:
                 ret = m.pct_change().dropna()
                 hi = set(ret[ret > 0].index)
-                l1, l2 = "米国株が上げた月", "下げた月"
+                l1, l2 = f"{jname}が上げた月", "下げた月"
 
             print(f"\n{'ルール':<32}{'相関':>8}{l1:>15}{l2:>15}{'差':>10}")
             print("-" * 82)
@@ -2561,13 +2593,36 @@ def main() -> int:
                 b = pr[~pr.index.isin(hi)].mean() * 100
                 if lab.startswith("（基準）"):
                     base_gap = a - b
+                elif "減配したら手放す" in lab:
+                    gaps.setdefault(jname, [None, None])[0] = a - b
                 print(f"{lab[:30]:<32}{corr:>8.2f}{a:>14.2f}%{b:>14.2f}%"
                       f"{a - b:>+9.2f}pt")
+            if jname in gaps and base_gap is not None:
+                gaps[jname][1] = base_gap
 
             if key == "vix" and base_gap is not None:
                 print("\n  VIXが高い＝暴落や不安の局面。")
                 print("  そこでの成績が基準より良ければ、"
                       "「暴落に強い」という主張の裏づけになる。")
+
+        # ── 外部要因のまとめ ──
+        if gaps:
+            print("\n■ 外部要因のまとめ（依存の度合い）\n")
+            names = list(gaps.keys())
+            print(f"{'要因':<20}{'ルール':>10}{'基準':>10}{'差':>10}  判定")
+            print("-" * 70)
+            for nm in names:
+                a, b = gaps[nm]
+                if a is None or b is None:
+                    continue
+                d_ = a - b
+                verdict = ("依存が強い" if d_ > 0.8 else
+                           "市場並み" if d_ > -0.4 else "耐性あり")
+                print(f"{nm[:18]:<20}{a:>+9.2f}pt{b:>+9.2f}pt{d_:>+9.2f}pt"
+                      f"  {verdict}")
+            print("\n  「差」＝ルールの差 − 基準の差。")
+            print("  プラスが大きいほど、その要因に市場平均以上に依存している。")
+            print("  マイナスなら、市場平均より耐性がある。")
 
         print("\n【読み方】\n")
         print("  ルールと基準の「差」を比べてください。")
