@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>配分案 — DIVIDEND HEIST</title>
+<style>
+:root{
+  --ink:#131821; --ink2:#48525f; --mute:#8a93a0;
+  --line:#e4e8ed; --bg:#f7f8fa; --card:#fff;
+  --buy:#e0483c; --ok:#1f7a55; --warn:#b6801c;
+  --s:#c9a227; --a:#5b7cc4; --b:#8c8478;
+}
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--bg); color:var(--ink);
+  font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP",sans-serif;
+  font-size:15px; line-height:1.7; -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1000px; margin:0 auto; padding:32px 20px 80px}
+
+/* ── 見出し ── */
+header{display:flex; align-items:baseline; justify-content:space-between;
+  flex-wrap:wrap; gap:12px; margin-bottom:28px}
+h1{font-size:26px; font-weight:700; margin:0; letter-spacing:-.01em}
+.meta{color:var(--mute); font-size:13px}
+a.back{color:var(--a); text-decoration:none; font-size:14px}
+a.back:hover{text-decoration:underline}
+
+/* ── 入力 ── */
+.panel{background:var(--card); border:1px solid var(--line);
+  border-radius:12px; padding:22px 24px; margin-bottom:22px}
+.field{display:flex; align-items:center; gap:14px; flex-wrap:wrap}
+label{font-weight:600; font-size:14px}
+input[type=text]{
+  font:inherit; font-size:22px; font-weight:600; letter-spacing:-.01em;
+  padding:10px 14px; width:230px; text-align:right;
+  border:1px solid var(--line); border-radius:8px; background:#fff;
+  color:var(--ink);
+}
+input[type=text]:focus{outline:2px solid var(--a); outline-offset:1px;
+  border-color:transparent}
+.yen{color:var(--ink2); font-size:16px}
+button{
+  font:inherit; font-weight:600; font-size:15px; cursor:pointer;
+  padding:11px 22px; border:0; border-radius:8px;
+  background:var(--ink); color:#fff;
+}
+button:hover{background:#2a3240}
+button:focus-visible{outline:2px solid var(--a); outline-offset:2px}
+.quick{display:flex; gap:8px; margin-top:14px; flex-wrap:wrap}
+.quick button{background:#eef1f5; color:var(--ink2); font-weight:500;
+  font-size:13px; padding:6px 13px}
+.quick button:hover{background:#e2e7ee; color:var(--ink)}
+
+/* ── 結果 ── */
+.total{font-size:15px; color:var(--ink2); margin:0 0 18px}
+.total b{font-size:24px; color:var(--ink); font-weight:700;
+  letter-spacing:-.01em}
+.bar{height:8px; border-radius:4px; background:#e9edf2; overflow:hidden;
+  margin:10px 0 4px}
+.bar i{display:block; height:100%; background:var(--ok); border-radius:4px}
+
+table{width:100%; border-collapse:collapse; font-size:14px}
+th{text-align:left; font-weight:600; font-size:12px; color:var(--mute);
+  padding:0 10px 9px; border-bottom:1px solid var(--line); white-space:nowrap}
+td{padding:13px 10px; border-bottom:1px solid #f0f2f5; vertical-align:middle}
+tr:last-child td{border-bottom:0}
+.num{text-align:right; font-variant-numeric:tabular-nums}
+.nm{font-weight:600}
+.sec{color:var(--mute); font-size:12px}
+.tier{display:inline-flex; align-items:center; justify-content:center;
+  width:22px; height:22px; border-radius:6px; font-size:12px;
+  font-weight:700; color:#fff}
+.tier.S{background:var(--s)} .tier.A{background:var(--a)}
+.tier.B{background:var(--b)}
+.cheap{color:var(--ok); font-weight:600}
+.only-sm{display:none}
+@media (max-width:640px){ .only-sm{display:inline-flex; margin-right:7px;
+  vertical-align:-3px} }
+
+/* ── 補足 ── */
+.note{background:var(--card); border:1px solid var(--line);
+  border-radius:12px; padding:18px 22px; margin-top:18px; font-size:14px}
+.note h3{font-size:15px; margin:0 0 8px}
+.note p{margin:0 0 8px; color:var(--ink2)}
+.note p:last-child{margin-bottom:0}
+.note.alert{border-left:3px solid var(--warn)}
+.note.quiet{background:#f2f4f7; border-color:#e7eaef; color:var(--ink2)}
+.steps{margin:0; padding-left:1.2em; color:var(--ink2)}
+.steps li{margin-bottom:4px}
+.funnel{font-size:13px; color:var(--ink2)}
+.funnel span{display:inline-block; margin-right:16px}
+.funnel b{color:var(--ink)}
+.empty{text-align:center; padding:40px 20px; color:var(--ink2)}
+.empty b{display:block; font-size:17px; color:var(--ink); margin-bottom:6px}
+@media (max-width:640px){
+  .wrap{padding:20px 14px 60px}
+  h1{font-size:21px}
+  .field{display:grid; grid-template-columns:1fr auto; gap:10px}
+  label{grid-column:1/-1}
+  input[type=text]{width:100%; font-size:20px}
+  .yen{display:none}
+  #go{grid-column:1/-1; width:100%; padding:13px}
+  .hide-sm{display:none}
+
+  /* 表を積み上げ表示にする。横に詰めると銘柄名が縦に折れて読めない */
+  table,thead,tbody,tr,td{display:block; width:100%}
+  thead{display:none}
+  tr{padding:14px 0; border-bottom:1px solid #f0f2f5}
+  tr:last-child{border-bottom:0}
+  td{border:0; padding:0; display:flex; justify-content:space-between;
+     align-items:baseline; gap:12px; font-size:14px}
+  td:first-child{display:none}          /* Tierは銘柄名の行にまとめる */
+  td:nth-child(2){display:block; margin-bottom:8px}
+  td:nth-child(2) .nm{font-size:15px}
+  td:not(:first-child):not(:nth-child(2))::before{
+    content:attr(data-l); color:var(--mute); font-size:12px; font-weight:500}
+  td.num{text-align:right}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div>
+    <h1>いくら、何を買うか</h1>
+    <div class="meta" id="meta">読み込んでいます…</div>
+  </div>
+  <a class="back" href="./">シグナル一覧へ戻る</a>
+</header>
+
+<div class="panel">
+  <div class="field">
+    <label for="amt">投資できる金額</label>
+    <input type="text" id="amt" inputmode="numeric" value="1,000,000">
+    <span class="yen">円</span>
+    <button id="go">配分を出す</button>
+  </div>
+  <div class="quick">
+    <button data-v="300000">30万</button>
+    <button data-v="500000">50万</button>
+    <button data-v="1000000">100万</button>
+    <button data-v="3000000">300万</button>
+    <button data-v="5000000">500万</button>
+    <button data-v="10000000">1000万</button>
+  </div>
+</div>
+
+<div id="out"></div>
+
+</div>
+<script>
+const TIER_W = {S:2.0, A:1.5, B:1.0};
+const TARGET = 15, MAX_NAMES = 20;
+const ORDER = {S:0, A:1, B:2};
+let DATA = null;
+
+const yen = v => Math.round(v).toLocaleString('ja-JP');
+const el  = (h) => { const d=document.createElement('div'); d.innerHTML=h; return d.firstElementChild; };
+
+/* ── 候補を絞る ── */
+function pick(data){
+  const rows = data.stocks || [];
+  const minY = (data.thresholds && data.thresholds.min_yield) || 0;
+  const st = {all:rows.length, pass:0, buy:0, emg:0, lowY:0, lowQ:0};
+  const out = [];
+  for(const r of rows){
+    if(!r.screening_pass) continue;
+    st.pass++;
+    if(String(r.signal||'').toUpperCase() !== 'BUY') continue;
+    st.buy++;
+    if(r.emergency_exit){ st.emg++; continue; }
+    const px = r.price;
+    if(!px || px <= 0) continue;
+    const cy = +r.current_yield || 0, q75 = +r.yield_q75 || 0;
+    if(cy < minY){ st.lowY++; continue; }       // 足切り未満は買わない
+    if(q75 > 0 && cy < q75){ st.lowQ++; continue; }  // Q75に届かない
+    out.push({code:String(r.code||''), name:r.name||'', sector:r.sector||'',
+              tier:r.tier || r.core_type || 'B', price:+px,
+              yield:cy, q75:q75, sample:+r.yield_sample_n||0});
+  }
+  out.sort((a,b)=> (ORDER[a.tier]??9)-(ORDER[b.tier]??9) || b.yield-a.yield);
+  return [out, st, minY];
+}
+
+/* ── 金額に合わせて目標銘柄数を決める ── */
+function fitTarget(cands, budget, target){
+  if(!cands.length) return target;
+  const avg = (2.0+1.5+1.0)/3;
+  target = Math.min(target, Math.max(cands.length,1));
+  const want = Math.min(cands.length, target);
+  for(let t=target; t>=1; t--){
+    let cash = budget, ok = 0;
+    for(const c of cands){
+      const unit = budget/t * ((TIER_W[c.tier]||1)/avg);
+      const sh = Math.floor(Math.min(unit,cash)/c.price/100)*100;
+      if(sh>0){ cash -= sh*c.price; ok++; }
+    }
+    if(ok >= want) return t;
+  }
+  return 1;
+}
+
+/* ── 割り当てる ── */
+function allocate(cands, budget, target, maxNames){
+  const avg = (2.0+1.5+1.0)/3;
+  let cash = budget; const plan = [];
+  for(const c of cands){
+    if(plan.length >= maxNames) break;
+    let unit = budget/target * ((TIER_W[c.tier]||1)/avg);
+    let sh = Math.floor(unit/c.price/100)*100;
+    if(sh<=0) continue;
+    let cost = sh*c.price;
+    if(cost > cash){
+      sh = Math.floor(cash/c.price/100)*100;
+      if(sh<=0) continue;
+      cost = sh*c.price;
+    }
+    cash -= cost;
+    plan.push({...c, shares:sh, cost:cost});
+  }
+
+  // 1〜2銘柄しか買えないときは、1単元が安い順に組み直して数を増やす
+  let reordered = false;
+  if(plan.length < 3 && cands.length > plan.length){
+    const byPx = [...cands].sort((a,b)=>a.price-b.price);
+    let c2 = budget; const alt = [];
+    for(const c of byPx){
+      if(alt.length >= maxNames) break;
+      const cost = c.price*100;
+      if(cost > c2) continue;
+      c2 -= cost;
+      alt.push({...c, shares:100, cost:cost});
+    }
+    if(alt.length > plan.length){
+      plan.length = 0; plan.push(...alt); cash = c2; reordered = true;
+    }
+  }
+
+  // 端数を埋める。1銘柄が偏りすぎないよう上限を置く
+  if(plan.length && cash>0){
+    let cap = budget/target*2;
+    if(plan.length < target) cap = Math.max(cap, Math.min(budget/plan.length, budget/3));
+    for(let i=0;i<60;i++){
+      let bought = false;
+      for(const p of plan){
+        const add = p.price*100;
+        if(p.cost+add > cap || add > cash) continue;
+        p.shares += 100; p.cost += add; cash -= add; bought = true;
+      }
+      if(!bought) break;
+    }
+  }
+  return [plan, cash, reordered];
+}
+
+/* ── 描く ── */
+function render(amount){
+  const out = document.getElementById('out');
+  out.innerHTML = '';
+  const [cands, st, minY] = pick(DATA);
+  const target = fitTarget(cands, amount, TARGET);
+  const [plan, left, reordered] = allocate(cands, amount, target, MAX_NAMES);
+
+  // 絞り込みの経過
+  let f = `<span>対象 <b>${st.all}</b></span>
+           <span>スクリーニング通過 <b>${st.pass}</b></span>
+           <span>買いシグナル <b>${st.buy}</b></span>`;
+  if(st.emg)  f += `<span>減配などで除外 <b>−${st.emg}</b></span>`;
+  if(st.lowY) f += `<span>利回り${minY}％未満 <b>−${st.lowY}</b></span>`;
+  if(st.lowQ) f += `<span>割安でない <b>−${st.lowQ}</b></span>`;
+  f += `<span>買える候補 <b>${cands.length}</b></span>`;
+  out.appendChild(el(`<div class="note quiet funnel">${f}</div>`));
+
+  if(!plan.length){
+    const cheapest = cands.length ? Math.min(...cands.map(c=>c.price))*100 : 0;
+    out.appendChild(el(!cands.length
+      ? `<div class="panel empty"><b>今日は買える銘柄がありません</b>
+           条件に合う銘柄がないだけで、相場の良し悪しとは関係ありません。<br>
+           翌営業日にまた判定されます。</div>`
+      : `<div class="panel empty"><b>金額が足りません</b>
+           いちばん安い候補でも、100株で ${yen(cheapest)}円 必要です。<br>
+           単元未満株が使える証券会社なら、少額でも買えます。</div>`));
+    return;
+  }
+
+  const used = amount - left, pct = used/amount*100;
+  let h = `<div class="panel">`;
+  if(reordered) h += `<p class="total" style="margin-bottom:14px">
+    金額に対して銘柄を分けすぎると1単元も買えないため、
+    <b style="font-size:15px">1単元の安い順</b>に組んで銘柄数を増やしました。</p>`;
+  h += `<p class="total"><b>${yen(used)}円</b> を ${plan.length}銘柄に。
+        残り ${yen(left)}円</p>
+    <div class="bar"><i style="width:${pct.toFixed(1)}%"></i></div>
+    <div class="meta">${pct.toFixed(0)}％を使います</div>
+    <table style="margin-top:18px">
+      <thead><tr>
+        <th>銘柄</th><th></th>
+        <th class="num">利回り</th>
+        <th class="num hide-sm">過去3年のQ75</th>
+        <th class="num">割安度</th>
+        <th class="num hide-sm">株価</th>
+        <th class="num">株数</th><th class="num">金額</th>
+      </tr></thead><tbody>`;
+  for(const p of plan){
+    const gap = p.q75>0 ? (p.yield/p.q75-1)*100 : 0;
+    h += `<tr>
+      <td><span class="tier ${p.tier}">${p.tier}</span></td>
+      <td><div class="nm"><span class="tier ${p.tier} only-sm">${p.tier}</span>${p.name}</div>
+          <div class="sec">${p.code} ${p.sector}</div></td>
+      <td class="num" data-l="利回り">${p.yield.toFixed(2)}％</td>
+      <td class="num hide-sm" data-l="過去3年のQ75">${p.q75 ? p.q75.toFixed(2)+'％' : '—'}</td>
+      <td class="num cheap" data-l="割安度">+${gap.toFixed(0)}％</td>
+      <td class="num hide-sm" data-l="株価">${yen(p.price)}</td>
+      <td class="num" data-l="株数">${p.shares.toLocaleString()}株</td>
+      <td class="num" data-l="金額">${yen(p.cost)}円</td></tr>`;
+  }
+  h += `</tbody></table>
+    <p class="meta" style="margin-top:12px">
+      割安度は、いまの利回りが過去3年のQ75を何％上回っているか。
+      大きいほど、その銘柄にしては安い。</p></div>`;
+  out.appendChild(el(h));
+
+  // 業種の偏り
+  const sec = {};
+  for(const p of plan) sec[p.sector||'不明'] = (sec[p.sector||'不明']||0) + p.cost;
+  const secs = Object.entries(sec).sort((a,b)=>b[1]-a[1]);
+  let sh = `<div class="note"><h3>業種の内訳</h3>`;
+  for(const [s,v] of secs)
+    sh += `<p style="margin-bottom:4px">${s} … ${yen(v)}円（${(v/used*100).toFixed(0)}％）</p>`;
+  const top = secs[0][1]/used*100;
+  if(top >= 40) sh += `<p style="margin-top:10px">
+    1業種に${top.toFixed(0)}％が集中しています。検証では業種の上限を設けても
+    成績は変わりませんでしたが、偏りが気になるなら、
+    資産全体のなかでこの戦略の比率を下げるほうが筋が通ります。</p>`;
+  out.appendChild(el(sh + `</div>`));
+
+  // 銘柄数が少ないとき
+  if(plan.length < 5){
+    const topPct = Math.max(...plan.map(p=>p.cost))/used*100;
+    out.appendChild(el(`<div class="note alert">
+      <h3>${plan.length}銘柄しか買えていません</h3>
+      <p>1銘柄に最大${topPct.toFixed(0)}％が集中します。
+        検証では、集中が大きいほど下落が深くなりました
+        （3銘柄だけ持っていたときの最大下落は17.3％）。</p>
+      <p>全額を今日入れる必要はありません。
+        数日から数週間に分けて、候補が増えたときに買い足すほうが分散が効きます。</p>
+      <p>ただし何か月も待つのは逆効果です。
+        2年かけて分割すると、検証では優位が消えました。
+        数週間のうちに入れ終えるのが目安です。</p></div>`));
+  } else if(left > amount*0.05){
+    out.appendChild(el(`<div class="note">
+      <h3>残った ${yen(left)}円 について</h3>
+      <p>${plan.length >= MAX_NAMES
+          ? `上限の${MAX_NAMES}銘柄に達しました。`
+          : cands.length <= plan.length
+            ? '条件を満たす銘柄が、いまはこれだけでした。'
+            : '予算の枠に対して株価が高く、端数が残りました。'}</p>
+      <p>検証では、まとまった資金は早めに入れたほうが成績が良いと出ています
+        （初日に全額 +5.3pt ／ 2年かけて分割 −0.6pt）。
+        意図的に温存する理由はありません。</p></div>`));
+  }
+
+  out.appendChild(el(`<div class="note quiet">
+    <h3>発注する前に</h3>
+    <ul class="steps">
+      <li>株価は判定時点のものです。寄り付きで変わります</li>
+      <li>決算発表の直前・直後は、数字が古いことがあります</li>
+      <li>すでに持っている銘柄が含まれていないか確認してください</li>
+    </ul>
+    <p style="margin-top:10px; font-size:13px">
+      過去の検証にもとづく機械的な配分です。将来の結果を保証するものではありません。</p>
+  </div>`));
+}
+
+/* ── 入力まわり ── */
+const amt = document.getElementById('amt');
+const val = () => +amt.value.replace(/[^\d]/g,'') || 0;
+const fmt = () => { const v = val(); amt.value = v ? v.toLocaleString('ja-JP') : ''; };
+amt.addEventListener('input', () => {
+  const p = amt.selectionStart, before = amt.value.length;
+  fmt();
+  amt.selectionStart = amt.selectionEnd = Math.max(0, p + amt.value.length - before);
+});
+amt.addEventListener('keydown', e => { if(e.key === 'Enter') run(); });
+document.getElementById('go').addEventListener('click', run);
+document.querySelectorAll('.quick button').forEach(b =>
+  b.addEventListener('click', () => {
+    amt.value = (+b.dataset.v).toLocaleString('ja-JP'); run();
+  }));
+
+function run(){
+  if(!DATA) return;
+  const v = val();
+  if(v <= 0){
+    document.getElementById('out').innerHTML =
+      `<div class="panel empty"><b>金額を入れてください</b>
+        投資に回せる額を入力すると、買う銘柄と株数を出します。</div>`;
+    return;
+  }
+  render(v);
+}
+
+fetch('./data/results.json')
+  .then(r => r.ok ? r.json() : Promise.reject(r.status))
+  .then(d => {
+    DATA = d;
+    const t = (d.generated_at || '').slice(0,10);
+    const th = d.thresholds || {};
+    const sn = (d.stocks||[]).find(s => s.yield_sample_n)?.yield_sample_n;
+    document.getElementById('meta').textContent =
+      `${t} 判定 ／ 利回り ${th.min_yield ?? '?'}％以上`
+      + (sn ? ` ／ 過去${Math.round(sn/12)}年の分布で判定` : '');
+    run();
+  })
+  .catch(() => {
+    document.getElementById('meta').textContent = '判定結果を読み込めませんでした';
+    document.getElementById('out').innerHTML =
+      `<div class="panel empty"><b>データがありません</b>
+        シグナルの生成がまだ終わっていないようです。しばらくして開き直してください。</div>`;
+  });
+</script>
+</body>
+</html>
