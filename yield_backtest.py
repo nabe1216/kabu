@@ -437,6 +437,41 @@ VARIANTS: dict[str, dict[str, Any]] = {
         "swap_tier": {"min_gap": 2, "max_year": 2},
     },
 
+    # ── 入れ替えを、含み損益と配当の時期まで見て判断する ──
+    # 含み損の銘柄を売れば税金はかからず、損失は繰り越して相殺できる。
+    # 逆に含み益の銘柄を売ると、その場で2割が消える。
+    # また権利確定月の直前に売ると、その回の配当を丸ごと逃す。
+    "swap_loss": {
+        "label": "含み損の銘柄だけ入れ替える（税金がかからない）",
+        "entry": [75], "exit": [], "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S"], "exit_on_cut": True,
+        "swap_tier": {"min_gap": 2, "max_year": 4, "only_loss": True},
+    },
+    "swap_nodiv": {
+        "label": "権利月の3か月前は入れ替えない",
+        "entry": [75], "exit": [], "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S"], "exit_on_cut": True,
+        "swap_tier": {"min_gap": 2, "max_year": 4, "avoid_div_months": 3},
+    },
+    "swap_smart": {
+        "label": "含み損のみ＋権利月の3か月前は避ける",
+        "entry": [75], "exit": [], "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S"], "exit_on_cut": True,
+        "swap_tier": {"min_gap": 2, "max_year": 4,
+                      "only_loss": True, "avoid_div_months": 3},
+    },
+    "swap_smart_1": {
+        "label": "同上・1段階上でも入れ替え",
+        "entry": [75], "exit": [], "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S"], "exit_on_cut": True,
+        "swap_tier": {"min_gap": 1, "max_year": 6,
+                      "only_loss": True, "avoid_div_months": 3},
+    },
+
     # ── 外部要因が逆風の業種を避ける ──
     # 金利が下降局面なら銀行を買わない、原油が下降局面なら資源を買わない、
     # 円高局面なら輸出関連を買わない。判定は前月までの値だけで行う。
@@ -1832,7 +1867,23 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                                 if _shs else 0)
                         _px0 = day.loc[worst[0], "price"]
                         _win = _px0 > _avg
-                        if (not swap_tier.get("only_win")) or _win:
+                        # 権利確定月までの月数。近いほど、売ると配当を逃す。
+                        _fm = int(day.loc[worst[0]].get("fiscal_month", 0) or 0)
+                        _im = int(day.loc[worst[0]].get("interim_month", 0) or 0)
+                        _cm = pd.Timestamp(dt).month
+                        _ms = [((m - _cm) % 12) for m in (_fm, _im) if m]
+                        _near = min(_ms) if _ms else 99
+
+                        _ok = True
+                        if swap_tier.get("only_win") and not _win:
+                            _ok = False          # 含み益のときだけ
+                        if swap_tier.get("only_loss") and _win:
+                            _ok = False          # 含み損のときだけ（税金がかからない）
+                        _avoid = swap_tier.get("avoid_div_months", 0)
+                        if _avoid and _near <= _avoid:
+                            _ok = False          # 権利月が近いので見送る
+                            diag["swap_skipped_div"] = diag.get("swap_skipped_div", 0) + 1
+                        if _ok:
                             _pr = _px0 * (1 - slip) * (1 - fee)
                             for sh, _c0 in _st["lots"]:
                                 cash += sh * _pr
@@ -3448,8 +3499,10 @@ def main() -> int:
         print("  ※ 基準は初日に等金額で買って放置した場合。配当は課税後で加算しています。")
 
     ts = d0.get("tier_swaps", 0)
-    if ts:
-        print(f"\n  質で入れ替えた回数： {ts}回")
+    if ts or d0.get("swap_skipped_div"):
+        print(f"\n  質で入れ替えた回数： {ts}回"
+              + (f"（権利月が近く見送り {d0['swap_skipped_div']}回）"
+                 if d0.get("swap_skipped_div") else ""))
     rs = d0.get("range_sells", 0)
     if rs:
         print(f"\n  レンジ上限で降りた回数： {rs}回")
