@@ -516,6 +516,37 @@ VARIANTS: dict[str, dict[str, Any]] = {
                       "max_pct": 25, "avoid_div_months": 3},
     },
 
+    # ── 新規で買えないときだけ入れ替える ──
+    # 資金があるなら買い増しで質を上げればよく、税金を払う必要がない。
+    # 枠が埋まっている、または現金が足りないときだけ入れ替える。
+    "swap_stuck": {
+        "label": "買えないときだけ入れ替え（含み益20％＋Q25以下＋権利月回避）",
+        "entry": [75], "exit": [], "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S"], "exit_on_cut": True,
+        "swap_tier": {"min_gap": 1, "max_year": 6, "min_gain": 0.20,
+                      "max_pct": 25, "avoid_div_months": 3,
+                      "only_when_stuck": True},
+    },
+    "swap_stuck_loose": {
+        "label": "買えないときだけ入れ替え（含み益の条件なし）",
+        "entry": [75], "exit": [], "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S"], "exit_on_cut": True,
+        "swap_tier": {"min_gap": 1, "max_year": 6,
+                      "max_pct": 25, "avoid_div_months": 3,
+                      "only_when_stuck": True},
+    },
+    "swap_stuck_gap2": {
+        "label": "買えないときだけ入れ替え（2段階上のみ）",
+        "entry": [75], "exit": [], "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S"], "exit_on_cut": True,
+        "swap_tier": {"min_gap": 2, "max_year": 6, "min_gain": 0.20,
+                      "max_pct": 25, "avoid_div_months": 3,
+                      "only_when_stuck": True},
+    },
+
     # ── 外部要因が逆風の業種を避ける ──
     # 金利が下降局面なら銀行を買わない、原油が下降局面なら資源を買わない、
     # 円高局面なら輸出関連を買わない。判定は前月までの値だけで行う。
@@ -1885,8 +1916,26 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
         # 売却益に課税されるので、それを取り戻せるかが問われる。
         if swap_tier and cands:
             _ord2 = {"S": 0, "A": 1, "B": 2}
+            # 新規で買えるうちは入れ替えない、という条件。
+            # 資金が潤沢なら買い増しで質を上げられるので、
+            # わざわざ税金を払って入れ替える必要がない。
+            if swap_tier.get("only_when_stuck"):
+                _p0, _c0, _a0, _px0b, _t0 = cands[0]
+                if tier_budget:
+                    _need = TIER_BUDGET.get(_t0, TIER_BUDGET["B"]) / n_tr
+                else:
+                    _need = value_of(day) / max_names / n_tr
+                _stuck = (len(pos) >= max_names) or (cash < _need)
+                if not _stuck:
+                    diag["swap_skip_rich"] = diag.get("swap_skip_rich", 0) + 1
+                    cands = cands      # 何もしない
+                    swap_ok_now = False
+                else:
+                    swap_ok_now = True
+            else:
+                swap_ok_now = True
             _cap = swap_tier.get("max_year", 4) * max(mi / 12.0, 0.1)
-            if diag.get("tier_swaps", 0) < _cap:
+            if swap_ok_now and diag.get("tier_swaps", 0) < _cap:
                 # 買える候補のうち、いちばん質が高いもの
                 best = None
                 for _p, _c, _a, _px, _t in cands:
@@ -3562,6 +3611,7 @@ def main() -> int:
     if d0.get("swap_skip_gain"): _sk.append(f"含み益が足りず {d0['swap_skip_gain']}回")
     if d0.get("swap_skip_pct"): _sk.append(f"まだ割安で {d0['swap_skip_pct']}回")
     if d0.get("swap_skipped_div"): _sk.append(f"権利月が近く {d0['swap_skipped_div']}回")
+    if d0.get("swap_skip_rich"): _sk.append(f"新規で買えたため {d0['swap_skip_rich']}回")
     if _sk:
         print(f"\n  入れ替えの見送り： " + " ／ ".join(_sk))
     if ts or d0.get("swap_skipped_div"):
