@@ -29,6 +29,10 @@ on:
         description: "元本（円）。空欄なら通常300万・実運用モードで1000万"
         required: false
         default: ""
+      after_event:
+        description: "減配・業績急変のあと株価がどうなったかを調べる（true/false）"
+        required: false
+        default: "false"
       factor_test:
         description: "外部要因（金利・原油・為替）が逆風の業種を避ける形を検証（true/false）"
         required: false
@@ -97,10 +101,6 @@ on:
         description: "約定のずれ（bps）。10 で片道0.1％"
         required: false
         default: "10"
-      fee_bps:
-        description: "手数料（bps）。無料コースなら 0"
-        required: false
-        default: "0"
       realistic:
         description: "実運用と同じ条件で回す（true/false）。1000万・Tier別予算・20銘柄・配当あり"
         required: false
@@ -147,6 +147,7 @@ jobs:
             --universe "${{ github.event.inputs.universe || 'core' }}" \
             --min-yield "${{ github.event.inputs.min_yield || '0' }}" \
             --ramp "${{ github.event.inputs.ramp || '0' }}" \
+            ${{ github.event.inputs.after_event == 'true' && '--after-event' || '' }} \
             ${{ github.event.inputs.factor_test == 'true' && '--factor-test' || '' }} \
             ${{ github.event.inputs.fx_test == 'true' && '--fx-test' || '' }} \
             ${{ github.event.inputs.range_swing == 'true' && '--range-swing' || '' }} \
@@ -161,7 +162,6 @@ jobs:
             ${{ github.event.inputs.show_trades == 'true' && '--show-trades' || '' }} \
             --tax "${{ github.event.inputs.tax || '20.315' }}" \
             --slip-bps "${{ github.event.inputs.slip_bps || '10' }}" \
-            --fee-bps "${{ github.event.inputs.fee_bps || '0' }}" \
             --max-names "${{ github.event.inputs.max_names || '0' }}" \
             --capital "${{ github.event.inputs.capital || '0' }}" \
             ${{ github.event.inputs.only != '' && format('--only {0}', github.event.inputs.only) || '' }} \
@@ -193,5 +193,6 @@ jobs:
             data/range_test.csv
             data/range_trades.csv
             data/usdjpy.csv
+            data/after_event.csv
             run.log
           if-no-files-found: ignore
