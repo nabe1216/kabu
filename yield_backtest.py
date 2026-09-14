@@ -516,6 +516,21 @@ VARIANTS: dict[str, dict[str, Any]] = {
                       "max_pct": 25, "avoid_div_months": 3},
     },
 
+    # ── 業績急変で撤退するか ──
+    # 実運用には入っているのに、検証では一度も試していなかった。
+    "exit_op_only": {
+        "label": "業績急変だけで撤退（減配では売らない）",
+        "entry": [75], "exit": [], "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S"], "exit_on_cut": True, "exit_on_op": True,
+    },
+    "exit_none": {
+        "label": "減配でも業績急変でも売らない",
+        "entry": [75], "exit": [], "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S", "A", "B"],
+    },
+
     # ── 新規で買えないときだけ入れ替える ──
     # 資金があるなら買い増しで質を上げればよく、税金を払う必要がない。
     # 枠が埋まっている、または現金が足りないときだけ入れ替える。
@@ -1235,6 +1250,30 @@ def dps_timeline(stmts: list[dict], px: pd.DataFrame) -> pd.DataFrame:
     return df.groupby("date", as_index=False)["dps"].last()
 
 
+def op_timeline(stmts: list[dict]) -> pd.DataFrame:
+    """開示日つきの営業利益（通期）の系列を作る。
+
+    その日に開示されていた数字だけを使う。
+    前年同期と比べて急減したかどうかの判定に使う。
+    """
+    recs = []
+    for s in stmts:
+        if s.get("CurPerType") not in ("FY", "4Q"):
+            continue
+        d = pdate(s.get("DiscDate")) or pdate(s.get("CurPerEn"))
+        if d is None:
+            continue
+        v = fnum(s.get("OpProfit")) or fnum(s.get("OperatingProfit")) \
+            or fnum(s.get("OpPrf")) or fnum(s.get("OP"))
+        if v is None:
+            continue
+        recs.append({"date": pd.Timestamp(d), "op": float(v)})
+    if not recs:
+        return pd.DataFrame()
+    df = pd.DataFrame(recs).sort_values("date")
+    return df.groupby("date", as_index=False)["op"].last()
+
+
 def shares_outstanding(stmts: list[dict]) -> float | None:
     """発行済株式数。ShOutFY があればそれ、無ければ 純利益÷EPS で逆算する。"""
     fy = [x for x in stmts if x.get("CurPerType") in ("FY", "4Q")]
@@ -1390,6 +1429,19 @@ def build_panel(store: dict, years: int, lookback: int = 36) -> pd.DataFrame:
         f["progressive"] = (code in PROGRESSIVE) or (code in DOE)
         # 減配の検知。直近1年の最高額を下回ったら減配とみなす。
         # 配当利回りで割安さを測る戦略では、減配は「買った根拠が消える」出来事。
+        # 営業利益の急変。前回開示と比べて大きく落ちたか。
+        opt = op_timeline(store["stmts"].get(code, []))
+        if not opt.empty and len(opt) >= 2:
+            os_ = opt.set_index("date")["op"]
+            f["op"] = f["date"].map(os_).ffill() if "date" in f.columns \
+                else np.nan
+            _prev = f["op"].shift(1).where(f["op"] != f["op"].shift(1)).ffill()
+            f["op_drop"] = ((f["op"] < _prev * 0.8) & _prev.notna()
+                            & (_prev > 0)).fillna(False)
+        else:
+            f["op"] = np.nan
+            f["op_drop"] = False
+
         prev_max = f["dps"].rolling(12, min_periods=2).max().shift(1)
         f["dps_cut"] = (f["dps"] < prev_max * 0.999).fillna(False)
         f["fiscal_month"] = fm if fm else 0
@@ -1507,6 +1559,9 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
     hold_tiers = set(cfg.get("hold_tiers", []))
     # 減配したら手放すか。実運用の「緊急撤退」に相当する。
     exit_on_cut = cfg.get("exit_on_cut", False)
+    # 営業利益が前回開示比で2割超落ちたら撤退するか。
+    # 実運用には入っているが、検証では一度も試していなかった。
+    exit_on_op = cfg.get("exit_on_op", False)
     # 部分利確。上がったら「一部だけ」売る。
     #   threshold … 何％上がったら売るか（前回売った値段からの上昇率）
     #   fraction  … そのとき何割を売るか
@@ -1610,7 +1665,10 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
             st["peak"] = max(st.get("peak", price), price)
 
             # 減配は「売らない Tier」でも例外として手放す
-            if exit_on_cut and bool(row.get("dps_cut")) and st["lots"]:
+            _emg = bool(row.get("dps_cut"))
+            if exit_on_op and bool(row.get("op_drop")):
+                _emg = True
+            if exit_on_cut and _emg and st["lots"]:
                 for sh, pr in st["lots"]:
                     eff = price * (1 - slip) * (1 - fee)
                     cash += sh * eff
@@ -2476,6 +2534,8 @@ def main() -> int:
     ap.add_argument("--only", default="", help="比較するルールをカンマ区切りで指定")
     ap.add_argument("--capital", type=float, default=0,
                     help="元本。未指定なら通常300万・実運用モードで1000万")
+    ap.add_argument("--after-event", action="store_true",
+                    help="減配・業績急変のあと、株価がどうなったかを調べる")
     ap.add_argument("--factor-test", action="store_true",
                     help="外部要因（金利・原油・為替）が逆風の業種を"
                          "避ける形を検証する")
@@ -2826,6 +2886,83 @@ def main() -> int:
         for v in VARIANTS.values():
             v.setdefault("min_yield", args.min_yield)
         log.info("利回り %.1f％ 未満の銘柄は買わない設定で回します", args.min_yield)
+
+    # ══════════════════════════════════════════
+    # 減配・業績急変のあと、株価はどうなったか
+    #   「握っておけば戻る」という感覚を、事実として確かめる。
+    #   ただし上場廃止になった会社はデータに存在しないため、
+    #   ここに出る数字は「生き残った会社だけ」のものである。
+    # ══════════════════════════════════════════
+    if args.after_event:
+        ev = []
+        for code, g in panel.groupby("code"):
+            g = g.sort_values("date").reset_index(drop=True)
+            for i, r in g.iterrows():
+                kind = None
+                if bool(r.get("dps_cut")):
+                    kind = "減配"
+                elif bool(r.get("op_drop")):
+                    kind = "業績急変"
+                if not kind:
+                    continue
+                p0 = r["price"]
+                if not p0 or p0 <= 0:
+                    continue
+                rec = {"code": code, "name": r.get("name", code),
+                       "date": r["date"], "kind": kind, "px": p0}
+                for m in (6, 12, 24, 36):
+                    j = i + m
+                    rec[f"m{m}"] = (g.loc[j, "price"] / p0 - 1) * 100 \
+                        if j < len(g) else np.nan
+                # 途中でどこまで下げたか（1年間）
+                lo = g.loc[i:min(i + 12, len(g) - 1), "price"].min()
+                rec["dd"] = (lo / p0 - 1) * 100
+                ev.append(rec)
+        if not ev:
+            print("該当する出来事が見つかりませんでした。")
+            return 1
+        ed = pd.DataFrame(ev)
+
+        print(f"\n■ 減配・業績急変のあと、株価はどうなったか"
+              f"（{panel['date'].min().date()} 〜 {panel['date'].max().date()}）\n")
+        print(f"  対象となった出来事 … {len(ed)}件"
+              f"（減配 {int((ed['kind'] == '減配').sum())}件 ／ "
+              f"業績急変 {int((ed['kind'] == '業績急変').sum())}件）")
+        print(f"  対象銘柄 … {ed['code'].nunique()}社\n")
+
+        for kind, g in list(ed.groupby("kind")) + [("すべて", ed)]:
+            print(f"【{kind}】{len(g)}件\n")
+            print(f"{'その後':<10}{'平均':>10}{'中央値':>10}"
+                  f"{'プラスの割合':>14}{'−20%以下':>11}{'件数':>7}")
+            print("-" * 64)
+            for m, lbl in [(6, "6か月後"), (12, "1年後"),
+                           (24, "2年後"), (36, "3年後")]:
+                v = g[f"m{m}"].dropna()
+                if len(v) < 5:
+                    continue
+                print(f"{lbl:<10}{v.mean():>+9.1f}%{v.median():>+9.1f}%"
+                      f"{(v > 0).mean() * 100:>13.0f}%"
+                      f"{(v <= -20).mean() * 100:>10.0f}%{len(v):>7}")
+            dd = g["dd"].dropna()
+            if len(dd):
+                print(f"\n  1年のうちの最大下落 … 平均 {dd.mean():.1f}% ／ "
+                      f"中央値 {dd.median():.1f}% ／ 最悪 {dd.min():.1f}%")
+            print()
+
+        print("【読み方】\n")
+        one = ed["m12"].dropna()
+        if len(one) >= 5:
+            print(f"  出来事の1年後、プラスだった割合は {(one > 0).mean() * 100:.0f}％。")
+            print(f"  20％以上下げたままだった割合は {(one <= -20).mean() * 100:.0f}％。")
+        print("\n  ※ ここに出ているのは「いま上場している会社」だけです。")
+        print("    業績が崩れて上場廃止になった会社は、1社も含まれていません。")
+        print("    つまり「戻った会社だけを見て、戻ると言っている」構造です。")
+        print("    実際の確率は、ここに出る数字より悪いはずです。")
+
+        OUTDIR.mkdir(parents=True, exist_ok=True)
+        ed.to_csv(OUTDIR / "after_event.csv", index=False, encoding="utf-8-sig")
+        print("\n書き出しました: data/after_event.csv")
+        return 0
 
     # ══════════════════════════════════════════
     # 為替（ドル円）との関係を調べる
