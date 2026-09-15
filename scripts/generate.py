@@ -86,6 +86,13 @@ EMERGENCY_OP_DROP = -0.20            # 営業利益YoY -20%以下
 # --- ユニバース ---
 MARKET_CODE_PRIME = '0111'           # 東証プライム
 MARKET_CAP_MIN_OKU = 300             # 時価総額300億円以上
+# 対象の範囲。
+#   core  … TOPIX Core30 / Large70 / Mid400（約489社）
+#   prime … 東証プライムの全銘柄（約1,557社）
+#
+# 検証では prime のほうが基準を上回る幅が大きかった
+# （+8.9pt -> +11.2pt）が、取得に70〜90分かかる。
+UNIVERSE_SCOPE = 'prime'
 
 # --- API設定 (J-Quants V2) ---
 JQUANTS_BASE = 'https://api.jquants.com'
@@ -1582,7 +1589,8 @@ def build_universe(client: JQuantsClient) -> list[dict[str, Any]]:
             continue
 
         scale_cat = row.get('ScaleCat', '') or ''
-        if scale_cat not in SCALE_TARGETS:
+        # core のときだけ規模区分で絞る
+        if UNIVERSE_SCOPE == 'core' and scale_cat not in SCALE_TARGETS:
             skipped_scale += 1
             continue
 
