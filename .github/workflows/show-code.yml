@@ -1,0 +1,83 @@
+name: show-code
+
+# generate.py の必要な部分だけを取り出して表示する。
+# 全文を貼らなくても、改修に必要な箇所が分かるようにするためのもの。
+# コードは一切変更しない。読むだけ。
+on:
+  workflow_dispatch:
+
+jobs:
+  show:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 必要な部分を取り出す
+        run: |
+          python - <<'PY'
+          import os, re
+          from pathlib import Path
+
+          s = Path("scripts/generate.py").read_text(encoding="utf-8")
+          lines = s.split("\n")
+          out = []
+
+          def show(title, idxs, before=3, after=22):
+              out.append(f"\n{'=' * 60}")
+              out.append(f"■ {title}")
+              out.append("=" * 60)
+              seen = set()
+              for i in idxs[:4]:
+                  a, b = max(0, i - before), min(len(lines), i + after)
+                  if any(x in seen for x in range(a, b)):
+                      continue
+                  seen.update(range(a, b))
+                  out.append(f"\n--- {a+1}行目から ---")
+                  for j in range(a, b):
+                      out.append(f"{j+1:>5}| {lines[j]}")
+
+          # 1. 関数の一覧（全体像をつかむ）
+          out.append("=" * 60)
+          out.append("■ 関数の一覧")
+          out.append("=" * 60)
+          for i, l in enumerate(lines):
+              if re.match(r"^(def |async def )", l):
+                  out.append(f"{i+1:>5}| {l.rstrip()}")
+
+          # 2. 財務データを取りに行っている箇所
+          idx = [i for i, l in enumerate(lines)
+                 if "fins/statements" in l or "/fins/" in l]
+          if idx:
+              show("財務データの取得", idx)
+          else:
+              idx = [i for i, l in enumerate(lines)
+                     if "statements" in l and ("get(" in l or "def " in l)]
+              show("財務データらしき箇所", idx)
+
+          # 3. 株価を取りに行っている箇所
+          idx = [i for i, l in enumerate(lines)
+                 if "daily_quotes" in l or "prices/" in l]
+          show("株価の取得", idx)
+
+          # 4. 全銘柄をまわしている本体
+          idx = [i for i, l in enumerate(lines)
+                 if re.search(r"for .* in .*(universe|uni|stocks|codes)\b", l)
+                 and not l.strip().startswith("#")]
+          show("全銘柄をまわしている箇所", idx, after=30)
+
+          # 5. データを保存している箇所
+          idx = [i for i, l in enumerate(lines)
+                 if "json.dump" in l or "write_text" in l]
+          show("保存している箇所", idx, after=12)
+
+          text = "\n".join(out)
+          print(text)
+          sm = os.environ.get("GITHUB_STEP_SUMMARY")
+          if sm:
+              with open(sm, "a", encoding="utf-8") as f:
+                  f.write("```\n" + text[:60000] + "\n```\n")
+          PY
