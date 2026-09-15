@@ -1,0 +1,139 @@
+name: patch-universe
+
+# 対象銘柄の範囲を切り替える。
+#
+#   core  … 東証プライムのうち TOPIX Core30 / Large70 / Mid400（約489社）
+#   prime … 東証プライムの全銘柄（約1,557社）
+#
+# なぜ広げるか
+#   検証では、プライム全銘柄に広げたほうが基準を上回る幅が
+#   むしろ大きくなった（+8.9pt -> +11.2pt）。
+#   また対象が3倍になるぶん、買える候補も増えて分散が効きやすくなる。
+#
+# 代償
+#   毎日のデータ取得が 35〜40分 から 70〜90分 に延びる。
+#   タイムアウトに近づくため、実行時間を必ず確認すること。
+#
+# 目印が見つからない場合や文法エラーが出た場合は何も保存せずに止まる。
+# 戻すときは core を指定して再実行。
+on:
+  workflow_dispatch:
+    inputs:
+      scope:
+        description: "対象の範囲。core＝約489社（既定）／ prime＝約1,557社"
+        required: false
+        default: "core"
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: generate.py を書き換える
+        env:
+          SCOPE: ${{ github.event.inputs.scope || 'core' }}
+        run: |
+          python - <<'PY'
+          import ast, os, re, sys
+          from pathlib import Path
+
+          scope = os.environ.get("SCOPE", "core")
+          if scope not in ("core", "prime"):
+              sys.exit(f"scope は core / prime のいずれかです（指定: {scope}）")
+
+          p = Path("scripts/generate.py")
+          s = before = p.read_text(encoding="utf-8")
+          log = []
+
+          if "UNIVERSE_SCOPE" in s:
+              m = re.search(r"^UNIVERSE_SCOPE\s*=\s*'(\w+)'", s, re.M)
+              cur = m.group(1) if m else "?"
+              if cur == scope:
+                  print(f"すでに {scope} です。何もしません。")
+                  sys.exit(0)
+              s = re.sub(r"^UNIVERSE_SCOPE\s*=\s*'\w+'",
+                         f"UNIVERSE_SCOPE = '{scope}'", s, count=1, flags=re.M)
+              log.append(f"対象の範囲 … {cur} -> {scope}")
+          else:
+              # 1. 設定を足す
+              a1 = "MARKET_CAP_MIN_OKU"
+              if s.count(a1) < 1:
+                  sys.exit("目印（MARKET_CAP_MIN_OKU）が見つかりません。中止します。")
+              line = [l for l in s.split("\n") if l.startswith(a1)]
+              if not line:
+                  sys.exit("MARKET_CAP_MIN_OKU の行が見つかりません。中止します。")
+              a1 = line[0]
+              add = [
+                  "",
+                  "# 対象の範囲。",
+                  "#   core  … TOPIX Core30 / Large70 / Mid400（約489社）",
+                  "#   prime … 東証プライムの全銘柄（約1,557社）",
+                  "#",
+                  "# 検証では prime のほうが基準を上回る幅が大きかった",
+                  "# （+8.9pt -> +11.2pt）が、取得に70〜90分かかる。",
+                  f"UNIVERSE_SCOPE = '{scope}'",
+              ]
+              s = s.replace(a1, a1 + "\n".join(add), 1)
+              log.append(f"対象の範囲を {scope} に設定")
+
+              # 2. 規模区分の絞り込みを条件つきにする
+              pat = re.compile(
+                  r"^(\s*)if\s+(?:\(?[\w\.]*(?:get\(['\"]ScaleCategory['\"]\)|"
+                  r"ScaleCategory|scale)\)?[^\n]*?)\s+not\s+in\s+"
+                  r"([A-Z_]+|\{[^}]*\})\s*:\s*$", re.M)
+              m = pat.search(s)
+              if not m:
+                  print("規模区分で絞っている行が見つかりませんでした。")
+                  print("候補になりそうな行：\n")
+                  for i, l in enumerate(s.split("\n"), 1):
+                      if "Scale" in l or "scale" in l:
+                          print(f"  {i:>5}: {l.rstrip()}")
+                  sys.exit("中止しました。上の一覧から該当行を教えてください。")
+              indent = m.group(1)
+              cond = m.group(0).strip()
+              new = (f"{indent}# core のときだけ規模区分で絞る\n"
+                     f"{indent}if UNIVERSE_SCOPE == 'core' and "
+                     + cond[3:])
+              s = s.replace(m.group(0), new, 1)
+              log.append("規模区分の絞り込みを条件つきに変更")
+
+          if s == before:
+              print("変更はありませんでした。")
+              sys.exit(0)
+
+          ast.parse(s)
+          p.write_text(s, encoding="utf-8")
+          for x in log:
+              print(x)
+
+          desc = {"core": "約489社。取得は35〜40分",
+                  "prime": "約1,557社。取得は70〜90分"}
+          lines = ["## generate.py の変更", ""]
+          lines += [f"- {x}" for x in log]
+          lines += ["", f"**{scope}** … {desc[scope]}", "",
+                    "次に「Generate Dividend Signals」を手動実行してください。", "",
+                    "**実行時間を必ず確認してください。**",
+                    "90分を超えると途中で止まります。", "",
+                    "戻すときは、このワークフローを core で再実行してください。"]
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
+              f.write("\n".join(lines) + "\n")
+          PY
+
+      - name: 保存する
+        run: |
+          if git diff --quiet -- scripts/generate.py; then
+            echo "変更なし。"
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add scripts/generate.py
+          git commit -m "対象の範囲を変更"
+          git push
