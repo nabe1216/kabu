@@ -172,6 +172,29 @@ tbody tr:last-child td{border-bottom:none}
 .btn{background:var(--primary);color:#fff;border:none;border-radius:var(--radius-sm);padding:9px 16px;font-size:13px;font-weight:600;transition:background .15s}
 .btn:hover{background:var(--primary-hover)}
 .btn-ghost{background:none;border:none;color:var(--buy);font-size:12px;font-weight:600;padding:4px}
+
+/* ===== 配分案 ===== */
+.pbtn-amt{border:1px solid var(--border);background:var(--card);border-radius:var(--radius-sm);padding:7px 13px;font-size:12.5px;font-weight:600;color:var(--text-2);transition:all .12s}
+.pbtn-amt:hover{background:var(--primary-soft);color:var(--primary);border-color:var(--primary)}
+.al-sum{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+.al-sum .big{font-size:26px;font-weight:700;letter-spacing:-.02em}
+.al-bar{height:8px;border-radius:4px;background:#EDEFF3;overflow:hidden;margin:6px 0 4px}
+.al-bar i{display:block;height:100%;background:var(--green);border-radius:4px}
+.al-why{font-size:12.5px;color:var(--text-2);line-height:1.65;margin-top:7px;padding-left:11px;border-left:2px solid var(--border-strong);white-space:normal;max-width:520px}
+.al-why b{color:var(--text);font-weight:600}
+details.al-d{margin-top:5px}
+details.al-d summary{cursor:pointer;font-size:12px;color:var(--primary);font-weight:600;list-style:none;display:inline-block}
+details.al-d summary::-webkit-details-marker{display:none}
+details.al-d summary::before{content:"＋ "}
+details.al-d[open] summary::before{content:"− "}
+.al-def{display:flex;gap:11px;align-items:flex-start;margin-bottom:12px}
+.al-def:last-child{margin-bottom:0}
+.al-def .tier{flex-shrink:0;margin-top:1px}
+.al-def div{font-size:12.5px;color:var(--text-2);line-height:1.65}
+.al-def b{display:block;color:var(--text);font-size:12.5px}
+.al-note{font-size:12.5px;color:var(--text-2);line-height:1.7}
+.al-note.warn{border-left:3px solid var(--amber)}
+td.al-name{white-space:normal;min-width:250px}
 </style>
 </head>
 <body>
@@ -203,6 +226,14 @@ tbody tr:last-child td{border-bottom:none}
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 17.8 5.8 21 7 14.1 2 9.3l6.9-1L12 2l3.1 6.3 6.9 1-5 4.8L18.2 21z"/></svg>
       監視リスト
     </button>
+    <button data-view="alloc">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1v22"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+      配分案
+    </button>
+    <button data-view="pf">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.2 15.9A10 10 0 1 1 8.1 2.8"/><path d="M22 12A10 10 0 0 0 12 2v10z"/></svg>
+      構成を見る
+    </button>
   </nav>
   <div class="side-foot">最終更新: <span id="lastUpdate">—</span></div>
 </aside>
@@ -231,20 +262,20 @@ tbody tr:last-child td{border-bottom:none}
         <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>
       </div>
       <div class="logic-body">
-        <div class="logic-item"><span class="tag p-buy">BUY</span>過去5年で見て利回り上位25%（割安サイン）＋ 8条件クリア</div>
-        <div class="logic-item"><span class="tag p-sell">SELL</span>過去5年で見て利回り下位25%（割高サイン）</div>
+        <div class="logic-item"><span class="tag p-buy">BUY</span>過去3年で見て利回り上位25%（割安サイン）＋ 8条件クリア</div>
+        <div class="logic-item"><span class="tag p-sell">SELL</span>過去3年で見て利回り下位25%（割高サイン）※現在は売却判定に使っていません</div>
         <div class="logic-item"><span class="tag p-box">BOX</span>横ばい相場（上下のレンジで売買しやすい）</div>
-        <div class="logic-item"><span class="tag p-cheap">割安</span>PER・PBRが過去5年の中央値より低い（過去比で割安）</div>
-        <div class="logic-item"><span class="tag tier-S" style="border-radius:99px;width:auto;padding:1px 9px">S</span>配当を守る企業 × 業界トップ／配分 4倍</div>
-        <div class="logic-item"><span class="tag tier-A" style="border-radius:99px;width:auto;padding:1px 9px">A</span>配当を守る企業 OR 業界トップ／配分 2倍</div>
-        <div class="logic-item"><span class="tag tier-B" style="border-radius:99px;width:auto;padding:1px 9px">B</span>基本条件クリアのみ／配分 1倍</div>
+        <div class="logic-item"><span class="tag p-cheap">割安</span>PER・PBRが過去の中央値より低い（過去比で割安）</div>
+        <div class="logic-item"><span class="tag tier-S" style="border-radius:99px;width:auto;padding:1px 9px">S</span>配当を守る企業 × 業界トップ／総資産の約8.9%</div>
+        <div class="logic-item"><span class="tag tier-A" style="border-radius:99px;width:auto;padding:1px 9px">A</span>配当を守る企業 OR 業界トップ／総資産の約6.7%</div>
+        <div class="logic-item"><span class="tag tier-B" style="border-radius:99px;width:auto;padding:1px 9px">B</span>基本条件クリアのみ／総資産の約4.4%</div>
         <div class="logic-item"><span class="tag p-warn">緊急</span>減配・業績急悪化・配当方針撤回のいずれかが発生</div>
-        <div class="logic-item"><span class="tag p-neu">8条件</span>減配ゼロ・利益安定・配当に無理がない・財務健全・割安・利回り3%以上</div>
+        <div class="logic-item"><span class="tag p-neu">8条件</span>減配ゼロ・利益安定・配当に無理がない・財務健全・割安・利回り4%以上</div>
       </div>
     </div>
 
     <div class="card tbl-wrap"><table>
-      <thead><tr><th>シグナル</th><th>銘柄</th><th>区分</th><th>Tier</th><th class="t-right">利回り</th><th>9Yレンジ</th><th class="t-right">PER×PBR</th><th class="t-right">時価総額</th><th></th></tr></thead>
+      <thead><tr><th>シグナル</th><th>銘柄</th><th>区分</th><th>Tier</th><th class="t-right">利回り</th><th>3Yレンジ</th><th class="t-right">PER×PBR</th><th class="t-right">時価総額</th><th></th></tr></thead>
       <tbody id="tbSignals"></tbody>
     </table><div id="emptySignals" class="empty" style="display:none">本日のシグナルはありません</div></div>
   </section>
@@ -263,7 +294,7 @@ tbody tr:last-child td{border-bottom:none}
       <select id="fSort"><option value="signal">並び順: シグナル</option><option value="leader">業界首位を上に</option><option value="yield">利回りが高い順</option><option value="mcap">時価総額が大きい順</option><option value="code">コード順</option></select>
     </div>
     <div class="card tbl-wrap"><table>
-      <thead><tr><th>シグナル</th><th>銘柄</th><th>区分</th><th>Tier</th><th class="t-right">利回り</th><th>9Yレンジ</th><th class="t-right">PER×PBR</th><th class="t-right">時価総額</th><th></th></tr></thead>
+      <thead><tr><th>シグナル</th><th>銘柄</th><th>区分</th><th>Tier</th><th class="t-right">利回り</th><th>3Yレンジ</th><th class="t-right">PER×PBR</th><th class="t-right">時価総額</th><th></th></tr></thead>
       <tbody id="tbAll"></tbody>
     </table><div id="emptyAll" class="empty" style="display:none">条件に一致する銘柄がありません</div></div>
   </section>
@@ -309,8 +340,50 @@ tbody tr:last-child td{border-bottom:none}
   <section id="view-watch" style="display:none">
     <div class="page-head"><h1>監視リスト</h1><div class="meta">★ を付けた銘柄</div></div>
     <div class="card tbl-wrap"><table>
-      <thead><tr><th>シグナル</th><th>銘柄</th><th>区分</th><th>Tier</th><th class="t-right">利回り</th><th>9Yレンジ</th><th class="t-right">PER×PBR</th><th class="t-right">時価総額</th><th></th></tr></thead>
+      <thead><tr><th>シグナル</th><th>銘柄</th><th>区分</th><th>Tier</th><th class="t-right">利回り</th><th>3Yレンジ</th><th class="t-right">PER×PBR</th><th class="t-right">時価総額</th><th></th></tr></thead>
       <tbody id="tbWatch"></tbody></table><div id="emptyWatch" class="empty" style="display:none">監視中の銘柄はありません。一覧の ★ で追加できます</div></div>
+  </section>
+
+  <!-- ===== 配分案 ===== -->
+  <section id="view-alloc" style="display:none">
+    <div class="page-head">
+      <h1>いくら、何を買うか</h1>
+      <div class="meta" id="alMeta">—</div>
+    </div>
+
+    <div class="card add-form" style="align-items:center">
+      <div><label>投資できる金額（円）</label>
+        <input id="alAmt" inputmode="numeric" value="1,000,000"
+               style="width:180px;text-align:right;font-size:17px;font-weight:600"></div>
+      <button class="btn" onclick="renderAlloc()">配分を出す</button>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-left:auto">
+        <button class="pbtn-amt" data-v="300000">30万</button>
+        <button class="pbtn-amt" data-v="500000">50万</button>
+        <button class="pbtn-amt" data-v="1000000">100万</button>
+        <button class="pbtn-amt" data-v="3000000">300万</button>
+        <button class="pbtn-amt" data-v="5000000">500万</button>
+        <button class="pbtn-amt" data-v="10000000">1000万</button>
+      </div>
+    </div>
+
+    <div id="alOut"></div>
+  </section>
+
+  <!-- ===== ポートフォリオ診断 ===== -->
+  <section id="view-pf" style="display:none">
+    <div class="page-head">
+      <h1>いまの構成を見る</h1>
+      <div class="meta">入力はこの端末にだけ保存されます</div>
+    </div>
+
+    <div class="card add-form">
+      <div><label>コード</label><input id="pfCode" placeholder="8058" style="width:90px"></div>
+      <div><label>株数</label><input id="pfSh" type="number" placeholder="100" style="width:90px"></div>
+      <div><label>取得単価</label><input id="pfCb" type="number" placeholder="2500" style="width:110px"></div>
+      <button class="btn" id="pfAddBtn" onclick="pfAdd()">追加</button>
+    </div>
+
+    <div id="pfOut"></div>
   </section>
 
 </main>
@@ -341,9 +414,9 @@ tbody tr:last-child td{border-bottom:none}
   <div class="d-body">
     <div id="tab-overview">
       <div class="card sec"><h4>主要指標</h4><div class="mgrid" id="dMetrics"></div></div>
-      <div class="card sec"><h4>配当利回りの推移 <small>過去5年 · 月次</small></h4><div class="chart-box" id="cYield"></div></div>
-      <div class="card sec"><h4>PERの推移 <small>過去5年 · 月次 · 中央値より下＝過去比割安</small><span id="cPerTag"></span></h4><div class="chart-box" id="cPer"></div></div>
-      <div class="card sec"><h4>PBRの推移 <small>過去5年 · 月次 · 中央値より下＝過去比割安</small><span id="cPbrTag"></span></h4><div class="chart-box" id="cPbr"></div></div>
+      <div class="card sec"><h4>配当利回りの推移 <small>月次</small></h4><div class="chart-box" id="cYield"></div></div>
+      <div class="card sec"><h4>PERの推移 <small>月次 · 中央値より下＝過去比割安</small><span id="cPerTag"></span></h4><div class="chart-box" id="cPer"></div></div>
+      <div class="card sec"><h4>PBRの推移 <small>月次 · 中央値より下＝過去比割安</small><span id="cPbrTag"></span></h4><div class="chart-box" id="cPbr"></div></div>
     </div>
     <div id="tab-chart" style="display:none">
       <div class="card sec"><h4>株価チャート</h4>
@@ -500,7 +573,7 @@ const grahamCell=s=>{
 
 /* ===== PER/PBR 割安判定（追加） =====
    generate.py が per_cheap/pbr_cheap を出力していればそれを使用。
-   無ければ valuation_history から過去5年の中央値を自算し、現在値が中央値以下なら割安。
+   無ければ valuation_history から過去の中央値を自算し、現在値が中央値以下なら割安。
    PER は EPS が荒れるため有効点12未満は判定しない。 */
 function valMedian(s,key){
   const mk=key==='per'?'per_median':'pbr_median';
@@ -567,7 +640,7 @@ $('nav').addEventListener('click',e=>{
   const b=e.target.closest('button'); if(!b)return;
   S.view=b.dataset.view;
   document.querySelectorAll('#nav button').forEach(x=>x.classList.toggle('active',x===b));
-  ['signals','all','fwd','port','watch'].forEach(v=>$('view-'+v).style.display=v===S.view?'':'none');
+  ['signals','all','fwd','port','watch','alloc','pf'].forEach(v=>$('view-'+v).style.display=v===S.view?'':'none');
   render();
 });
 ['fBucket','fSignal','fSector','fBox','fPass','fEx','fSearch','fSort'].forEach(id=>{
@@ -579,6 +652,8 @@ function render(){
   else if(S.view==='fwd')renderFwd();
   else if(S.view==='port')renderPort();
   else if(S.view==='watch')renderWatch();
+  else if(S.view==='alloc')renderAlloc();
+  else if(S.view==='pf')renderPf();
 }
 
 function stockRow(s){
@@ -757,7 +832,7 @@ function switchTab(tab){
 function renderMetrics(s){
   const perTag=isCheap(s,'per')?' <span class="pill p-cheap" style="font-size:10px;padding:0 6px">割安</span>':'';
   const pbrTag=isCheap(s,'pbr')?' <span class="pill p-cheap" style="font-size:10px;padding:0 6px">割安</span>':'';
-  const items=[['現在利回り',fmt.pct(s.current_yield)],['5年Q25 / 中央値 / Q75',`${fmt.num(s.yield_q25)} / ${fmt.num(s.yield_median)} / ${fmt.num(s.yield_q75)}%`],
+  const items=[['現在利回り',fmt.pct(s.current_yield)],['3年Q25 / 中央値 / Q75',`${fmt.num(s.yield_q25)} / ${fmt.num(s.yield_median)} / ${fmt.num(s.yield_q75)}%`],
     ['PER',fmt.num(s.per,1)+perTag],['PBR',fmt.num(s.pbr,2)+pbrTag],['PER×PBR',s.per_pbr==null?'—':s.per_pbr.toFixed(1)+(s.per_pbr<=22.5?' ✓':' ✗')],
     ['配当性向',fmt.pct(s.payout_ratio,1)],['自己資本比率',s.equity_ratio==null?'—':(s.equity_ratio*100).toFixed(1)+'%'],['ROE',fmt.pct(s.roe,1)],
     ['売上(直近)',fmt.oku(s.latest_sales_oku)],['営業利益(直近)',fmt.oku(s.latest_op_oku)],['純利益(直近)',fmt.oku(s.latest_np_oku)],['予想DPS','¥'+fmt.num(s.forecast_dps,1)]];
@@ -825,7 +900,7 @@ function renderScreen(s){
   const rows=[['減配経験（10期）','過去に減配していない',sc.dividend],['売上の安定性','構造的な売上減がない',sc.revenue],
     ['営業利益の安定性','本業が崩れていない',sc.op_profit],['純利益の安定性','配当原資が確保',sc.net_profit],
     ['配当性向 ≤ 50%','無理のない配当',sc.payout],[`自己資本比率 ${eqMin}`,'財務健全（業種別基準）',sc.equity],
-    ['PER×PBR ≤ 22.5','割高すぎない',sc.valuation],['利回り ≥ 3.0%','高配当の前提',sc.min_yield]];
+    ['PER×PBR ≤ 22.5','割高すぎない',sc.valuation],[`利回り ≥ ${(S.data.thresholds&&S.data.thresholds.min_yield)||4.0}%`,'高配当の前提',sc.min_yield]];
   $('dScreen').innerHTML=rows.map(([t,d,ok])=>`<div class="chk-row"><div><b>${t}</b><div style="font-size:11.5px;color:var(--text-3)">${d}</div></div><span class="${ok?'ok':'ng'}">${ok?'✓':'✗'}</span></div>`).join('');
 }
 function renderBox(s){
@@ -867,7 +942,506 @@ function renderPeers(s){
   }).join('');
 }
 
+
+/* ================= 配分案 =================
+   投資できる金額から、買う銘柄と株数を出す。
+   実運用（portfolio_engine.py）と同じ考え方で割り当てる。
+   相場の良し悪しでは判断しない。検証で11案すべて成績が下がったため。 */
+const AL_W={S:2.0,A:1.5,B:1.0}, AL_TARGET=15, AL_MAX=20, AL_ORD={S:0,A:1,B:2};
+
+function alAmount(){return +($('alAmt').value||'').replace(/[^\d]/g,'')||0;}
+document.addEventListener('click',e=>{
+  const b=e.target.closest('.pbtn-amt'); if(!b)return;
+  $('alAmt').value=(+b.dataset.v).toLocaleString('ja-JP'); renderAlloc();
+});
+
+/* 候補を絞る。results.json には順位ではなく yield_q75（実際の利回り）が入っている */
+function alPick(){
+  const minY=(S.data.thresholds&&S.data.thresholds.min_yield)||0;
+  const st={all:S.data.stocks.length,pass:0,buy:0,emg:0,lowY:0,lowQ:0};
+  const out=[];
+  for(const r of S.data.stocks){
+    if(!r.screening_pass)continue; st.pass++;
+    if(String(r.signal||'').toUpperCase()!=='BUY')continue; st.buy++;
+    if(r.emergency_exit){st.emg++;continue;}
+    if(!r.price||r.price<=0)continue;
+    const cy=+r.current_yield||0,q75=+r.yield_q75||0;
+    if(cy<minY){st.lowY++;continue;}                 // 足切り未満は買わない
+    if(q75>0&&cy<q75){st.lowQ++;continue;}           // Q75に届かない
+    out.push({...r,_y:cy,_q:q75});
+  }
+  out.sort((a,b)=>(AL_ORD[a.tier]??9)-(AL_ORD[b.tier]??9)||b._y-a._y);
+  return [out,st,minY];
+}
+/* 金額が小さいときは目標銘柄数を下げる（分けすぎると1単元も買えない） */
+function alFit(c,budget,target){
+  if(!c.length)return target;
+  const avg=(2.0+1.5+1.0)/3;
+  target=Math.min(target,Math.max(c.length,1));
+  const want=Math.min(c.length,target);
+  for(let t=target;t>=1;t--){
+    let cash=budget,ok=0;
+    for(const x of c){
+      const unit=budget/t*((AL_W[x.tier]||1)/avg);
+      const sh=Math.floor(Math.min(unit,cash)/x.price/100)*100;
+      if(sh>0){cash-=sh*x.price;ok++;}
+    }
+    if(ok>=want)return t;
+  }
+  return 1;
+}
+function alAllocate(c,budget,target){
+  const avg=(2.0+1.5+1.0)/3; let cash=budget; const plan=[];
+  for(const x of c){
+    if(plan.length>=AL_MAX)break;
+    const unit=budget/target*((AL_W[x.tier]||1)/avg);
+    let sh=Math.floor(unit/x.price/100)*100;
+    if(sh<=0)continue;
+    let cost=sh*x.price;
+    if(cost>cash){sh=Math.floor(cash/x.price/100)*100;if(sh<=0)continue;cost=sh*x.price;}
+    cash-=cost; plan.push({...x,_sh:sh,_cost:cost});
+  }
+  // 1〜2銘柄しか買えないときは、1単元の安い順に組み直して数を増やす
+  let re=false;
+  if(plan.length<3&&c.length>plan.length){
+    const byPx=[...c].sort((a,b)=>a.price-b.price); let c2=budget; const alt=[];
+    for(const x of byPx){
+      if(alt.length>=AL_MAX)break;
+      const cost=x.price*100; if(cost>c2)continue;
+      c2-=cost; alt.push({...x,_sh:100,_cost:cost});
+    }
+    if(alt.length>plan.length){plan.length=0;plan.push(...alt);cash=c2;re=true;}
+  }
+  // 端数を埋める。1銘柄が偏りすぎないよう上限を置く
+  if(plan.length&&cash>0){
+    let cap=budget/target*2;
+    if(plan.length<target)cap=Math.max(cap,Math.min(budget/plan.length,budget/3));
+    for(let i=0;i<60;i++){
+      let bought=false;
+      for(const x of plan){
+        const add=x.price*100;
+        if(x._cost+add>cap||add>cash)continue;
+        x._sh+=100; x._cost+=add; cash-=add; bought=true;
+      }
+      if(!bought)break;
+    }
+  }
+  return [plan,cash,re];
+}
+/* なぜこの銘柄なのかを一文で */
+function alWhy(x){
+  const gap=x._q>0?(x._y/x._q-1)*100:0;
+  const lv=gap>=20?'過去3年でもかなり安い水準':gap>=8?'過去3年で見て安い水準':'過去3年の安い側に入ったところ';
+  const t={S:'累進配当（またはDOE）を掲げ、業界首位級。中核として長く持つ区分',
+           A:'累進配当か業界首位級の、どちらか一方を満たす区分',
+           B:'そのどちらにも当たらない区分'}[x.tier]||'';
+  return `利回り <b>${x._y.toFixed(2)}％</b> は、この銘柄の過去3年のQ75（${x._q.toFixed(2)}％）を
+    <b>${gap.toFixed(0)}％</b> 上回る。${lv}。<b>Tier ${x.tier}</b> — ${t}。`;
+}
+function renderAlloc(){
+  const out=$('alOut'); if(!S.data){out.innerHTML='';return;}
+  const amt=alAmount();
+  const sn=(S.data.stocks.find(x=>x.yield_sample_n)||{}).yield_sample_n;
+  const minY0=(S.data.thresholds&&S.data.thresholds.min_yield);
+  $('alMeta').innerHTML=`<b>${fmt.date(S.data.generated_at)}</b> 判定`
+    +(minY0!=null?` · 利回り ${minY0}％以上`:'')
+    +(sn?` · 過去${Math.round(sn/12)}年の分布で判定`:'');
+  if(amt<=0){out.innerHTML='<div class="card empty">投資できる金額を入れてください</div>';return;}
+
+  const [c,st,minY]=alPick();
+  const target=alFit(c,amt,AL_TARGET);
+  const [plan,left,re]=alAllocate(c,amt,target);
+
+  let h='';
+  // 絞り込みの経過
+  h+=`<div class="card" style="padding:12px 16px;margin-bottom:14px;font-size:12.5px;color:var(--text-2)">
+    対象 <b style="color:var(--text)">${st.all}</b> ／ スクリーニング通過 <b style="color:var(--text)">${st.pass}</b>
+    ／ 買いシグナル <b style="color:var(--text)">${st.buy}</b>`
+    +(st.emg?` ／ 減配などで除外 <b style="color:var(--text)">−${st.emg}</b>`:'')
+    +(st.lowY?` ／ 利回り${minY}％未満 <b style="color:var(--text)">−${st.lowY}</b>`:'')
+    +(st.lowQ?` ／ 割安でない <b style="color:var(--text)">−${st.lowQ}</b>`:'')
+    +` ／ <b style="color:var(--text)">買える候補 ${c.length}</b></div>`;
+
+  if(!plan.length){
+    const cheap=c.length?Math.min(...c.map(x=>x.price))*100:0;
+    h+=`<div class="card empty">`+(!c.length
+      ? `<b style="display:block;font-size:15px;color:var(--text);margin-bottom:6px">今日は買える銘柄がありません</b>
+         条件に合う銘柄がないだけで、相場の良し悪しとは関係ありません。翌営業日にまた判定されます。`
+      : `<b style="display:block;font-size:15px;color:var(--text);margin-bottom:6px">金額が足りません</b>
+         いちばん安い候補でも、100株で ${fmt.yen(cheap)} 必要です。`)+`</div>`;
+    out.innerHTML=h; return;
+  }
+
+  const used=amt-left, pct=used/amt*100;
+  h+=`<div class="card sec">`;
+  if(re)h+=`<div class="al-note" style="margin-bottom:12px">金額に対して銘柄を分けすぎると1単元も買えないため、<b>1単元の安い順</b>に組んで銘柄数を増やしました。</div>`;
+  h+=`<div class="al-sum"><span class="big mono">${fmt.yen(used)}</span>
+      <span style="color:var(--text-2)">を ${plan.length}銘柄に　残り ${fmt.yen(left)}</span></div>
+    <div class="al-bar"><i style="width:${pct.toFixed(1)}%"></i></div>
+    <div style="font-size:11.5px;color:var(--text-3)">${pct.toFixed(0)}％を使います</div>
+    <div class="tbl-wrap" style="margin-top:14px"><table>
+      <thead><tr><th>Tier</th><th>銘柄</th><th class="t-right">利回り</th><th class="t-right">過去3年Q75</th><th class="t-right">割安度</th><th class="t-right">株価</th><th class="t-right">株数</th><th class="t-right">金額</th></tr></thead><tbody>`;
+  for(const x of plan){
+    const gap=x._q>0?(x._y/x._q-1)*100:0;
+    h+=`<tr onclick="openDetail('${x.code}')">
+      <td>${tierChip(x)}</td>
+      <td class="al-name"><span class="t-code">${x.code}</span>
+        <span class="t-name" style="margin-left:6px">${esc(x.name)}</span>
+        <small style="color:var(--text-3);font-size:11px;display:block">${esc(x.sector||'')}</small>
+        <details class="al-d" onclick="event.stopPropagation()"><summary>なぜこの銘柄か</summary>
+          <div class="al-why">${alWhy(x)}</div></details></td>
+      <td class="t-right mono" style="font-weight:600">${x._y.toFixed(2)}%</td>
+      <td class="t-right mono">${x._q?x._q.toFixed(2)+'%':'—'}</td>
+      <td class="t-right"><span class="pill p-cheap">+${gap.toFixed(0)}%</span></td>
+      <td class="t-right mono">${fmt.yen(x.price)}</td>
+      <td class="t-right mono">${x._sh.toLocaleString()}株</td>
+      <td class="t-right mono" style="font-weight:600">${fmt.yen(x._cost)}</td></tr>`;
+  }
+  h+=`</tbody></table></div>
+    <div style="font-size:11.5px;color:var(--text-3);margin-top:10px">割安度は、いまの利回りが過去3年のQ75を何％上回っているか。大きいほど、その銘柄にしては安い。</div></div>`;
+
+  // 区分の意味
+  h+=`<div class="card sec"><h4>この表の読み方</h4>
+    <div class="al-def"><span class="tier tier-S">S</span><div><b>累進配当かつ業界首位級</b>
+      減配しないと宣言している（またはDOEを採用している）うえ、業界で首位級の会社。いちばん厚く買い、減配しない限り売りません。</div></div>
+    <div class="al-def"><span class="tier tier-A">A</span><div><b>どちらか一方を満たす</b>
+      累進配当か業界首位級の、片方だけに当てはまる会社。Sの次に厚く買います。</div></div>
+    <div class="al-def"><span class="tier tier-B">B</span><div><b>そのどちらでもない</b>
+      スクリーニングは通っているものの、上の2つには当たらない会社。いちばん薄く買います。</div></div>
+    <div class="al-note" style="margin-top:14px"><b>買う順番</b>　Sから順に、同じ区分のなかでは利回りの高い順。
+      1銘柄あたりの金額は、総額 ÷ 15銘柄 に区分ごとの重み（S 2.0 ／ A 1.5 ／ B 1.0）を掛けて決めます。</div>
+    <div class="al-note" style="margin-top:6px"><b>買う条件</b>　スクリーニング8条件を通り、
+      いまの利回りがその銘柄の過去3年のQ75以上であること。</div></div>`;
+
+  // 業種の偏り
+  const sec={};
+  for(const x of plan)sec[x.sector||'不明']=(sec[x.sector||'不明']||0)+x._cost;
+  const ss=Object.entries(sec).sort((a,b)=>b[1]-a[1]);
+  h+=`<div class="card sec"><h4>業種の内訳</h4>`;
+  for(const [k,v] of ss)h+=`<div class="al-note">${esc(k)} … ${fmt.yen(v)}（${(v/used*100).toFixed(0)}％）</div>`;
+  const top=ss[0][1]/used*100;
+  if(top>=40)h+=`<div class="al-note" style="margin-top:10px">1業種に${top.toFixed(0)}％が集中しています。
+    検証では業種の上限を設けても成績は変わりませんでしたが、偏りが気になるなら、
+    資産全体のなかでこの戦略の比率を下げるほうが筋が通ります。</div>`;
+  h+=`</div>`;
+
+  // 銘柄数が少ないとき
+  if(plan.length<5){
+    const tp=Math.max(...plan.map(x=>x._cost))/used*100;
+    h+=`<div class="card sec al-note warn"><h4>${plan.length}銘柄しか買えていません</h4>
+      <div class="al-note">1銘柄に最大${tp.toFixed(0)}％が集中します。検証では、集中が大きいほど下落が深くなりました（3銘柄だけ持っていたときの最大下落は17.3％）。</div>
+      <div class="al-note" style="margin-top:8px">全額を今日入れる必要はありません。数日から数週間に分けて、候補が増えたときに買い足すほうが分散が効きます。</div>
+      <div class="al-note" style="margin-top:8px">ただし何か月も待つのは逆効果です。2年かけて分割すると、検証では優位が消えました。数週間のうちに入れ終えるのが目安です。</div></div>`;
+  }else if(left>amt*0.05){
+    h+=`<div class="card sec"><h4>残った ${fmt.yen(left)} について</h4>
+      <div class="al-note">${plan.length>=AL_MAX?`上限の${AL_MAX}銘柄に達しました。`:c.length<=plan.length?'条件を満たす銘柄が、いまはこれだけでした。':'予算の枠に対して株価が高く、端数が残りました。'}</div>
+      <div class="al-note" style="margin-top:8px">検証では、まとまった資金は早めに入れたほうが成績が良いと出ています（初日に全額 +5.3pt ／ 2年かけて分割 −0.6pt）。意図的に温存する理由はありません。</div></div>`;
+  }
+
+  h+=`<div class="card sec"><h4>発注する前に</h4>
+    <div class="al-note">・株価は判定時点のものです。寄り付きで変わります</div>
+    <div class="al-note">・決算発表の直前・直後は、数字が古いことがあります</div>
+    <div class="al-note">・すでに持っている銘柄が含まれていないか確認してください</div>
+    <div class="al-note" style="margin-top:8px;color:var(--text-3)">過去の検証にもとづく機械的な配分です。将来の結果を保証するものではありません。</div></div>`;
+  out.innerHTML=h;
+}
+
+
+/* ================= ポートフォリオ診断 =================
+   いま持っている銘柄を入力し、構成の偏りと、
+   追加資金があるときの買い方、入れ替えの候補を見る。
+
+   入れ替えについて：
+   64条件の総当たりで、入れ替えありは59%対41%で上回ったが
+   85%には届かず「決められない」範囲だった。
+   ただし「新規で買えるときは入れ替えない」という条件は
+   98%の条件で効いたので、そこだけは明確に反映している。 */
+const PF_KEY='div_pf_v2';
+let PF = JSON.parse(localStorage.getItem(PF_KEY)||'[]');
+const PF_W={S:2.0,A:1.5,B:1.0};
+
+function pfSave(){localStorage.setItem(PF_KEY,JSON.stringify(PF));}
+function pfFind(code){return S.data.stocks.find(x=>x.code===String(code).trim());}
+
+function pfAdd(){
+  const c=$('pfCode').value.trim(), sh=+$('pfSh').value, cb=+$('pfCb').value;
+  if(!c||!sh||!cb){alert('コード・株数・取得単価を入れてください');return;}
+  if(!pfFind(c)){
+    if(!confirm(`コード ${c} は対象銘柄に見つかりません。それでも追加しますか？`))return;
+  }
+  PF.push({code:c,shares:sh,cost:cb});
+  pfSave(); $('pfCode').value='';$('pfSh').value='';$('pfCb').value='';
+  renderPf();
+}
+function pfDel(i){PF.splice(i,1);pfSave();renderPf();}
+function pfClear(){if(confirm('入力した保有をすべて消しますか？')){PF=[];pfSave();renderPf();}}
+
+/* 入れ替えの候補を探す。検証で効いた条件をすべて満たすものだけ。 */
+function pfSwapCandidates(rows, cash){
+  const ORD={S:0,A:1,B:2};
+  const out=[];
+  // 買える候補（配分案と同じ絞り込み）
+  const [cands]=alPick();
+  const held=new Set(rows.map(r=>r.code));
+  const better=cands.filter(c=>!held.has(c.code));
+  if(!better.length)return out;
+
+  for(const r of rows){
+    if(!r.s)continue;
+    const gain=r.cost>0?(r.s.price/r.cost-1):0;
+    // 条件1：含み益が20％以上（少額の利確は避ける）
+    if(gain<0.20)continue;
+    // 条件2：利回りが下がってQ25以下（割高側に入った）
+    const q25=+r.s.yield_q25||0, cy=+r.s.current_yield||0;
+    if(!(q25>0&&cy<=q25))continue;
+    // 条件3：権利確定月まで3か月以内なら見送る（配当を逃すため）
+    const m=new Date().getMonth()+1;
+    const ms=[r.s.fiscal_month,r.s.interim_month].filter(Boolean)
+      .map(x=>((x-m)%12+12)%12);
+    const near=ms.length?Math.min(...ms):99;
+    if(near<=3)continue;
+    // 条件4：いまより質の高い買い候補があること
+    const up=better.filter(c=>(ORD[c.tier]??9)<(ORD[r.s.tier]??9));
+    if(!up.length)continue;
+    out.push({row:r,gain,to:up.slice(0,3),near});
+  }
+  return out;
+}
+
+function renderPf(){
+  const out=$('pfOut'); if(!S.data){out.innerHTML='';return;}
+
+  // 入力済みの一覧
+  let li='';
+  if(PF.length){
+    li=`<div class="card sec"><h4 style="display:flex;align-items:baseline;justify-content:space-between">
+      <span>入力した保有 <small>${PF.length}銘柄</small></span>
+      <button class="btn-ghost" onclick="pfClear()">すべて消す</button></h4>
+      <div class="tbl-wrap"><table><thead><tr>
+      <th>Tier</th><th>銘柄</th><th class="t-right">株数</th><th class="t-right">取得単価</th>
+      <th class="t-right">現在値</th><th class="t-right">評価額</th><th class="t-right">損益</th>
+      <th class="t-right">利回り</th><th></th></tr></thead><tbody>`;
+    PF.forEach((p,i)=>{
+      const s=pfFind(p.code);
+      const px=s?.price??null, val=px!=null?px*p.shares:null;
+      const pl=val!=null?val-p.cost*p.shares:null;
+      const plp=pl!=null?pl/(p.cost*p.shares)*100:null;
+      li+=`<tr${s?` onclick="openDetail('${p.code}')"`:''}>
+        <td>${s?tierChip(s):'—'}</td>
+        <td><span class="t-code">${esc(p.code)}</span>
+          <span class="t-name" style="margin-left:6px">${esc(s?.name||'（対象外）')}</span>
+          <small style="color:var(--text-3);font-size:11px;display:block">${esc(s?.sector||'')}</small></td>
+        <td class="t-right mono">${p.shares.toLocaleString()}</td>
+        <td class="t-right mono">${fmt.yen(p.cost)}</td>
+        <td class="t-right mono">${fmt.yen(px)}</td>
+        <td class="t-right mono">${fmt.yen(val)}</td>
+        <td class="t-right mono ${pl>=0?'pl-pos':'pl-neg'}" style="font-weight:600">${
+          pl==null?'—':(pl>=0?'+':'')+fmt.yen(pl)+` (${plp>=0?'+':''}${plp.toFixed(1)}%)`}</td>
+        <td class="t-right mono">${s?fmt.pct(s.current_yield):'—'}</td>
+        <td onclick="event.stopPropagation()"><button class="btn-ghost" onclick="pfDel(${i})">削除</button></td></tr>`;
+    });
+    li+='</tbody></table></div></div>';
+  }
+
+  if(!PF.length){
+    out.innerHTML=`<div class="card empty">
+      <b style="display:block;font-size:15px;color:var(--text);margin-bottom:6px">保有を入力してください</b>
+      いま持っている銘柄を入れると、構成の偏りと、追加資金があるときの買い方が分かります。<br>
+      入力した内容はこの端末にだけ保存されます。</div>`;
+    return;
+  }
+
+  // 集計
+  const rows=PF.map(p=>({...p,s:pfFind(p.code)}))
+    .map(r=>({...r,val:r.s?.price!=null?r.s.price*r.shares:0,
+              div:r.s?.forecast_dps!=null?r.s.forecast_dps*r.shares:0}));
+  const total=rows.reduce((a,b)=>a+b.val,0);
+  const divTot=rows.reduce((a,b)=>a+b.div,0);
+  const costTot=rows.reduce((a,b)=>a+b.cost*b.shares,0);
+  const pl=total-costTot;
+
+  const byTier={S:0,A:0,B:0,'—':0};
+  const bySec={};
+  for(const r of rows){
+    byTier[r.s?.tier||'—']=(byTier[r.s?.tier||'—']||0)+r.val;
+    const k=r.s?.sector||'不明'; bySec[k]=(bySec[k]||0)+r.val;
+  }
+
+  let h='';
+  // 全体
+  h+=`<div class="fx-grid">
+    <div class="card kpi"><div class="k-lbl">評価総額</div><div class="k-val">${fmt.yen(total)}</div></div>
+    <div class="card kpi"><div class="k-lbl">損益</div><div class="k-val ${pl>=0?'pl-pos':'pl-neg'}">${pl>=0?'+':''}${fmt.yen(pl)}</div></div>
+    <div class="card kpi"><div class="k-lbl">年間配当（予）</div><div class="k-val">${divTot>0?fmt.yen(divTot):'—'}</div></div>
+    <div class="card kpi"><div class="k-lbl">全体の利回り</div><div class="k-val">${(total>0&&divTot>0)?(divTot/total*100).toFixed(2)+'%':'—'}</div></div>
+    <div class="card kpi"><div class="k-lbl">銘柄数</div><div class="k-val">${PF.length}</div></div>
+  </div>`;
+
+  h+=li;
+
+  // Tierの偏り
+  // 目安は「いま買える候補のTier構成」に重みを掛けたもの。
+  // 候補にSが1社もない時期にS40%を目指しても意味がないため。
+  const [cAll]=alPick();
+  const avail={S:0,A:0,B:0};
+  for(const c of cAll)avail[c.tier]=(avail[c.tier]||0)+1;
+  const anyAvail=Object.values(avail).some(v=>v>0);
+  const ideal={};
+  for(const t of ['S','A','B'])
+    ideal[t]=anyAvail?(avail[t]||0)*PF_W[t]:PF_W[t];
+  let sumW=Object.values(ideal).reduce((a,b)=>a+b,0);
+  if(sumW<=0){for(const t of ['S','A','B'])ideal[t]=PF_W[t];
+    sumW=Object.values(ideal).reduce((a,b)=>a+b,0);}
+  h+=`<div class="card sec"><h4>質（Tier）の構成</h4>
+    <div class="tbl-wrap"><table><thead><tr>
+      <th>Tier</th><th class="t-right">評価額</th><th class="t-right">いまの比率</th>
+      <th class="t-right">目安</th><th>判定</th></tr></thead><tbody>`;
+  for(const t of ['S','A','B']){
+    const v=byTier[t]||0, cur=total>0?v/total*100:0;
+    const tgt=ideal[t]/sumW*100;
+    const gap=cur-tgt;
+    const j=Math.abs(gap)<8?'<span class="pill p-neu">ほぼ目安どおり</span>'
+      :gap>0?'<span class="pill p-warn">多い</span>'
+      :'<span class="pill p-core">少ない</span>';
+    h+=`<tr><td><span class="tier tier-${t}">${t}</span></td>
+      <td class="t-right mono">${fmt.yen(v)}</td>
+      <td class="t-right mono" style="font-weight:600">${cur.toFixed(0)}%</td>
+      <td class="t-right mono" style="color:var(--text-3)">${tgt.toFixed(0)}%</td>
+      <td>${j}</td></tr>`;
+  }
+  if(byTier['—'])h+=`<tr><td>—</td><td class="t-right mono">${fmt.yen(byTier['—'])}</td>
+    <td class="t-right mono">${(byTier['—']/total*100).toFixed(0)}%</td>
+    <td class="t-right">—</td><td><span class="pill p-ex">対象外</span></td></tr>`;
+  h+=`</tbody></table></div>
+    <div class="al-note" style="margin-top:12px">目安は、<b>いま買える候補のTier構成</b>に予算の重み（S 2.0 ／ A 1.5 ／ B 1.0）を掛けたものです。
+      S が候補に1社もない時期に S を増やそうとしても意味がないため、そのときの相場に合わせて動きます。
+      ぴったり合わせる必要はありません。<b>大きく偏っているかどうか</b>だけ見てください。</div></div>`;
+
+  // 業種の偏り
+  const ss=Object.entries(bySec).sort((a,b)=>b[1]-a[1]);
+  h+=`<div class="card sec"><h4>業種の構成</h4>`;
+  for(const [k,v] of ss.slice(0,8))
+    h+=`<div class="al-note">${esc(k)} … ${fmt.yen(v)}（${(v/total*100).toFixed(0)}%）</div>`;
+  const topSec=ss[0][1]/total*100;
+  if(topSec>=40)h+=`<div class="al-note" style="margin-top:10px">1業種に${topSec.toFixed(0)}%が集中しています。
+    検証では業種の上限を設けても成績は変わりませんでしたが、この戦略はもともと
+    <b>金利と資源に反応する銘柄に偏ります</b>。
+    気になるなら、資産全体のなかでこの戦略の比率を下げるほうが筋が通ります。</div>`;
+  h+=`</div>`;
+
+  // 1銘柄への集中
+  const mx=Math.max(...rows.map(r=>r.val));
+  if(total>0&&mx/total>=0.25){
+    const nm=rows.find(r=>r.val===mx);
+    h+=`<div class="card sec al-note warn"><h4>1銘柄への集中</h4>
+      <div class="al-note"><b>${esc(nm.s?.name||nm.code)}</b> が全体の
+        ${(mx/total*100).toFixed(0)}% を占めています。</div>
+      <div class="al-note" style="margin-top:8px">検証では、集中が大きいほど下落が深くなりました
+        （3銘柄だけ持っていたときの最大下落は17.3%）。
+        次に買うときは、この銘柄以外に回すほうが分散が効きます。</div></div>`;
+  }
+
+  // 減配・業績急変の警告
+  const emg=rows.filter(r=>r.s?.emergency_exit);
+  if(emg.length){
+    h+=`<div class="card sec al-note warn"><h4>減配・業績急変が出ています</h4>`;
+    for(const r of emg)h+=`<div class="al-note">・<b>${esc(r.s.name)}</b>
+      ${esc((r.s.emergency_reasons||[]).join(' / ')||'緊急撤退の判定')}</div>`;
+    h+=`<div class="al-note" style="margin-top:8px">このルールで<b>唯一、売ると決めている場面</b>です。
+      検証では、減配・業績急変で撤退するほうが、持ち続けるより良い結果でした
+      （75%の条件で上回る）。株価は3年で77%が回復しましたが、
+      その間に資金が拘束され、戻らなかった1〜2割が全体を押し下げます。</div></div>`;
+  }
+
+  // 追加資金があるなら
+  h+=`<div class="card add-form" style="align-items:center;margin-top:14px">
+    <div><label>追加で入れられる金額（円）</label>
+      <input id="pfCash" inputmode="numeric" value="${($('pfCash')?.value)||''}"
+             placeholder="500,000" style="width:170px;text-align:right;font-size:16px;font-weight:600"></div>
+    <button class="btn" id="pfGo" onclick="renderPf()">この金額で考える</button>
+  </div>`;
+
+  const cash=+($('pfCash')?.value||'').replace(/[^\d]/g,'')||0;
+
+  // 入れ替えの候補
+  const sw=pfSwapCandidates(rows,cash);
+  h+=`<div class="card sec"><h4>入れ替えの候補</h4>`;
+  if(!sw.length){
+    h+=`<div class="al-note">条件を満たす銘柄はありません。<b>いまは入れ替えを考える場面ではありません。</b></div>`;
+  }else{
+    for(const x of sw){
+      h+=`<div class="al-note" style="margin-bottom:10px">
+        <b>${esc(x.row.s.name)}</b>（含み益 ${(x.gain*100).toFixed(0)}%、
+        利回りがQ25以下）→ ${x.to.map(t=>`<span class="tier tier-${t.tier}" style="width:20px;height:20px;font-size:10px">${t.tier}</span> ${esc(t.name)}`).join(' / ')}</div>`;
+    }
+  }
+  h+=`<div class="al-note" style="margin-top:12px;color:var(--text-2)">
+    <b>ただし、入れ替えは推奨しません。</b>64条件の検証で、入れ替えありは59%対41%で上回りましたが、
+    85%には届かず「決められない」範囲でした。最大下落はむしろ深くなります（13.7%→17.7%）。</div>
+    <div class="al-note" style="margin-top:6px">
+    はっきりしたのは<b>「新規で買えるうちは入れ替えない」</b>という点だけです（98%の条件で有利）。
+    ${cash>0?'<b>いま追加資金があるので、入れ替えではなく買い増しで質を上げてください。</b>'
+      :'追加資金があるなら、まずそちらで買うほうが有利です。'}</div></div>`;
+
+  // 追加資金の使い道
+  if(cash>0){
+    const [c2]=alPick();
+    const held=new Set(rows.map(r=>r.code));
+    const nw=c2.filter(x=>!held.has(x.code));
+    h+=`<div class="card sec"><h4>${fmt.yen(cash)} を足すなら</h4>`;
+    if(!nw.length){
+      h+=`<div class="al-note">いま買える候補のうち、まだ持っていない銘柄はありません。</div>`;
+    }else{
+      // 足りていないTierを優先
+      const lack=['S','A','B'].filter(t=>{
+        const cur=total>0?(byTier[t]||0)/total*100:0;
+        return cur < ideal[t]/sumW*100 - 5;
+      });
+      const pick=nw.filter(x=>!lack.length||lack.includes(x.tier)).slice(0,6);
+      const use=pick.length?pick:nw.slice(0,6);
+      if(lack.length)h+=`<div class="al-note" style="margin-bottom:10px">
+        いまの構成では <b>Tier ${lack.join('・')}</b> が目安より少ないので、そちらを優先します。</div>`;
+      h+=`<div class="tbl-wrap"><table><thead><tr>
+        <th>Tier</th><th>銘柄</th><th class="t-right">利回り</th>
+        <th class="t-right">株価</th><th class="t-right">100株</th></tr></thead><tbody>`;
+      for(const x of use){
+        h+=`<tr onclick="openDetail('${x.code}')"><td>${tierChip(x)}</td>
+          <td><span class="t-code">${x.code}</span>
+            <span class="t-name" style="margin-left:6px">${esc(x.name)}</span></td>
+          <td class="t-right mono">${x._y.toFixed(2)}%</td>
+          <td class="t-right mono">${fmt.yen(x.price)}</td>
+          <td class="t-right mono">${fmt.yen(x.price*100)}</td></tr>`;
+      }
+      h+=`</tbody></table></div>
+        <div class="al-note" style="margin-top:10px">具体的な株数まで決めたい場合は、
+        <b>配分案</b>のタブで金額を入れてください。</div>`;
+    }
+    h+=`</div>`;
+  }
+
+  out.innerHTML=h;
+  const ce=$('pfCash');
+  if(ce){
+    ce.value=cash?cash.toLocaleString('ja-JP'):'';
+    ce.addEventListener('input',()=>{
+      const v=+ce.value.replace(/[^\d]/g,'')||0;
+      ce.value=v?v.toLocaleString('ja-JP'):'';
+    });
+    ce.addEventListener('keydown',e=>{if(e.key==='Enter')renderPf();});
+  }
+}
+
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closeDetail();});
+(function(){
+  const a=$('alAmt');
+  if(a){
+    a.addEventListener('input',()=>{
+      const v=+a.value.replace(/[^\d]/g,'')||0;
+      a.value=v?v.toLocaleString('ja-JP'):'';
+    });
+    a.addEventListener('keydown',e=>{if(e.key==='Enter')renderAlloc();});
+  }
+})();
 init();
 </script>
 </body>
