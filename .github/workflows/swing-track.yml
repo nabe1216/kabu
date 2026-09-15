@@ -1,0 +1,42 @@
+name: swing-track
+
+# レンジ（ボックス）売買を、仮想で並走記録する。
+#
+# バックテストでは「効かない」と出たが、その検証は
+# 2019-2026 の上昇相場のデータによるもの。
+# 横ばい相場では結論が変わる可能性が残っているため、
+# これから先の実データを貯めて確かめる。
+#
+# 本番トラック（portfolio_engine.py）には一切影響しない。
+on:
+  schedule:
+    - cron: "40 11 * * 1-5"   # 平日 20:40 JST（本番19:30・入れ替え20:15の後）
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  track:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: レンジ売買を記録する
+        run: python scripts/swing_engine.py
+
+      - name: 保存する
+        run: |
+          if git diff --quiet -- data/swing_state.json data/swing_history.json; then
+            echo "変更なし。"
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/swing_state.json data/swing_history.json
+          git commit -m "レンジ売買の記録"
+          git push
