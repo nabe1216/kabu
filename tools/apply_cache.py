@@ -31,7 +31,7 @@ CACHE_BLOCK = '''# 財務データを何日もたせるか。0 ならキャッ�
 # 株価と財務で1銘柄あたり2回APIを呼ぶため、財務を毎日取らなければ
 # 実行時間がほぼ半分になる。決算の反映はその日数ぶん遅れる。
 STMTS_CACHE_DAYS = {days}
-_STMTS_CACHE_PATH = DATA_DIR / 'stmts_cache.json'
+_STMTS_CACHE_PATH = OUTPUT_DIR / 'stmts_cache.json'
 _stmts_cache = None
 
 
@@ -67,7 +67,7 @@ def _save_stmts_cache():
         return
     try:
         _stmts_cache['saved_at'] = date.today().isoformat()
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         with _STMTS_CACHE_PATH.open('w', encoding='utf-8') as f:
             json.dump(_stmts_cache, f, ensure_ascii=False)
         log.info('財務データのキャッシュを保存しました（%d銘柄）',
@@ -97,17 +97,25 @@ def main() -> int:
     s = before = TARGET.read_text(encoding="utf-8")
     log = []
 
+    # 以前の版が DATA_DIR（存在しない名前）を使っていたら直す
+    if "_STMTS_CACHE_PATH = DATA_DIR" in s:
+        s = s.replace("_STMTS_CACHE_PATH = DATA_DIR / 'stmts_cache.json'",
+                      "_STMTS_CACHE_PATH = OUTPUT_DIR / 'stmts_cache.json'")
+        s = s.replace("        DATA_DIR.mkdir(parents=True, exist_ok=True)",
+                      "        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)")
+        log.append("保存先の名前を DATA_DIR から OUTPUT_DIR に修正")
+
     # すでに入っていれば、日数だけ変える
-    if "STMTS_CACHE_DAYS" in s:
+    if "STMTS_CACHE_DAYS" in s and not log:
         m = re.search(r"^STMTS_CACHE_DAYS\s*=\s*(\d+)", s, re.M)
         cur = m.group(1) if m else "?"
         if str(cur) == str(days):
-            print(f"すでに {days} 日です。何もしません。")
-            return 0
+            print(f"すでに {days} 日です。")
+        else:
+            log.append(f"財務データの保持日数 … {cur} → {days}")
         s = re.sub(r"^STMTS_CACHE_DAYS\s*=\s*\d+",
                    f"STMTS_CACHE_DAYS = {days}", s, count=1, flags=re.M)
-        log.append(f"財務データの保持日数 … {cur} → {days}")
-    else:
+    elif "STMTS_CACHE_DAYS" not in s:
         # 1. キャッシュの読み書きを足す
         a1 = "def safe_float(value: Any) -> float | None:"
         if s.count(a1) != 1:
