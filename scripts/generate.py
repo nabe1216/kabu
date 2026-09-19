@@ -337,6 +337,14 @@ class JQuantsClient:
         V2: /v2/fins/summary (V1 の /fins/statements 後継)
         """
         params = {'code': code}
+        if STMTS_CACHE_DAYS > 0:
+            c = _load_stmts_cache()
+            hit = c['data'].get(code)
+            if hit is not None:
+                return hit
+            got = self.get('/v2/fins/summary', params)
+            c['data'][code] = got
+            return got
         return self.get('/v2/fins/summary', params)
 
     # --- 決算予定 ---
@@ -352,6 +360,55 @@ class JQuantsClient:
 # ============================================================================
 # (5) ヘルパー: 数値変換・期間整形
 # ============================================================================
+
+# 財務データを何日もたせるか。0 ならキャッシュを使わない。
+# 株価と財務で1銘柄あたり2回APIを呼ぶため、財務を毎日取らなければ
+# 実行時間がほぼ半分になる。決算の反映はその日数ぶん遅れる。
+STMTS_CACHE_DAYS = 7
+_STMTS_CACHE_PATH = DATA_DIR / 'stmts_cache.json'
+_stmts_cache = None
+
+
+def _load_stmts_cache():
+    """財務データのキャッシュを読む。壊れていれば空で始める。"""
+    global _stmts_cache
+    if _stmts_cache is not None:
+        return _stmts_cache
+    _stmts_cache = {'saved_at': '', 'data': {}}
+    if STMTS_CACHE_DAYS > 0 and _STMTS_CACHE_PATH.exists():
+        try:
+            with _STMTS_CACHE_PATH.open(encoding='utf-8') as f:
+                c = json.load(f)
+            saved = parse_date(c.get('saved_at'))
+            if saved is not None:
+                age = (date.today() - saved).days
+                if age < STMTS_CACHE_DAYS:
+                    _stmts_cache = c
+                    log.info('財務データのキャッシュを使います（%d日前・%d銘柄）',
+                             age, len(c.get('data', {})))
+                else:
+                    log.info('財務データのキャッシュが%d日前なので取り直します', age)
+        except Exception as e:
+            log.warning('財務データのキャッシュを読めません: %s', e)
+    return _stmts_cache
+
+
+def _save_stmts_cache():
+    """取得した財務データを保存する。"""
+    if STMTS_CACHE_DAYS <= 0 or _stmts_cache is None:
+        return
+    if not _stmts_cache.get('data'):
+        return
+    try:
+        _stmts_cache['saved_at'] = date.today().isoformat()
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        with _STMTS_CACHE_PATH.open('w', encoding='utf-8') as f:
+            json.dump(_stmts_cache, f, ensure_ascii=False)
+        log.info('財務データのキャッシュを保存しました（%d銘柄）',
+                 len(_stmts_cache['data']))
+    except Exception as e:
+        log.warning('財務データのキャッシュを保存できません: %s', e)
+
 
 def safe_float(value: Any) -> float | None:
     """空文字や None を None に変換した上で float へ。"""
@@ -1693,6 +1750,8 @@ def main() -> int:
 
         if i % 50 == 0:
             log.info('Progress: %d/%d (failures=%d)', i, n_total, failures)
+
+    _save_stmts_cache()
 
     # 統計
     bucket_counts: dict[str, int] = defaultdict(int)
