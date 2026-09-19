@@ -1,0 +1,48 @@
+name: patch-timeout
+
+# daily.yml の実行時間の上限を変える。
+#
+# 対象をプライム全銘柄に広げたため、初回は財務データも
+# 全銘柄ぶん取得することになり、90分では足りない。
+# 2回目以降はキャッシュが効いて50〜60分に収まる見込みなので、
+# 初回を通したら 90 に戻しておくとよい。
+on:
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: "実行時間の上限（分）。初回は180、通常は90"
+        required: false
+        default: "180"
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: PyYAML を入れる
+        run: pip install pyyaml --quiet
+
+      - name: daily.yml を書き換える
+        env:
+          MINUTES: ${{ github.event.inputs.minutes || '180' }}
+        run: python tools/apply_timeout.py
+
+      - name: 保存する
+        run: |
+          if git diff --quiet -- .github/workflows/daily.yml; then
+            echo "変更なし。"
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/workflows/daily.yml
+          git commit -m "実行時間の上限を変更"
+          git push
