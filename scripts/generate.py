@@ -365,7 +365,7 @@ class JQuantsClient:
 # 株価と財務で1銘柄あたり2回APIを呼ぶため、財務を毎日取らなければ
 # 実行時間がほぼ半分になる。決算の反映はその日数ぶん遅れる。
 STMTS_CACHE_DAYS = 7
-_STMTS_CACHE_PATH = DATA_DIR / 'stmts_cache.json'
+_STMTS_CACHE_PATH = OUTPUT_DIR / 'stmts_cache.json'
 _stmts_cache = None
 
 
@@ -401,7 +401,7 @@ def _save_stmts_cache():
         return
     try:
         _stmts_cache['saved_at'] = date.today().isoformat()
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         with _STMTS_CACHE_PATH.open('w', encoding='utf-8') as f:
             json.dump(_stmts_cache, f, ensure_ascii=False)
         log.info('財務データのキャッシュを保存しました（%d銘柄）',
