@@ -344,6 +344,8 @@ class JQuantsClient:
                 return hit
             got = self.get('/v2/fins/summary', params)
             c['data'][code] = got
+            if len(c['data']) % 100 == 0:
+                _save_stmts_cache(force=False)
             return got
         return self.get('/v2/fins/summary', params)
 
@@ -388,19 +390,23 @@ def _load_stmts_cache():
                              age, len(c.get('data', {})))
                 else:
                     log.info('財務データのキャッシュが%d日前なので取り直します', age)
+            else:
+                _stmts_cache = c
+                log.info('作りかけのキャッシュを引き継ぎます（%d銘柄）',
+                         len(c.get('data', {})))
         except Exception as e:
             log.warning('財務データのキャッシュを読めません: %s', e)
     return _stmts_cache
 
 
-def _save_stmts_cache():
+def _save_stmts_cache(force=True):
     """取得した財務データを保存する。"""
     if STMTS_CACHE_DAYS <= 0 or _stmts_cache is None:
         return
     if not _stmts_cache.get('data'):
         return
     try:
-        _stmts_cache['saved_at'] = date.today().isoformat()
+        _stmts_cache['saved_at'] = date.today().isoformat() if force else ''
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         with _STMTS_CACHE_PATH.open('w', encoding='utf-8') as f:
             json.dump(_stmts_cache, f, ensure_ascii=False)
