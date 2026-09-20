@@ -92,7 +92,7 @@ MARKET_CAP_MIN_OKU = 300             # 時価総額300億円以上
 #
 # 検証では prime のほうが基準を上回る幅が大きかった
 # （+8.9pt -> +11.2pt）が、取得に70〜90分かかる。
-UNIVERSE_SCOPE = 'prime'
+UNIVERSE_SCOPE = 'small1'
 
 # --- API設定 (J-Quants V2) ---
 JQUANTS_BASE = 'https://api.jquants.com'
@@ -1652,8 +1652,14 @@ def build_universe(client: JQuantsClient) -> list[dict[str, Any]]:
             continue
 
         scale_cat = row.get('ScaleCat', '') or ''
-        # core のときだけ規模区分で絞る
-        if UNIVERSE_SCOPE == 'core' and scale_cat not in SCALE_TARGETS:
+        # 段階に応じて規模区分で絞る。
+        #   core   … Core30 / Large70 / Mid400
+        #   small1 … 上記 + TOPIX Small 1
+        #   prime  … 絞らない（社数が多く時間内に収まらない）
+        _targets = set(SCALE_TARGETS)
+        if UNIVERSE_SCOPE == 'small1':
+            _targets |= {'TOPIX Small 1'}
+        if UNIVERSE_SCOPE != 'prime' and scale_cat not in _targets:
             skipped_scale += 1
             continue
 
