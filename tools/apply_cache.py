@@ -54,19 +54,30 @@ def _load_stmts_cache():
                              age, len(c.get('data', {{}})))
                 else:
                     log.info('財務データのキャッシュが%d日前なので取り直します', age)
+            else:
+                # 保存日が無い＝作りかけ。中身はそのまま使う
+                _stmts_cache = c
+                log.info('作りかけのキャッシュを引き継ぎます（%d銘柄）',
+                         len(c.get('data', {{}})))
         except Exception as e:
             log.warning('財務データのキャッシュを読めません: %s', e)
     return _stmts_cache
 
 
-def _save_stmts_cache():
-    """取得した財務データを保存する。"""
+def _save_stmts_cache(force=True):
+    """取得した財務データを保存する。
+
+    途中で止まっても、そこまでの分が残るようにこまめに保存する。
+    そうしないと、時間切れのたびに最初からやり直しになり、
+    いつまでも完走できない。
+    """
     if STMTS_CACHE_DAYS <= 0 or _stmts_cache is None:
         return
     if not _stmts_cache.get('data'):
         return
     try:
-        _stmts_cache['saved_at'] = date.today().isoformat()
+        _stmts_cache['saved_at'] = date.today().isoformat() if force else ''
+
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         with _STMTS_CACHE_PATH.open('w', encoding='utf-8') as f:
             json.dump(_stmts_cache, f, ensure_ascii=False)
@@ -86,6 +97,10 @@ GET_NEW = """        if STMTS_CACHE_DAYS > 0:
                 return hit
             got = self.get('/v2/fins/summary', params)
             c['data'][code] = got
+            # 100件ごとに保存する。途中で時間切れになっても、
+            # そこまでの分は次回に引き継げる。
+            if len(c['data']) % 100 == 0:
+                _save_stmts_cache(force=False)
             return got
         return self.get('/v2/fins/summary', params)"""
 
@@ -96,6 +111,32 @@ def main() -> int:
         sys.exit(f"{TARGET} がありません。")
     s = before = TARGET.read_text(encoding="utf-8")
     log = []
+
+    # 以前の版に途中保存が無ければ足す
+    if ("STMTS_CACHE_DAYS" in s
+            and "_save_stmts_cache(force=False)" not in s):
+        s = s.replace("""            got = self.get('/v2/fins/summary', params)
+            c['data'][code] = got
+            return got""",
+                      """            got = self.get('/v2/fins/summary', params)
+            c['data'][code] = got
+            if len(c['data']) % 100 == 0:
+                _save_stmts_cache(force=False)
+            return got""", 1)
+        s = s.replace("def _save_stmts_cache():",
+                      "def _save_stmts_cache(force=True):", 1)
+        s = s.replace("        _stmts_cache['saved_at'] = date.today().isoformat()",
+                      "        _stmts_cache['saved_at'] = "
+                      "date.today().isoformat() if force else ''", 1)
+        s = s.replace("""                else:
+                    log.info('財務データのキャッシュが%d日前なので取り直します', age)""",
+                      """                else:
+                    log.info('財務データのキャッシュが%d日前なので取り直します', age)
+            else:
+                _stmts_cache = c
+                log.info('作りかけのキャッシュを引き継ぎます（%d銘柄）',
+                         len(c.get('data', {})))""", 1)
+        log.append("途中保存を追加（時間切れでもそこまでの分が残る）")
 
     # 以前の版が DATA_DIR（存在しない名前）を使っていたら直す
     if "_STMTS_CACHE_PATH = DATA_DIR" in s:
