@@ -1,0 +1,65 @@
+name: patch-budget
+
+# 財務データの取得を、決めた時間で自分から打ち切るようにする。
+#
+# 90分の上限で強制終了すると、そのあとのコミットまで到達せず、
+# 作りかけのキャッシュがリポジトリに残らない。
+# 70分で自分から切り上げれば、処理は最後まで走り、
+# ここまでの分が保存される。2〜3回で全銘柄ぶんが揃う。
+#
+# 先に patch-cache を実行しておくこと。
+on:
+  workflow_dispatch:
+    inputs:
+      budget:
+        description: "財務データの取得に使う時間（分）。上限90に対して70が目安"
+        required: false
+        default: "70"
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: generate.py を書き換える
+        env:
+          BUDGET: ${{ github.event.inputs.budget || '70' }}
+        run: python tools/apply_budget.py
+
+      - name: daily.yml のコミット対象にキャッシュを足す
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path(".github/workflows/daily.yml")
+          s = p.read_text(encoding="utf-8")
+          if "data/stmts_cache.json" in s:
+              print("すでに入っています。")
+          else:
+              old = "git add data/results.json data/portfolio_state.json data/portfolio_history.json"
+              if old in s:
+                  p.write_text(s.replace(old, old + " data/stmts_cache.json", 1),
+                               encoding="utf-8")
+                  print("コミット対象に data/stmts_cache.json を追加")
+              else:
+                  print("！ git add の行が見つかりません。手で追加してください。")
+          PY
+
+      - name: 保存する
+        run: |
+          if git diff --quiet; then
+            echo "変更なし。"
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add scripts/generate.py .github/workflows/daily.yml
+          git commit -m "取得の時間制限とキャッシュのコミットを追加"
+          git push
