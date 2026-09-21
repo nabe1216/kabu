@@ -76,6 +76,15 @@ input:focus,select:focus{border-color:var(--primary)}
 .logic.open .logic-body{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:8px 24px;padding-top:14px}
 .logic-item{display:flex;gap:10px;align-items:baseline;font-size:12.5px;color:var(--text-2)}
 .logic-item .tag{flex-shrink:0;font-size:11px;font-weight:600;padding:1px 9px;border-radius:99px;min-width:52px;text-align:center}
+.logic.open .logic-body{display:block}
+.lg-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(310px,1fr));gap:20px 30px}
+.lg-sec h5{font-size:11px;font-weight:600;color:var(--text-3);letter-spacing:.06em;margin-bottom:9px;padding-bottom:6px;border-bottom:1px solid var(--border)}
+.lg-row{display:flex;gap:10px;align-items:baseline;font-size:12.5px;color:var(--text-2);line-height:1.6;margin-bottom:6px}
+.lg-row b{color:var(--text);font-weight:600}
+.lg-v{flex:1;min-width:0}
+.lg-row .tag{flex-shrink:0;font-size:11px;font-weight:600;padding:1px 9px;border-radius:99px;min-width:52px;text-align:center}
+.lg-k{flex-shrink:0;min-width:64px;font-size:11.5px;font-weight:600;color:var(--text)}
+.lg-note{font-size:11.5px;color:var(--text-3);line-height:1.6;margin-top:6px}
 
 /* ===== Filter bar ===== */
 .filters{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:12px 14px;margin-bottom:14px}
@@ -244,7 +253,7 @@ td.al-name{white-space:normal;min-width:250px}
   <section id="view-signals">
     <div class="page-head">
       <h1>本日のシグナル</h1>
-      <div class="meta"><b id="sigDate">—</b> · 東証プライム主要銘柄</div>
+      <div class="meta"><b id="sigDate">—</b> · 東証プライム <span id="sigUniv">—</span>社</div>
     </div>
 
     <div class="kpi-grid">
@@ -262,15 +271,64 @@ td.al-name{white-space:normal;min-width:250px}
         <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>
       </div>
       <div class="logic-body">
-        <div class="logic-item"><span class="tag p-buy">BUY</span>過去3年で見て利回り上位25%（割安サイン）＋ 8条件クリア</div>
-        <div class="logic-item"><span class="tag p-sell">SELL</span>過去3年で見て利回り下位25%（割高サイン）※現在は売却判定に使っていません</div>
-        <div class="logic-item"><span class="tag p-box">BOX</span>横ばい相場（上下のレンジで売買しやすい）</div>
-        <div class="logic-item"><span class="tag p-cheap">割安</span>PER・PBRが過去の中央値より低い（過去比で割安）</div>
-        <div class="logic-item"><span class="tag tier-S" style="border-radius:99px;width:auto;padding:1px 9px">S</span>配当を守る企業 × 業界トップ／総資産の約8.9%</div>
-        <div class="logic-item"><span class="tag tier-A" style="border-radius:99px;width:auto;padding:1px 9px">A</span>配当を守る企業 OR 業界トップ／総資産の約6.7%</div>
-        <div class="logic-item"><span class="tag tier-B" style="border-radius:99px;width:auto;padding:1px 9px">B</span>基本条件クリアのみ／総資産の約4.4%</div>
-        <div class="logic-item"><span class="tag p-warn">緊急</span>減配・業績急悪化・配当方針撤回のいずれかが発生</div>
-        <div class="logic-item"><span class="tag p-neu">8条件</span>減配ゼロ・利益安定・配当に無理がない・財務健全・割安・利回り4%以上</div>
+       <div class="lg-grid">
+
+        <div class="lg-sec"><h5>対象銘柄</h5>
+          <div class="lg-row"><span class="lg-k">市場</span><span class="lg-v">東証プライム</span></div>
+          <div class="lg-row"><span class="lg-k">規模</span><span class="lg-v">TOPIX Core30・Large70・Mid400・Small 1（Small 2 は対象外）</span></div>
+          <div class="lg-row"><span class="lg-k">いま</span><span class="lg-v"><b id="lgUniv">—</b>社を毎日判定</span></div>
+          <div class="lg-note">時価総額では絞っていません。銘柄の一覧に時価総額が載っておらず、事前に絞れないためです。</div>
+        </div>
+
+        <div class="lg-sec"><h5>買う前提（8条件・すべて満たす）</h5>
+          <div class="lg-row"><span class="lg-k">減配</span><span class="lg-v">過去10期で減配していない ※</span></div>
+          <div class="lg-row"><span class="lg-k">売上</span><span class="lg-v">過去5期で、前期比−10%超の減少が2期続いていない</span></div>
+          <div class="lg-row"><span class="lg-k">営業利益</span><span class="lg-v">同上</span></div>
+          <div class="lg-row"><span class="lg-k">純利益</span><span class="lg-v">同上</span></div>
+          <div class="lg-row"><span class="lg-k">配当性向</span><span class="lg-v">50%以下</span></div>
+          <div class="lg-row"><span class="lg-k">自己資本</span><span class="lg-v">比率50%以上（建設・海運・卸売は33%、金融・不動産は対象外）</span></div>
+          <div class="lg-row"><span class="lg-k">割安</span><span class="lg-v">PER×PBR <b id="lgGraham">40</b> 以下</span></div>
+          <div class="lg-row"><span class="lg-k">利回り</span><span class="lg-v"><b id="lgMinY">4</b>%以上 ※</span></div>
+          <div class="lg-note">※ 累進配当・DOE の会社は、減配と利回りの条件が免除されます。</div>
+        </div>
+
+        <div class="lg-sec"><h5>シグナル</h5>
+          <div class="lg-row"><span class="tag p-buy">BUY</span><span class="lg-v">いまの利回りが、過去3年の月次利回りの上位25%（Q75）以上</span></div>
+          <div class="lg-row"><span class="tag p-sell">SELL</span><span class="lg-v">下位25%（Q25）以下。<b>表示のみで、売却には使いません</b></span></div>
+          <div class="lg-row"><span class="tag p-neu">中立</span><span class="lg-v">その間</span></div>
+          <div class="lg-row"><span class="tag p-box">BOX</span><span class="lg-v">横ばい相場（過去60日の値幅8〜20%・ADX 22未満）。参考表示</span></div>
+          <div class="lg-row"><span class="tag p-cheap">割安</span><span class="lg-v">PER・PBR が過去の中央値より低い。参考表示</span></div>
+        </div>
+
+        <div class="lg-sec"><h5>質の区分（Tier）</h5>
+          <div class="lg-row"><span class="lg-k">配当を守る</span><span class="lg-v">日経累進高配当株指数の構成銘柄、累進配当を宣言している会社、DOE を採用している会社（リストで管理）</span></div>
+          <div class="lg-row"><span class="lg-k">業界トップ</span><span class="lg-v">同じ33業種のなかで時価総額上位3社</span></div>
+          <div class="lg-row"><span class="tag tier-S" style="border-radius:99px;width:auto;padding:1px 9px">S</span><span class="lg-v">両方を満たす ／ 総資産の約8.9%</span></div>
+          <div class="lg-row"><span class="tag tier-A" style="border-radius:99px;width:auto;padding:1px 9px">A</span><span class="lg-v">どちらか一方 ／ 約6.7%</span></div>
+          <div class="lg-row"><span class="tag tier-B" style="border-radius:99px;width:auto;padding:1px 9px">B</span><span class="lg-v">どちらでもない ／ 約4.4%</span></div>
+        </div>
+
+        <div class="lg-sec"><h5>買い方</h5>
+          <div class="lg-row"><span class="lg-k">条件</span><span class="lg-v">8条件を満たし、BUY が出ている</span></div>
+          <div class="lg-row"><span class="lg-k">順番</span><span class="lg-v">S → A → B。同じ区分なら利回りの高い順</span></div>
+          <div class="lg-row"><span class="lg-k">金額</span><span class="lg-v">総資産 ÷ 15銘柄 × 重み（S 2.0 ／ A 1.5 ／ B 1.0）</span></div>
+          <div class="lg-row"><span class="lg-k">上限</span><span class="lg-v">同時に20銘柄まで。買い増しはしない。100株単位</span></div>
+          <div class="lg-note">配分案のタブでは、利回り<span class="lgMinY2">4</span>%未満の銘柄を除いています（検証と同じ条件にするため）。</div>
+        </div>
+
+        <div class="lg-sec"><h5>売り方</h5>
+          <div class="lg-row"><span class="tag p-warn">緊急</span><span class="lg-v">減配（予想配当が前年比−10%超）、または営業利益が前年比−20%以下</span></div>
+          <div class="lg-row"><span class="lg-k">それ以外</span><span class="lg-v"><b>売りません。</b>値上がりしても、SELL が出ても持ち続けます</span></div>
+          <div class="lg-note">検証では、利確・入れ替え・相場を見た売買のいずれも成績を下げました。</div>
+        </div>
+
+        <div class="lg-sec"><h5>データの更新</h5>
+          <div class="lg-row"><span class="lg-k">頻度</span><span class="lg-v">平日 19:30 に自動更新（土日は動きません）</span></div>
+          <div class="lg-row"><span class="lg-k">財務</span><span class="lg-v">7日ごとに取り直します。<b>決算の反映が最大7日遅れます</b></span></div>
+          <div class="lg-row"><span class="lg-k">株価</span><span class="lg-v">毎日。過去9年分を使います</span></div>
+        </div>
+
+       </div>
       </div>
     </div>
 
@@ -567,7 +625,7 @@ const rangeBar=s=>{
 };
 const grahamCell=s=>{
   if(s.per_pbr==null)return'—';
-  const ok=s.per_pbr<=22.5;
+  const ok=s.per_pbr<=gth();
   return`<span class="mono" style="color:${ok?'var(--green)':'var(--buy)'};font-weight:600">${s.per_pbr.toFixed(1)}</span>`;
 };
 
@@ -610,8 +668,20 @@ async function init(){
   const dt=new Date(S.data.generated_at);
   $('lastUpdate').textContent=dt.toLocaleString('ja-JP',{hour12:false}).replace(/\//g,'.');
   $('sigDate').textContent=dt.toLocaleDateString('ja-JP').replace(/\//g,'.');
-  buildSectorFilter(); updateKpis(); updateFwdBadge(); render();
+  buildSectorFilter(); updateKpis(); updateFwdBadge(); fillLogic(); render();
 }
+/* 判定ロジックの数値を、実際の設定値で埋める */
+function fillLogic(){
+  const th=S.data.thresholds||{};
+  const set=(id,v)=>{const e=$(id);if(e&&v!=null)e.textContent=v;};
+  set('lgUniv',S.data.universe_count?S.data.universe_count.toLocaleString():null);
+  set('lgGraham',th.graham);
+  set('lgMinY',th.min_yield);
+  document.querySelectorAll('.lgMinY2').forEach(e=>{if(th.min_yield!=null)e.textContent=th.min_yield;});
+  const u=$('sigUniv'); if(u&&S.data.universe_count)u.textContent=S.data.universe_count.toLocaleString();
+}
+/* PER×PBR の上限。以前は画面だけ 22.5 と書かれていたが、実際の判定は 40 */
+const gth=()=>(S.data&&S.data.thresholds&&S.data.thresholds.graham)||40;
 function buildSectorFilter(){
   const secs=[...new Set(S.data.stocks.map(s=>s.sector).filter(Boolean))].sort();
   $('fSector').innerHTML='<option value="">業種: すべて</option>'+secs.map(x=>`<option>${esc(x)}</option>`).join('');
@@ -804,7 +874,7 @@ function openDetail(code){
   S.detail=s; S.dtab='overview';
   $('dCode').textContent=s.code; $('dName').textContent=s.name;
   $('dSub').textContent=`${s.sector||''} · 時価総額 ${fmt.oku(s.market_cap_oku)} · ${s.fiscal_month?s.fiscal_month+'月決算':''}${s.interim_month?`（権利月 ${s.fiscal_month}月/${s.interim_month}月）`:''}`;
-  $('dBadges').innerHTML=[sigPill(s),s.is_box?'<span class="pill p-box">BOX</span>':'',`<span class="pill ${bucketClass(s)}">${bucketLabel(s)}</span>`,s.tier?`<span class="pill" style="background:var(--neutral-bg);color:var(--text-2)">Tier ${s.tier}（配分 ${s.tier_weight||1}倍）</span>`:'',s.is_industry_leader?'<span class="pill p-core">業界トップ級</span>':'',isCheap(s,'per')?'<span class="pill p-cheap">PER割安</span>':'',isCheap(s,'pbr')?'<span class="pill p-cheap">PBR割安</span>':''].filter(Boolean).join('');
+  $('dBadges').innerHTML=[sigPill(s),s.is_box?'<span class="pill p-box">BOX</span>':'',`<span class="pill ${bucketClass(s)}">${bucketLabel(s)}</span>`,s.tier?`<span class="pill" style="background:var(--neutral-bg);color:var(--text-2)">Tier ${s.tier}（総資産の約${({S:'8.9',A:'6.7',B:'4.4'})[s.tier]||'—'}%）</span>`:'',s.is_industry_leader?'<span class="pill p-core">業界トップ級</span>':'',isCheap(s,'per')?'<span class="pill p-cheap">PER割安</span>':'',isCheap(s,'pbr')?'<span class="pill p-cheap">PBR割安</span>':''].filter(Boolean).join('');
   $('dPrice').innerHTML=`${fmt.yen(s.price)}<small>利回り ${fmt.pct(s.current_yield)} / 予想DPS ¥${fmt.num(s.forecast_dps,1)}</small>`;
   $('dLinks').innerHTML=s.links?Object.entries({minkabu:'みんかぶ',irbank:'IR BANK',tdnet:'TDnet'}).map(([k,l])=>s.links[k]?`<a href="${s.links[k]}" target="_blank" rel="noopener">${l} ↗</a>`:'').join(''):'';
   switchTab('overview');
@@ -833,7 +903,7 @@ function renderMetrics(s){
   const perTag=isCheap(s,'per')?' <span class="pill p-cheap" style="font-size:10px;padding:0 6px">割安</span>':'';
   const pbrTag=isCheap(s,'pbr')?' <span class="pill p-cheap" style="font-size:10px;padding:0 6px">割安</span>':'';
   const items=[['現在利回り',fmt.pct(s.current_yield)],['3年Q25 / 中央値 / Q75',`${fmt.num(s.yield_q25)} / ${fmt.num(s.yield_median)} / ${fmt.num(s.yield_q75)}%`],
-    ['PER',fmt.num(s.per,1)+perTag],['PBR',fmt.num(s.pbr,2)+pbrTag],['PER×PBR',s.per_pbr==null?'—':s.per_pbr.toFixed(1)+(s.per_pbr<=22.5?' ✓':' ✗')],
+    ['PER',fmt.num(s.per,1)+perTag],['PBR',fmt.num(s.pbr,2)+pbrTag],['PER×PBR',s.per_pbr==null?'—':s.per_pbr.toFixed(1)+(s.per_pbr<=gth()?' ✓':' ✗')],
     ['配当性向',fmt.pct(s.payout_ratio,1)],['自己資本比率',s.equity_ratio==null?'—':(s.equity_ratio*100).toFixed(1)+'%'],['ROE',fmt.pct(s.roe,1)],
     ['売上(直近)',fmt.oku(s.latest_sales_oku)],['営業利益(直近)',fmt.oku(s.latest_op_oku)],['純利益(直近)',fmt.oku(s.latest_np_oku)],['予想DPS','¥'+fmt.num(s.forecast_dps,1)]];
   $('dMetrics').innerHTML=items.map(([l,v])=>`<div class="mi"><div class="l">${l}</div><div class="v mono">${v}</div></div>`).join('');
@@ -900,7 +970,7 @@ function renderScreen(s){
   const rows=[['減配経験（10期）','過去に減配していない',sc.dividend],['売上の安定性','構造的な売上減がない',sc.revenue],
     ['営業利益の安定性','本業が崩れていない',sc.op_profit],['純利益の安定性','配当原資が確保',sc.net_profit],
     ['配当性向 ≤ 50%','無理のない配当',sc.payout],[`自己資本比率 ${eqMin}`,'財務健全（業種別基準）',sc.equity],
-    ['PER×PBR ≤ 22.5','割高すぎない',sc.valuation],[`利回り ≥ ${(S.data.thresholds&&S.data.thresholds.min_yield)||4.0}%`,'高配当の前提',sc.min_yield]];
+    [`PER×PBR ≤ ${gth()}`,'割高すぎない',sc.valuation],[`利回り ≥ ${(S.data.thresholds&&S.data.thresholds.min_yield)||4.0}%`,'高配当の前提',sc.min_yield]];
   $('dScreen').innerHTML=rows.map(([t,d,ok])=>`<div class="chk-row"><div><b>${t}</b><div style="font-size:11.5px;color:var(--text-3)">${d}</div></div><span class="${ok?'ok':'ng'}">${ok?'✓':'✗'}</span></div>`).join('');
 }
 function renderBox(s){
@@ -1227,7 +1297,7 @@ function renderPf(){
       const pl=val!=null?val-p.cost*p.shares:null;
       const plp=pl!=null?pl/(p.cost*p.shares)*100:null;
       li+=`<tr${s?` onclick="openDetail('${p.code}')"`:''}>
-        <td>${s?tierChip(s):'—'}</td>
+        <td>${s?tierChip(s):'<span class="pill p-ex">対象外</span>'}</td>
         <td><span class="t-code">${esc(p.code)}</span>
           <span class="t-name" style="margin-left:6px">${esc(s?.name||'（対象外）')}</span>
           <small style="color:var(--text-3);font-size:11px;display:block">${esc(s?.sector||'')}</small></td>
@@ -1255,14 +1325,18 @@ function renderPf(){
   const rows=PF.map(p=>({...p,s:pfFind(p.code)}))
     .map(r=>({...r,val:r.s?.price!=null?r.s.price*r.shares:0,
               div:r.s?.forecast_dps!=null?r.s.forecast_dps*r.shares:0}));
-  const total=rows.reduce((a,b)=>a+b.val,0);
-  const divTot=rows.reduce((a,b)=>a+b.div,0);
-  const costTot=rows.reduce((a,b)=>a+b.cost*b.shares,0);
+  // 現在値が取れない銘柄（対象外）は集計から外す。
+  // 評価額0のまま取得額だけ引くと、損益が大きく狂うため。
+  const known=rows.filter(r=>r.s&&r.s.price);
+  const unknown=rows.filter(r=>!(r.s&&r.s.price));
+  const total=known.reduce((a,b)=>a+b.val,0);
+  const divTot=known.reduce((a,b)=>a+b.div,0);
+  const costTot=known.reduce((a,b)=>a+b.cost*b.shares,0);
   const pl=total-costTot;
 
   const byTier={S:0,A:0,B:0,'—':0};
   const bySec={};
-  for(const r of rows){
+  for(const r of known){
     byTier[r.s?.tier||'—']=(byTier[r.s?.tier||'—']||0)+r.val;
     const k=r.s?.sector||'不明'; bySec[k]=(bySec[k]||0)+r.val;
   }
@@ -1274,10 +1348,21 @@ function renderPf(){
     <div class="card kpi"><div class="k-lbl">損益</div><div class="k-val ${pl>=0?'pl-pos':'pl-neg'}">${pl>=0?'+':''}${fmt.yen(pl)}</div></div>
     <div class="card kpi"><div class="k-lbl">年間配当（予）</div><div class="k-val">${divTot>0?fmt.yen(divTot):'—'}</div></div>
     <div class="card kpi"><div class="k-lbl">全体の利回り</div><div class="k-val">${(total>0&&divTot>0)?(divTot/total*100).toFixed(2)+'%':'—'}</div></div>
-    <div class="card kpi"><div class="k-lbl">銘柄数</div><div class="k-val">${PF.length}</div></div>
+    <div class="card kpi"><div class="k-lbl">銘柄数</div><div class="k-val">${known.length}${
+      unknown.length?`<small style="font-size:12px;color:var(--text-3)"> +対象外${unknown.length}</small>`:''}</div></div>
   </div>`;
 
   h+=li;
+  if(unknown.length){
+    h+=`<div class="card sec al-note"><h4>対象外の銘柄について</h4>
+      <div class="al-note">${unknown.map(r=>esc(r.code)).join('、')} は、
+        このツールの対象（東証プライムのうち TOPIX Core30／Large70／Mid400 の489社）
+        に入っていないため、現在値も判定も取得できません。
+        <b>上の集計からは除いています。</b></div>
+      <div class="al-note" style="margin-top:8px">対象をプライム全銘柄（約1,557社）に広げることはできます。
+        検証では、広げたほうが基準を上回る幅がむしろ大きくなりました（+8.9pt→+11.2pt）。
+        ただし毎日のデータ取得が35〜40分から70〜90分に延びます。</div></div>`;
+  }
 
   // Tierの偏り
   // 目安は「いま買える候補のTier構成」に重みを掛けたもの。
@@ -1330,7 +1415,7 @@ function renderPf(){
   h+=`</div>`;
 
   // 1銘柄への集中
-  const mx=Math.max(...rows.map(r=>r.val));
+  const mx=known.length?Math.max(...known.map(r=>r.val)):0;
   if(total>0&&mx/total>=0.25){
     const nm=rows.find(r=>r.val===mx);
     h+=`<div class="card sec al-note warn"><h4>1銘柄への集中</h4>
@@ -1342,7 +1427,7 @@ function renderPf(){
   }
 
   // 減配・業績急変の警告
-  const emg=rows.filter(r=>r.s?.emergency_exit);
+  const emg=known.filter(r=>r.s?.emergency_exit);
   if(emg.length){
     h+=`<div class="card sec al-note warn"><h4>減配・業績急変が出ています</h4>`;
     for(const r of emg)h+=`<div class="al-note">・<b>${esc(r.s.name)}</b>
