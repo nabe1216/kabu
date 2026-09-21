@@ -1,10 +1,12 @@
 name: Generate Dividend Signals
 
-# 毎日 19:30 JST = 10:30 UTC に自動実行
+# 平日 19:30 JST = 10:30 UTC に自動実行
+# 土日は市場が閉まっていてデータが変わらないので動かさない。
+# （毎日動かすと GitHub Actions の無料枠 月2,000分 を超えるため）
 # 手動実行も可能（workflow_dispatch）
 on:
   schedule:
-    - cron: '30 10 * * *'
+    - cron: '30 10 * * 1-5'
   workflow_dispatch:
 
 # results.json をコミットするための権限
@@ -14,6 +16,7 @@ permissions:
 jobs:
   generate:
     runs-on: ubuntu-latest
+    # 対象を small1 に広げて約72分。上限まで18分の余裕がある。
     timeout-minutes: 90
 
     steps:
@@ -45,6 +48,10 @@ jobs:
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           git add data/results.json data/portfolio_state.json data/portfolio_history.json
+          # 財務データのキャッシュ（無ければ飛ばす）
+          if [ -f data/stmts_cache.json ]; then
+            git add data/stmts_cache.json
+          fi
           if git diff --staged --quiet; then
             echo "No changes to commit"
           else
