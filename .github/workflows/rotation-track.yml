@@ -1,15 +1,18 @@
 name: rotation-track
 
 # 入れ替えルールの並走フォワードテスト。
-# 既存の「Generate Dividend Signals」が results.json を更新したあとに走ります。
 #
-# 既存のワークフローには一切手を入れていません。
-# 出力も data/rotation_state.json など別ファイルなので、
-# 既存のダッシュボード表示には影響しません。
+# 動く順番
+#   「Generate Dividend Signals」が成功したあとに動く。
+#   以前は時刻（20:15）で動かしていたが、シグナル生成が72分かかるようになり、
+#   前日のデータを読んだり、シグナル生成の保存とぶつかったりするおそれが出たため。
+#
+# 出力は data/rotation_state.json など別ファイルなので、
+# 既存のダッシュボード表示には影響しない。
 on:
-  schedule:
-    # 平日 20:15 JST（= 11:15 UTC）。既存の 19:30 JST 実行の後に回します。
-    - cron: "15 11 * * 1-5"
+  workflow_run:
+    workflows: ["Generate Dividend Signals"]
+    types: [completed]
   workflow_dispatch:
 
 permissions:
@@ -17,10 +20,14 @@ permissions:
 
 jobs:
   track:
+    # シグナル生成が失敗した日は動かさない（古いデータで記録しないため）
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: main
 
       - uses: actions/setup-python@v5
         with:
@@ -53,4 +60,11 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add data/rotation_state.json data/rotation_history.json
           git commit -m "chore: 入れ替えトラックを更新 ($(date -u +%Y-%m-%d))"
-          git push
+          # レンジの記録と同時に保存することがあるので、ぶつかったら少し待って送り直す
+          for i in 1 2 3; do
+            git pull --rebase --autostash origin main && git push && exit 0
+            echo "送信に失敗しました（${i}回目）。少し待って送り直します。"
+            sleep $((i * 5))
+          done
+          echo "3回送り直しても保存できませんでした。"
+          exit 1
