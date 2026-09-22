@@ -231,6 +231,10 @@ td.al-name{white-space:normal;min-width:250px}
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="m7 15 4-4 3 3 5-6"/><path d="m7 19 5-3 3 1 4-3"/></svg>
       並走記録
     </button>
+    <button data-view="mine">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16v16H4z"/><path d="M8 9h8M8 13h8M8 17h5"/></svg>
+      自分の売買
+    </button>
     <button data-view="port">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/></svg>
       保有銘柄
@@ -387,6 +391,31 @@ td.al-name{white-space:normal;min-width:250px}
   <section id="view-cmp" style="display:none">
     <div class="page-head"><h1>並走記録</h1><div class="meta">本番・入れ替え・レンジ売買を、同じ元本で並べて比べる</div></div>
     <div id="cmpOut"></div>
+  </section>
+
+  <!-- ===== 自分の売買 ===== -->
+  <section id="view-mine" style="display:none">
+    <div class="page-head"><h1>自分の売買</h1><div class="meta">この端末のブラウザにだけ保存され、どこにも送信されません</div></div>
+
+    <div class="card add-form">
+      <div><label>日付</label><input id="myDate" type="date"></div>
+      <div><label>コード</label><input id="myCode" placeholder="1928" style="width:80px"></div>
+      <div><label>売買</label><select id="mySide"><option value="BUY">買い</option><option value="SELL">売り</option></select></div>
+      <div><label>株数</label><input id="myQty" type="number" placeholder="100" style="width:80px"></div>
+      <div><label>単価</label><input id="myPrice" type="number" placeholder="3300" style="width:100px"></div>
+      <div><label>手数料（任意）</label><input id="myFee" type="number" placeholder="0" style="width:90px"></div>
+      <button class="btn" id="myAddBtn" onclick="myAdd()">追加</button>
+    </div>
+
+    <div class="card sec" style="margin-bottom:14px">
+      <h4>SBI証券の CSV を読み込む</h4>
+      <div class="al-note">SBI証券の<b>取引履歴（約定履歴・国内株式）</b>から CSV をダウンロードし、ここで選んでください。
+        同じ売買は二重に入りません。何度読み込んでも大丈夫です。</div>
+      <div style="margin-top:10px"><input type="file" id="myFile" accept=".csv,.json,text/csv" onchange="myImport(event)"></div>
+      <div class="al-note" style="margin-top:8px;color:var(--text-3)">読み込めなかったときは、そのファイルをチャットに添付していただければ、形に合わせて直します。</div>
+    </div>
+
+    <div id="myOut"></div>
   </section>
 
   <!-- ===== 保有（手動） ===== -->
@@ -726,7 +755,7 @@ $('nav').addEventListener('click',e=>{
   const b=e.target.closest('button'); if(!b)return;
   S.view=b.dataset.view;
   document.querySelectorAll('#nav button').forEach(x=>x.classList.toggle('active',x===b));
-  ['signals','all','fwd','cmp','port','watch','alloc','pf'].forEach(v=>$('view-'+v).style.display=v===S.view?'':'none');
+  ['signals','all','fwd','cmp','mine','port','watch','alloc','pf'].forEach(v=>$('view-'+v).style.display=v===S.view?'':'none');
   render();
 });
 ['fBucket','fSignal','fSector','fBox','fPass','fEx','fSearch','fSort'].forEach(id=>{
@@ -737,6 +766,7 @@ function render(){
   else if(S.view==='all')renderAll();
   else if(S.view==='fwd')renderFwd();
   else if(S.view==='cmp')renderCmp();
+  else if(S.view==='mine')renderMine();
   else if(S.view==='port')renderPort();
   else if(S.view==='watch')renderWatch();
   else if(S.view==='alloc')renderAlloc();
@@ -1672,6 +1702,240 @@ function renderCmp(){
       legend:{orientation:'h',y:1.12,font:{size:11}},yaxis:{gridcolor:'#EEF0F4',zeroline:true,zerolinecolor:'#C9CED8',ticksuffix:'%'},
       shapes:[]},plyCfg());
   }
+}
+
+
+/* ================= 自分の売買 =================
+   実際に行った売買を、手入力か SBI証券の CSV で取り込み、
+   ・往復ごとの損益（先に買ったものから順に売ったとみなす）
+   ・「売らずに今日まで持っていたら」との比較
+   を出す。入力はこの端末のブラウザにだけ保存し、どこにも送らない。 */
+const MY_KEY='div_mytrades_v1';
+let MY=JSON.parse(localStorage.getItem(MY_KEY)||'[]');
+function mySave(){localStorage.setItem(MY_KEY,JSON.stringify(MY));}
+const myKey=t=>[t.date,t.code,t.side,t.qty,t.price].join('|');
+function myNum(v){if(v==null)return 0;const n=+String(v).replace(/[,，\s"円株]/g,'');return isNaN(n)?0:n;}
+function myDate(v){
+  const m=String(v||'').trim().match(/(\d{2,4})[\/\-年.](\d{1,2})[\/\-月.](\d{1,2})/);
+  if(!m)return null;
+  let y=+m[1]; if(y<100)y+=2000;
+  return `${y}-${String(m[2]).padStart(2,'0')}-${String(m[3]).padStart(2,'0')}`;
+}
+
+function myAdd(){
+  const t={date:$('myDate').value, code:$('myCode').value.trim(), side:$('mySide').value,
+           qty:+$('myQty').value, price:+$('myPrice').value, fee:+($('myFee').value||0), tax:0, src:'手入力'};
+  if(!t.date||!t.code||!t.qty||!t.price){alert('日付・コード・株数・単価を入れてください');return;}
+  const s=pfFind(t.code); t.name=s?.name||'';
+  if(MY.some(x=>myKey(x)===myKey(t))){alert('同じ売買がすでにあります');return;}
+  MY.push(t); mySave();
+  $('myCode').value='';$('myQty').value='';$('myPrice').value='';$('myFee').value='';
+  renderMine();
+}
+function myDel(i){MY.splice(i,1);mySave();renderMine();}
+function myClear(){if(confirm('入力した売買をすべて消しますか？（元に戻せません）')){MY=[];mySave();renderMine();}}
+function myBackup(){
+  const b=new Blob([JSON.stringify(MY,null,1)],{type:'application/json'});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(b);
+  a.download=`my_trades_${new Date().toISOString().slice(0,10)}.json`; a.click();
+}
+
+/* CSV の1行を分ける（ダブルクォート対応） */
+function myCsvRow(line){
+  const out=[];let cur='',q=false;
+  for(let i=0;i<line.length;i++){
+    const c=line[i];
+    if(q){ if(c==='"'){ if(line[i+1]==='"'){cur+='"';i++;} else q=false; } else cur+=c; }
+    else if(c==='"')q=true;
+    else if(c===','){out.push(cur);cur='';}
+    else cur+=c;
+  }
+  out.push(cur); return out.map(x=>x.trim());
+}
+
+/* SBI証券の約定履歴 CSV を読む。
+   文字コードは Shift_JIS のことが多いので、まずそれで読み、だめなら UTF-8。
+   列は名前で探すので、並び順が多少違っても読める。 */
+async function myImport(ev){
+  const f=ev.target.files[0]; if(!f)return;
+  const buf=await f.arrayBuffer();
+  let txt;
+  try{ txt=new TextDecoder('shift_jis').decode(buf); }catch(e){ txt=''; }
+  if(!/約定|銘柄/.test(txt)) txt=new TextDecoder('utf-8').decode(buf);
+  ev.target.value='';
+
+  // バックアップ（JSON）から戻す場合
+  if(/\.json$/i.test(f.name)){
+    try{
+      const arr=JSON.parse(txt);
+      if(!Array.isArray(arr))throw 0;
+      let add=0; for(const t of arr){ if(!MY.some(x=>myKey(x)===myKey(t))){MY.push(t);add++;} }
+      mySave(); alert(`バックアップから ${add} 件を戻しました`); renderMine();
+    }catch(e){ alert('バックアップのファイルを読めませんでした'); }
+    return;
+  }
+
+  const lines=txt.split(/\r?\n/);
+  let hi=-1,cols=null;
+  for(let i=0;i<lines.length;i++){
+    const r=myCsvRow(lines[i]);
+    if(r.some(c=>c.includes('約定日'))&&r.some(c=>c.includes('銘柄'))){hi=i;cols=r;break;}
+  }
+  if(hi<0){
+    alert('約定日と銘柄の列が見つかりませんでした。\nSBI証券の約定履歴（国内株式）のCSVかどうかご確認ください。\n読めない場合は、ファイルをチャットに添付していただければ形に合わせます。');
+    return;
+  }
+  const find=(...ws)=>cols.findIndex(c=>ws.some(w=>c.includes(w)));
+  const ix={date:find('約定日'), code:find('コード'), name:cols.findIndex(c=>c==='銘柄'||c.includes('銘柄名')),
+    side:find('取引','売買'), qty:find('数量'), price:find('単価'), fee:find('手数料'),
+    tax:cols.findIndex(c=>c.includes('税額')||c==='税金')};
+  const miss=['date','code','side','qty','price'].filter(k=>ix[k]<0);
+  if(miss.length){
+    alert('必要な列が見つかりませんでした：'+miss.join('、')+'\n見つかった列：'+cols.join(' / '));
+    return;
+  }
+  let add=0,dup=0,skip=0;
+  for(let i=hi+1;i<lines.length;i++){
+    if(!lines[i].trim())continue;
+    const r=myCsvRow(lines[i]);
+    const date=myDate(r[ix.date]); if(!date)continue;
+    const kind=r[ix.side]||'';
+    // 信用の売り建て（空売り）は、買いと売りの順番が逆になるので扱わない
+    if(/新規売|返済買/.test(kind)){skip++;continue;}
+    const side=/買/.test(kind)?'BUY':/売/.test(kind)?'SELL':null;
+    if(!side){skip++;continue;}
+    const code=String(r[ix.code]||'').replace(/[^\dA-Za-z]/g,'').slice(0,5);
+    const t={date,code,side,qty:myNum(r[ix.qty]),price:myNum(r[ix.price]),
+      fee:ix.fee>=0?myNum(r[ix.fee]):0, tax:ix.tax>=0?myNum(r[ix.tax]):0,
+      name:(ix.name>=0?r[ix.name]:'')||pfFind(code)?.name||'', src:'SBI CSV'};
+    if(!t.code||!t.qty||!t.price){skip++;continue;}
+    if(MY.some(x=>myKey(x)===myKey(t))){dup++;continue;}
+    MY.push(t); add++;
+  }
+  mySave();
+  alert(`${add} 件を取り込みました`+(dup?`（重複 ${dup} 件は飛ばしました）`:'')+(skip?`\n読み飛ばした行：${skip} 件（信用の売り建てなど）`:''));
+  renderMine();
+}
+
+/* 先に買ったものから順に売ったとみなして、往復ごとの損益を出す */
+function myMatch(){
+  const tr=[...MY].map((t,i)=>({...t,_i:i})).sort((a,b)=>a.date.localeCompare(b.date)||(a.side==='BUY'?-1:1));
+  const lots={}, rounds=[]; let orphan=0;
+  for(const t of tr){
+    const q=lots[t.code]||(lots[t.code]=[]);
+    if(t.side==='BUY'){ q.push({qty:t.qty,price:t.price,date:t.date,feePer:(t.fee||0)/t.qty,name:t.name}); continue; }
+    let left=t.qty; const feePer=(t.fee||0)/t.qty, taxPer=(t.tax||0)/t.qty;
+    while(left>0&&q.length){
+      const lot=q[0], take=Math.min(lot.qty,left);
+      const cost=take*lot.price+take*lot.feePer;
+      const proceeds=take*t.price-take*feePer;
+      const days=Math.round((new Date(t.date)-new Date(lot.date))/864e5);
+      rounds.push({code:t.code,name:t.name||lot.name,buyDate:lot.date,sellDate:t.date,qty:take,
+        buy:lot.price,sell:t.price,cost,proceeds,pl:proceeds-cost,tax:take*taxPer,days});
+      lot.qty-=take; left-=take; if(lot.qty<=0)q.shift();
+    }
+    if(left>0)orphan++;
+  }
+  const open=[];
+  for(const [code,q] of Object.entries(lots))for(const l of q)if(l.qty>0)open.push({code,...l});
+  return {rounds,open,orphan};
+}
+
+function renderMine(){
+  const out=$('myOut'); if(!out)return;
+  const {rounds,open,orphan}=myMatch();
+  let h='';
+
+  if(!MY.length){
+    out.innerHTML=`<div class="card empty"><b style="display:block;font-size:15px;color:var(--text);margin-bottom:6px">まだ売買がありません</b>
+      上のフォームで1件ずつ入れるか、SBI証券の約定履歴のCSVを読み込んでください。</div>`;
+    return;
+  }
+
+  // ── 往復の成績 ──
+  const n=rounds.length, win=rounds.filter(r=>r.pl>0).length;
+  const plSum=rounds.reduce((a,r)=>a+r.pl,0), taxSum=rounds.reduce((a,r)=>a+r.tax,0);
+  const feeSum=MY.reduce((a,t)=>a+(t.fee||0),0);
+  const avgPct=n?rounds.reduce((a,r)=>a+r.pl/r.cost*100,0)/n:0;
+  const avgDays=n?rounds.reduce((a,r)=>a+r.days,0)/n:0;
+  h+=`<div class="fx-grid">
+    <div class="card kpi"><div class="k-lbl">往復した回数</div><div class="k-val">${n}</div></div>
+    <div class="card kpi"><div class="k-lbl">勝った割合</div><div class="k-val">${n?(win/n*100).toFixed(0)+'%':'—'}</div></div>
+    <div class="card kpi"><div class="k-lbl">確定した損益</div><div class="k-val ${plSum>=0?'pl-pos':'pl-neg'}">${plSum>=0?'+':''}${fmt.yen(plSum)}</div></div>
+    <div class="card kpi"><div class="k-lbl">1回あたり</div><div class="k-val">${n?(avgPct>=0?'+':'')+avgPct.toFixed(2)+'%':'—'}</div></div>
+    <div class="card kpi"><div class="k-lbl">平均の保有日数</div><div class="k-val">${n?avgDays.toFixed(0)+'日':'—'}</div></div>
+    <div class="card kpi"><div class="k-lbl">手数料＋税金</div><div class="k-val">${fmt.yen(feeSum+taxSum)}</div></div>
+  </div>`;
+
+  // ── 売らずに持っていたら ──
+  let known=0,holdVal=0,soldVal=0;
+  for(const r of rounds){
+    const s=pfFind(r.code);
+    if(s&&s.price){known++; holdVal+=s.price*r.qty; soldVal+=r.proceeds-r.tax;}
+  }
+  h+=`<div class="card sec"><h4>売らずに今日まで持っていたら</h4>`;
+  if(!known){
+    h+=`<div class="al-note">売った銘柄の今日の株価が分からないため、比べられません（対象外の銘柄か、まだ往復がありません）。</div>`;
+  }else{
+    const diff=holdVal-soldVal;
+    h+=`<div class="al-sum"><span class="big mono ${diff>0?'pl-neg':'pl-pos'}">${diff>0?'持っていたほうが ':'売ったほうが '}${fmt.yen(Math.abs(diff))} 多い</span></div>
+      <div class="al-note">売って受け取った金額（手数料・税金を引いたあと） ${fmt.yen(soldVal)} ／ 同じ株を今日まで持っていた場合の時価 ${fmt.yen(holdVal)}</div>
+      <div class="al-note" style="margin-top:8px">${known}回の往復のうち、今日の株価が分かる分だけで比べています${known<n?`（${n-known}回は対象外の銘柄のため除外）`:''}。</div>
+      <div class="al-note" style="margin-top:8px"><b>持っていれば配当も入っていた</b>ので、実際の差はこれより「持っていたほうが有利」寄りです。
+        一方で、売ったお金を別の銘柄に回して増やしていたなら、その分は入っていません。</div>`;
+  }
+  h+=`</div>`;
+
+  // ── 持ったままの銘柄 ──
+  if(open.length){
+    h+=`<div class="card sec"><h4>まだ売っていない銘柄 <small>${open.length}件</small></h4><div class="tbl-wrap"><table><thead><tr>
+      <th>銘柄</th><th>買った日</th><th class="t-right">株数</th><th class="t-right">取得単価</th><th class="t-right">いまの株価</th><th class="t-right">含み損益</th></tr></thead><tbody>`;
+    for(const o of open.sort((a,b)=>a.date.localeCompare(b.date))){
+      const s=pfFind(o.code), px=s?.price;
+      const pl=px?(px-o.price)*o.qty:null;
+      h+=`<tr${s?` onclick="openDetail('${o.code}')"`:''}><td><span class="t-code">${esc(o.code)}</span> <span class="t-name">${esc(o.name||s?.name||'')}</span></td>
+        <td class="mono">${o.date}</td><td class="t-right mono">${o.qty.toLocaleString()}</td>
+        <td class="t-right mono">${fmt.yen(o.price)}</td><td class="t-right mono">${px?fmt.yen(px):'—'}</td>
+        <td class="t-right mono ${pl==null?'':pl>=0?'pl-pos':'pl-neg'}" style="font-weight:600">${pl==null?'—':(pl>=0?'+':'')+fmt.yen(pl)}</td></tr>`;
+    }
+    h+=`</tbody></table></div><div class="al-note" style="margin-top:10px">レンジを割って持ち続けている銘柄もここに入ります。<b>往復の成績だけでは見えない部分</b>なので、あわせて見てください。</div></div>`;
+  }
+  if(orphan)h+=`<div class="card sec al-note warn">買いの記録がない売りが ${orphan} 件あります。取り込んだ期間より前に買った株かもしれません。その分は往復の成績に入っていません。</div>`;
+
+  // ── 往復の一覧 ──
+  if(n){
+    h+=`<div class="card sec"><h4>往復の一覧 <small>新しい順</small></h4><div class="tbl-wrap"><table><thead><tr>
+      <th>銘柄</th><th>買い → 売り</th><th class="t-right">日数</th><th class="t-right">株数</th>
+      <th class="t-right">買値 → 売値</th><th class="t-right">損益</th></tr></thead><tbody>`;
+    for(const r of [...rounds].reverse()){
+      const pct=r.pl/r.cost*100;
+      h+=`<tr onclick="openDetail('${r.code}')"><td><span class="t-code">${esc(r.code)}</span> <span class="t-name">${esc(r.name||'')}</span></td>
+        <td class="mono">${r.buyDate} → ${r.sellDate}</td><td class="t-right mono">${r.days}</td>
+        <td class="t-right mono">${r.qty.toLocaleString()}</td>
+        <td class="t-right mono">${fmt.yen(r.buy)} → ${fmt.yen(r.sell)}</td>
+        <td class="t-right mono ${r.pl>=0?'pl-pos':'pl-neg'}" style="font-weight:600">${r.pl>=0?'+':''}${fmt.yen(r.pl)} (${pct>=0?'+':''}${pct.toFixed(1)}%)</td></tr>`;
+    }
+    h+=`</tbody></table></div></div>`;
+  }
+
+  // ── 入力した売買 ──
+  h+=`<div class="card sec"><h4 style="display:flex;justify-content:space-between;align-items:baseline">
+      <span>入力した売買 <small>${MY.length}件</small></span>
+      <span><button class="btn-ghost" style="color:var(--primary)" onclick="myBackup()">バックアップを保存</button>
+      <button class="btn-ghost" onclick="myClear()">すべて消す</button></span></h4>
+    <div class="list-scroll"><div class="tbl-wrap"><table><thead><tr><th>日付</th><th>売買</th><th>銘柄</th>
+      <th class="t-right">株数</th><th class="t-right">単価</th><th class="t-right">手数料</th><th>入力</th><th></th></tr></thead><tbody>`;
+  MY.map((t,i)=>({t,i})).sort((a,b)=>b.t.date.localeCompare(a.t.date)).forEach(({t,i})=>{
+    h+=`<tr><td class="mono">${t.date}</td><td><span class="pill ${t.side==='BUY'?'p-buy':'p-sell'}">${t.side==='BUY'?'買い':'売り'}</span></td>
+      <td><span class="t-code">${esc(t.code)}</span> <span class="t-name">${esc(t.name||'')}</span></td>
+      <td class="t-right mono">${(+t.qty).toLocaleString()}</td><td class="t-right mono">${fmt.yen(t.price)}</td>
+      <td class="t-right mono">${t.fee?fmt.yen(t.fee):'—'}</td><td style="color:var(--text-3);font-size:11px">${esc(t.src||'')}</td>
+      <td><button class="btn-ghost" onclick="myDel(${i})">削除</button></td></tr>`;
+  });
+  h+=`</tbody></table></div></div>
+    <div class="al-note" style="margin-top:10px">この端末のブラウザにだけ保存されています。<b>ときどき「バックアップを保存」</b>しておくと、ブラウザのデータを消しても戻せます（戻すときは下の読み込みでそのファイルを選びます）。</div></div>`;
+
+  out.innerHTML=h;
 }
 
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closeDetail();});
