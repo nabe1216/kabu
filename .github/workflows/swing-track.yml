@@ -50,6 +50,11 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add data/swing_state.json data/swing_history.json
           git commit -m "レンジ売買の記録"
-          # ほかの記録が先に保存していても拒否されないよう、最新を取り込んでから送る
-          git pull --rebase --autostash origin main
-          git push
+          # 入れ替えの記録と同時に保存することがあるので、ぶつかったら少し待って送り直す
+          for i in 1 2 3; do
+            git pull --rebase --autostash origin main && git push && exit 0
+            echo "送信に失敗しました（${i}回目）。少し待って送り直します。"
+            sleep $((i * 5))
+          done
+          echo "3回送り直しても保存できませんでした。"
+          exit 1
