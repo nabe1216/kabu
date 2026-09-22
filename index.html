@@ -227,6 +227,10 @@ td.al-name{white-space:normal;min-width:250px}
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg>
       検証運用 <span class="badge" id="navFwdRet" style="display:none"></span>
     </button>
+    <button data-view="cmp">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="m7 15 4-4 3 3 5-6"/><path d="m7 19 5-3 3 1 4-3"/></svg>
+      並走記録
+    </button>
     <button data-view="port">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/></svg>
       保有銘柄
@@ -377,6 +381,12 @@ td.al-name{white-space:normal;min-width:250px}
       <div class="card sec"><h4>売買履歴 <small>直近50件</small></h4><div class="list-scroll" id="fxTrades"></div></div>
       <div class="card sec"><h4>配当履歴 <small>直近50件</small></h4><div class="list-scroll" id="fxDivs"></div></div>
     </div>
+  </section>
+
+  <!-- ===== 並走記録 ===== -->
+  <section id="view-cmp" style="display:none">
+    <div class="page-head"><h1>並走記録</h1><div class="meta">本番・入れ替え・レンジ売買を、同じ元本で並べて比べる</div></div>
+    <div id="cmpOut"></div>
   </section>
 
   <!-- ===== 保有（手動） ===== -->
@@ -594,6 +604,7 @@ const S = {
   watch: JSON.parse(localStorage.getItem('div_watchlist')||'[]'),
   port:  JSON.parse(localStorage.getItem('div_portfolio')||'[]'),
   fwd:{state:null,hist:null},
+  trk:{main:null,rot:null,swing:null},
 };
 const fmt = {
   yen:(n)=>n==null?'—':'¥'+Math.round(n).toLocaleString(),
@@ -665,6 +676,11 @@ async function init(){
   S.data = await loadJSON('data/results.json') || DUMMY_DATA;
   const [st,hi]=await Promise.all([loadJSON('data/portfolio_state.json'),loadJSON('data/portfolio_history.json')]);
   S.fwd.state=st;S.fwd.hist=hi;
+  // 並走記録（無ければ null のまま。画面で「まだ記録がありません」と出す）
+  const [rs,rh,ss,sh]=await Promise.all([
+    loadJSON('data/rotation_state.json'),loadJSON('data/rotation_history.json'),
+    loadJSON('data/swing_state.json'),loadJSON('data/swing_history.json')]);
+  S.trk.main={st,hi}; S.trk.rot={st:rs,hi:rh}; S.trk.swing={st:ss,hi:sh};
   const dt=new Date(S.data.generated_at);
   $('lastUpdate').textContent=dt.toLocaleString('ja-JP',{hour12:false}).replace(/\//g,'.');
   $('sigDate').textContent=dt.toLocaleDateString('ja-JP').replace(/\//g,'.');
@@ -710,7 +726,7 @@ $('nav').addEventListener('click',e=>{
   const b=e.target.closest('button'); if(!b)return;
   S.view=b.dataset.view;
   document.querySelectorAll('#nav button').forEach(x=>x.classList.toggle('active',x===b));
-  ['signals','all','fwd','port','watch','alloc','pf'].forEach(v=>$('view-'+v).style.display=v===S.view?'':'none');
+  ['signals','all','fwd','cmp','port','watch','alloc','pf'].forEach(v=>$('view-'+v).style.display=v===S.view?'':'none');
   render();
 });
 ['fBucket','fSignal','fSector','fBox','fPass','fEx','fSearch','fSort'].forEach(id=>{
@@ -720,6 +736,7 @@ function render(){
   if(S.view==='signals')renderSignals();
   else if(S.view==='all')renderAll();
   else if(S.view==='fwd')renderFwd();
+  else if(S.view==='cmp')renderCmp();
   else if(S.view==='port')renderPort();
   else if(S.view==='watch')renderWatch();
   else if(S.view==='alloc')renderAlloc();
@@ -1513,6 +1530,147 @@ function renderPf(){
       ce.value=v?v.toLocaleString('ja-JP'):'';
     });
     ce.addEventListener('keydown',e=>{if(e.key==='Enter')renderPf();});
+  }
+}
+
+
+/* ================= 並走記録（本番・入れ替え・レンジ） =================
+   3つの仮想運用を同じ画面で比べる。
+   どれも元本は同じなので、損益率で並べれば直接比べられる。
+   記録ファイルの形が少しずつ違っても表示できるよう、項目は緩く読む。 */
+const TRK=[
+  {key:'main', name:'本番', color:'#3B5BFD',
+   desc:'売らない。減配・業績急変のときだけ売る（検証で最も良かった形）'},
+  {key:'rot', name:'入れ替え', color:'#D97706',
+   desc:'より質の高い銘柄が出たら入れ替える（検証では本番とほぼ互角）'},
+  {key:'swing', name:'レンジ売買', color:'#10B981',
+   desc:'横ばいの銘柄を下限で買い上限で売る（検証では効かなかった。横ばい相場で確かめる）'},
+];
+let CMP_SEL='main';
+
+function trkSummary(t){
+  const st=t.st||{}, hi=t.hi||{};
+  // 記録ごとに形が少し違ってもよいように、配列でなければ中身を取り出す
+  const arr=v=>Array.isArray(v)?v:(v&&typeof v==='object'?Object.values(v):[]);
+  const hold=arr(st.holdings);
+  const hv=hold.reduce((a,h)=>a+(+h.value||0),0);
+  const init=+st.initial_cash||10000000;
+  const val=st.total_value!=null?+st.total_value:((+st.cash||0)+hv);
+  const trades=arr(hi.trades);
+  const realized=st.realized_pl!=null?+st.realized_pl
+    :trades.reduce((a,x)=>a+(+x.realized_pl||0),0);
+  return {init,val,ret:val-init,pct:(val-init)/init*100,cash:+st.cash||0,
+    holds:hold.length,trades:st.trades_count!=null?+st.trades_count:trades.length,
+    realized,tax:st.tax_paid!=null?+st.tax_paid:null,
+    started:st.started_at||(hi.daily_snapshots&&hi.daily_snapshots[0]?.date)||null,
+    snaps:arr(hi.daily_snapshots).filter(x=>x&&x.date&&x.total_value!=null), hold, tradesList:trades};
+}
+
+function renderCmp(){
+  const out=$('cmpOut'); if(!out)return;
+  const rows=TRK.map(t=>{
+    let sm=null;
+    try{ if(S.trk[t.key]&&S.trk[t.key].st) sm=trkSummary(S.trk[t.key]); }
+    catch(e){ console.warn(t.name+'の記録を読めません',e); }
+    return {...t,has:!!sm,s:sm};
+  });
+  let h='';
+
+  // 一覧
+  h+=`<div class="card tbl-wrap" style="margin-bottom:14px"><table><thead><tr>
+    <th>記録</th><th class="t-right">評価額</th><th class="t-right">損益</th>
+    <th class="t-right">確定した損益</th><th class="t-right">税金</th>
+    <th class="t-right">保有</th><th class="t-right">売買</th><th>開始</th></tr></thead><tbody>`;
+  for(const r of rows){
+    if(!r.has){
+      h+=`<tr><td><span class="dot" style="background:${r.color};margin-right:8px"></span><b>${r.name}</b>
+        <small style="display:block;color:var(--text-3);font-size:11px;white-space:normal;max-width:360px">${r.desc}</small></td>
+        <td colspan="7" style="color:var(--text-3)">まだ記録がありません（初回の実行後に表示されます）</td></tr>`;
+      continue;
+    }
+    const s=r.s;
+    h+=`<tr onclick="CMP_SEL='${r.key}';renderCmp()" style="${CMP_SEL===r.key?'background:var(--primary-soft)':''}">
+      <td><span class="dot" style="background:${r.color};margin-right:8px"></span><b>${r.name}</b>
+        <small style="display:block;color:var(--text-3);font-size:11px;white-space:normal;max-width:360px">${r.desc}</small></td>
+      <td class="t-right mono">${fmt.yen(s.val)}</td>
+      <td class="t-right mono ${s.ret>=0?'pl-pos':'pl-neg'}" style="font-weight:600">${s.ret>=0?'+':''}${fmt.yen(s.ret)}
+        <small style="display:block;font-size:11px">${s.pct>=0?'+':''}${s.pct.toFixed(2)}%</small></td>
+      <td class="t-right mono">${fmt.yen(s.realized)}</td>
+      <td class="t-right mono">${s.tax!=null?fmt.yen(s.tax):'—'}</td>
+      <td class="t-right mono">${s.holds}</td>
+      <td class="t-right mono">${s.trades}</td>
+      <td class="mono" style="color:var(--text-3)">${fmt.date(s.started)}</td></tr>`;
+  }
+  h+=`</tbody></table></div>`;
+
+  // 推移
+  h+=`<div class="card sec"><h4>損益率の推移 <small>元本が同じなので、そのまま比べられます</small></h4><div id="cmpCurve"></div></div>`;
+
+  // 選んだ記録の中身
+  const cur=rows.find(r=>r.key===CMP_SEL&&r.has)||rows.find(r=>r.has);
+  if(cur){
+    CMP_SEL=cur.key;
+    const s=cur.s;
+    h+=`<div class="pbtns" style="margin:4px 0 12px">`+rows.filter(r=>r.has).map(r=>
+      `<button class="${r.key===CMP_SEL?'active':''}" onclick="CMP_SEL='${r.key}';renderCmp()">${r.name}</button>`).join('')+`</div>`;
+    const hs=[...s.hold].sort((a,b)=>(+b.value||0)-(+a.value||0));
+    h+=`<div class="two-col">
+      <div class="card sec"><h4>${cur.name}の保有 <small>${hs.length}銘柄 ／ 現金 ${fmt.yen(s.cash)}</small></h4>`;
+    if(!hs.length) h+=`<div class="empty" style="padding:24px">いまは保有していません</div>`;
+    else{
+      h+=`<div class="tbl-wrap"><table><thead><tr><th>銘柄</th><th class="t-right">株数</th>
+        <th class="t-right">取得単価</th><th class="t-right">損益</th></tr></thead><tbody>`;
+      for(const x of hs){
+        const q=+(x.qty??x.shares??0), bp=+(x.buy_price??x.cost??0);
+        const pl=x.unrealized_pl!=null?+x.unrealized_pl:((+x.value||0)-bp*q);
+        const pp=x.unrealized_pl_pct!=null?+x.unrealized_pl_pct:(bp*q?pl/(bp*q)*100:0);
+        h+=`<tr onclick="openDetail('${x.code}')"><td>${x.tier?`<span class="tier tier-${x.tier}" style="width:20px;height:20px;font-size:10.5px;margin-right:6px">${x.tier}</span>`:''}
+          <span class="t-code">${esc(x.code)}</span> <span class="t-name">${esc(x.name||'')}</span></td>
+          <td class="t-right mono">${q.toLocaleString()}</td>
+          <td class="t-right mono">${fmt.yen(bp)}</td>
+          <td class="t-right mono ${pl>=0?'pl-pos':'pl-neg'}" style="font-weight:600">${pl>=0?'+':''}${fmt.yen(pl)} (${pp>=0?'+':''}${pp.toFixed(1)}%)</td></tr>`;
+      }
+      h+=`</tbody></table></div>`;
+    }
+    h+=`</div><div class="card sec"><h4>${cur.name}の売買 <small>直近30件</small></h4><div class="list-scroll">`;
+    const tr=s.tradesList.slice(-30).reverse();
+    if(!tr.length) h+=`<div class="empty" style="padding:24px">まだ売買はありません</div>`;
+    for(const t of tr){
+      const buy=String(t.action||'').toUpperCase()==='BUY';
+      const pl=t.realized_pl!=null?`<div class="r2 mono ${+t.realized_pl>=0?'pl-pos':'pl-neg'}" style="font-weight:600">
+        ${+t.realized_pl>=0?'+':''}${fmt.yen(t.realized_pl)}${t.tax?` ／ 税金 ${fmt.yen(t.tax)}`:''}${t.holding_days!=null?` ／ 保有${t.holding_days}日`:''}</div>`:'';
+      h+=`<div class="trade-row"><div class="r1"><span class="pill ${buy?'p-buy':'p-sell'}">${buy?'買い':'売り'}</span>
+        <span class="t-code">${esc(t.code||'')}</span><b>${esc(t.name||'')}</b></div>
+        <div class="r2 mono">${esc(t.date||'')} ・ ${(+(t.qty||0)).toLocaleString()}株 × ${fmt.yen(t.price)}${t.reason?` ・ ${esc(t.reason)}`:''}</div>${pl}</div>`;
+    }
+    h+=`</div></div></div>`;
+  }
+
+  // 読み方
+  h+=`<div class="card sec"><h4>読み方</h4>
+    <div class="al-note">3つとも<b>仮想の記録</b>です。実際のお金は動いていません。本番の設定にも影響しません。</div>
+    <div class="al-note" style="margin-top:8px"><b>記録が短いうちは、差に意味はありません。</b>
+      数週間の差は偶然で簡単にひっくり返ります。少なくとも半年、できれば相場の上げと下げを一度ずつ経験してから比べてください。</div>
+    <div class="al-note" style="margin-top:8px">レンジ売買は、2019〜2026年の上昇相場の検証では効きませんでした。
+      <b>横ばいや下落の局面で本番を上回るか</b>が、この記録で確かめたいことです。</div></div>`;
+
+  out.innerHTML=h;
+
+  // 推移のグラフ
+  const tr=[];
+  for(const r of rows){
+    if(!r.has||r.s.snaps.length<1)continue;
+    tr.push({x:r.s.snaps.map(x=>x.date),y:r.s.snaps.map(x=>((+x.total_value)-r.s.init)/r.s.init*100),
+      name:r.name,type:'scatter',mode:'lines',line:{color:r.color,width:2.2},
+      hovertemplate:r.name+' %{x}<br>%{y:+.2f}%<extra></extra>'});
+  }
+  const maxLen=Math.max(0,...rows.filter(r=>r.has).map(r=>r.s.snaps.length));
+  if(!tr.length||maxLen<2){
+    $('cmpCurve').innerHTML='<div class="empty">記録が2日以上たまると、ここに推移が描かれます</div>';
+  }else{
+    Plotly.newPlot('cmpCurve',tr,{...plyLayout(),height:280,showlegend:true,
+      legend:{orientation:'h',y:1.12,font:{size:11}},yaxis:{gridcolor:'#EEF0F4',zeroline:true,zerolinecolor:'#C9CED8',ticksuffix:'%'},
+      shapes:[]},plyCfg());
   }
 }
 
