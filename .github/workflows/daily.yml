@@ -56,6 +56,9 @@ jobs:
             echo "No changes to commit"
           else
             git commit -m "chore: update results.json ($(date -u +%Y-%m-%dT%H:%M:%SZ))"
+            # 72分のあいだに他の記録が保存していると、そのままでは拒否される。
+            # 最新を取り込んでから送る。
+            git pull --rebase --autostash origin main
             git push
           fi
 
