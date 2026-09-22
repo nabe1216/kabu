@@ -7,10 +7,16 @@ name: swing-track
 # 横ばい相場では結論が変わる可能性が残っているため、
 # これから先の実データを貯めて確かめる。
 #
+# 動く順番
+#   「Generate Dividend Signals」が成功したあとに動く。
+#   以前は時刻（20:40）で動かしていたが、シグナル生成が72分かかるようになり、
+#   前日のデータを読んだり、保存がぶつかったりするおそれが出たため。
+#
 # 本番トラック（portfolio_engine.py）には一切影響しない。
 on:
-  schedule:
-    - cron: "40 11 * * 1-5"   # 平日 20:40 JST（本番19:30・入れ替え20:15の後）
+  workflow_run:
+    workflows: ["Generate Dividend Signals"]
+    types: [completed]
   workflow_dispatch:
 
 permissions:
@@ -18,10 +24,15 @@ permissions:
 
 jobs:
   track:
+    # シグナル生成が失敗した日は動かさない（古いデータで記録しないため）
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: main
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -39,4 +50,6 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add data/swing_state.json data/swing_history.json
           git commit -m "レンジ売買の記録"
+          # ほかの記録が先に保存していても拒否されないよう、最新を取り込んでから送る
+          git pull --rebase --autostash origin main
           git push
