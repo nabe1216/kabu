@@ -2479,6 +2479,227 @@ def simulate_range(store: dict, panel: pd.DataFrame, cfg: dict,
             "capital": capital}
 
 
+
+# ══════════════════════════════════════════
+# 手法の探索
+#
+#   いまのルールの設定をいじるのではなく、
+#   まったく別の考え方の手法を並べて比べる。
+#
+#   大事なのは選び方。
+#   同じ7年のデータで何十通りも試して「いちばん良かったもの」を選ぶと、
+#   実力ではなく偶然で選んだものになる。
+#   そこで期間を前半と後半に分け、
+#     ・前半のデータだけで順位をつける
+#     ・後半（選ぶときに一切見ていない期間）で答え合わせをする
+#   前半で上位だったものが後半でも上位なら、偶然ではない可能性が高い。
+#
+#   ここでの比較は、すべて同じ簡易エンジンで行う。
+#   Tier別の予算や建玉の管理は入っていないので、
+#   本番ルールの数字とは一致しない。手法どうしの優劣を見るためのもの。
+# ══════════════════════════════════════════
+def _mats(panel: pd.DataFrame) -> dict:
+    """比較に使う行列（月 × 銘柄）をまとめて作る。"""
+    px = panel.pivot_table(index="date", columns="code", values="price")
+    yl = panel.pivot_table(index="date", columns="code", values="yield")
+    dg = panel.pivot_table(index="date", columns="code", values="dps_growth")
+    po = panel.pivot_table(index="date", columns="code", values="pct_own")
+    cut = panel.pivot_table(index="date", columns="code", values="dps_cut")
+    px = px.sort_index()
+    ret = px.pct_change()
+    # 過去12か月の値動き（前月までの情報だけを使う）
+    mom = (px / px.shift(12) - 1).shift(1)
+    vol = ret.rolling(12, min_periods=6).std().shift(1)
+    # 市場全体の動き。等金額で全銘柄を持ったときの指数。
+    idx = (1 + ret.mean(axis=1).fillna(0)).cumprod()
+    mkt = (idx / idx.shift(12) - 1).shift(1)
+    return {"px": px, "yield": yl, "dps_growth": dg, "pct_own": po,
+            "cut": cut.fillna(False).astype(bool), "ret": ret,
+            "mom": mom, "vol": vol, "mkt": mkt}
+
+
+def _score(m: dict, kind: str, d) -> pd.Series:
+    """その月の銘柄ごとの点数。大きいほど買いたい。"""
+    if kind == "yield":          # 利回りが高い順
+        return m["yield"].loc[d]
+    if kind == "pct_own":        # その銘柄の過去と比べて安い順
+        return m["pct_own"].loc[d]
+    if kind == "growth":         # 増配率が高い順
+        return m["dps_growth"].loc[d]
+    if kind == "mom":            # 過去12か月で上がった順
+        return m["mom"].loc[d]
+    if kind == "rev":            # 過去12か月で下がった順
+        return -m["mom"].loc[d]
+    if kind == "lowvol":         # 値動きが小さい順
+        return -m["vol"].loc[d]
+    if kind == "yield_lowvol":   # 高配当 かつ 値動きが小さい
+        return (m["yield"].loc[d].rank(pct=True)
+                + (-m["vol"].loc[d]).rank(pct=True))
+    if kind == "yield_mom":      # 高配当 かつ 上がっている
+        return (m["yield"].loc[d].rank(pct=True)
+                + m["mom"].loc[d].rank(pct=True))
+    if kind == "yield_growth":   # 高配当 かつ 増配している
+        return (m["yield"].loc[d].rank(pct=True)
+                + m["dps_growth"].loc[d].rank(pct=True))
+    raise ValueError(kind)
+
+
+def run_strategy(m: dict, cfg: dict, dates, capital: float,
+                 n: int, min_yield: float, tax: float, slip: float) -> dict:
+    """ひとつの手法を月次で回す。
+
+    cfg の項目
+      score     … 銘柄の選び方（上の _score の種類）
+      rebalance … 何か月ごとに入れ替えるか。0 なら入れ替えない（買ったら持ち続ける）
+      regime    … 市場の状態で選び方を変える {"up": "mom", "flat": "yield", ...}
+      exit_cut  … 減配したら手放すか
+    """
+    cash, pos = capital, {}          # pos: code -> {"sh": 株数, "cost": 取得単価}
+    loss_pool, tax_paid, trades = 0.0, 0.0, 0
+    curve = []
+    reb = cfg.get("rebalance", 0)
+
+    def price(code, d):
+        v = m["px"].at[d, code] if code in m["px"].columns else np.nan
+        return v if pd.notna(v) else None
+
+    for i, d in enumerate(dates):
+        # ── 減配したら手放す ──
+        if cfg.get("exit_cut"):
+            for c in list(pos):
+                if c in m["cut"].columns and bool(m["cut"].at[d, c]):
+                    p = price(c, d)
+                    if p is None:
+                        continue
+                    eff = p * (1 - slip)
+                    g = (eff - pos[c]["cost"]) * pos[c]["sh"]
+                    cash += pos[c]["sh"] * eff
+                    if g > 0:
+                        t = max(0.0, g - loss_pool) * tax
+                        loss_pool = max(0.0, loss_pool - g)
+                        cash -= t
+                        tax_paid += t
+                    else:
+                        loss_pool += -g
+                    del pos[c]
+                    trades += 1
+
+        # ── 買う銘柄を決める ──
+        do_reb = (reb > 0 and i % reb == 0) or (reb == 0 and not pos)
+        if do_reb:
+            kind = cfg.get("score", "yield")
+            if cfg.get("regime"):
+                mk = m["mkt"].loc[d] if d in m["mkt"].index else np.nan
+                st = ("up" if pd.notna(mk) and mk > 0.05 else
+                      "down" if pd.notna(mk) and mk < -0.05 else "flat")
+                kind = cfg["regime"].get(st, kind)
+            sc = _score(m, kind, d)
+            ok = m["yield"].loc[d] >= min_yield
+            sc = sc[ok & m["px"].loc[d].notna()].dropna()
+            want = list(sc.sort_values(ascending=False).head(n).index)
+
+            # 入れ替える手法は、外れた銘柄を売る
+            if reb > 0:
+                for c in list(pos):
+                    if c in want:
+                        continue
+                    p = price(c, d)
+                    if p is None:
+                        continue
+                    eff = p * (1 - slip)
+                    g = (eff - pos[c]["cost"]) * pos[c]["sh"]
+                    cash += pos[c]["sh"] * eff
+                    if g > 0:
+                        t = max(0.0, g - loss_pool) * tax
+                        loss_pool = max(0.0, loss_pool - g)
+                        cash -= t
+                        tax_paid += t
+                    else:
+                        loss_pool += -g
+                    del pos[c]
+                    trades += 1
+
+            # 空いている枠を買う
+            total = cash + sum(pos[c]["sh"] * (price(c, d) or pos[c]["cost"])
+                               for c in pos)
+            unit = total / n
+            for c in want:
+                if c in pos or len(pos) >= n:
+                    continue
+                p = price(c, d)
+                if not p or p <= 0:
+                    continue
+                sh = int(unit // p // 100) * 100
+                if sh <= 0:
+                    continue
+                eff = p * (1 + slip)
+                if sh * eff > cash:
+                    sh = int(cash // eff // 100) * 100
+                    if sh <= 0:
+                        continue
+                cash -= sh * eff
+                pos[c] = {"sh": sh, "cost": eff}
+                trades += 1
+
+        # ── 評価と配当 ──
+        val = cash
+        div = 0.0
+        for c, st in pos.items():
+            p = price(c, d) or st["cost"]
+            val += st["sh"] * p
+            y = m["yield"].at[d, c] if c in m["yield"].columns else np.nan
+            if pd.notna(y):
+                div += st["sh"] * p * (y / 100) / 12
+        cash += div * (1 - tax)
+        curve.append({"date": d, "value": val + div * (1 - tax)})
+
+    eq = pd.DataFrame(curve)
+    v = eq["value"].to_numpy()
+    yrs = max((dates[-1] - dates[0]).days / 365.25, 0.5)
+    dd = float((1 - v / np.maximum.accumulate(v)).max())
+    r = pd.Series(v).pct_change().dropna()
+    return {"年率": (v[-1] / capital) ** (1 / yrs) - 1,
+            "最大下落": dd, "シャープ": float(r.mean() / r.std() * np.sqrt(12))
+            if r.std() > 0 else 0.0, "売買": trades, "税金": tax_paid,
+            "curve": eq}
+
+
+# 比べる手法。設定をいじったものではなく、考え方が違うものを並べる。
+EXPLORE = [
+    ("いまのルールに近い形", {"score": "pct_own", "rebalance": 0, "exit_cut": True},
+     "その銘柄の過去3年と比べて安いものを買い、減配するまで売らない"),
+    ("ダウの犬（年1回）", {"score": "yield", "rebalance": 12},
+     "利回りが高い順に買い、1年ごとに入れ替える。有名な古典的手法"),
+    ("高配当・毎月入れ替え", {"score": "yield", "rebalance": 1},
+     "利回りが高い順に買い、毎月見直す"),
+    ("高配当・買って放置", {"score": "yield", "rebalance": 0},
+     "利回りが高い順に買い、あとは何もしない"),
+    ("増配率が高い順", {"score": "growth", "rebalance": 12},
+     "配当を増やしている会社を買う。利回りの高さは見ない"),
+    ("上がっている順（モメンタム）", {"score": "mom", "rebalance": 1},
+     "過去12か月で上がった銘柄を買う。高配当戦略とは逆の発想"),
+    ("下がっている順（逆張り）", {"score": "rev", "rebalance": 1},
+     "過去12か月で下がった銘柄を買う"),
+    ("値動きが小さい順", {"score": "lowvol", "rebalance": 12},
+     "値動きの小さい銘柄を買う。世界的に効くとされる手法"),
+    ("高配当 × 値動きが小さい", {"score": "yield_lowvol", "rebalance": 12},
+     "2つの条件を組み合わせる"),
+    ("高配当 × 上がっている", {"score": "yield_mom", "rebalance": 12},
+     "高配当のなかで、勢いのあるものを買う"),
+    ("高配当 × 増配している", {"score": "yield_growth", "rebalance": 12},
+     "高配当のなかで、配当を増やしているものを買う"),
+    ("市況で切り替え：上昇はモメンタム", {"rebalance": 3,
+     "regime": {"up": "mom", "flat": "yield", "down": "yield"}},
+     "市場が上げているときはモメンタム、それ以外は高配当"),
+    ("市況で切り替え：上昇は放置", {"rebalance": 3,
+     "regime": {"up": "pct_own", "flat": "yield", "down": "yield"}},
+     "市場が上げているときは割安買い、それ以外は高配当"),
+    ("市況で切り替え：下落だけ低ボラ", {"rebalance": 3,
+     "regime": {"up": "yield", "flat": "yield", "down": "lowvol"}},
+     "市場が下げているときだけ、値動きの小さい銘柄に逃げる"),
+]
+
+
 def buy_and_hold(pn: pd.DataFrame, tax_rate: float) -> dict | None:
     dts = sorted(pn["date"].unique())
     if len(dts) < 12:
@@ -2534,6 +2755,11 @@ def main() -> int:
     ap.add_argument("--only", default="", help="比較するルールをカンマ区切りで指定")
     ap.add_argument("--capital", type=float, default=0,
                     help="元本。未指定なら通常300万・実運用モードで1000万")
+    ap.add_argument("--explore", action="store_true",
+                    help="別の考え方の手法を並べて比べる。"
+                         "前半のデータで順位をつけ、後半で答え合わせをする")
+    ap.add_argument("--explore-names", type=int, default=15,
+                    help="探索で同時に持つ銘柄数（既定15）")
     ap.add_argument("--after-event", action="store_true",
                     help="減配・業績急変のあと、株価がどうなったかを調べる")
     ap.add_argument("--factor-test", action="store_true",
@@ -2886,6 +3112,100 @@ def main() -> int:
         for v in VARIANTS.values():
             v.setdefault("min_yield", args.min_yield)
         log.info("利回り %.1f％ 未満の銘柄は買わない設定で回します", args.min_yield)
+
+    # ══════════════════════════════════════════
+    # 手法の探索
+    # ══════════════════════════════════════════
+    if args.explore:
+        m = _mats(panel)
+        dates = list(m["px"].index)
+        # 最初の12か月は、過去12か月の情報が揃わないので使わない
+        dates = [d for d in dates if d >= dates[0] + pd.DateOffset(months=12)]
+        if len(dates) < 36:
+            sys.exit("期間が短すぎます。3年以上のデータが必要です。")
+        half = len(dates) // 2
+        tr, te = dates[:half], dates[half:]
+        cap = args.capital
+        tax = args.tax / 100.0
+        slip = args.slip_bps / 10000.0
+        n = args.explore_names
+        my = args.min_yield or 0.0
+
+        log.info("手法の探索：%d通り × 3期間（前半 %s〜%s ／ 後半 %s〜%s）",
+                 len(EXPLORE), tr[0].date(), tr[-1].date(),
+                 te[0].date(), te[-1].date())
+
+        rows = []
+        for name, cfg, desc in EXPLORE:
+            r = {"手法": name, "説明": desc}
+            for lbl, ds in (("前半", tr), ("後半", te), ("全期間", dates)):
+                out = run_strategy(m, cfg, ds, cap, n, my, tax, slip)
+                r[lbl] = out["年率"] * 100
+                if lbl == "全期間":
+                    r["最大下落"] = out["最大下落"] * 100
+                    r["売買"] = out["売買"]
+                    r["税金"] = out["税金"]
+            rows.append(r)
+            log.info("  %-28s 前半 %5.1f%% ／ 後半 %5.1f%%",
+                     name[:28], r["前半"], r["後半"])
+
+        df = pd.DataFrame(rows)
+        df["前半順位"] = df["前半"].rank(ascending=False).astype(int)
+        df["後半順位"] = df["後半"].rank(ascending=False).astype(int)
+
+        print(f"\n■ 手法の探索（{dates[0].date()} 〜 {dates[-1].date()} ／ "
+              f"{n}銘柄・税{args.tax}%・ずれ{args.slip_bps}bps）\n")
+        print("  前半のデータだけで順位をつけ、後半で答え合わせをしています。")
+        print("  後半は、順位をつけるときに一切見ていない期間です。\n")
+
+        d2 = df.sort_values("前半", ascending=False)
+        print(f"{'手法':<30}{'前半':>8}{'後半':>8}{'全期間':>9}"
+              f"{'前半順位':>9}{'後半順位':>9}{'最大下落':>9}{'売買':>7}")
+        print("-" * 92)
+        for _, r in d2.iterrows():
+            print(f"{r['手法'][:28]:<30}{r['前半']:>7.1f}%{r['後半']:>7.1f}%"
+                  f"{r['全期間']:>8.1f}%{r['前半順位']:>9}{r['後半順位']:>9}"
+                  f"{r['最大下落']:>8.1f}%{r['売買']:>7.0f}")
+
+        # 前半の順位が、後半でどれだけ当たっているか
+        corr = df["前半順位"].corr(df["後半順位"], method="spearman")
+        top = d2.iloc[0]
+        print(f"\n【答え合わせ】\n")
+        print(f"  前半で1位だった手法 … {top['手法']}")
+        print(f"    後半では {int(top['後半順位'])}位 / {len(df)}通り"
+              f"（年率 {top['後半']:.1f}%）")
+        best_te = df.sort_values("後半", ascending=False).iloc[0]
+        print(f"  後半で1位だった手法 … {best_te['手法']}"
+              f"（前半は {int(best_te['前半順位'])}位）")
+        print(f"\n  前半の順位と後半の順位の一致度 … {corr:+.2f}")
+        if corr > 0.5:
+            print("    → かなり一致しています。前半で良かった手法は、"
+                  "後半でも良い傾向があります。")
+        elif corr > 0.2:
+            print("    → ゆるやかに一致しています。多少は参考になります。")
+        elif corr > -0.2:
+            print("    → ほとんど関係がありません。"
+                  "**前半で良かった手法を選んでも、後半では役に立ちません。**")
+        else:
+            print("    → 逆の関係です。前半で良かった手法ほど、後半で悪くなっています。")
+
+        print("\n【手法の説明】\n")
+        for _, r in d2.iterrows():
+            print(f"  {r['手法']}")
+            print(f"    {r['説明']}")
+
+        print("\n【読み方】\n")
+        print("  ・ここでの比較は、手法どうしの優劣を見るための簡易エンジンです。")
+        print("    Tier別の予算などは入っていないので、本番ルールの数字とは一致しません。")
+        print("  ・「全期間」でいちばん良かった手法を選ぶのは危険です。")
+        print("    14通りも試せば、偶然いちばん良いものが必ず出ます。")
+        print("  ・見るべきは一致度です。これが低ければ、"
+              "どの手法を選んでも将来の役には立ちません。")
+
+        OUTDIR.mkdir(parents=True, exist_ok=True)
+        df.to_csv(OUTDIR / "explore.csv", index=False, encoding="utf-8-sig")
+        print("\n書き出しました: data/explore.csv")
+        return 0
 
     # ══════════════════════════════════════════
     # 減配・業績急変のあと、株価はどうなったか
