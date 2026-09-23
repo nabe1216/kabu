@@ -29,6 +29,10 @@ on:
         description: "元本（円）。空欄なら通常300万・実運用モードで1000万"
         required: false
         default: ""
+      explore:
+        description: "別の考え方の手法を並べて比べる（true/false）。前半で順位をつけ後半で答え合わせします"
+        required: false
+        default: "false"
       after_event:
         description: "減配・業績急変のあと株価がどうなったかを調べる（true/false）"
         required: false
@@ -85,10 +89,6 @@ on:
         description: "資金を何か月かけて入れるか。0なら初日に全額、12なら毎月1/12ずつ"
         required: false
         default: "0"
-      show_trades:
-        description: "建玉の明細を表示する（true/false）"
-        required: false
-        default: "false"
       universe:
         description: "対象。core＝大型〜中型（489社）、prime＝プライム全銘柄（約1600社・取得に70分前後）"
         required: false
@@ -147,6 +147,7 @@ jobs:
             --universe "${{ github.event.inputs.universe || 'core' }}" \
             --min-yield "${{ github.event.inputs.min_yield || '0' }}" \
             --ramp "${{ github.event.inputs.ramp || '0' }}" \
+            ${{ github.event.inputs.explore == 'true' && '--explore' || '' }} \
             ${{ github.event.inputs.after_event == 'true' && '--after-event' || '' }} \
             ${{ github.event.inputs.factor_test == 'true' && '--factor-test' || '' }} \
             ${{ github.event.inputs.fx_test == 'true' && '--fx-test' || '' }} \
@@ -159,7 +160,6 @@ jobs:
             --grid-lookback "${{ github.event.inputs.grid_lookback || '24' }}" \
             --grid-max-names "${{ github.event.inputs.grid_max_names || '20' }}" \
             ${{ github.event.inputs.walk != '' && format('--walk {0}', github.event.inputs.walk) || '' }} \
-            ${{ github.event.inputs.show_trades == 'true' && '--show-trades' || '' }} \
             --tax "${{ github.event.inputs.tax || '20.315' }}" \
             --slip-bps "${{ github.event.inputs.slip_bps || '10' }}" \
             --max-names "${{ github.event.inputs.max_names || '0' }}" \
@@ -194,5 +194,6 @@ jobs:
             data/range_trades.csv
             data/usdjpy.csv
             data/after_event.csv
+            data/explore.csv
             run.log
           if-no-files-found: ignore
