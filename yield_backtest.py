@@ -2533,6 +2533,7 @@ def _score(m: dict, kind: str, d) -> pd.Series:
     if kind == "lowvol":         # 値動きが小さい順
         return -m["vol"].loc[d]
     if kind == "yield_lowvol":   # 高配当 かつ 値動きが小さい
+        # 片方が欠けている銘柄は選ばれないよう、順位づけの前に揃える
         return (m["yield"].loc[d].rank(pct=True)
                 + (-m["vol"].loc[d]).rank(pct=True))
     if kind == "yield_mom":      # 高配当 かつ 上がっている
@@ -3117,8 +3118,17 @@ def main() -> int:
     # 手法の探索
     # ══════════════════════════════════════════
     if args.explore:
-        m = _mats(panel)
+        log.info("手法の探索：行列を作成中…")
+        try:
+            m = _mats(panel)
+        except Exception as e:
+            log.exception("行列を作れませんでした")
+            sys.exit(f"データの形が想定と違います：{e}")
         dates = list(m["px"].index)
+        log.info("  月数 %d ／ 銘柄 %d", len(dates), m["px"].shape[1])
+        # 増配率が全く無いと、その手法だけ動かないので知らせる
+        if m["dps_growth"].notna().sum().sum() == 0:
+            log.warning("増配率のデータがありません。その手法は0%%になります。")
         # 最初の12か月は、過去12か月の情報が揃わないので使わない
         dates = [d for d in dates if d >= dates[0] + pd.DateOffset(months=12)]
         if len(dates) < 36:
@@ -3138,16 +3148,22 @@ def main() -> int:
         rows = []
         for name, cfg, desc in EXPLORE:
             r = {"手法": name, "説明": desc}
-            for lbl, ds in (("前半", tr), ("後半", te), ("全期間", dates)):
-                out = run_strategy(m, cfg, ds, cap, n, my, tax, slip)
-                r[lbl] = out["年率"] * 100
-                if lbl == "全期間":
-                    r["最大下落"] = out["最大下落"] * 100
-                    r["売買"] = out["売買"]
-                    r["税金"] = out["税金"]
+            try:
+                for lbl, ds in (("前半", tr), ("後半", te), ("全期間", dates)):
+                    out = run_strategy(m, cfg, ds, cap, n, my, tax, slip)
+                    r[lbl] = out["年率"] * 100
+                    if lbl == "全期間":
+                        r["最大下落"] = out["最大下落"] * 100
+                        r["売買"] = out["売買"]
+                        r["税金"] = out["税金"]
+            except Exception as e:
+                log.warning("  %s は計算できませんでした（%s）。飛ばします。", name, e)
+                continue
             rows.append(r)
             log.info("  %-28s 前半 %5.1f%% ／ 後半 %5.1f%%",
                      name[:28], r["前半"], r["後半"])
+        if len(rows) < 2:
+            sys.exit("計算できた手法が足りません。")
 
         df = pd.DataFrame(rows)
         df["前半順位"] = df["前半"].rank(ascending=False).astype(int)
