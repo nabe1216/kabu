@@ -127,13 +127,21 @@ jobs:
       - name: 依存関係をインストール
         run: pip install --quiet numpy pandas requests
 
-      # 取得済みの株価データを再利用する。週ごとに作り直す。
+      # 取得済みの株価データを再利用する。
+      #
+      # 以前は actions/cache を使っていたが、
+      # 「実行が最後まで成功したときだけ保存される」仕組みのため、
+      # 1時間かけて取得しても、そのあとの処理で失敗すると保存されず、
+      # 次回もゼロから取り直すことになっていた。
+      # 復元と保存を分け、失敗しても保存されるようにする。
       - name: キャッシュを復元
-        uses: actions/cache@v4
+        id: cache
+        uses: actions/cache/restore@v4
         with:
           path: data/yield_backtest_cache.pkl
-          key: yield-backtest-cache-v1-${{ github.run_id }}
+          key: yield-backtest-cache-v2-
           restore-keys: |
+            yield-backtest-cache-v2-
             yield-backtest-cache-v1-
 
       - name: バックテストを実行
@@ -178,6 +186,15 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           cat run.log
           exit $code
+
+      # 取得したデータを保存する。ここが肝心で、
+      # 失敗した実行でも保存しないと、いつまでも取り直しになる。
+      - name: キャッシュを保存
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data/yield_backtest_cache.pkl
+          key: yield-backtest-cache-v2-${{ github.run_id }}
 
       - name: 結果をダウンロードできるようにする
         if: always()
