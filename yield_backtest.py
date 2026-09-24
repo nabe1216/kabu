@@ -405,6 +405,35 @@ VARIANTS: dict[str, dict[str, Any]] = {
         "hold_tiers": ["S"], "exit_on_cut": True,
     },
 
+    # ── 「過去3年と比べて安いとき」に買う仕組みは効いているか ──
+    # 探索で「高配当・買って放置」がいまのルールを上回ったため、
+    # 本番と同じ条件（スクリーニング・Tier別予算・売らない）で確かめる。
+    # 変えるのは「どの銘柄を、いつ買うか」だけ。
+    "xs_any_tier": {
+        "label": "分位なし：利回りの高い順に買う（Tier優先）",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True,
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True,
+    },
+    "xs_any_yield": {
+        "label": "分位なし：利回りの高い順に買う（Tierを見ない）",
+        "entry": [0], "exit": [], "cross": True,
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True,
+    },
+    "xs80_tier": {
+        "label": "全銘柄の利回り上位20％から買う（Tier優先）",
+        "entry": [80], "exit": [], "priority": "tier", "cross": True,
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True,
+    },
+    "own_any_tier": {
+        "label": "分位で待たない：条件を満たせばすぐ買う（Tier優先）",
+        "entry": [0], "exit": [], "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True,
+    },
+
     # ── 質（Tier）で入れ替える ──
     # B ばかり持っているときに S が買い候補になったら入れ替えるべきか。
     # 売却益に20.315％の税金がかかるので、それを取り戻せるかが問われる。
@@ -3184,7 +3213,8 @@ def main() -> int:
                   f"{r['最大下落']:>8.1f}%{r['売買']:>7.0f}")
 
         # 前半の順位が、後半でどれだけ当たっているか
-        corr = df["前半順位"].corr(df["後半順位"], method="spearman")
+        # 順位どうしの相関（scipy を使わずに計算する）
+        corr = df["前半"].rank().corr(df["後半"].rank())
         top = d2.iloc[0]
         print(f"\n【答え合わせ】\n")
         print(f"  前半で1位だった手法 … {top['手法']}")
