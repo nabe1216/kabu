@@ -301,8 +301,8 @@ td.al-name{white-space:normal;min-width:250px}
         </div>
 
         <div class="lg-sec"><h5>シグナル</h5>
-          <div class="lg-row"><span class="tag p-buy">BUY</span><span class="lg-v">いまの利回りが、過去3年の月次利回りの上位25%（Q75）以上</span></div>
-          <div class="lg-row"><span class="tag p-sell">SELL</span><span class="lg-v">下位25%（Q25）以下。<b>表示のみで、売却には使いません</b></span></div>
+          <div class="lg-row"><span class="tag p-buy">BUY</span><span class="lg-v" id="lgBuy">いまの利回りが、過去3年の月次利回りの上位25%（Q75）以上</span></div>
+          <div class="lg-row" id="lgSellRow"><span class="tag p-sell">SELL</span><span class="lg-v">下位25%（Q25）以下。<b>表示のみで、売却には使いません</b></span></div>
           <div class="lg-row"><span class="tag p-neu">中立</span><span class="lg-v">その間</span></div>
           <div class="lg-row"><span class="tag p-box">BOX</span><span class="lg-v">横ばい相場（過去60日の値幅8〜20%・ADX 22未満）。参考表示</span></div>
           <div class="lg-row"><span class="tag p-cheap">割安</span><span class="lg-v">PER・PBR が過去の中央値より低い。参考表示</span></div>
@@ -318,7 +318,7 @@ td.al-name{white-space:normal;min-width:250px}
 
         <div class="lg-sec"><h5>買い方</h5>
           <div class="lg-row"><span class="lg-k">条件</span><span class="lg-v">8条件を満たし、BUY が出ている</span></div>
-          <div class="lg-row"><span class="lg-k">順番</span><span class="lg-v">S → A → B。同じ区分なら利回りの高い順</span></div>
+          <div class="lg-row"><span class="lg-k">順番</span><span class="lg-v lg-buyorder">S → A → B。同じ区分なら利回りの高い順</span></div>
           <div class="lg-row"><span class="lg-k">金額</span><span class="lg-v">総資産 ÷ 15銘柄 × 重み（S 2.0 ／ A 1.5 ／ B 1.0）</span></div>
           <div class="lg-row"><span class="lg-k">上限</span><span class="lg-v">同時に20銘柄まで。買い増しはしない。100株単位</span></div>
           <div class="lg-note">配分案のタブでは、利回り<span class="lgMinY2">4</span>%未満の銘柄を除いています（検証と同じ条件にするため）。</div>
@@ -724,9 +724,16 @@ function fillLogic(){
   set('lgMinY',th.min_yield);
   document.querySelectorAll('.lgMinY2').forEach(e=>{if(th.min_yield!=null)e.textContent=th.min_yield;});
   const u=$('sigUniv'); if(u&&S.data.universe_count)u.textContent=S.data.universe_count.toLocaleString();
+  if(buyMode()==='yield'){
+    const b=$('lgBuy'); if(b)b.innerHTML=`スクリーニング8条件を通り、利回り${th.min_yield??4}%以上。<b>その銘柄の過去と比べて安くなるのを待たずに買います</b>`;
+    const r=$('lgSellRow'); if(r)r.innerHTML=`<span class="tag p-sell">SELL</span><span class="lg-v">いまのルールでは出しません（もともと売却には使っていません）</span>`;
+    document.querySelectorAll('.lg-buyorder').forEach(e=>e.textContent='S → A → B。同じ区分なら、いまの利回りが高い順');
+  }
 }
 /* PER×PBR の上限。以前は画面だけ 22.5 と書かれていたが、実際の判定は 40 */
 const gth=()=>(S.data&&S.data.thresholds&&S.data.thresholds.graham)||40;
+/* 買いの判定の方式。yield＝待たずに買う（新）、quantile＝Q75まで待つ（旧） */
+const buyMode=()=>(S.data&&S.data.thresholds&&S.data.thresholds.buy_mode)||'quantile';
 function buildSectorFilter(){
   const secs=[...new Set(S.data.stocks.map(s=>s.sector).filter(Boolean))].sort();
   $('fSector').innerHTML='<option value="">業種: すべて</option>'+secs.map(x=>`<option>${esc(x)}</option>`).join('');
@@ -1084,7 +1091,7 @@ function alPick(){
     if(!r.price||r.price<=0)continue;
     const cy=+r.current_yield||0,q75=+r.yield_q75||0;
     if(cy<minY){st.lowY++;continue;}                 // 足切り未満は買わない
-    if(q75>0&&cy<q75){st.lowQ++;continue;}           // Q75に届かない
+    if(buyMode()!=='yield'&&q75>0&&cy<q75){st.lowQ++;continue;}  // 旧ルールのみ：Q75に届かない
     out.push({...r,_y:cy,_q:q75});
   }
   out.sort((a,b)=>(AL_ORD[a.tier]??9)-(AL_ORD[b.tier]??9)||b._y-a._y);
@@ -1147,6 +1154,15 @@ function alAllocate(c,budget,target){
 }
 /* なぜこの銘柄なのかを一文で */
 function alWhy(x){
+  const t0={S:'累進配当（またはDOE）を掲げ、業界首位級。中核として長く持つ区分',
+            A:'累進配当か業界首位級の、どちらか一方を満たす区分',
+            B:'そのどちらにも当たらない区分'}[x.tier]||'';
+  if(buyMode()==='yield'){
+    const minY=(S.data.thresholds&&S.data.thresholds.min_yield)||4;
+    return `スクリーニング8条件を通り、利回り <b>${x._y.toFixed(2)}％</b> は足切り（${minY}％）を上回る。
+      同じ区分の中では、いまの利回りが高い順に買います。<b>Tier ${x.tier}</b> — ${t0}。`
+      +(x._q?` <span style="color:var(--text-3)">（参考：この銘柄の過去3年のQ75は${x._q.toFixed(2)}％）</span>`:'');
+  }
   const gap=x._q>0?(x._y/x._q-1)*100:0;
   const lv=gap>=20?'過去3年でもかなり安い水準':gap>=8?'過去3年で見て安い水準':'過去3年の安い側に入ったところ';
   const t={S:'累進配当（またはDOE）を掲げ、業界首位級。中核として長く持つ区分',
@@ -1209,13 +1225,13 @@ function renderAlloc(){
           <div class="al-why">${alWhy(x)}</div></details></td>
       <td class="t-right mono" style="font-weight:600">${x._y.toFixed(2)}%</td>
       <td class="t-right mono">${x._q?x._q.toFixed(2)+'%':'—'}</td>
-      <td class="t-right"><span class="pill p-cheap">+${gap.toFixed(0)}%</span></td>
+      <td class="t-right"><span class="pill ${gap>=0?'p-cheap':'p-neu'}">${gap>=0?'+':''}${gap.toFixed(0)}%</span></td>
       <td class="t-right mono">${fmt.yen(x.price)}</td>
       <td class="t-right mono">${x._sh.toLocaleString()}株</td>
       <td class="t-right mono" style="font-weight:600">${fmt.yen(x._cost)}</td></tr>`;
   }
   h+=`</tbody></table></div>
-    <div style="font-size:11.5px;color:var(--text-3);margin-top:10px">割安度は、いまの利回りが過去3年のQ75を何％上回っているか。大きいほど、その銘柄にしては安い。</div></div>`;
+    <div style="font-size:11.5px;color:var(--text-3);margin-top:10px">割安度は、いまの利回りが過去3年のQ75を何％上回っているか。${buyMode()==='yield'?'<b>いまのルールでは買う条件に使っておらず、参考として出しています。</b>':'大きいほど、その銘柄にしては安い。'}</div></div>`;
 
   // 区分の意味
   h+=`<div class="card sec"><h4>この表の読み方</h4>
