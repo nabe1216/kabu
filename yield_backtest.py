@@ -2540,11 +2540,21 @@ def _mats(panel: pd.DataFrame) -> dict:
     mom = (px / px.shift(12) - 1).shift(1)
     vol = ret.rolling(12, min_periods=6).std().shift(1)
     # 市場全体の動き。等金額で全銘柄を持ったときの指数。
-    idx = (1 + ret.mean(axis=1).fillna(0)).cumprod()
+    mret = ret.mean(axis=1).fillna(0)
+    idx = (1 + mret).cumprod()
     mkt = (idx / idx.shift(12) - 1).shift(1)
+    # 以下は高配当と関係のない指標。すべて前月までの情報だけを使う。
+    hi52 = (px / px.rolling(12, min_periods=6).max()).shift(1)       # 1年の高値にどれだけ近いか
+    rev1 = (-(px / px.shift(1) - 1)).shift(1)                        # 先月下げた順
+    mom121 = (px.shift(1) / px.shift(12) - 1).shift(1)               # 直近1か月を除いた12か月の上昇率
+    cov = ret.rolling(24, min_periods=12).cov(mret)
+    beta = (cov.div(mret.rolling(24, min_periods=12).var(), axis=0)).shift(1)  # 市場との連動の強さ
+    trend_on = (idx > idx.rolling(10, min_periods=10).mean()).shift(1).fillna(True)  # 市場が10か月平均より上
     return {"px": px, "yield": yl, "dps_growth": dg, "pct_own": po,
             "cut": cut.fillna(False).astype(bool), "ret": ret,
-            "mom": mom, "vol": vol, "mkt": mkt}
+            "mom": mom, "vol": vol, "mkt": mkt,
+            "hi52": hi52, "rev1": rev1, "mom121": mom121, "beta": beta,
+            "trend_on": trend_on}
 
 
 def _score(m: dict, kind: str, d) -> pd.Series:
@@ -2571,6 +2581,14 @@ def _score(m: dict, kind: str, d) -> pd.Series:
     if kind == "yield_growth":   # 高配当 かつ 増配している
         return (m["yield"].loc[d].rank(pct=True)
                 + m["dps_growth"].loc[d].rank(pct=True))
+    if kind == "hi52":           # 1年の高値に近い順
+        return m["hi52"].loc[d]
+    if kind == "rev1":           # 先月下げた順（短期の反発を狙う）
+        return m["rev1"].loc[d]
+    if kind == "mom121":         # 直近1か月を除いた12か月の上昇率
+        return m["mom121"].loc[d]
+    if kind == "lowbeta":        # 市場と連動しにくい順
+        return -m["beta"].loc[d]
     raise ValueError(kind)
 
 
@@ -2614,8 +2632,39 @@ def run_strategy(m: dict, cfg: dict, dates, capital: float,
                     del pos[c]
                     trades += 1
 
+        # ── 持つ時期を変える手法：持たない月は全部売って現金にする ──
+        timing = cfg.get("timing")
+        if timing:
+            on = True
+            if timing == "trend":      # 市場が10か月平均を下回ったら持たない
+                on = bool(m["trend_on"].loc[d]) if d in m["trend_on"].index else True
+            elif timing == "season":   # 5〜10月は持たない（セル・イン・メイ）
+                on = pd.Timestamp(d).month not in (5, 6, 7, 8, 9, 10)
+            if not on:
+                for c in list(pos):
+                    p = price(c, d)
+                    if p is None:
+                        continue
+                    eff = p * (1 - slip)
+                    g = (eff - pos[c]["cost"]) * pos[c]["sh"]
+                    cash += pos[c]["sh"] * eff
+                    if g > 0:
+                        t = max(0.0, g - loss_pool) * tax
+                        loss_pool = max(0.0, loss_pool - g)
+                        cash -= t
+                        tax_paid += t
+                    else:
+                        loss_pool += -g
+                    del pos[c]
+                    trades += 1
+                curve.append({"date": d, "value": cash})
+                continue
+
         # ── 買う銘柄を決める ──
-        do_reb = (reb > 0 and i % reb == 0) or (reb == 0 and not pos)
+        # 何も持っていないときは、入れ替えの月でなくても買う。
+        # そうしないと、年1回の入れ替えが毎回「持たない月」に当たった場合に
+        # 一度も買えないまま終わってしまう。
+        do_reb = (reb > 0 and i % reb == 0) or (not pos)
         if do_reb:
             kind = cfg.get("score", "yield")
             if cfg.get("regime"):
@@ -2695,6 +2744,31 @@ def run_strategy(m: dict, cfg: dict, dates, capital: float,
 
 
 # 比べる手法。設定をいじったものではなく、考え方が違うものを並べる。
+EXPLORE_OTHER = [
+    ("1年の高値に近い順", {"score": "hi52", "rebalance": 1},
+     "高値を更新しそうな銘柄を買う。「高値は更新されやすい」という経験則"),
+    ("先月下げた順（短期の反発）", {"score": "rev1", "rebalance": 1},
+     "先月大きく下げた銘柄を買い、翌月の戻りを狙う"),
+    ("12か月の上昇率（直近1か月を除く）", {"score": "mom121", "rebalance": 1},
+     "学術的に最もよく知られたモメンタムの形。直近の揺り戻しを避ける"),
+    ("市場と連動しにくい順（低ベータ）", {"score": "lowbeta", "rebalance": 12},
+     "相場全体が動いても動きにくい銘柄を持つ"),
+    ("モメンタム＋下げ相場は現金", {"score": "mom121", "rebalance": 1, "timing": "trend"},
+     "市場が10か月平均を下回ったら全部売って現金で待つ"),
+    ("値動きが小さい順＋下げ相場は現金", {"score": "lowvol", "rebalance": 12, "timing": "trend"},
+     "低ボラの銘柄を持ち、市場が崩れたら現金に逃げる"),
+    ("1年の高値に近い順＋下げ相場は現金", {"score": "hi52", "rebalance": 1, "timing": "trend"},
+     "高値圏の銘柄を買い、市場が崩れたら現金"),
+    ("モメンタム＋夏は持たない", {"score": "mom121", "rebalance": 1, "timing": "season"},
+     "5〜10月は現金。「5月に売って逃げろ」という格言"),
+    ("値動きが小さい順＋夏は持たない", {"score": "lowvol", "rebalance": 12, "timing": "season"},
+     "低ボラの銘柄を11〜4月だけ持つ"),
+    ("市況で切り替え：上げはモメンタム・下げは低ベータ", {"rebalance": 3,
+     "regime": {"up": "mom121", "flat": "lowvol", "down": "lowbeta"}},
+     "市場の勢いで、持つ銘柄の性格を変える"),
+]
+
+
 EXPLORE = [
     ("いまのルールに近い形", {"score": "pct_own", "rebalance": 0, "exit_cut": True},
      "その銘柄の過去3年と比べて安いものを買い、減配するまで売らない"),
@@ -3171,26 +3245,29 @@ def main() -> int:
         my = args.min_yield or 0.0
 
         log.info("手法の探索：%d通り × 3期間（前半 %s〜%s ／ 後半 %s〜%s）",
-                 len(EXPLORE), tr[0].date(), tr[-1].date(),
+                 len(EXPLORE) + len(EXPLORE_OTHER), tr[0].date(), tr[-1].date(),
                  te[0].date(), te[-1].date())
 
         rows = []
-        for name, cfg, desc in EXPLORE:
-            r = {"手法": name, "説明": desc}
-            try:
-                for lbl, ds in (("前半", tr), ("後半", te), ("全期間", dates)):
-                    out = run_strategy(m, cfg, ds, cap, n, my, tax, slip)
-                    r[lbl] = out["年率"] * 100
-                    if lbl == "全期間":
-                        r["最大下落"] = out["最大下落"] * 100
-                        r["売買"] = out["売買"]
-                        r["税金"] = out["税金"]
-            except Exception as e:
-                log.warning("  %s は計算できませんでした（%s）。飛ばします。", name, e)
-                continue
-            rows.append(r)
-            log.info("  %-28s 前半 %5.1f%% ／ 後半 %5.1f%%",
-                     name[:28], r["前半"], r["後半"])
+        _groups = [("高配当に関わる手法", EXPLORE),
+                   ("高配当と関係のない手法", EXPLORE_OTHER)]
+        for _g, _lst in _groups:
+            for name, cfg, desc in _lst:
+                r = {"手法": name, "説明": desc, "分類": _g}
+                try:
+                    for lbl, ds in (("前半", tr), ("後半", te), ("全期間", dates)):
+                        out = run_strategy(m, cfg, ds, cap, n, my, tax, slip)
+                        r[lbl] = out["年率"] * 100
+                        if lbl == "全期間":
+                            r["最大下落"] = out["最大下落"] * 100
+                            r["売買"] = out["売買"]
+                            r["税金"] = out["税金"]
+                except Exception as e:
+                    log.warning("  %s は計算できませんでした（%s）。飛ばします。", name, e)
+                    continue
+                rows.append(r)
+                log.info("  %-28s 前半 %5.1f%% ／ 後半 %5.1f%%",
+                         name[:28], r["前半"], r["後半"])
         if len(rows) < 2:
             sys.exit("計算できた手法が足りません。")
 
@@ -3235,6 +3312,12 @@ def main() -> int:
         else:
             print("    → 逆の関係です。前半で良かった手法ほど、後半で悪くなっています。")
 
+        for _g in df["分類"].unique():
+            _x = df[df["分類"] == _g]
+            if len(_x) >= 4:
+                _c = _x["前半"].rank().corr(_x["後半"].rank())
+                print(f"  {_g}だけで見た一致度 … {_c:+.2f}（{len(_x)}通り）")
+
         print("\n【手法の説明】\n")
         for _, r in d2.iterrows():
             print(f"  {r['手法']}")
@@ -3244,7 +3327,7 @@ def main() -> int:
         print("  ・ここでの比較は、手法どうしの優劣を見るための簡易エンジンです。")
         print("    Tier別の予算などは入っていないので、本番ルールの数字とは一致しません。")
         print("  ・「全期間」でいちばん良かった手法を選ぶのは危険です。")
-        print("    14通りも試せば、偶然いちばん良いものが必ず出ます。")
+        print(f"    {len(df)}通りも試せば、偶然いちばん良いものが必ず出ます。")
         print("  ・見るべきは一致度です。これが低ければ、"
               "どの手法を選んでも将来の役には立ちません。")
 
