@@ -1,0 +1,189 @@
+name: patch-buymode
+
+# 買いの判定を切り替える。これ1つで完結する（別のファイルは要らない）。
+#   yield    … スクリーニングを通り、利回りが足切り以上なら BUY（新しいルール）
+#   quantile … 利回りが過去3年の Q75 以上で BUY（これまでのルール）
+# 戻すときは quantile で再実行する。
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "yield（新しいルール）/ quantile（これまで）"
+        required: false
+        default: "yield"
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: generate.py を書き換える
+        env:
+          MODE: ${{ github.event.inputs.mode || 'yield' }}
+        run: |
+          python - <<'PY'
+          #!/usr/bin/env python3
+          """買いの判定を切り替える。
+
+              yield    … 新しいルール。スクリーニングを通り、利回りが足切り以上なら BUY。
+                          その銘柄の過去3年と比べて安くなるのを待たない。
+              quantile … これまでのルール。利回りが過去3年の Q75 以上で BUY、Q25 以下で SELL。
+
+          なぜ変えるか
+              64条件の総当たりで、新しいルールがこれまでのルールを86%の条件で上回った
+              （平均年率 27.7% 対 24.1%）。最悪の年率・ばらつき・最大下落もすべて良かった。
+              外部要因への依存は、ほぼ同じだった（+6.89pt 対 +6.71pt）。
+
+          目印が見つからない場合や文法エラーが出た場合は、何も保存せずに止まる。
+          """
+          import ast
+          import os
+          import re
+          import sys
+          from pathlib import Path
+
+          GEN = Path("scripts/generate.py")
+          PORT = Path("scripts/portfolio_engine.py")
+
+
+          def show_port_sorting(out: list) -> None:
+              """portfolio_engine.py が、買う候補をどう並べているかを表示する。
+
+              検証では「同じ Tier の中では、いまの利回りが高い順」に買っている。
+              本番の並べ方がそれと違えば、検証どおりの動きにならないので確かめる。
+              """
+              if not PORT.exists():
+                  out.append("portfolio_engine.py が見つかりません。")
+                  return
+              lines = PORT.read_text(encoding="utf-8").split("\n")
+              hits = [i for i, l in enumerate(lines)
+                      if re.search(r"\.sort\(|sorted\(", l) and not l.strip().startswith("#")]
+              out.append("### 買う順番の確認")
+              out.append("")
+              if not hits:
+                  out.append("**要確認** … portfolio_engine.py に並べ替えの行が見つかりませんでした。")
+                  return
+              keys = " ".join(lines[i] for i in hits)
+              if "tier" in keys.lower() and "yield" in keys.lower():
+                  out.append("**OK** … Tier順（S→A→B）、同じTierの中では利回りの高い順に買っています。"
+                             "検証と同じ並べ方です。")
+                  return
+              out.append("**要確認** … 並べ方が検証（Tier順・同じTierなら利回りの高い順）と"
+                         "違う可能性があります。この画面を送ってください。")
+              out.append("")
+              out.append("```")
+              shown = set()
+              for i in hits[:6]:
+                  for j in range(max(0, i - 6), min(len(lines), i + 3)):
+                      if j in shown:
+                          continue
+                      shown.add(j)
+                      out.append(f"{j+1:>4}| {lines[j]}")
+                  out.append("    ...")
+              out.append("```")
+
+
+          def main() -> int:
+              mode = os.environ.get("MODE", "yield")
+              if mode not in ("yield", "quantile"):
+                  sys.exit(f"MODE は yield か quantile です（指定: {mode}）")
+              if not GEN.exists():
+                  sys.exit(f"{GEN} がありません。")
+              s = before = GEN.read_text(encoding="utf-8")
+              log = []
+
+              if "BUY_MODE" in s:
+                  m = re.search(r"^BUY_MODE\s*=\s*'(\w+)'", s, re.M)
+                  cur = m.group(1) if m else "?"
+                  if cur != mode:
+                      s = re.sub(r"^BUY_MODE\s*=\s*'\w+'", f"BUY_MODE = '{mode}'",
+                                 s, count=1, flags=re.M)
+                      log.append(f"買いの判定 … {cur} → {mode}")
+              else:
+                  # 1. 設定を足す（足切りの定義の直後）
+                  m = re.search(r"^MIN_YIELD_THRESHOLD\s*=.*$", s, re.M)
+                  if not m:
+                      sys.exit("MIN_YIELD_THRESHOLD の行が見つかりません。中止します。")
+                  block = (m.group(0) + "\n\n"
+                           "# 買いの判定。\n"
+                           "#   yield    … スクリーニングを通り、利回りが足切り以上なら BUY（待たない）\n"
+                           "#   quantile … 利回りが過去3年の Q75 以上で BUY、Q25 以下で SELL（これまで）\n"
+                           "# 64条件の総当たりで yield が86%の条件で上回ったため、yield を採用。\n"
+                           f"BUY_MODE = '{mode}'")
+                  s = s.replace(m.group(0), block, 1)
+                  log.append(f"買いの判定の設定を追加（{mode}）")
+
+                  # 2. 判定の関数に分岐を入れる
+                  pat = re.compile(
+                      r'(def determine_signal\(current_yield[^\n]*\n'
+                      r'(\s*)"""BUY / SELL / NEUTRAL を判定。"""\n'
+                      r'\s*if current_yield is None or current_yield <= 0:\n'
+                      r'\s*return \'NEUTRAL\'\n)')
+                  m2 = pat.search(s)
+                  if not m2:
+                      sys.exit("determine_signal の目印が見つかりません。中止します。")
+                  ind = m2.group(2)
+                  add = (m2.group(1)
+                         + f"{ind}# 新しいルール：その銘柄の過去と比べて安くなるのを待たず、\n"
+                         + f"{ind}# 利回りが足切り以上なら買う候補にする（スクリーニングは別で判定）。\n"
+                         + f"{ind}if BUY_MODE == 'yield':\n"
+                         + f"{ind}    return 'BUY' if current_yield >= MIN_YIELD_THRESHOLD else 'NEUTRAL'\n")
+                  s = s.replace(m2.group(1), add, 1)
+                  log.append("判定の関数に新しいルールの分岐を追加")
+
+                  # 3. results.json に設定を書き出す（ダッシュボードが切り替えに使う）
+                  a3 = "'min_yield': MIN_YIELD_THRESHOLD,"
+                  if s.count(a3) == 1:
+                      s = s.replace(a3, a3 + " 'buy_mode': BUY_MODE,", 1)
+                      log.append("results.json に buy_mode を出力")
+                  else:
+                      log.append("！ results.json への出力は追加できませんでした（目印が見つからない）")
+
+              out = ["## 買いの判定の変更", ""]
+              if s != before:
+                  ast.parse(s)
+                  GEN.write_text(s, encoding="utf-8")
+                  out += [f"- {x}" for x in log]
+              else:
+                  out.append(f"すでに {mode} です。generate.py は変更していません。")
+              out += ["",
+                      "**yield** … スクリーニングを通り利回りが足切り以上なら BUY（新しいルール）",
+                      "**quantile** … 過去3年の Q75 以上で BUY（これまでのルール）", "",
+                      "次に「Generate Dividend Signals」を実行してください。", ""]
+              show_port_sorting(out)
+              for x in log:
+                  print(x)
+              sm = os.environ.get("GITHUB_STEP_SUMMARY")
+              if sm:
+                  with open(sm, "a", encoding="utf-8") as f:
+                      f.write("\n".join(out) + "\n")
+              else:
+                  print("\n".join(out))
+              return 0
+
+
+          if __name__ == "__main__":
+              sys.exit(main())
+
+          PY
+
+      - name: 保存する
+        run: |
+          if git diff --quiet -- scripts/generate.py; then
+            echo "変更なし。"
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add scripts/generate.py
+          git commit -m "買いの判定を変更"
+          git pull --rebase --autostash origin main
+          git push
