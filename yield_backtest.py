@@ -1303,6 +1303,77 @@ def op_timeline(stmts: list[dict]) -> pd.DataFrame:
     return df.groupby("date", as_index=False)["op"].last()
 
 
+# 財務の項目名（V2 は短い略称）。候補を順に試す。
+FUND_FIELDS = {
+    "eps":   ("EPS",),
+    "bps":   ("BPS",),
+    "np":    ("NP", "NetProfit", "Profit"),
+    "eq":    ("Eq", "Equity", "NetAssets", "TotalEquity"),
+    "sales": ("Sales", "NetSales", "Revenue"),
+    "sh":    ("ShOutFY", "ShOut", "SharesOutstanding"),
+}
+
+
+def fund_timeline(stmts: list[dict]) -> pd.DataFrame:
+    """開示日つきの通期の財務項目の系列。前年の純利益も持たせる（成長率用）。"""
+    recs = []
+    for st in stmts:
+        if st.get("CurPerType") not in ("FY", "4Q"):
+            continue
+        d = pdate(st.get("DiscDate")) or pdate(st.get("CurPerEn"))
+        if d is None:
+            continue
+        rec = {"date": pd.Timestamp(d)}
+        for k, names in FUND_FIELDS.items():
+            v = None
+            for nm in names:
+                v = fnum(st.get(nm))
+                if v is not None:
+                    break
+            rec[k] = v
+        recs.append(rec)
+    if not recs:
+        return pd.DataFrame()
+    df = pd.DataFrame(recs).sort_values("date").groupby("date", as_index=False).last()
+    df["np_prev"] = df["np"].shift(1)
+    return df
+
+
+def add_fund_columns(store: dict, panel: pd.DataFrame) -> pd.DataFrame:
+    """パネルに財務項目を足す。その月までに開示されていた数字だけを使う。"""
+    panel = panel.copy()
+    cols = ["eps", "bps", "np", "eq", "sales", "sh", "np_prev"]
+    for c in cols:
+        panel[c] = np.nan
+    got = {c: 0 for c in cols}
+    for code, g in panel.groupby("code"):
+        ft = fund_timeline(store["stmts"].get(code, []))
+        if ft.empty:
+            continue
+        ft = ft.set_index("date").sort_index()
+        idx = g["date"]
+        for c in cols:
+            if c not in ft.columns:
+                continue
+            ser = ft[c].dropna()
+            if ser.empty:
+                continue
+            got[c] += 1
+            # その月末までに開示された最新の値
+            vals = ser.reindex(ser.index.union(idx)).ffill().reindex(idx)
+            panel.loc[g.index, c] = vals.to_numpy()
+    for c in cols:
+        log.info("  財務 %-8s … 取れた銘柄 %d社", c, got[c])
+    if got["eps"] == 0 and got["bps"] == 0:
+        log.warning("財務の項目が取れていません。項目名が違う可能性があります。")
+        # 手がかりとして、最初の1件の項目名を出す
+        for code, st in store["stmts"].items():
+            if st:
+                log.warning("  項目名の例: %s", ", ".join(list(st[0].keys())[:40]))
+                break
+    return panel
+
+
 def shares_outstanding(stmts: list[dict]) -> float | None:
     """発行済株式数。ShOutFY があればそれ、無ければ 純利益÷EPS で逆算する。"""
     fy = [x for x in stmts if x.get("CurPerType") in ("FY", "4Q")]
@@ -2552,11 +2623,22 @@ def _mats(panel: pd.DataFrame) -> dict:
     trend_on = (idx > idx.rolling(10, min_periods=10).mean()).shift(1).fillna(True)  # 市場が10か月平均より上
     mvol = mret.rolling(3, min_periods=2).std().shift(1)          # 市場の荒れ具合（直近3か月）
     mvol_hi = (mvol > mvol.rolling(24, min_periods=12).median()).fillna(False)
-    return {"px": px, "yield": yl, "dps_growth": dg, "pct_own": po,
-            "cut": cut.fillna(False).astype(bool), "ret": ret,
-            "mom": mom, "vol": vol, "mkt": mkt,
-            "hi52": hi52, "rev1": rev1, "mom121": mom121, "beta": beta,
-            "trend_on": trend_on, "mvol_hi": mvol_hi}
+    out = {"px": px, "yield": yl, "dps_growth": dg, "pct_own": po,
+           "cut": cut.fillna(False).astype(bool), "ret": ret,
+           "mom": mom, "vol": vol, "mkt": mkt,
+           "hi52": hi52, "rev1": rev1, "mom121": mom121, "beta": beta,
+           "trend_on": trend_on, "mvol_hi": mvol_hi}
+    # 財務を使う指標（列があるときだけ）
+    if "eps" in panel.columns:
+        f = {c: panel.pivot_table(index="date", columns="code", values=c)
+             for c in ("eps", "bps", "np", "eq", "sh", "np_prev")}
+        eps, bps = f["eps"].where(f["eps"] > 0), f["bps"].where(f["bps"] > 0)
+        out["per"] = (px / eps).shift(1)                       # 低いほど割安
+        out["pbr"] = (px / bps).shift(1)
+        out["roe"] = (f["np"] / f["eq"].where(f["eq"] > 0)).shift(1)   # 高いほど稼ぐ力
+        out["npg"] = ((f["np"] - f["np_prev"]) / f["np_prev"].abs().where(f["np_prev"].abs() > 0)).shift(1)
+        out["size"] = (px * f["sh"]).shift(1)                  # 時価総額
+    return out
 
 
 def _score(m: dict, kind: str, d) -> pd.Series:
@@ -2591,6 +2673,22 @@ def _score(m: dict, kind: str, d) -> pd.Series:
         return m["mom121"].loc[d]
     if kind == "lowbeta":        # 市場と連動しにくい順
         return -m["beta"].loc[d]
+    if kind == "lowper":         # 利益に比べて株価が安い順
+        return -m["per"].loc[d]
+    if kind == "lowpbr":         # 資産に比べて株価が安い順
+        return -m["pbr"].loc[d]
+    if kind == "roe":            # 稼ぐ力が高い順
+        return m["roe"].loc[d]
+    if kind == "npg":            # 利益が伸びている順
+        return m["npg"].loc[d]
+    if kind == "small":          # 時価総額が小さい順
+        return -m["size"].loc[d]
+    if kind == "magic":          # 高ROE かつ 低PER（マジックフォーミュラ）
+        return m["roe"].loc[d].rank(pct=True) + (-m["per"].loc[d]).rank(pct=True)
+    if kind == "value_quality":  # 低PBR かつ 高ROE
+        return (-m["pbr"].loc[d]).rank(pct=True) + m["roe"].loc[d].rank(pct=True)
+    if kind == "growth_mom":     # 利益が伸びていて、株価も上がっている
+        return m["npg"].loc[d].rank(pct=True) + m["mom121"].loc[d].rank(pct=True)
     raise ValueError(kind)
 
 
@@ -2911,6 +3009,26 @@ def run_portfolio(m: dict, spec: dict, dates, capital: float, n: int,
 
 
 # 比べる手法。設定をいじったものではなく、考え方が違うものを並べる。
+EXPLORE_FUND = [
+    ("低PER（利益に比べて安い）", {"score": "lowper", "rebalance": 12},
+     "割安株の代表。配当は見ない"),
+    ("低PBR（資産に比べて安い）", {"score": "lowpbr", "rebalance": 12},
+     "もう一つの割安株。日本で長く効くとされた"),
+    ("高ROE（稼ぐ力）", {"score": "roe", "rebalance": 12},
+     "質の高い会社を買う。割安かどうかは見ない"),
+    ("利益の伸び（成長株）", {"score": "npg", "rebalance": 12},
+     "純利益の伸び率が高い順。高配当の反対側"),
+    ("小型株", {"score": "small", "rebalance": 12},
+     "時価総額の小さい順。小型株効果"),
+    ("マジックフォーミュラ（高ROE×低PER）", {"score": "magic", "rebalance": 12},
+     "グリーンブラットの有名な手法"),
+    ("低PBR×高ROE", {"score": "value_quality", "rebalance": 12},
+     "安くて質の高い会社"),
+    ("成長×モメンタム", {"score": "growth_mom", "rebalance": 3},
+     "利益が伸びていて株価も上がっている会社"),
+]
+
+
 EXPLORE_OTHER = [
     ("1年の高値に近い順", {"score": "hi52", "rebalance": 1},
      "高値を更新しそうな銘柄を買う。「高値は更新されやすい」という経験則"),
@@ -3482,6 +3600,8 @@ def main() -> int:
     # 手法の探索
     # ══════════════════════════════════════════
     if args.explore:
+        log.info("手法の探索：財務の項目を足しています…")
+        panel = add_fund_columns(store, panel)
         log.info("手法の探索：行列を作成中…")
         try:
             m = _mats(panel)
@@ -3506,12 +3626,14 @@ def main() -> int:
         my = args.min_yield or 0.0
 
         log.info("手法の探索：%d通り × 3期間（前半 %s〜%s ／ 後半 %s〜%s）",
-                 len(EXPLORE) + len(EXPLORE_OTHER), tr[0].date(), tr[-1].date(),
+                 len(EXPLORE) + len(EXPLORE_OTHER) + (len(EXPLORE_FUND) if "per" in m else 0),
+                 tr[0].date(), tr[-1].date(),
                  te[0].date(), te[-1].date())
 
         rows = []
         _groups = [("高配当に関わる手法", EXPLORE),
-                   ("高配当と関係のない手法", EXPLORE_OTHER)]
+                   ("高配当と関係のない手法", EXPLORE_OTHER),
+                   ("財務を使う手法", EXPLORE_FUND if "per" in m else [])]
         for _g, _lst in _groups:
             for name, cfg, desc in _lst:
                 r = {"手法": name, "説明": desc, "分類": _g}
