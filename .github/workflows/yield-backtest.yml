@@ -30,7 +30,7 @@ on:
         required: false
         default: ""
       explore:
-        description: "別の考え方の手法を並べて比べる（true/false）。前半で順位をつけ後半で答え合わせします"
+        description: "別の考え方の手法を比べる。true＝手法の探索 ／ blend＝組み合わせvs使い分け ／ false＝しない"
         required: false
         default: "false"
       after_event:
@@ -156,6 +156,7 @@ jobs:
             --min-yield "${{ github.event.inputs.min_yield || '0' }}" \
             --ramp "${{ github.event.inputs.ramp || '0' }}" \
             ${{ github.event.inputs.explore == 'true' && '--explore' || '' }} \
+            ${{ github.event.inputs.explore == 'blend' && '--blend' || '' }} \
             ${{ github.event.inputs.after_event == 'true' && '--after-event' || '' }} \
             ${{ github.event.inputs.factor_test == 'true' && '--factor-test' || '' }} \
             ${{ github.event.inputs.fx_test == 'true' && '--fx-test' || '' }} \
@@ -212,5 +213,6 @@ jobs:
             data/usdjpy.csv
             data/after_event.csv
             data/explore.csv
+            data/blend.csv
             run.log
           if-no-files-found: ignore
