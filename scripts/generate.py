@@ -63,6 +63,12 @@ EQUITY_RATIO_MIN = 0.50              # 自己資本比率 ≥ 50%
 GRAHAM_THRESHOLD = 40.0              # PER × PBR ≤ 40 (B3: 異常値だけ弾く緩い床。業種バイアス緩和)
 MIN_YIELD_THRESHOLD = 4.0            # 最低利回り ≧ 4.0%
 
+# 買いの判定。
+#   yield    … スクリーニングを通り、利回りが足切り以上なら BUY（待たない）
+#   quantile … 利回りが過去3年の Q75 以上で BUY、Q25 以下で SELL（これまで）
+# 64条件の総当たりで yield が86%の条件で上回ったため、yield を採用。
+BUY_MODE = 'yield'
+
 # --- ボックス判定閾値 ---
 BOX_LOOKBACK_DAYS = 60               # 60日のレンジで判定
 BOX_ADX_PERIOD = 14                  # ADX期間
@@ -797,6 +803,10 @@ def determine_signal(current_yield: float | None, dist: dict[str, float]) -> str
     """BUY / SELL / NEUTRAL を判定。"""
     if current_yield is None or current_yield <= 0:
         return 'NEUTRAL'
+    # 新しいルール：その銘柄の過去と比べて安くなるのを待たず、
+    # 利回りが足切り以上なら買う候補にする（スクリーニングは別で判定）。
+    if BUY_MODE == 'yield':
+        return 'BUY' if current_yield >= MIN_YIELD_THRESHOLD else 'NEUTRAL'
     q75 = dist.get('q75')
     q25 = dist.get('q25')
     if q75 is None or math.isnan(q75) or q25 is None or math.isnan(q25):
@@ -1810,7 +1820,7 @@ def main() -> int:
         'processed_count': len(stocks),
         'failure_count': failures,
         'thresholds': {
-            'min_yield': MIN_YIELD_THRESHOLD,
+            'min_yield': MIN_YIELD_THRESHOLD, 'buy_mode': BUY_MODE,
             'graham': GRAHAM_THRESHOLD,
             'payout_max': PAYOUT_RATIO_MAX,
             'equity_min': EQUITY_RATIO_MIN,
