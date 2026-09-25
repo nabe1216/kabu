@@ -2550,11 +2550,13 @@ def _mats(panel: pd.DataFrame) -> dict:
     cov = ret.rolling(24, min_periods=12).cov(mret)
     beta = (cov.div(mret.rolling(24, min_periods=12).var(), axis=0)).shift(1)  # 市場との連動の強さ
     trend_on = (idx > idx.rolling(10, min_periods=10).mean()).shift(1).fillna(True)  # 市場が10か月平均より上
+    mvol = mret.rolling(3, min_periods=2).std().shift(1)          # 市場の荒れ具合（直近3か月）
+    mvol_hi = (mvol > mvol.rolling(24, min_periods=12).median()).fillna(False)
     return {"px": px, "yield": yl, "dps_growth": dg, "pct_own": po,
             "cut": cut.fillna(False).astype(bool), "ret": ret,
             "mom": mom, "vol": vol, "mkt": mkt,
             "hi52": hi52, "rev1": rev1, "mom121": mom121, "beta": beta,
-            "trend_on": trend_on}
+            "trend_on": trend_on, "mvol_hi": mvol_hi}
 
 
 def _score(m: dict, kind: str, d) -> pd.Series:
@@ -2606,6 +2608,7 @@ def run_strategy(m: dict, cfg: dict, dates, capital: float,
     loss_pool, tax_paid, trades = 0.0, 0.0, 0
     curve = []
     reb = cfg.get("rebalance", 0)
+    _rg = {}                         # 状況の判定の記憶（確認期間に使う）
 
     def price(code, d):
         v = m["px"].at[d, code] if code in m["px"].columns else np.nan
@@ -2668,10 +2671,42 @@ def run_strategy(m: dict, cfg: dict, dates, capital: float,
         if do_reb:
             kind = cfg.get("score", "yield")
             if cfg.get("regime"):
-                mk = m["mkt"].loc[d] if d in m["mkt"].index else np.nan
-                st = ("up" if pd.notna(mk) and mk > 0.05 else
-                      "down" if pd.notna(mk) and mk < -0.05 else "flat")
-                kind = cfg["regime"].get(st, kind)
+                if cfg.get("regime_by") == "vol":
+                    hi_ = bool(m["mvol_hi"].loc[d]) if d in m["mvol_hi"].index else False
+                    st = "rough" if hi_ else "calm"
+                else:
+                    mk = m["mkt"].loc[d] if d in m["mkt"].index else np.nan
+                    st = ("up" if pd.notna(mk) and mk > 0.05 else
+                          "down" if pd.notna(mk) and mk < -0.05 else "flat")
+                # 同じ状況が続いた月数を数え、決めた回数だけ続いたときに切り替える
+                need = cfg.get("regime_confirm", 1)
+                if st == _rg.get("pending"):
+                    _rg["count"] = _rg.get("count", 0) + 1
+                else:
+                    _rg["pending"], _rg["count"] = st, 1
+                if _rg["count"] >= need or _rg.get("cur") is None:
+                    _rg["cur"] = st
+                kind = cfg["regime"].get(_rg["cur"], kind)
+                if kind == "cash":
+                    # 現金にする：全部売る
+                    for c in list(pos):
+                        p = price(c, d)
+                        if p is None:
+                            continue
+                        eff = p * (1 - slip)
+                        g = (eff - pos[c]["cost"]) * pos[c]["sh"]
+                        cash += pos[c]["sh"] * eff
+                        if g > 0:
+                            t = max(0.0, g - loss_pool) * tax
+                            loss_pool = max(0.0, loss_pool - g)
+                            cash -= t
+                            tax_paid += t
+                        else:
+                            loss_pool += -g
+                        del pos[c]
+                        trades += 1
+                    curve.append({"date": d, "value": cash})
+                    continue
             sc = _score(m, kind, d)
             ok = m["yield"].loc[d] >= min_yield
             sc = sc[ok & m["px"].loc[d].notna()].dropna()
@@ -2741,6 +2776,138 @@ def run_strategy(m: dict, cfg: dict, dates, capital: float,
             "最大下落": dd, "シャープ": float(r.mean() / r.std() * np.sqrt(12))
             if r.std() > 0 else 0.0, "売買": trades, "税金": tax_paid,
             "curve": eq}
+
+
+
+
+# ══════════════════════════════════════════
+# 組み合わせ vs 使い分け
+#
+#   「どんな状況でも一定の成果」を目指すとき、方法は2つある。
+#     A. 使い分け … 状況を読んで、そのとき良さそうな手法に乗り換える
+#     B. 同時に持つ … 動きの違う手法を最初から一緒に持ち、片方の弱い時期を補う
+#   これまでの検証では A は16回試して16回とも成績を下げた。
+#   ここでは A の最も丁寧な形（確認期間つき）と B を同じ土俵で比べる。
+#
+#   見るのは平均ではなく「悪いとき」。最悪の年、マイナスの年の数、最大下落。
+# ══════════════════════════════════════════
+SLEEVES = {
+    "高配当": {"score": "yield", "rebalance": 0, "min_yield": 4.0,
+              "desc": "利回り4％以上を、高い順に買って持ち続ける（本番に近い）"},
+    "モメンタム": {"score": "mom121", "rebalance": 1, "min_yield": 0.0,
+                  "desc": "12か月の上昇率が高い順（高配当と逆の時期に強い）"},
+    "低ボラ": {"score": "lowvol", "rebalance": 12, "min_yield": 0.0,
+              "desc": "値動きの小さい順（守り）"},
+    "現金": None,
+}
+
+PORTFOLIOS = [
+    # ── 1本だけ ──
+    ("高配当だけ", {"mix": {"高配当": 1.0}}, "いまの本番に近い形。比較の基準"),
+    ("モメンタムだけ", {"mix": {"モメンタム": 1.0}}, ""),
+    ("低ボラだけ", {"mix": {"低ボラ": 1.0}}, ""),
+    # ── 同時に持つ（別々の口座で持つ形。互いに触らない） ──
+    ("高配当70＋モメンタム30", {"mix": {"高配当": 0.7, "モメンタム": 0.3}}, "動きの逆な2つを持つ"),
+    ("高配当50＋モメンタム50", {"mix": {"高配当": 0.5, "モメンタム": 0.5}}, ""),
+    ("高配当50＋低ボラ50", {"mix": {"高配当": 0.5, "低ボラ": 0.5}}, "守りを厚く"),
+    ("高配当60＋モメンタム20＋低ボラ20", {"mix": {"高配当": 0.6, "モメンタム": 0.2, "低ボラ": 0.2}}, "3つに分ける"),
+    ("高配当70＋現金30", {"mix": {"高配当": 0.7, "現金": 0.3}}, "現金を残す"),
+    # ── 同時に持つ＋年1回、元の比率に戻す ──
+    ("高配当50＋モメンタム50・年1回戻す", {"mix": {"高配当": 0.5, "モメンタム": 0.5}, "rebalance_years": 1},
+     "増えた側を売って減った側を買い足す。状況は読まない"),
+    # ── 使い分け（状況を読んで乗り換える。2か月続いたら切り替え） ──
+    ("使い分け：上げはモメンタム・それ以外は高配当",
+     {"switch": {"regime": {"up": "mom121", "flat": "yield", "down": "yield"},
+                 "rebalance": 3, "regime_confirm": 2}, "min_yield": 0.0},
+     "市場の12か月の動きで判定"),
+    ("使い分け：荒れたら低ボラ・落ち着けば高配当",
+     {"switch": {"regime": {"rough": "lowvol", "calm": "yield"}, "regime_by": "vol",
+                 "rebalance": 3, "regime_confirm": 2}, "min_yield": 0.0},
+     "市場の荒れ具合で判定"),
+    ("使い分け：上げはモメンタム・下げは現金",
+     {"switch": {"regime": {"up": "mom121", "flat": "yield", "down": "cash"},
+                 "rebalance": 3, "regime_confirm": 2}, "min_yield": 0.0},
+     "下げ相場は全部売って現金"),
+]
+
+
+def _curve_stats(curve: pd.DataFrame, capital: float) -> dict:
+    v = curve["value"].to_numpy()
+    yrs = max((curve["date"].iloc[-1] - curve["date"].iloc[0]).days / 365.25, 0.5)
+    dd = float((1 - v / np.maximum.accumulate(v)).max())
+    yearly = {}
+    c = curve.set_index("date")["value"]
+    ye = c.resample("YE").last()
+    prev = capital
+    for d_, val in ye.items():
+        yearly[d_.year] = val / prev - 1
+        prev = val
+    return {"年率": (v[-1] / capital) ** (1 / yrs) - 1, "最大下落": dd,
+            "年ごと": yearly}
+
+
+def run_portfolio(m: dict, spec: dict, dates, capital: float, n: int,
+                  tax: float, slip: float) -> dict:
+    """組み合わせ、または使い分けを回す。"""
+    if "switch" in spec:
+        cfg = dict(spec["switch"])
+        out = run_strategy(m, cfg, dates, capital, n, spec.get("min_yield", 0.0),
+                           tax, slip)
+        st = _curve_stats(out["curve"], capital)
+        st["売買"] = out["売買"]
+        return st
+
+    mix = spec["mix"]
+    curves, trades = [], 0
+    for name, w in mix.items():
+        if name == "現金":
+            curves.append(pd.Series(capital * w, index=dates))
+            continue
+        cfg = dict(SLEEVES[name])
+        my = cfg.pop("min_yield", 0.0)
+        cfg.pop("desc", None)
+        out = run_strategy(m, cfg, dates, capital * w, max(3, int(round(n * w))),
+                           my, tax, slip)
+        curves.append(out["curve"].set_index("date")["value"])
+        trades += out["売買"]
+
+    total = pd.concat(curves, axis=1).sum(axis=1)
+
+    # 年1回、元の比率に戻す（増えた側を売り、減った側を買う）。
+    # 各手法の月次の増減率を使って近似する。売った分の利益に税金、出し入れにずれ。
+    if spec.get("rebalance_years"):
+        rets = [c.pct_change().fillna(0) for c in curves]
+        ws = list(mix.values())
+        vals = [capital * w for w in ws]
+        basis = list(vals)
+        out_v, extra_tr = [], 0
+        every = spec["rebalance_years"] * 12
+        for i, d in enumerate(dates):
+            vals = [v * (1 + r.loc[d]) for v, r in zip(vals, rets)]
+            tot = sum(vals)
+            if i > 0 and i % every == 0:
+                tgt = [tot * w for w in ws]
+                for k in range(len(vals)):
+                    delta = tgt[k] - vals[k]
+                    if delta < 0:            # 売る側：ずれと税金
+                        sold = -delta
+                        gain_ratio = max(0.0, 1 - basis[k] / vals[k]) if vals[k] > 0 else 0
+                        cost = sold * slip + sold * gain_ratio * tax
+                        tot -= cost
+                        basis[k] *= (vals[k] - sold) / vals[k] if vals[k] > 0 else 1
+                    else:                    # 買う側：ずれ
+                        tot -= delta * slip
+                        basis[k] += delta
+                    extra_tr += 1
+                vals = [tot * w for w in ws]
+            out_v.append(tot)
+        total = pd.Series(out_v, index=dates)
+        trades += extra_tr
+
+    curve = pd.DataFrame({"date": total.index, "value": total.to_numpy()})
+    st = _curve_stats(curve, capital)
+    st["売買"] = trades
+    return st
 
 
 # 比べる手法。設定をいじったものではなく、考え方が違うものを並べる。
@@ -2859,6 +3026,9 @@ def main() -> int:
     ap.add_argument("--only", default="", help="比較するルールをカンマ区切りで指定")
     ap.add_argument("--capital", type=float, default=0,
                     help="元本。未指定なら通常300万・実運用モードで1000万")
+    ap.add_argument("--blend", action="store_true",
+                    help="動きの違う手法を同時に持つ形と、状況で使い分ける形を、"
+                         "同じ土俵で比べる。悪いとき（最悪の年・最大下落）を見る")
     ap.add_argument("--explore", action="store_true",
                     help="別の考え方の手法を並べて比べる。"
                          "前半のデータで順位をつけ、後半で答え合わせをする")
@@ -3216,6 +3386,97 @@ def main() -> int:
         for v in VARIANTS.values():
             v.setdefault("min_yield", args.min_yield)
         log.info("利回り %.1f％ 未満の銘柄は買わない設定で回します", args.min_yield)
+
+    # ══════════════════════════════════════════
+    # 組み合わせ vs 使い分け
+    # ══════════════════════════════════════════
+    if args.blend:
+        m = _mats(panel)
+        dates = list(m["px"].index)
+        dates = [d for d in dates if d >= dates[0] + pd.DateOffset(months=12)]
+        if len(dates) < 36:
+            sys.exit("期間が短すぎます。3年以上のデータが必要です。")
+        half = len(dates) // 2
+        tr, te = dates[:half], dates[half:]
+        cap, tax, slip, n = args.capital, args.tax / 100.0, args.slip_bps / 10000.0, 15
+
+        log.info("組み合わせ vs 使い分け：%d通り", len(PORTFOLIOS))
+        rows = []
+        for name, spec, desc in PORTFOLIOS:
+            try:
+                full = run_portfolio(m, spec, dates, cap, n, tax, slip)
+                a = run_portfolio(m, spec, tr, cap, n, tax, slip)
+                b = run_portfolio(m, spec, te, cap, n, tax, slip)
+            except Exception as e:
+                log.warning("  %s は計算できませんでした（%s）", name, e)
+                continue
+            ys = full["年ごと"]
+            yv = [v for y, v in ys.items() if y >= dates[0].year + 1]  # 最初の端数の年は除く
+            rows.append({"名前": name, "説明": desc, "種類":
+                         "使い分け" if "switch" in spec else
+                         ("1本だけ" if len(spec["mix"]) == 1 else "同時に持つ"),
+                         "全期間": full["年率"] * 100, "前半": a["年率"] * 100,
+                         "後半": b["年率"] * 100, "最大下落": full["最大下落"] * 100,
+                         "最悪の年": (min(yv) * 100) if yv else float("nan"),
+                         "マイナスの年": sum(1 for v in yv if v < 0),
+                         "年数": len(yv), "売買": full["売買"], "年ごと": ys})
+            log.info("  %-30s 全期間 %5.1f%%  最悪の年 %+5.1f%%",
+                     name[:30], rows[-1]["全期間"], rows[-1]["最悪の年"])
+        df = pd.DataFrame(rows)
+
+        print(f"\n■ 組み合わせ vs 使い分け（{dates[0].date()} 〜 {dates[-1].date()}"
+              f" ／ 元本 {cap:,.0f}円・税{args.tax}%・ずれ{args.slip_bps}bps）\n")
+        print("  「どんな状況でも一定」を見るため、平均ではなく悪いときの数字を並べています。\n")
+        print(f"{'':<34}{'種類':<8}{'全期間':>7}{'前半':>7}{'後半':>7}"
+              f"{'最悪の年':>9}{'赤字の年':>8}{'最大下落':>9}{'売買':>7}")
+        print("-" * 100)
+        for _, r in df.iterrows():
+            print(f"{r['名前'][:32]:<34}{r['種類']:<8}{r['全期間']:>6.1f}%{r['前半']:>6.1f}%"
+                  f"{r['後半']:>6.1f}%{r['最悪の年']:>+8.1f}%"
+                  f"{int(r['マイナスの年']):>5}/{int(r['年数'])}{r['最大下落']:>8.1f}%"
+                  f"{int(r['売買']):>7}")
+
+        # 年ごと
+        years = sorted({y for ys in df["年ごと"] for y in ys})
+        years = [y for y in years if y >= dates[0].year + 1]
+        print("\n■ 年ごとの成績\n")
+        print(f"{'':<34}" + "".join(f"{y:>8}" for y in years))
+        print("-" * (34 + 8 * len(years)))
+        for _, r in df.iterrows():
+            print(f"{r['名前'][:32]:<34}" + "".join(
+                f"{r['年ごと'].get(y, float('nan')) * 100:>+7.1f}%" for y in years))
+
+        # 判定（基準は先に決めておく）
+        base = df[df["名前"] == "高配当だけ"].iloc[0]
+        print("\n【判定】基準＝高配当だけ。"
+              f"年率 {base['全期間']:.1f}% ／ 最悪の年 {base['最悪の年']:+.1f}% ／ "
+              f"最大下落 {base['最大下落']:.1f}%\n")
+        print("  採用の条件（事前に決めたもの）：")
+        print("    最悪の年 または 最大下落 が 3pt 以上よくなり、かつ 年率の低下が 2pt 以内\n")
+        for _, r in df.iterrows():
+            if r["名前"] == "高配当だけ":
+                continue
+            dy = r["全期間"] - base["全期間"]
+            dw = r["最悪の年"] - base["最悪の年"]
+            dd = base["最大下落"] - r["最大下落"]
+            ok = (dw >= 3 or dd >= 3) and dy >= -2
+            tag = "◎ 条件を満たす" if ok else ("△ 悪いときは改善、年率は代償が大きい"
+                                         if (dw >= 3 or dd >= 3) else "× 改善なし")
+            print(f"  {tag:<22} {r['名前'][:32]:<34} 年率{dy:+.1f}pt ／ "
+                  f"最悪の年{dw:+.1f}pt ／ 最大下落{dd:+.1f}pt")
+
+        print("\n【読み方】")
+        print("  ・「使い分け」は、状況が2か月続いてから切り替える丁寧な形にしています。")
+        print("  ・「同時に持つ」は、別々の口座で持つ形。互いに触りません。")
+        print("    「年1回戻す」だけ、増えた側を売って減った側を買い足します（税金とずれを計上）。")
+        print("  ・7年の間に本当の下げ相場は1回（コロナ）しかありません。")
+        print("    「どんな状況でも」は、このデータでは確かめきれません。")
+
+        OUTDIR.mkdir(parents=True, exist_ok=True)
+        df.drop(columns=["年ごと"]).to_csv(OUTDIR / "blend.csv", index=False,
+                                          encoding="utf-8-sig")
+        print("\n書き出しました: data/blend.csv")
+        return 0
 
     # ══════════════════════════════════════════
     # 手法の探索
