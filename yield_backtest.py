@@ -1691,6 +1691,8 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
             return float(v) if v is not None and not pd.isna(v) else -99.0
         if measure in ("pbr", "per", "size"):
             # 全銘柄の中での順位（％）。pbr/per は低いほど、size は小さいほど高い値になる
+            if "pct_" + measure not in row.index:
+                raise RuntimeError(f"pct_{measure} の列がありません。財務の項目が足されていません。")
             v = row.get("pct_" + measure)
             return float(v) if v is not None and not pd.isna(v) else -99.0
         return row["pct_cross"] if cross else row["pct_own"]
@@ -3408,10 +3410,20 @@ def main() -> int:
     log.info("パネルを作成中…")
     panel = build_panel(store, args.years, args.lookback)
 
-    # 選んだルールに PBR / PER / 時価総額 で選ぶものがあれば、財務の項目を足す
+    # 選んだルールに PBR / PER / 時価総額 で選ぶものがあれば、財務の項目を足す。
+    # 総当たりなどでパネルを作り直すときも、必ず同じように足すこと
+    # （足し忘れると全銘柄の順位が空になり、一度も買わずに0％になる）。
     _sel_names = [x.strip() for x in (args.only or "").split(",") if x.strip()]
-    if any(VARIANTS.get(n_, {}).get("measure") in ("pbr", "per", "size")
-           for n_ in _sel_names):
+    _need_fund = any(VARIANTS.get(n_, {}).get("measure") in ("pbr", "per", "size")
+                     for n_ in _sel_names)
+
+    def _panel_for(lb_):
+        pn_ = build_panel(store, args.years, lb_)
+        if _need_fund and not pn_.empty:
+            pn_ = add_fund_columns(store, pn_)
+        return pn_
+
+    if _need_fund:
         log.info("PBR・PER・時価総額で選ぶルールがあるので、財務の項目を足します…")
         panel = add_fund_columns(store, panel)
 
@@ -3462,7 +3474,7 @@ def main() -> int:
 
         rows = []
         for lb in lbs:
-            pn = build_panel(store, args.years, lb)
+            pn = _panel_for(lb)
             if pn.empty:
                 log.warning("分位%dか月：判定できる時点がありません", lb)
                 continue
@@ -4246,8 +4258,7 @@ def main() -> int:
         panels = {}
         for lb_ in lbs_:
             # 分位の期間ごとにパネルを作り直す（重いので一度だけ）
-            panels[lb_] = build_panel(store, args.years, lb_) if lb_ != args.lookback \
-                else panel
+            panels[lb_] = _panel_for(lb_) if lb_ != args.lookback else panel
             log.info("  分位%dか月のパネル … %d件", lb_, len(panels[lb_]))
 
         for lb_ in lbs_:
