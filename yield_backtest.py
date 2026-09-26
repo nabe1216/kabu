@@ -405,6 +405,35 @@ VARIANTS: dict[str, dict[str, Any]] = {
         "hold_tiers": ["S"], "exit_on_cut": True,
     },
 
+    # ── 財務で選ぶ。探索で高配当を上回った3つを、本番と同じ条件で確かめる ──
+    # 買う条件は「全銘柄の中で安い側20％」。並べ方は安い順。
+    # 売り方・予算・減配撤退は本番と同じ。利回りの足切りは総当たりの欄で 0 と 4 を振る
+    # （4 のときは「利回り4％以上の中で PBR が低い順」＝いまのルールとの組み合わせになる）。
+    "pbr_low": {
+        "label": "低PBR順に買う（安い側20％から）",
+        "entry": [80], "exit": [], "measure": "pbr",
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True,
+    },
+    "pbr_low_tier": {
+        "label": "低PBR順に買う（Tier優先）",
+        "entry": [80], "exit": [], "measure": "pbr", "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True,
+    },
+    "per_low": {
+        "label": "低PER順に買う（安い側20％から）",
+        "entry": [80], "exit": [], "measure": "per",
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True,
+    },
+    "small_low": {
+        "label": "時価総額の小さい順に買う（小さい側20％から）",
+        "entry": [80], "exit": [], "measure": "size",
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True,
+    },
+
     # ── 「過去3年と比べて安いとき」に買う仕組みは効いているか ──
     # 探索で「高配当・買って放置」がいまのルールを上回ったため、
     # 本番と同じ条件（スクリーニング・Tier別予算・売らない）で確かめる。
@@ -1364,6 +1393,17 @@ def add_fund_columns(store: dict, panel: pd.DataFrame) -> pd.DataFrame:
             panel.loc[g.index, c] = vals.to_numpy()
     for c in cols:
         log.info("  財務 %-8s … 取れた銘柄 %d社", c, got[c])
+    # 本番のエンジンで使う、全銘柄の中での順位（％）。
+    #   pct_pbr / pct_per … 低いほど高い値（安い順）
+    #   pct_size          … 時価総額が小さいほど高い値
+    _pbr = panel["price"] / panel["bps"].where(panel["bps"] > 0)
+    _per = panel["price"] / panel["eps"].where(panel["eps"] > 0)
+    _size = panel["price"] * panel["sh"]
+    panel["_pbr"], panel["_per"], panel["_size"] = _pbr, _per, _size
+    panel["pct_pbr"] = panel.groupby("date")["_pbr"].rank(pct=True, ascending=False) * 100
+    panel["pct_per"] = panel.groupby("date")["_per"].rank(pct=True, ascending=False) * 100
+    panel["pct_size"] = panel.groupby("date")["_size"].rank(pct=True, ascending=False) * 100
+    panel = panel.drop(columns=["_pbr", "_per", "_size"])
     if got["eps"] == 0 and got["bps"] == 0:
         log.warning("財務の項目が取れていません。項目名が違う可能性があります。")
         # 手がかりとして、最初の1件の項目名を出す
@@ -1645,9 +1685,13 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
         return entry
 
     def level(row):
-        """割安さの指標。大きいほど割安。"""
+        """割安さの指標。大きいほど割安（買いたい）。"""
         if measure == "z":
             v = row.get("zscore")
+            return float(v) if v is not None and not pd.isna(v) else -99.0
+        if measure in ("pbr", "per", "size"):
+            # 全銘柄の中での順位（％）。pbr/per は低いほど、size は小さいほど高い値になる
+            v = row.get("pct_" + measure)
             return float(v) if v is not None and not pd.isna(v) else -99.0
         return row["pct_cross"] if cross else row["pct_own"]
     gain_exit = cfg.get("gain_exit")
@@ -3363,6 +3407,13 @@ def main() -> int:
 
     log.info("パネルを作成中…")
     panel = build_panel(store, args.years, args.lookback)
+
+    # 選んだルールに PBR / PER / 時価総額 で選ぶものがあれば、財務の項目を足す
+    _sel_names = [x.strip() for x in (args.only or "").split(",") if x.strip()]
+    if any(VARIANTS.get(n_, {}).get("measure") in ("pbr", "per", "size")
+           for n_ in _sel_names):
+        log.info("PBR・PER・時価総額で選ぶルールがあるので、財務の項目を足します…")
+        panel = add_fund_columns(store, panel)
 
     # 外部要因を使う検証では、追い風か逆風かをパネルに足す
     if args.factor_test:
