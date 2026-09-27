@@ -61,7 +61,7 @@ REVENUE_CONSECUTIVE_LIMIT = 2        # 2期連続でアウト
 PAYOUT_RATIO_MAX = 50.0              # 配当性向 ≤ 50%
 EQUITY_RATIO_MIN = 0.50              # 自己資本比率 ≥ 50%
 GRAHAM_THRESHOLD = 40.0              # PER × PBR ≤ 40 (B3: 異常値だけ弾く緩い床。業種バイアス緩和)
-MIN_YIELD_THRESHOLD = 4.0            # 最低利回り ≧ 4.0%
+MIN_YIELD_THRESHOLD = 3.0            # 最低利回り ≧ 3.0%
 
 # 買いの判定。
 #   yield    … スクリーニングを通り、利回りが足切り以上なら BUY（待たない）
