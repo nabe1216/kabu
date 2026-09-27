@@ -3455,6 +3455,88 @@ def history_test() -> int:
         cor = df["割安株 − 割高株（HML）"].corr(df["上がっている株 − 下がっている株（モメンタム）"])
         print(f"\n  割安とモメンタムの連動 … {cor:+.2f}（マイナスなら、片方が負ける月にもう片方が勝ちやすい）")
 
+    # ══════════════════════════════════════════
+    # 市況に合わせて、割安と稼ぐ力の割合を変える（35年）
+    #   割安寄り＝割安70＋稼ぐ力30、稼ぐ力寄り＝割安30＋稼ぐ力70。
+    #   判断には前の月までの情報だけを使う。
+    #   切り替えるたびに入れ替えの費用がかかるとして、割合が変わった月に
+    #   変わった割合 × 0.5％ を差し引く（売らずに新しい買いだけで寄せるなら、実際はもっと小さい）。
+    # ══════════════════════════════════════════
+    if "稼ぐ力の高い会社 − 低い会社（RMW）" in df.columns:
+        H = df["割安株 − 割高株（HML）"]
+        Rm = df["稼ぐ力の高い会社 − 低い会社（RMW）"]
+        spread = H - Rm
+        sig = {}
+        sig["因子の勢い（12か月）"] = spread.rolling(12).sum().shift(1) > 0
+        sig["因子の勢い（36か月）"] = spread.rolling(36).sum().shift(1) > 0
+        try:
+            mk = fetch_markets()
+        except Exception as e:
+            mk = {}
+            log.warning("米金利・ドル円を取得できませんでした（%s）", e)
+        if "us10y" in mk:
+            r10 = mk["us10y"].resample("ME").last().reindex(df.index, method="ffill")
+            sig["米金利の向き（12か月）"] = (r10 - r10.shift(12)).shift(1) > 0
+        if "usdjpy" in mk:
+            fx = mk["usdjpy"].resample("ME").last().reindex(df.index, method="ffill")
+            sig["円安・円高の向き（12か月）"] = (fx / fx.shift(12) - 1).shift(1) > 0
+
+        def _mix(w: pd.Series) -> pd.Series:
+            w = w.astype(float)
+            cost = w.diff().abs().fillna(0) * 0.005
+            return w * H + (1 - w) * Rm - cost
+
+        cand = {"固定：割安100（いまの本番の考え方）": H,
+                "固定：割安70＋稼ぐ力30": H * 0.7 + Rm * 0.3,
+                "固定：割安50＋稼ぐ力50": H * 0.5 + Rm * 0.5}
+        for nm_, sg in sig.items():
+            w = sg.map({True: 0.7, False: 0.3}).where(sg.notna(), 0.5)
+            cand["切り替え：" + nm_] = _mix(w)
+        cdf = pd.DataFrame(cand).dropna()
+        mid = cdf.index[len(cdf) // 2]
+
+        def _ann(x):
+            return (1 + x).prod() ** (12 / len(x)) - 1 if len(x) >= 12 else float("nan")
+
+        print(f"\n■ 市況に合わせて割合を変える（{cdf.index.min().date()} 〜 {cdf.index.max().date()}）\n")
+        print(f"  前半 〜{mid.date()} ／ 後半 {mid.date()}〜。判断には前の月までの情報だけを使う。\n")
+        print(f"{'':<36}{'年率':>7}{'前半':>7}{'後半':>7}{'最大下落':>9}{'回復まで最長':>12}{'切替':>6}")
+        print("-" * 86)
+        res = {}
+        for c in cdf.columns:
+            x = _streaks(cdf[c])
+            a_, b_ = _ann(cdf[c][cdf.index < mid]), _ann(cdf[c][cdf.index >= mid])
+            nsw = "—"
+            if c.startswith("切り替え："):
+                sg = sig[c.replace("切り替え：", "")].reindex(cdf.index)
+                nsw = str(int((sg.astype(float).diff().abs() > 0).sum()))
+            res[c] = (x["年率"], a_, b_, x["最大下落"], x["回復まで最長"])
+            print(f"{c[:34]:<36}{x['年率']*100:>+6.1f}%{a_*100:>+6.1f}%{b_*100:>+6.1f}%"
+                  f"{x['最大下落']*100:>8.1f}%{x['回復まで最長']:>9}か月{nsw:>6}")
+
+        print("\n  時代ごとの年率\n")
+        print(f"{'':<36}" + "".join(f"{p[0][:10]:>12}" for p in periods))
+        print("-" * (36 + 12 * len(periods)))
+        for c in cdf.columns:
+            cells = []
+            for _n, y0, y1 in periods:
+                sub = cdf[c][(cdf.index.year >= int(y0)) & (cdf.index.year <= int(y1))]
+                v = _ann(sub)
+                cells.append(f"{v*100:>+11.1f}%" if v == v else f"{'—':>12}")
+            print(f"{c[:34]:<36}" + "".join(cells))
+
+        base = res["固定：割安70＋稼ぐ力30"]
+        print("\n【判定】基準＝固定の割安70＋稼ぐ力30。3つとも満たせば採用\n")
+        print("  ① 35年の年率で上回る ② 回復までの最長が長くならない ③ 前半・後半の両方で上回る\n")
+        for c, v in res.items():
+            if not c.startswith("切り替え："):
+                continue
+            ok = [v[0] > base[0], v[4] <= base[4], v[1] > base[1] and v[2] > base[2]]
+            mark = "◎ 採用の条件を満たす" if all(ok) else f"× 満たさない（{'・'.join(n for n, o in zip(['①', '②', '③'], ok) if not o)}）"
+            print(f"  {c[5:][:24]:<26} {mark}")
+        print("\n  ※ ここでの数字は市場全体の「割安株と割高株の差」「稼ぐ力の差」で、")
+        print("    いまのルールそのものではありません。考え方として効くかどうかの確認です。")
+
     print("\n■ 年ごとの成績（割安株 − 割高株）\n")
     yr = st["割安株 − 割高株（HML）"]["年ごと"]
     line = []
