@@ -489,7 +489,7 @@ def update_portfolio(stocks: list[dict[str, Any]]) -> dict[str, Any]:
     buy_candidates.sort(
         key=lambda s: (
             tier_order.get(s.get('tier', 'B'), 99),
-            -(s.get('current_yield') or 0),
+            s.get('buy_sort', -(s.get('current_yield') or 0)),
         )
     )
 

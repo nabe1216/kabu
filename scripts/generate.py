@@ -67,7 +67,11 @@ MIN_YIELD_THRESHOLD = 4.0            # 最低利回り ≧ 4.0%
 #   yield    … スクリーニングを通り、利回りが足切り以上なら BUY（待たない）
 #   quantile … 利回りが過去3年の Q75 以上で BUY、Q25 以下で SELL（これまで）
 # 64条件の総当たりで yield が86%の条件で上回ったため、yield を採用。
-BUY_MODE = 'yield'
+BUY_MODE = 'pbr'
+# 低PBR順のとき、全銘柄の中で PBR が安い側何％までを買うか。
+# 80 なら「安い側20％」。検証で 10/20/30％ いずれも崩れなかったので、
+# 最初に決めた 20％ を使う。
+PBR_TOP_PCT = 80
 
 # --- ボックス判定閾値 ---
 BOX_LOOKBACK_DAYS = 60               # 60日のレンジで判定
@@ -805,7 +809,7 @@ def determine_signal(current_yield: float | None, dist: dict[str, float]) -> str
         return 'NEUTRAL'
     # 新しいルール：その銘柄の過去と比べて安くなるのを待たず、
     # 利回りが足切り以上なら買う候補にする（スクリーニングは別で判定）。
-    if BUY_MODE == 'yield':
+    if BUY_MODE in ('yield', 'pbr'):
         return 'BUY' if current_yield >= MIN_YIELD_THRESHOLD else 'NEUTRAL'
     q75 = dist.get('q75')
     q25 = dist.get('q25')
@@ -1772,6 +1776,22 @@ def main() -> int:
 
         if i % 50 == 0:
             log.info('Progress: %d/%d (failures=%d)', i, n_total, failures)
+
+    # ── 低PBR順（BUY_MODE == 'pbr'）──
+    # 全銘柄の中で PBR が安い側 PBR_TOP_PCT% に入る銘柄だけを BUY に残し、
+    # 同じ Tier の中では PBR の低い順に買えるよう buy_sort を付ける。
+    _pbrs = sorted([(x['code'], x['pbr']) for x in stocks
+                    if x.get('pbr') is not None and x['pbr'] > 0], key=lambda t: -t[1])
+    _n = len(_pbrs)
+    _rank = {c: (i + 1) / _n * 100 for i, (c, _) in enumerate(_pbrs)} if _n else {}
+    for x in stocks:
+        x['pbr_rank'] = round(_rank.get(x['code'], 0.0), 1)
+        if BUY_MODE == 'pbr':
+            x['buy_sort'] = x['pbr'] if x.get('pbr') else 99.0
+            if x.get('signal') == 'BUY' and _rank.get(x['code'], 0.0) < PBR_TOP_PCT:
+                x['signal'] = 'NEUTRAL'
+        else:
+            x['buy_sort'] = -(x.get('current_yield') or 0)
 
     _save_stmts_cache()
 
