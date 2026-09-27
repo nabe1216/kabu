@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import logging
 import os
 import io
@@ -3269,6 +3270,153 @@ def run_portfolio(m: dict, spec: dict, dates, capital: float, n: int,
     return st
 
 
+
+
+# ══════════════════════════════════════════
+# 日本の長い歴史で確かめる（1990年〜）
+#
+#   J-Quants は9年しか遡れず、その9年は割安株に極端に有利な時期だった。
+#   ケネス・フレンチ教授（ダートマス大学）が公開している日本のファクターの月次成績で、
+#   「割安株に傾ける」「上がっている株に傾ける」が35年間でどうだったかを見る。
+#     HML … 割安株（PBRが低い）− 割高株。いまのルールの考え方に近い
+#     WML … 上がっている株 − 下がっている株（モメンタム）
+#     RMW … 稼ぐ力の高い会社 − 低い会社（取れれば）
+#   どれも「差」なので、ドル建てでも為替の影響はほぼ打ち消される。
+# ══════════════════════════════════════════
+FRENCH = "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/"
+
+
+def _french(name: str) -> pd.DataFrame | None:
+    """フレンチ教授のデータを取得し、月次の表だけを取り出す（％→小数）。"""
+    import io
+    import zipfile
+    url = FRENCH + name + "_CSV.zip"
+    try:
+        r = requests.get(url, timeout=60)
+        r.raise_for_status()
+        z = zipfile.ZipFile(io.BytesIO(r.content))
+        txt = z.read(z.namelist()[0]).decode("latin-1")
+    except Exception as e:
+        log.warning("%s を取得できませんでした（%s）", name, e)
+        return None
+    lines = txt.splitlines()
+    head, rows = None, []
+    for ln in lines:
+        cells = [c.strip() for c in ln.split(",")]
+        if head is None:
+            if len(cells) >= 2 and cells[0] == "" and any(c for c in cells[1:]):
+                head = cells[1:]
+            continue
+        if re.fullmatch(r"\d{6}", cells[0] or ""):
+            try:
+                rows.append([cells[0]] + [float(x) for x in cells[1:1 + len(head)]])
+            except ValueError:
+                continue
+        elif rows:
+            break            # 月次の表が終わった（このあと年次の表が続く）
+    if not rows:
+        log.warning("%s の中身を読めませんでした。先頭の行：\n%s", name, "\n".join(lines[:8]))
+        return None
+    df = pd.DataFrame(rows, columns=["ym"] + head)
+    df["date"] = pd.to_datetime(df["ym"], format="%Y%m") + pd.offsets.MonthEnd(0)
+    df = df.set_index("date").drop(columns=["ym"]) / 100.0
+    log.info("  %s … %s 〜 %s（%d か月）列：%s", name, df.index.min().date(),
+             df.index.max().date(), len(df), "・".join(head))
+    return df
+
+
+def _streaks(r: pd.Series) -> dict:
+    """累積・最大下落・前の山を回復するまでの最長の月数・年ごとの成績。"""
+    v = (1 + r).cumprod()
+    peak = v.cummax()
+    dd = 1 - v / peak
+    under, longest = 0, 0
+    for x in (v < peak).to_numpy():
+        under = under + 1 if x else 0
+        longest = max(longest, under)
+    yr = (1 + r).groupby(r.index.year).prod() - 1
+    yrs = len(r) / 12
+    return {"年率": v.iloc[-1] ** (1 / yrs) - 1, "最大下落": dd.max(),
+            "回復まで最長": longest, "年ごと": yr,
+            "負けた年": int((yr < 0).sum()), "年数": len(yr)}
+
+
+def history_test() -> int:
+    log.info("日本の長い歴史のデータを取得します（ケネス・フレンチ教授のデータライブラリ）…")
+    f3 = _french("Japan_3_Factors")
+    mom = _french("Japan_Mom_Factor")
+    f5 = _french("Japan_5_Factors")
+    if f3 is None or "HML" not in f3.columns:
+        sys.exit("日本の割安株のデータ（HML）が取れませんでした。ログの先頭の行を見せてください。")
+    ser = {"割安株 − 割高株（HML）": f3["HML"]}
+    if mom is not None:
+        mc = [c for c in mom.columns if c.upper() in ("WML", "MOM", "UMD")] or list(mom.columns[:1])
+        ser["上がっている株 − 下がっている株（モメンタム）"] = mom[mc[0]]
+    if f5 is not None and "RMW" in f5.columns:
+        ser["稼ぐ力の高い会社 − 低い会社（RMW）"] = f5["RMW"]
+    df = pd.DataFrame(ser).dropna()
+    if "上がっている株 − 下がっている株（モメンタム）" in df.columns:
+        df["割安50＋モメンタム50"] = (df["割安株 − 割高株（HML）"] * 0.5
+                                   + df["上がっている株 − 下がっている株（モメンタム）"] * 0.5)
+    if "稼ぐ力の高い会社 − 低い会社（RMW）" in df.columns:
+        df["割安50＋稼ぐ力50"] = (df["割安株 − 割高株（HML）"] * 0.5
+                               + df["稼ぐ力の高い会社 − 低い会社（RMW）"] * 0.5)
+    a, b = df.index.min(), df.index.max()
+    print(f"\n■ 日本の長い歴史で確かめる（{a.date()} 〜 {b.date()}・{len(df)}か月）\n")
+    print("  どれも「Aの株を買い、Bの株を売った」ときの差の成績です。")
+    print("  ＋なら A が B を上回った。ドル建てですが、差なので為替の影響はほぼ打ち消されます。\n")
+
+    st = {c: _streaks(df[c]) for c in df.columns}
+    print(f"{'':<34}{'年率':>7}{'最大下落':>9}{'回復まで最長':>12}{'負けた年':>9}")
+    print("-" * 74)
+    for c, x in st.items():
+        print(f"{c[:32]:<34}{x['年率'] * 100:>+6.1f}%{x['最大下落'] * 100:>8.1f}%"
+              f"{x['回復まで最長']:>9}か月{x['負けた年']:>5}/{x['年数']}")
+
+    periods = [("バブル崩壊（1990〜1999）", "1990", "1999"),
+               ("ITバブルと回復（2000〜2007）", "2000", "2007"),
+               ("リーマン・円高（2008〜2012）", "2008", "2012"),
+               ("アベノミクス・低金利（2013〜2019）", "2013", "2019"),
+               ("コロナ・金利上昇（2020〜）", "2020", "2100")]
+    print("\n■ 時代ごとの年率\n")
+    print(f"{'':<34}" + "".join(f"{p[0][:12]:>14}" for p in periods))
+    print("-" * (34 + 14 * len(periods)))
+    for c in df.columns:
+        cells = []
+        for _n, y0, y1 in periods:
+            sub = df[c][(df.index.year >= int(y0)) & (df.index.year <= int(y1))]
+            cells.append(f"{((1 + sub).prod() ** (12 / len(sub)) - 1) * 100:>+13.1f}%"
+                         if len(sub) >= 12 else f"{'—':>14}")
+        print(f"{c[:32]:<34}" + "".join(cells))
+    print("\n  列の見出し：" + " ／ ".join(p[0] for p in periods))
+
+    if "上がっている株 − 下がっている株（モメンタム）" in df.columns:
+        cor = df["割安株 − 割高株（HML）"].corr(df["上がっている株 − 下がっている株（モメンタム）"])
+        print(f"\n  割安とモメンタムの連動 … {cor:+.2f}（マイナスなら、片方が負ける月にもう片方が勝ちやすい）")
+
+    print("\n■ 年ごとの成績（割安株 − 割高株）\n")
+    yr = st["割安株 − 割高株（HML）"]["年ごと"]
+    line = []
+    for y, v in yr.items():
+        line.append(f"{y}:{v * 100:+.0f}%")
+        if len(line) == 8:
+            print("  " + "  ".join(line)); line = []
+    if line:
+        print("  " + "  ".join(line))
+
+    print("\n【読み方】\n")
+    print("  ・いまのルール（低PBR順）は「割安株に傾ける」考え方。HML が負けている時代には、")
+    print("    いまのルールも市場平均に負けやすいと考えられる。")
+    print("  ・「回復まで最長」は、前の山を取り戻すまでにかかった最長の月数。")
+    print("    この長さの逆風に耐えられるかが、実際に続けられるかどうかを決める。")
+    print("  ・組み合わせの行は、2つを半分ずつ持った場合。最大下落と回復までの長さが")
+    print("    片方だけより短くなっていれば、「同時に持つ」ことに長い歴史の裏づけがある。")
+    OUTDIR.mkdir(parents=True, exist_ok=True)
+    df.to_csv(OUTDIR / "japan_factors.csv", encoding="utf-8-sig")
+    print("\n書き出しました: data/japan_factors.csv")
+    return 0
+
+
 # 比べる手法。設定をいじったものではなく、考え方が違うものを並べる。
 EXPLORE_FUND = [
     ("低PER（利益に比べて安い）", {"score": "lowper", "rebalance": 12},
@@ -3484,6 +3632,9 @@ def main() -> int:
     # 「比較するルール」の欄に特別な言葉を入れて動かす。
     if (args.only or "").strip() == "random_test":
         args.random_test, args.only = True, "pbr_low_tier,xs_any_tier"
+    # 日本の長い歴史（J-Quants のデータは使わないので、ここで抜ける）
+    if (args.only or "").strip() == "history_test":
+        return history_test()
     args.stress_test = False
     if (args.only or "").strip() == "stress_test":
         args.stress_test, args.only = True, "pbr_low_tier,xs_any_tier"
