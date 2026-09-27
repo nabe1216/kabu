@@ -529,6 +529,26 @@ VARIANTS: dict[str, dict[str, Any]] = {
         "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
     },
 
+    # ── 割安と稼ぐ力を合わせる（35年のデータで最も安定していた考え方）──
+    "pbrroe70_live": {
+        "label": "割安70＋稼ぐ力30の順・本番の売り方・足切り3％",
+        "entry": [80], "exit": [], "measure": "pbrroe70", "priority": "tier",
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+    },
+    "pbrroe50_live": {
+        "label": "割安50＋稼ぐ力50の順・本番の売り方・足切り3％",
+        "entry": [80], "exit": [], "measure": "pbrroe50", "priority": "tier",
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+    },
+    "pbrroe30_live": {
+        "label": "割安30＋稼ぐ力70の順・本番の売り方・足切り3％",
+        "entry": [80], "exit": [], "measure": "pbrroe30", "priority": "tier",
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+    },
+
     # ── B. 業種に偏らない低PBR ──
     "pbr_sec_tier": {
         "label": "業種の中で低PBR順（Tier優先）",
@@ -1557,6 +1577,18 @@ def add_fund_columns(store: dict, panel: pd.DataFrame) -> pd.DataFrame:
     panel = panel.drop(columns=["_pbr2"])
     # PBR と PER を合わせた割安さ
     panel["pct_value"] = (panel["pct_pbr"] + panel["pct_per"]) / 2
+    # 稼ぐ力（ROE＝純利益÷自己資本）の順位。高いほど大きい値
+    _roe = panel["np"] / panel["eq"].where(panel["eq"] > 0)
+    panel["_roe"] = _roe
+    panel["pct_roe"] = panel.groupby("date")["_roe"].rank(pct=True, ascending=True) * 100
+    panel = panel.drop(columns=["_roe"])
+    # 割安（PBRの低さ）と稼ぐ力（ROEの高さ）を合わせた順位。割合は wv で決める
+    for _wv in (70, 50, 30):
+        # 平均したままだと上位20％に入る銘柄が少なくなる（両方で上位の銘柄はまれ）ので、
+        # 合わせた点数で順位をつけ直し、どの割合でも候補の数をそろえる
+        panel["_mix"] = (panel["pct_pbr"] * _wv + panel["pct_roe"] * (100 - _wv)) / 100
+        panel[f"pct_pbrroe{_wv}"] = panel.groupby("date")["_mix"].rank(pct=True, ascending=True) * 100
+    panel = panel.drop(columns=["_mix"])
 
     # ── スクリーニング8条件（本番の generate.py と同じ判定） ──
     # 判定できない（データ不足）ものは本番と同じく通過扱い。
@@ -1879,7 +1911,8 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
         if measure == "z":
             v = row.get("zscore")
             return float(v) if v is not None and not pd.isna(v) else -99.0
-        if measure in ("pbr", "per", "size", "pbr_sec", "value"):
+        if measure in ("pbr", "per", "size", "pbr_sec", "value",
+                       "pbrroe70", "pbrroe50", "pbrroe30"):
             # 全銘柄の中での順位（％）。pbr/per は低いほど、size は小さいほど高い値になる
             if "pct_" + measure not in row.index:
                 raise RuntimeError(f"pct_{measure} の列がありません。財務の項目が足されていません。")
@@ -3359,8 +3392,13 @@ def history_test() -> int:
         df["割安50＋モメンタム50"] = (df["割安株 − 割高株（HML）"] * 0.5
                                    + df["上がっている株 − 下がっている株（モメンタム）"] * 0.5)
     if "稼ぐ力の高い会社 − 低い会社（RMW）" in df.columns:
-        df["割安50＋稼ぐ力50"] = (df["割安株 − 割高株（HML）"] * 0.5
-                               + df["稼ぐ力の高い会社 − 低い会社（RMW）"] * 0.5)
+        H, Rm = df["割安株 − 割高株（HML）"], df["稼ぐ力の高い会社 − 低い会社（RMW）"]
+        for wv in (0.7, 0.5, 0.3):
+            df[f"割安{int(wv*100)}＋稼ぐ力{int((1-wv)*100)}"] = H * wv + Rm * (1 - wv)
+        if f5 is not None and "CMA" in f5.columns:
+            C = f5["CMA"].reindex(df.index)
+            df["投資を控えめにする会社 − 積極的な会社（CMA）"] = C
+            df["割安＋稼ぐ力＋控えめ（3分の1ずつ）"] = (H + Rm + C) / 3
     a, b = df.index.min(), df.index.max()
     print(f"\n■ 日本の長い歴史で確かめる（{a.date()} 〜 {b.date()}・{len(df)}か月）\n")
     print("  どれも「Aの株を買い、Bの株を売った」ときの差の成績です。")
@@ -3390,6 +3428,29 @@ def history_test() -> int:
         print(f"{c[:32]:<34}" + "".join(cells))
     print("\n  列の見出し：" + " ／ ".join(p[0] for p in periods))
 
+    # どんな状況でも、に最も近いのはどれか（基準は先に決めておく）
+    #   ① 5つの時代すべてでプラス
+    #   ② そのうえで、回復までの最長がいちばん短い
+    print("\n■ 5つの時代すべてでプラスだったもの（回復までの最長が短い順）\n")
+    ok = []
+    for c in df.columns:
+        eras = []
+        for _n, y0, y1 in periods:
+            sub = df[c][(df.index.year >= int(y0)) & (df.index.year <= int(y1))]
+            if len(sub) >= 12:
+                eras.append((1 + sub).prod() ** (12 / len(sub)) - 1)
+        if eras and min(eras) > 0:
+            ok.append((st[c]["回復まで最長"], c, min(eras)))
+    if not ok:
+        print("  ありませんでした。")
+    for rec, c, mn in sorted(ok):
+        x = st[c]
+        print(f"  {c[:30]:<32} 回復まで最長 {rec:>3}か月 ／ 年率 {x['年率']*100:+.1f}% ／ "
+              f"最大下落 {x['最大下落']*100:.1f}% ／ いちばん悪い時代 {mn*100:+.1f}%")
+
+    if "稼ぐ力の高い会社 − 低い会社（RMW）" in df.columns:
+        cor2 = df["割安株 − 割高株（HML）"].corr(df["稼ぐ力の高い会社 − 低い会社（RMW）"])
+        print(f"\n  割安と稼ぐ力の連動 … {cor2:+.2f}")
     if "上がっている株 − 下がっている株（モメンタム）" in df.columns:
         cor = df["割安株 − 割高株（HML）"].corr(df["上がっている株 − 下がっている株（モメンタム）"])
         print(f"\n  割安とモメンタムの連動 … {cor:+.2f}（マイナスなら、片方が負ける月にもう片方が勝ちやすい）")
@@ -3793,7 +3854,8 @@ def main() -> int:
     # （足し忘れると全銘柄の順位が空になり、一度も買わずに0％になる）。
     _sel_names = [x.strip() for x in (args.only or "").split(",") if x.strip()]
     _need_fund = any(VARIANTS.get(n_, {}).get("measure") in
-                     ("pbr", "per", "size", "pbr_sec", "value")
+                     ("pbr", "per", "size", "pbr_sec", "value",
+                      "pbrroe70", "pbrroe50", "pbrroe30")
                      or VARIANTS.get(n_, {}).get("screen")
                      for n_ in _sel_names)
 
