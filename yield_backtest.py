@@ -474,6 +474,34 @@ VARIANTS: dict[str, dict[str, Any]] = {
         "budget_weighted": True, "target_names": 15,
         "hold_tiers": ["S", "A", "B"], "exit_on_cut": True,
     },
+    # ── 低PBR順に変えたことで、前提が変わった部分の確かめ直し ──
+    # 本番は「減配」と「業績急変（営業利益−20％）」の両方で売る。
+    # pbr_low_tier は減配だけなので、本番と同じ売り方の版を基準にする。
+    "pbr_live": {
+        "label": "低PBR順・本番と同じ売り方（減配＋業績急変）",
+        "entry": [80], "exit": [], "measure": "pbr", "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+    },
+    "pbr_nocut": {
+        "label": "低PBR順・減配でも業績急変でも売らない",
+        "entry": [80], "exit": [], "measure": "pbr", "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S", "A", "B"],
+    },
+    "pbr_live_t10": {
+        "label": "低PBR順・本番の売り方・目標10銘柄",
+        "entry": [80], "exit": [], "measure": "pbr", "priority": "tier",
+        "budget_weighted": True, "target_names": 10,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+    },
+    "pbr_live_t20": {
+        "label": "低PBR順・本番の売り方・目標20銘柄",
+        "entry": [80], "exit": [], "measure": "pbr", "priority": "tier",
+        "budget_weighted": True, "target_names": 20,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+    },
+
     # ── B. 業種に偏らない低PBR ──
     "pbr_sec_tier": {
         "label": "業種の中で低PBR順（Tier優先）",
@@ -3792,7 +3820,9 @@ def main() -> int:
         jn = {"fx": "円安(+1％あたり)", "rate": "米金利(+1ptあたり)",
               "oil": "原油(+1％あたり)", "spx": "米国株(+1％あたり)"}
 
-        print(f"\n■ 逆風が来たら何％沈むか（{fac.index.min().date()} 〜 {fac.index.max().date()} の動きから推定）\n")
+        _c0 = next(iter(curves.values()))["date"]
+        _a, _b = max(fac.index.min(), _c0.min()), min(fac.index.max(), _c0.max())
+        print(f"\n■ 逆風が来たら何％沈むか（{_a.date()} 〜 {_b.date()} の月ごとの動きから推定）\n")
         res_tab, betas = {}, {}
         for nm, c in curves.items():
             v = c.set_index("date")["value"].resample("ME").last().pct_change().dropna()
