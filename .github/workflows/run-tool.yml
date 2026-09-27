@@ -1,0 +1,66 @@
+name: run-tool
+
+# 書き換え用のスクリプトを動かす、汎用のワークフロー。
+#
+# これを一度置いておけば、今後の書き換えは
+#   1. スクリプト（.py）をリポジトリ直下か tools/ に置く
+#   2. Actions → run-tool → スクリプトの名前と設定値を入れて実行
+# だけで済む。書き換えのたびに .yml を置く必要がなくなる。
+#
+# 保存するのは scripts/・tools/・data/・直下のファイルだけ。
+# .github/ は GitHub の決まりで自動では書き換えられないので、対象にしない。
+on:
+  workflow_dispatch:
+    inputs:
+      tool:
+        description: "動かすスクリプトの名前（例: apply_pbrmode.py）"
+        required: true
+      value:
+        description: "スクリプトに渡す設定値（例: pbr）。要らなければ空欄"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: スクリプトを動かす
+        env:
+          TOOL: ${{ github.event.inputs.tool }}
+          MODE: ${{ github.event.inputs.value }}
+          VALUE: ${{ github.event.inputs.value }}
+        run: |
+          # 「(1)」付きの名前でも見つかるようにする
+          T="$TOOL"
+          for c in "tools/$T" "$T" "tools/${T%.py} (1).py" "${T%.py} (1).py"; do
+            if [ -f "$c" ]; then python "$c"; exit $?; fi
+          done
+          echo "スクリプトが見つかりません: $T（直下か tools/ に置いてください）"
+          exit 1
+
+      - name: 保存する
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A -- scripts tools data $(git ls-files --others --modified --exclude-standard | grep -v '^\.github/' | grep -v '/' || true) 2>/dev/null || true
+          git add -u -- . ':!.github' 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "変更なし。"
+            exit 0
+          fi
+          git commit -m "run-tool: ${{ github.event.inputs.tool }} ${{ github.event.inputs.value }}"
+          for i in 1 2 3; do
+            git pull --rebase --autostash origin main && git push && exit 0
+            echo "送信に失敗しました（${i}回目）。少し待って送り直します。"
+            sleep $((i * 5))
+          done
+          exit 1
