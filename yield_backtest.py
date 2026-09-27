@@ -434,6 +434,54 @@ VARIANTS: dict[str, dict[str, Any]] = {
         "hold_tiers": ["S", "A", "B"], "exit_on_cut": True,
     },
 
+    # ── A. スクリーニング8条件は効いているか ──
+    # 検証ツールにはこれまで利回りの足切りしか入っていなかった。
+    # 本番と同じ8条件を入れて、入れない場合と比べる。
+    "xs_any_tier_scr": {
+        "label": "利回りの高い順（Tier優先）＋8条件",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True,
+    },
+    "pbr_low_tier_scr": {
+        "label": "低PBR順（Tier優先）＋8条件",
+        "entry": [80], "exit": [], "measure": "pbr", "priority": "tier", "screen": True,
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True,
+    },
+    # ── C. 低PBR順の結果は、細かい条件で崩れないか ──
+    "pbr_low_tier_10": {
+        "label": "低PBR順（Tier優先）安い側10％から",
+        "entry": [90], "exit": [], "measure": "pbr", "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True,
+    },
+    "pbr_low_tier_30": {
+        "label": "低PBR順（Tier優先）安い側30％から",
+        "entry": [70], "exit": [], "measure": "pbr", "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True,
+    },
+    "value_low_tier": {
+        "label": "PBR＋PERの割安順（Tier優先）",
+        "entry": [80], "exit": [], "measure": "value", "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True,
+    },
+    "pbr_low_tier_slip30": {
+        "label": "低PBR順（Tier優先）約定のずれ30bps",
+        "entry": [80], "exit": [], "measure": "pbr", "priority": "tier", "slip_bps": 30,
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True,
+    },
+    # ── B. 業種に偏らない低PBR ──
+    "pbr_sec_tier": {
+        "label": "業種の中で低PBR順（Tier優先）",
+        "entry": [80], "exit": [], "measure": "pbr_sec", "priority": "tier",
+        "budget_weighted": True, "target_names": 15,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True,
+    },
+
     # ── 「過去3年と比べて安いとき」に買う仕組みは効いているか ──
     # 探索で「高配当・買って放置」がいまのルールを上回ったため、
     # 本番と同じ条件（スクリーニング・Tier別予算・売らない）で確かめる。
@@ -1340,7 +1388,40 @@ FUND_FIELDS = {
     "eq":    ("Eq", "Equity", "NetAssets", "TotalEquity"),
     "sales": ("Sales", "NetSales", "Revenue"),
     "sh":    ("ShOutFY", "ShOut", "SharesOutstanding"),
+    "op":    ("OP", "OpProfit", "OperatingProfit"),
+    "eqar":  ("EqAR",),
+    "payout": ("PayoutRatioAnn",),
+    "divann": ("DivAnn",),
 }
+
+
+def _stable(values: list) -> bool | None:
+    """本番の check_stability と同じ。過去5期で前期比−10%超が2期続いていなければ True。"""
+    vals = [v for v in values if v is not None and not pd.isna(v)]
+    if len(vals) < 3:
+        return None
+    ser = vals[-5:]
+    run = 0
+    for a, b in zip(ser[:-1], ser[1:]):
+        if a <= 0:
+            run = 0
+            continue
+        if (b - a) / abs(a) < -0.10:
+            run += 1
+            if run >= 2:
+                return False
+        else:
+            run = 0
+    return True
+
+
+def _no_cut(values: list) -> bool | None:
+    """本番の check_dividend_history と同じ。過去10期で一度も減配していなければ True。"""
+    vals = [v for v in values if v is not None and not pd.isna(v)]
+    if len(vals) < 3:
+        return None
+    h = vals[-10:]
+    return all(h[i] >= h[i - 1] for i in range(1, len(h)))
 
 
 def fund_timeline(stmts: list[dict]) -> pd.DataFrame:
@@ -1365,13 +1446,22 @@ def fund_timeline(stmts: list[dict]) -> pd.DataFrame:
         return pd.DataFrame()
     df = pd.DataFrame(recs).sort_values("date").groupby("date", as_index=False).last()
     df["np_prev"] = df["np"].shift(1)
+    # その開示の時点までの履歴だけで判定する（あとから分かる情報は使わない）
+    for col, fn, key in (("ok_sales", _stable, "sales"), ("ok_op", _stable, "op"),
+                         ("ok_np", _stable, "np"), ("ok_div", _no_cut, "divann")):
+        out = []
+        for i in range(len(df)):
+            r = fn(df[key].iloc[:i + 1].tolist()) if key in df.columns else None
+            out.append(np.nan if r is None else float(r))
+        df[col] = out
     return df
 
 
 def add_fund_columns(store: dict, panel: pd.DataFrame) -> pd.DataFrame:
     """パネルに財務項目を足す。その月までに開示されていた数字だけを使う。"""
     panel = panel.copy()
-    cols = ["eps", "bps", "np", "eq", "sales", "sh", "np_prev"]
+    cols = ["eps", "bps", "np", "eq", "sales", "sh", "np_prev",
+            "op", "eqar", "payout", "ok_sales", "ok_op", "ok_np", "ok_div"]
     for c in cols:
         panel[c] = np.nan
     got = {c: 0 for c in cols}
@@ -1404,6 +1494,51 @@ def add_fund_columns(store: dict, panel: pd.DataFrame) -> pd.DataFrame:
     panel["pct_per"] = panel.groupby("date")["_per"].rank(pct=True, ascending=False) * 100
     panel["pct_size"] = panel.groupby("date")["_size"].rank(pct=True, ascending=False) * 100
     panel = panel.drop(columns=["_pbr", "_per", "_size"])
+    # 業種の中での PBR の順位（業種に偏らないように選ぶため）
+    _pbr2 = panel["price"] / panel["bps"].where(panel["bps"] > 0)
+    panel["_pbr2"] = _pbr2
+    panel["pct_pbr_sec"] = panel.groupby(["date", "sector"])["_pbr2"].rank(
+        pct=True, ascending=False) * 100
+    panel = panel.drop(columns=["_pbr2"])
+    # PBR と PER を合わせた割安さ
+    panel["pct_value"] = (panel["pct_pbr"] + panel["pct_per"]) / 2
+
+    # ── スクリーニング8条件（本番の generate.py と同じ判定） ──
+    # 判定できない（データ不足）ものは本番と同じく通過扱い。
+    def _tri(x):
+        return None if (x is None or pd.isna(x)) else bool(x)
+    exempt_eq = {"銀行業", "証券、商品先物取引業", "保険業", "その他金融業", "不動産業"}
+    relaxed_eq = {"建設業", "海運業", "卸売業"}
+    per_ = panel["price"] / panel["eps"]
+    pbr_ = panel["price"] / panel["bps"]
+    pay = panel["payout"].where(panel["payout"].notna(),
+                                panel["dps"] / panel["eps"].where(panel["eps"] > 0))
+    pay = pay.where(pay.isna() | (pay >= 3), pay * 100)   # 0.35 のような比率なら％に
+    eqr = panel["eqar"].where(panel["eqar"].isna() | (panel["eqar"] <= 1.5),
+                              panel["eqar"] / 100)
+    res = []
+    prog = panel["progressive"] if "progressive" in panel.columns else pd.Series(False, index=panel.index)
+    for i in panel.index:
+        sec = panel.at[i, "sector"]
+        div_ok = True if bool(prog.at[i]) else _tri(panel.at[i, "ok_div"])
+        eq_ok = (True if sec in exempt_eq else
+                 None if pd.isna(eqr.at[i]) else
+                 eqr.at[i] >= (0.33 if sec in relaxed_eq else 0.50))
+        pv = pay.at[i]
+        pay_ok = None if pd.isna(pv) else pv <= 50.0
+        e, b = panel.at[i, "eps"], panel.at[i, "bps"]
+        if pd.isna(e) or pd.isna(b):
+            val_ok = None
+        elif e <= 0 or b <= 0:
+            val_ok = False
+        else:
+            val_ok = (per_.at[i] * pbr_.at[i]) <= 40.0
+        checks = [div_ok, _tri(panel.at[i, "ok_sales"]), _tri(panel.at[i, "ok_op"]),
+                  _tri(panel.at[i, "ok_np"]), pay_ok, eq_ok, val_ok]
+        res.append(all(c is None or c for c in checks))
+    panel["screen_pass"] = res
+    log.info("  スクリーニング8条件を通過した割合 … %.0f％（利回りの条件は別に判定）",
+             panel["screen_pass"].mean() * 100)
     if got["eps"] == 0 and got["bps"] == 0:
         log.warning("財務の項目が取れていません。項目名が違う可能性があります。")
         # 手がかりとして、最初の1件の項目名を出す
@@ -1689,7 +1824,7 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
         if measure == "z":
             v = row.get("zscore")
             return float(v) if v is not None and not pd.isna(v) else -99.0
-        if measure in ("pbr", "per", "size"):
+        if measure in ("pbr", "per", "size", "pbr_sec", "value"):
             # 全銘柄の中での順位（％）。pbr/per は低いほど、size は小さいほど高い値になる
             if "pct_" + measure not in row.index:
                 raise RuntimeError(f"pct_{measure} の列がありません。財務の項目が足されていません。")
@@ -1732,6 +1867,8 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
     # 指定があればそちらを優先する。
     min_yield = cfg.get("min_yield", 0.0) if min_yield_override is None \
         else float(min_yield_override)
+    # スクリーニング8条件を使うか（本番と同じ絞り込み）
+    use_screen = bool(cfg.get("screen", False))
     # 市場全体が割安なときに厚く、割高なときに薄く買う。
     # 「暴落を待つ」戦略は、待っている間の取り逃がしが本体なので、
     # 効いているかどうかは全期間で確かめる必要がある。
@@ -1763,6 +1900,10 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
     ramp = max(0, int(ramp))
 
     slip = slip_bps / 10000.0
+
+    if cfg.get('slip_bps') is not None:
+
+        slip = cfg['slip_bps'] / 10000.0
     fee = fee_bps / 10000.0
     loss_pool = 0.0        # 相殺できる損失の残り
 
@@ -2040,6 +2181,11 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
         diag["months"] += 1
         cands = []
         for code, row in day.iterrows():
+            if use_screen:
+                if "screen_pass" not in row.index:
+                    raise RuntimeError("screen_pass の列がありません。財務の項目が足されていません。")
+                if not bool(row["screen_pass"]):
+                    continue
             if min_yield > 0 and row.get("yield", 0) < min_yield:
                 continue        # 利回りが低すぎる銘柄は最初から除く
             p = level(row)
@@ -3414,7 +3560,9 @@ def main() -> int:
     # 総当たりなどでパネルを作り直すときも、必ず同じように足すこと
     # （足し忘れると全銘柄の順位が空になり、一度も買わずに0％になる）。
     _sel_names = [x.strip() for x in (args.only or "").split(",") if x.strip()]
-    _need_fund = any(VARIANTS.get(n_, {}).get("measure") in ("pbr", "per", "size")
+    _need_fund = any(VARIANTS.get(n_, {}).get("measure") in
+                     ("pbr", "per", "size", "pbr_sec", "value")
+                     or VARIANTS.get(n_, {}).get("screen")
                      for n_ in _sel_names)
 
     def _panel_for(lb_):

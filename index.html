@@ -633,7 +633,7 @@ const S = {
   watch: JSON.parse(localStorage.getItem('div_watchlist')||'[]'),
   port:  JSON.parse(localStorage.getItem('div_portfolio')||'[]'),
   fwd:{state:null,hist:null},
-  trk:{main:null,rot:null,swing:null},
+  trk:{main:null,rot:null,swing:null,val:null},
 };
 const fmt = {
   yen:(n)=>n==null?'—':'¥'+Math.round(n).toLocaleString(),
@@ -706,10 +706,11 @@ async function init(){
   const [st,hi]=await Promise.all([loadJSON('data/portfolio_state.json'),loadJSON('data/portfolio_history.json')]);
   S.fwd.state=st;S.fwd.hist=hi;
   // 並走記録（無ければ null のまま。画面で「まだ記録がありません」と出す）
-  const [rs,rh,ss,sh]=await Promise.all([
+  const [rs,rh,ss,sh,vs,vh]=await Promise.all([
     loadJSON('data/rotation_state.json'),loadJSON('data/rotation_history.json'),
-    loadJSON('data/swing_state.json'),loadJSON('data/swing_history.json')]);
-  S.trk.main={st,hi}; S.trk.rot={st:rs,hi:rh}; S.trk.swing={st:ss,hi:sh};
+    loadJSON('data/swing_state.json'),loadJSON('data/swing_history.json'),
+    loadJSON('data/value_state.json'),loadJSON('data/value_history.json')]);
+  S.trk.main={st,hi}; S.trk.rot={st:rs,hi:rh}; S.trk.swing={st:ss,hi:sh}; S.trk.val={st:vs,hi:vh};
   const dt=new Date(S.data.generated_at);
   $('lastUpdate').textContent=dt.toLocaleString('ja-JP',{hour12:false}).replace(/\//g,'.');
   $('sigDate').textContent=dt.toLocaleDateString('ja-JP').replace(/\//g,'.');
@@ -1586,9 +1587,11 @@ function renderPf(){
    記録ファイルの形が少しずつ違っても表示できるよう、項目は緩く読む。 */
 const TRK=[
   {key:'main', name:'本番', color:'#3B5BFD',
-   desc:'売らない。減配・業績急変のときだけ売る（検証で最も良かった形）'},
+   desc:'利回り4%以上・8条件を通った銘柄を、Tier順・利回りの高い順に買って持ち続ける（いまの本番）'},
   {key:'rot', name:'入れ替え', color:'#D97706',
    desc:'より質の高い銘柄が出たら入れ替える（検証では本番とほぼ互角）'},
+  {key:'val', name:'低PBR順', color:'#7C3AED',
+   desc:'利回り4%以上・8条件を通った銘柄から、PBRの安い側20%を、Tier順・PBRの低い順に買って持ち続ける（本番の候補）'},
   {key:'swing', name:'レンジ売買', color:'#10B981',
    desc:'横ばいの銘柄を下限で買い上限で売る（検証では効かなかった。横ばい相場で確かめる）'},
 ];
