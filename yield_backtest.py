@@ -502,6 +502,32 @@ VARIANTS: dict[str, dict[str, Any]] = {
         "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
     },
 
+    # ── 足切りどうしを、本番のルールで直接比べる ──
+    "pbr_live_y25": {
+        "label": "低PBR順・本番の売り方・足切り2.5％",
+        "entry": [80], "exit": [], "measure": "pbr", "priority": "tier",
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 2.5,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+    },
+    "pbr_live_y30": {
+        "label": "低PBR順・本番の売り方・足切り3.0％",
+        "entry": [80], "exit": [], "measure": "pbr", "priority": "tier",
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+    },
+    "pbr_live_y35": {
+        "label": "低PBR順・本番の売り方・足切り3.5％",
+        "entry": [80], "exit": [], "measure": "pbr", "priority": "tier",
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.5,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+    },
+    "pbr_live_y40": {
+        "label": "低PBR順・本番の売り方・足切り4.0％",
+        "entry": [80], "exit": [], "measure": "pbr", "priority": "tier",
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 4.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+    },
+
     # ── B. 業種に偏らない低PBR ──
     "pbr_sec_tier": {
         "label": "業種の中で低PBR順（Tier優先）",
@@ -1895,6 +1921,10 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
     # 指定があればそちらを優先する。
     min_yield = cfg.get("min_yield", 0.0) if min_yield_override is None \
         else float(min_yield_override)
+    # ルールの側で足切りを固定したいとき（総当たりの足切りの軸より優先する）。
+    # 足切りどうしを直接比べるために使う。
+    if cfg.get("min_yield_fixed") is not None:
+        min_yield = float(cfg["min_yield_fixed"])
     # スクリーニング8条件を使うか（本番と同じ絞り込み）
     use_screen = bool(cfg.get("screen", False))
     _rng_shuffle = np.random.default_rng(cfg.get("seed", 0))
