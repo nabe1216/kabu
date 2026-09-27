@@ -1869,6 +1869,7 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
         else float(min_yield_override)
     # スクリーニング8条件を使うか（本番と同じ絞り込み）
     use_screen = bool(cfg.get("screen", False))
+    _rng_shuffle = np.random.default_rng(cfg.get("seed", 0))
     # 市場全体が割安なときに厚く、割高なときに薄く買う。
     # 「暴落を待つ」戦略は、待っている間の取り逃がしが本体なので、
     # 効いているかどうかは全期間で確かめる必要がある。
@@ -2214,6 +2215,16 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
             cands.sort(key=lambda x: x[1])
         else:
             cands.sort(key=lambda x: -x[0])
+
+        # でたらめに並べる（運の幅を測るため）。
+        #   all  … 候補の中から完全にでたらめに選ぶ
+        #   tier … Tier順（S→A→B）は守り、同じTierの中だけでたらめ
+        _shuf = cfg.get("shuffle")
+        if _shuf and cands:
+            _rng_shuffle.shuffle(cands)
+            if _shuf == "tier":
+                _ord = {"S": 0, "A": 1, "B": 2}
+                cands.sort(key=lambda x: _ord.get(x[4], 9))   # 並べ替えは安定なので、Tier内はでたらめのまま
 
         # ── 入れ替え ──
         # 「枠が埋まったら」だけを条件にすると、資金が先に尽きる運用では
@@ -3336,6 +3347,11 @@ def main() -> int:
     ap.add_argument("--only", default="", help="比較するルールをカンマ区切りで指定")
     ap.add_argument("--capital", type=float, default=0,
                     help="元本。未指定なら通常300万・実運用モードで1000万")
+    ap.add_argument("--random-test", action="store_true",
+                    help="同じ候補の中からでたらめに選んだ場合と比べ、"
+                         "いまのルールの優位が運ではないかを確かめる")
+    ap.add_argument("--random-n", type=int, default=25,
+                    help="でたらめに選ぶ回数（既定25）")
     ap.add_argument("--blend", action="store_true",
                     help="動きの違う手法を同時に持つ形と、状況で使い分ける形を、"
                          "同じ土俵で比べる。悪いとき（最悪の年・最大下落）を見る")
@@ -3406,6 +3422,10 @@ def main() -> int:
                     help="同時に持つ最大銘柄数。未指定なら通常15・実運用モードで20")
     ap.add_argument("--refetch", action="store_true", help="キャッシュを無視して取り直す")
     args = ap.parse_args()
+    # 入力欄が上限（25個）に達しているので、新しいモードは
+    # 「比較するルール」の欄に特別な言葉を入れて動かす。
+    if (args.only or "").strip() == "random_test":
+        args.random_test, args.only = True, "pbr_low_tier,xs_any_tier"
 
     OUTDIR.mkdir(parents=True, exist_ok=True)
 
@@ -3715,6 +3735,70 @@ def main() -> int:
         for v in VARIANTS.values():
             v.setdefault("min_yield", args.min_yield)
         log.info("利回り %.1f％ 未満の銘柄は買わない設定で回します", args.min_yield)
+
+    # ══════════════════════════════════════════
+    # 運の幅を測る（でたらめに選んだ場合との比較）
+    #
+    #   同じ候補（利回り4％以上）の中から、でたらめに選んだ場合を何十回も回す。
+    #   いまのルールがその分布のどこにいるかで、優位が「選び方」から来ているのか、
+    #   「候補が良かっただけ」なのかが分かる。
+    #     でたらめ（全部）    … Tierも無視して、候補から適当に選ぶ
+    #     でたらめ（Tier内）  … Tier順は守り、同じTierの中だけ適当に選ぶ
+    # ══════════════════════════════════════════
+    if args.random_test:
+        if "pct_pbr" not in panel.columns:
+            log.info("財務の項目を足します…")
+            panel = add_fund_columns(store, panel)
+        my = args.min_yield if args.min_yield > 0 else 4.0
+        pool = dict(VARIANTS["xs_any_tier"])
+        refs = [("低PBR順（いまの本番）", VARIANTS["pbr_low_tier"]),
+                ("利回りの高い順（ひとつ前）", VARIANTS["xs_any_tier"])]
+        K = max(5, args.random_n)
+        conds = [(0, "資金を初日に全額"), (12, "資金を12か月かけて入れる")]
+        cap = args.capital
+        common = dict(tier_budget=True, dividends=True, slip_bps=args.slip_bps,
+                      tax_rate=args.tax / 100.0, min_yield_override=my)
+        log.info("運の幅を測ります：でたらめ %d回 × 2通り × 条件%d つ（足切り %.1f％）",
+                 K, len(conds), my)
+
+        print(f"\n■ 運の幅を測る（{panel['date'].min().date()} 〜 {panel['date'].max().date()}"
+              f" ／ 利回り{my}％以上の候補から選ぶ ／ でたらめ {K}回）\n")
+        summary = []
+        for ramp, lbl in conds:
+            ref_r = {}
+            for nm, cfg in refs:
+                r = simulate(panel, cfg, cap, 20, ramp=ramp, **common)
+                ref_r[nm] = metrics(r)["年率"]
+            dist = {}
+            for mode, mlbl in (("all", "でたらめ（全部）"), ("tier", "でたらめ（Tier内）")):
+                vals = []
+                for k in range(K):
+                    cfg = dict(pool, shuffle=mode, seed=1000 + k)
+                    r = simulate(panel, cfg, cap, 20, ramp=ramp, **common)
+                    vals.append(metrics(r)["年率"])
+                dist[mlbl] = np.array(vals)
+                log.info("  %s ／ %s … 平均 %.1f％", lbl, mlbl, np.mean(vals))
+
+            print(f"【{lbl}】\n")
+            print(f"{'':<24}{'平均':>8}{'下位5％':>9}{'中央':>8}{'上位5％':>9}{'最高':>8}")
+            print("-" * 68)
+            for mlbl, v in dist.items():
+                print(f"{mlbl:<24}{v.mean():>7.1f}%{np.percentile(v, 5):>8.1f}%"
+                      f"{np.median(v):>7.1f}%{np.percentile(v, 95):>8.1f}%{v.max():>7.1f}%")
+            print()
+            for nm, val in ref_r.items():
+                for mlbl, v in dist.items():
+                    pct = (v < val).mean() * 100
+                    print(f"  {nm:<26} {val:>5.1f}％ … {mlbl}の {pct:>3.0f}％ を上回る")
+                summary.append((lbl, nm, val, {k: (v < val).mean() * 100 for k, v in dist.items()}))
+            print()
+
+        print("【読み方】\n")
+        print("  ・「でたらめ（Tier内）の95％以上を上回る」なら、Tierの中での選び方に本当に価値がある。")
+        print("  ・50％前後なら、その選び方はでたらめと変わらない。成績は候補とTierのおかげ。")
+        print("  ・でたらめの「下位5％〜上位5％」の幅が、運だけで生まれる差の大きさの目安。")
+        print("    ルールどうしの差がこの幅より小さければ、運と区別がつかない。")
+        return 0
 
     # ══════════════════════════════════════════
     # 組み合わせ vs 使い分け
