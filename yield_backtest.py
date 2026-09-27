@@ -549,6 +549,13 @@ VARIANTS: dict[str, dict[str, Any]] = {
         "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
     },
 
+    "switch36_live": {
+        "label": "市況で切り替え（因子の勢い36か月）・本番の売り方・足切り3％",
+        "entry": [80], "exit": [], "measure": "switch36", "priority": "tier",
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+    },
+
     # ── B. 業種に偏らない低PBR ──
     "pbr_sec_tier": {
         "label": "業種の中で低PBR順（Tier優先）",
@@ -1589,6 +1596,16 @@ def add_fund_columns(store: dict, panel: pd.DataFrame) -> pd.DataFrame:
         panel["_mix"] = (panel["pct_pbr"] * _wv + panel["pct_roe"] * (100 - _wv)) / 100
         panel[f"pct_pbrroe{_wv}"] = panel.groupby("date")["_mix"].rank(pct=True, ascending=True) * 100
     panel = panel.drop(columns=["_mix"])
+    # 市況で切り替える順位：割安寄りの月は割安70＋稼ぐ力30、稼ぐ力寄りの月は割安30＋稼ぐ力70
+    if SWITCH_SIG is not None:
+        _m = panel["date"] + pd.offsets.MonthEnd(0)
+        _s = SWITCH_SIG.copy()
+        _s.index = _s.index + pd.offsets.MonthEnd(0)
+        _v = _m.map(_s)
+        panel["pct_switch36"] = np.where(_v == True, panel["pct_pbrroe70"],
+                                  np.where(_v == False, panel["pct_pbrroe30"], panel["pct_pbrroe50"]))
+        _n_v = int((_v == True).sum()); _n_q = int((_v == False).sum())
+        log.info("  市況の切り替え … 割安寄り %d件・稼ぐ力寄り %d件（銘柄×月）", _n_v, _n_q)
 
     # ── スクリーニング8条件（本番の generate.py と同じ判定） ──
     # 判定できない（データ不足）ものは本番と同じく通過扱い。
@@ -1912,7 +1929,7 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
             v = row.get("zscore")
             return float(v) if v is not None and not pd.isna(v) else -99.0
         if measure in ("pbr", "per", "size", "pbr_sec", "value",
-                       "pbrroe70", "pbrroe50", "pbrroe30"):
+                       "pbrroe70", "pbrroe50", "pbrroe30", "switch36"):
             # 全銘柄の中での順位（％）。pbr/per は低いほど、size は小さいほど高い値になる
             if "pct_" + measure not in row.index:
                 raise RuntimeError(f"pct_{measure} の列がありません。財務の項目が足されていません。")
@@ -3374,6 +3391,21 @@ def _streaks(r: pd.Series) -> dict:
             "負けた年": int((yr < 0).sum()), "年数": len(yr)}
 
 
+SWITCH_SIG = None   # 割安寄り（True）か稼ぐ力寄り（False）か。月末の日付ごと
+
+
+def french_switch_signal(months: int = 36, lag: int = 2) -> pd.Series | None:
+    """過去 months か月、割安（HML）が稼ぐ力（RMW）を上回っていれば True。
+    データの公開には1〜2か月の遅れがあるので、lag か月前までの情報で判断する。"""
+    f5 = _french("Japan_5_Factors")
+    if f5 is None or "HML" not in f5.columns or "RMW" not in f5.columns:
+        return None
+    spread = f5["HML"] - f5["RMW"]
+    sig = (spread.rolling(months).sum().shift(lag) > 0)
+    sig = sig[spread.rolling(months).count().shift(lag) >= months]
+    return sig
+
+
 def history_test() -> int:
     log.info("日本の長い歴史のデータを取得します（ケネス・フレンチ教授のデータライブラリ）…")
     f3 = _french("Japan_3_Factors")
@@ -3937,7 +3969,7 @@ def main() -> int:
     _sel_names = [x.strip() for x in (args.only or "").split(",") if x.strip()]
     _need_fund = any(VARIANTS.get(n_, {}).get("measure") in
                      ("pbr", "per", "size", "pbr_sec", "value",
-                      "pbrroe70", "pbrroe50", "pbrroe30")
+                      "pbrroe70", "pbrroe50", "pbrroe30", "switch36")
                      or VARIANTS.get(n_, {}).get("screen")
                      for n_ in _sel_names)
 
@@ -3947,6 +3979,14 @@ def main() -> int:
             pn_ = add_fund_columns(store, pn_)
         return pn_
 
+    global SWITCH_SIG
+    if any(VARIANTS.get(n_, {}).get("measure") == "switch36" for n_ in _sel_names):
+        log.info("市況で切り替えるルールがあるので、フレンチ教授のデータを取得します…")
+        SWITCH_SIG = french_switch_signal(36, 2)
+        if SWITCH_SIG is None:
+            sys.exit("切り替えの合図を作れませんでした（フレンチ教授のデータが取れない）。")
+        _last = SWITCH_SIG.index.max().date()
+        log.info("  合図：%s 時点で %s", _last, "割安寄り" if bool(SWITCH_SIG.iloc[-1]) else "稼ぐ力寄り")
     if _need_fund:
         log.info("PBR・PER・時価総額で選ぶルールがあるので、財務の項目を足します…")
         panel = add_fund_columns(store, panel)
