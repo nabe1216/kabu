@@ -549,6 +549,13 @@ VARIANTS: dict[str, dict[str, Any]] = {
         "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
     },
 
+    "switch36_flip": {
+        "label": "市況で切り替え（36か月）・切り替わった月だけ入れ替える",
+        "entry": [80], "exit": [], "measure": "switch36", "priority": "tier",
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "sell_on_flip": True,
+    },
     "switch36_live": {
         "label": "市況で切り替え（因子の勢い36か月）・本番の売り方・足切り3％",
         "entry": [80], "exit": [], "measure": "switch36", "priority": "tier",
@@ -1604,6 +1611,12 @@ def add_fund_columns(store: dict, panel: pd.DataFrame) -> pd.DataFrame:
         _v = _m.map(_s)
         panel["pct_switch36"] = np.where(_v == True, panel["pct_pbrroe70"],
                                   np.where(_v == False, panel["pct_pbrroe30"], panel["pct_pbrroe50"]))
+        # 合図が前の月から変わった月（この月だけ持ち株を入れ替える形で使う）
+        _flip = (_s != _s.shift(1)) & _s.shift(1).notna()
+        panel["switch_flip"] = _m.map(_flip).fillna(False).astype(bool)
+        log.info("  合図が切り替わった月 … %s",
+                 "、".join(str(d.date())[:7] for d in _flip[_flip].index
+                          if d >= panel["date"].min()) or "なし")
         _n_v = int((_v == True).sum()); _n_q = int((_v == False).sum())
         log.info("  市況の切り替え … 割安寄り %d件・稼ぐ力寄り %d件（銘柄×月）", _n_v, _n_q)
 
@@ -1978,6 +1991,8 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
         min_yield = float(cfg["min_yield_fixed"])
     # スクリーニング8条件を使うか（本番と同じ絞り込み）
     use_screen = bool(cfg.get("screen", False))
+    # 市況の合図が切り替わった月に、持ち株を入れ替えるか
+    sell_on_flip = bool(cfg.get("sell_on_flip", False))
     _rng_shuffle = np.random.default_rng(cfg.get("seed", 0))
     # 市場全体が割安なときに厚く、割高なときに薄く買う。
     # 「暴落を待つ」戦略は、待っている間の取り逃がしが本体なので、
@@ -2065,6 +2080,11 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
             _emg = bool(row.get("dps_cut"))
             if exit_on_op and bool(row.get("op_drop")):
                 _emg = True
+            # 市況の合図が切り替わった月だけ、新しい順位で上位から外れた銘柄を入れ替える
+            if sell_on_flip and not _emg and bool(row.get("switch_flip")) \
+                    and level(row) < min(entry_for(row)):
+                _emg = True
+                diag["flip_exits"] = diag.get("flip_exits", 0) + 1
             if exit_on_cut and _emg and st["lots"]:
                 for sh, pr in st["lots"]:
                     eff = price * (1 - slip) * (1 - fee)
