@@ -1,7 +1,7 @@
 {
   "started_at": "2026-06-28",
   "initial_cash": 10000000,
-  "cash": 471400.0,
+  "cash": 245400.0,
   "holdings": [
     {
       "code": "8801",
@@ -10,10 +10,10 @@
       "qty": 2700,
       "buy_date": "2026-06-28",
       "buy_price": 1451.5,
-      "current_price": 1491.0,
-      "value": 4025700.0,
-      "unrealized_pl": 106650.0,
-      "unrealized_pl_pct": 2.72
+      "current_price": 1453.0,
+      "value": 3923100.0,
+      "unrealized_pl": 4050.0,
+      "unrealized_pl_pct": 0.1
     },
     {
       "code": "6902",
@@ -22,10 +22,10 @@
       "qty": 1000,
       "buy_date": "2026-06-28",
       "buy_price": 1879.5,
-      "current_price": 1919.5,
-      "value": 1919500.0,
-      "unrealized_pl": 40000.0,
-      "unrealized_pl_pct": 2.13
+      "current_price": 1847.0,
+      "value": 1847000.0,
+      "unrealized_pl": -32500.0,
+      "unrealized_pl_pct": -1.73
     },
     {
       "code": "8439",
@@ -34,10 +34,10 @@
       "qty": 700,
       "buy_date": "2026-06-28",
       "buy_price": 2519.0,
-      "current_price": 2716.5,
-      "value": 1901550.0,
-      "unrealized_pl": 138250.0,
-      "unrealized_pl_pct": 7.84
+      "current_price": 2606.0,
+      "value": 1824200.0,
+      "unrealized_pl": 60900.0,
+      "unrealized_pl_pct": 3.45
     },
     {
       "code": "1925",
@@ -46,10 +46,10 @@
       "qty": 400,
       "buy_date": "2026-07-08",
       "buy_price": 4594.0,
-      "current_price": 4521.0,
-      "value": 1808400.0,
-      "unrealized_pl": -29200.0,
-      "unrealized_pl_pct": -1.59
+      "current_price": 2173.5,
+      "value": 869400.0,
+      "unrealized_pl": -968200.0,
+      "unrealized_pl_pct": -52.69
     },
     {
       "code": "4540",
@@ -58,16 +58,28 @@
       "qty": 100,
       "buy_date": "2026-08-23",
       "buy_price": 3745.0,
-      "current_price": 3857.0,
-      "value": 385700.0,
-      "unrealized_pl": 11200.0,
-      "unrealized_pl_pct": 2.99
+      "current_price": 3797.0,
+      "value": 379700.0,
+      "unrealized_pl": 5200.0,
+      "unrealized_pl_pct": 1.39
+    },
+    {
+      "code": "5970",
+      "name": "ジーテクト",
+      "tier": "B",
+      "qty": 100,
+      "buy_date": "2026-09-30",
+      "buy_price": 2260.0,
+      "current_price": 2215.0,
+      "value": 221500.0,
+      "unrealized_pl": -4500.0,
+      "unrealized_pl_pct": -1.99
     }
   ],
-  "total_value": 10704800.0,
-  "total_invested": 11635150.0,
+  "total_value": 9502850.0,
+  "total_invested": 11861150.0,
   "realized_pl": 52800.0,
   "dividend_received": 192550,
-  "last_updated": "2026-09-29",
-  "holdings_value": 10040850.0
+  "last_updated": "2026-09-30",
+  "holdings_value": 9064900.0
 }

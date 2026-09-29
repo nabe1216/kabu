@@ -81,6 +81,17 @@
       "price": 3745.0,
       "amount": 374500.0,
       "reason": "BUY_SIGNAL"
+    },
+    {
+      "date": "2026-09-30",
+      "action": "BUY",
+      "code": "5970",
+      "name": "ジーテクト",
+      "tier": "B",
+      "qty": 100,
+      "price": 2260.0,
+      "amount": 226000.0,
+      "reason": "BUY_SIGNAL"
     }
   ],
   "daily_snapshots": [
@@ -903,6 +914,16 @@
       "realized_pl": 52800.0,
       "dividend_total": 192550,
       "holdings_count": 5
+    },
+    {
+      "date": "2026-09-30",
+      "cash": 245400.0,
+      "holdings_value": 9064900.0,
+      "total_value": 9502850.0,
+      "unrealized_pl": -935050.0,
+      "realized_pl": 52800.0,
+      "dividend_total": 192550,
+      "holdings_count": 6
     }
   ],
   "dividends": [
