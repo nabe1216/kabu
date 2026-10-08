@@ -59,6 +59,26 @@ OUTDIR = Path("data")
 CACHE = OUTDIR / "yield_backtest_cache.pkl"
 
 # ══════════════════════════════════════════
+# 時間の上限への備え
+#   検証のワークフローは180分で強制終了される。強制終了だと、
+#   取り直し途中の株価も計算の結果も、何も残らない（2026年10月8日に起きた）。
+#   そうなる前に自分で止まり、取った分を保存して、次の実行で続きから取る。
+#   分はこのプログラムが動き始めてからの時間。前後の準備と保存に10分ほど見ておく。
+# ══════════════════════════════════════════
+_T0 = time.monotonic()
+FETCH_BUDGET_MIN = float(os.environ.get("FETCH_BUDGET_MIN", "130"))
+# これより遅く取り終えたら、計算は次の実行に回す。
+# 計算そのものは1,600社×9年の合成データで3分ほど（通常の比較2.5分・窓ずらし3分）。
+COMPUTE_START_LIMIT_MIN = float(os.environ.get("COMPUTE_START_LIMIT_MIN", "140"))
+FETCH_SAVE_EVERY_MIN = 15.0      # 取得の途中もこの間隔で保存する
+EXIT_UNFINISHED = 3              # 途中で止めたときの終了コード（緑にしないため）
+
+
+def _elapsed_min() -> float:
+    return (time.monotonic() - _T0) / 60.0
+
+
+# ══════════════════════════════════════════
 # 実運用の設定（portfolio_engine.py と同じ）
 #   これまでのバックテストは「等金額・8〜25銘柄」という簡略版だった。
 #   実際は Tier 別に予算が決まっていて、1000万では3〜4銘柄で資金が尽きる。
@@ -1070,6 +1090,14 @@ class RangeTooLong(Exception):
     """指定した期間がプランの範囲を超えているときに投げる"""
 
 
+class RateLimited(Exception):
+    """429（呼び出しすぎ）が続いて取れなかったときに投げる。
+
+    以前はここで黙って「データなし」を返していたため、
+    混み合ったときに、その銘柄が検証から静かに消えていた。
+    """
+
+
 class JQ:
     def __init__(self, key: str):
         self.key = key
@@ -1081,12 +1109,20 @@ class JQ:
             p = dict(params or {})
             if pk:
                 p["pagination_key"] = pk
-            for attempt in range(3):
+            # 429（呼び出しすぎ）は待てば通るので長めに粘る（合計で約3分）。
+            # 通信エラー・5xx は3回まで。どちらも、だめなら例外にする
+            # （黙って空のデータを返すと、その銘柄が検証から消える）。
+            net_err = 0
+            for attempt in range(7):
                 try:
                     r = self.s.get(f"{JQUANTS_BASE}{path}", params=p,
                                    headers={"x-api-key": self.key}, timeout=30)
                     if r.status_code == 429:
-                        time.sleep(2 ** (attempt + 1))
+                        wait = min(60, 2 ** (attempt + 1))
+                        ra = str(r.headers.get("Retry-After") or "").strip()
+                        if ra.isdigit():
+                            wait = max(wait, min(120, int(ra)))
+                        time.sleep(wait)
                         continue
                     if r.status_code in (401, 403):
                         # 契約プランに含まれない項目でも403が返る。
@@ -1098,9 +1134,12 @@ class JQ:
                     r.raise_for_status()
                     break
                 except requests.RequestException:
-                    if attempt == 2:
+                    net_err += 1
+                    if net_err >= 3:
                         raise
-                    time.sleep(2 ** attempt)
+                    time.sleep(2 ** net_err)
+            else:
+                raise RateLimited(f"429 が続きました: {path} {params}")
             j = r.json()
             data = j.get("data")
             if data is None:
@@ -1333,65 +1372,157 @@ def fetch_bars(jq: JQ, code: str, want_years: int) -> list[dict]:
     return []
 
 
-def fetch_all(jq: JQ, years: int, limit: int,
-              scale_filter: bool = True) -> dict:
-    """株価と財務をまとめて取得する。時間がかかるのでキャッシュします。"""
-    log.info("銘柄一覧を取得中…")
-    try:
-        info = jq.get("/v2/equities/master", {})
-    except NotAllowed as e:
-        sys.exit(f"認証に失敗しました（{e}）。APIキーをご確認ください。")
-    uni = []
-    for row in info:
-        if row.get("Mkt") != MARKET_PRIME:
-            continue
-        # 大型〜中型に絞ると、業績が崩れて中小型に落ちた会社が
-        # 最初から入らない（生き残りだけを見ることになる）。
-        # prime を選べば、その偏りが減る。
-        if scale_filter and (row.get("ScaleCat") or "") not in SCALE_TARGETS:
-            continue
-        code = norm_code(row.get("Code", ""))
-        if code:
-            uni.append({"code": code,
-                        "name": row.get("CoName", "") or row.get("CoNameEn", ""),
-                        "sector": row.get("S33Nm", ""),
-                        # 業界首位級の判定に使う。以前ここが抜けていて
-                        # Tier S が1社も出ない状態になっていた。
-                        "scale": row.get("ScaleCat", "")})
-    if limit:
-        uni = uni[:limit]
-    log.info("対象 %d銘柄", len(uni))
+def save_store(store: dict, note: str = "") -> None:
+    """取得したデータを保存する。書いている途中で止められても壊れないよう、
+    別名に書いてから置き換える。"""
+    OUTDIR.mkdir(parents=True, exist_ok=True)
+    tmp = CACHE.with_suffix(".tmp")
+    pd.to_pickle(store, tmp)
+    os.replace(tmp, CACHE)
+    if note:
+        log.info("  %s（%d / %d銘柄・開始から%.0f分）", note,
+                 len(store.get("quotes", {})), len(store.get("universe", [])),
+                 _elapsed_min())
 
-    store = {"universe": uni, "quotes": {}, "stmts": {}}
-    ok = 0
-    for i, u in enumerate(uni, 1):
-        time.sleep(API_SLEEP)
+
+def _fetch_one(jq: JQ, code: str) -> tuple[list | None, list | None]:
+    """1銘柄の株価と財務を取る。取れなければ例外。株価が空なら (None, None)。"""
+    time.sleep(API_SLEEP)
+    q = fetch_bars(jq, code, 9)   # いつでも上限まで取っておく
+    if not q:
+        return None, None
+    time.sleep(API_SLEEP)
+    try:
+        st = jq.get("/v2/fins/summary", {"code": code})
+    except NotAllowed:
+        st = []                   # 契約に含まれない。財務なしとして扱う
+    # それ以外の失敗は例外のまま返す。財務だけ欠けた銘柄を混ぜず、次の実行で取り直す
+    return q, st
+
+
+def fetch_all(jq: JQ, years: int, limit: int,
+              scale_filter: bool = True, store: dict | None = None) -> dict:
+    """株価と財務をまとめて取得する。時間がかかるのでキャッシュします。
+
+    途中で止まっても続きから取れるようにしてある。
+      ・使ってよい時間（FETCH_BUDGET_MIN）に達したら、取った分を保存して止まる
+      ・取得中も一定の間隔で保存する（強制終了に備える）
+      ・途中のデータ（complete が False）を渡すと、まだの銘柄だけを取る
+    取り終えたら store["complete"] = True、途中なら False にして返す。
+    """
+    if store and store.get("universe") and store.get("complete") is False:
+        uni = store["universe"]
+        store.setdefault("quotes", {})
+        store.setdefault("stmts", {})
+        store["resume_runs"] = int(store.get("resume_runs", 0)) + 1
+        log.info("前回の続きから取得します（取得済み %d / %d銘柄・%d回目の続き）",
+                 len(store["quotes"]), len(uni), store["resume_runs"])
+    else:
+        log.info("銘柄一覧を取得中…")
         try:
-            q = fetch_bars(jq, u["code"], 9)   # いつでも上限まで取っておく
-        except Exception as e:
-            log.warning("株価取得失敗 %s: %s", u["code"], e)
-            continue
-        if not q:
-            continue
-        ok += 1
-        time.sleep(API_SLEEP)
-        try:
-            st = jq.get("/v2/fins/summary", {"code": u["code"]})
-        except Exception:
-            st = []
-        store["quotes"][u["code"]] = q
-        store["stmts"][u["code"]] = st
-        if i % 50 == 0:
-            log.info("  取得 %d/%d（成功 %d）", i, len(uni), ok)
-    if ok == 0:
+            info = jq.get("/v2/equities/master", {})
+        except NotAllowed as e:
+            sys.exit(f"認証に失敗しました（{e}）。APIキーをご確認ください。")
+        uni = []
+        for row in info:
+            if row.get("Mkt") != MARKET_PRIME:
+                continue
+            # 大型〜中型に絞ると、業績が崩れて中小型に落ちた会社が
+            # 最初から入らない（生き残りだけを見ることになる）。
+            # prime を選べば、その偏りが減る。
+            if scale_filter and (row.get("ScaleCat") or "") not in SCALE_TARGETS:
+                continue
+            code = norm_code(row.get("Code", ""))
+            if code:
+                uni.append({"code": code,
+                            "name": row.get("CoName", "") or row.get("CoNameEn", ""),
+                            "sector": row.get("S33Nm", ""),
+                            # 業界首位級の判定に使う。以前ここが抜けていて
+                            # Tier S が1社も出ない状態になっていた。
+                            "scale": row.get("ScaleCat", "")})
+        if limit:
+            uni = uni[:limit]
+        store = {"universe": uni, "quotes": {}, "stmts": {}, "complete": False}
+    log.info("対象 %d銘柄（使ってよい時間 %.0f分・開始から%.0f分）",
+             len(uni), FETCH_BUDGET_MIN, _elapsed_min())
+
+    def _run(codes: list[str]) -> tuple[list[str], bool]:
+        """codes を順に取る。(取れなかった銘柄, 時間切れで止めたか) を返す。"""
+        failed: list[str] = []
+        last_save = time.monotonic()
+        for i, code in enumerate(codes, 1):
+            if _elapsed_min() >= FETCH_BUDGET_MIN:
+                return failed, True
+            try:
+                q, st = _fetch_one(jq, code)
+            except Exception as e:
+                log.warning("取得失敗 %s: %s", code, e)
+                failed.append(code)
+                continue
+            if q is not None:
+                store["quotes"][code] = q
+                store["stmts"][code] = st
+            if i % 50 == 0:
+                log.info("  取得 %d/%d（全体で取得済み %d / %d銘柄・開始から%.0f分）",
+                         i, len(codes), len(store["quotes"]), len(uni), _elapsed_min())
+            if (time.monotonic() - last_save) / 60 >= FETCH_SAVE_EVERY_MIN:
+                save_store(store, "途中まで保存しました")
+                last_save = time.monotonic()
+        return failed, False
+
+    todo = [u["code"] for u in uni if u["code"] not in store["quotes"]]
+    failed, stopped = _run(todo)
+    if failed and not stopped:
+        log.info("取れなかった %d銘柄を、もう一度だけ試します…", len(failed))
+        failed, stopped = _run(failed)
+
+    store["failed_codes"] = failed
+    store["stopped_by_time"] = stopped
+    if stopped:
+        log.warning("使ってよい時間（%.0f分）に達したので取得を止めました。"
+                    "取得済み %d / %d銘柄", FETCH_BUDGET_MIN,
+                    len(store["quotes"]), len(uni))
+        store["complete"] = False
+        return store
+    if not store["quotes"]:
         sys.exit("株価を1銘柄も取得できませんでした。APIキーと契約プランをご確認ください。")
-    log.info("取得できた銘柄: %d / %d", ok, len(uni))
+    log.info("取得できた銘柄: %d / %d", len(store["quotes"]), len(uni))
+    # 取れなかった銘柄が多いまま「取り終えた」にすると、偏ったデータで結果が出る。
+    # 次の実行でもう一度取る。ただし3回続いたら、残りは無いものとして進める。
+    too_many = len(failed) > max(10, int(len(uni) * 0.02))
+    if too_many and int(store.get("resume_runs", 0)) < 3:
+        log.warning("取れなかった銘柄が %d あります（%s …）。次の実行でもう一度取ります。",
+                    len(failed), ", ".join(failed[:10]))
+        store["complete"] = False
+        return store
+    if failed:
+        log.warning("取れなかった銘柄 %d を除いて進めます: %s", len(failed),
+                    ", ".join(failed[:20]) + (" …" if len(failed) > 20 else ""))
     try:
         store["topix"] = fetch_topix(jq)
     except Exception as e:
         log.warning("TOPIX の取得に失敗: %s", e)
         store["topix"] = pd.DataFrame()
+    store["complete"] = True
     return store
+
+
+def print_unfinished(store: dict, compute_only: bool) -> None:
+    """途中で止めたことを、Summary の最後に分かる形で出す。"""
+    n_ok, n_all = len(store.get("quotes", {})), len(store.get("universe", []))
+    print()
+    if compute_only:
+        print("■ まだ終わっていません（株価は取り終えましたが、計算の時間が残っていません）")
+    elif store.get("stopped_by_time"):
+        print("■ まだ終わっていません（株価の取得を途中で止めました）")
+    else:
+        print(f"■ まだ終わっていません（取れなかった銘柄が {len(store.get('failed_codes') or []):,} あるため、"
+              "次の実行でもう一度取ります）")
+    print(f"　 取得済み {n_ok:,} / {n_all:,}銘柄。取った分は保存しました"
+          f"（開始から{_elapsed_min():.0f}分）。")
+    print("　 同じ設定のまま、もう一度「Run workflow」を押してください。"
+          + ("今度は計算から始まります。" if compute_only else "続きから取ります。"))
+    print("　 180分の上限で強制終了されると、取った分も結果も消えるため、その前に止めています。")
 
 
 # ══════════════════════════════════════════
@@ -3836,19 +3967,33 @@ def main() -> int:
 
     OUTDIR.mkdir(parents=True, exist_ok=True)
 
-    if CACHE.exists() and not args.refetch:
-        log.info("キャッシュから読み込みます（取り直すなら --refetch）")
+    # 取得が途中で止まったデータ（complete が False）は、取り直しの指定に関係なく続きから取る。
+    # 取り終えたデータ（complete が True、または古い形で印が無いもの）は、そのまま使う。
+    store = None
+    if CACHE.exists():
         store = pd.read_pickle(CACHE)
-    else:
+        if store.get("complete") is False:
+            log.info("前回の株価の取得が途中で止まっています。続きから取ります。")
+        elif args.refetch:
+            store = None              # 取り終えたデータを捨てて、最初から取り直す
+        else:
+            log.info("キャッシュから読み込みます（取り直すなら --refetch）")
+    if store is None or store.get("complete") is False:
         key = os.environ.get("J_QUANTS_API_KEY")
         if not key:
             log.error("J_QUANTS_API_KEY が設定されていません")
             return 2
         store = fetch_all(JQ(key), args.years, args.limit,
-                          scale_filter=(args.universe == "core"))
-        store["universe_mode"] = args.universe
-        pd.to_pickle(store, CACHE)
+                          scale_filter=(args.universe == "core"), store=store)
+        store.setdefault("universe_mode", args.universe)
+        save_store(store)
         log.info("キャッシュに保存しました: %s", CACHE)
+        if store.get("complete") is False:
+            print_unfinished(store, compute_only=False)
+            return EXIT_UNFINISHED
+        if _elapsed_min() > COMPUTE_START_LIMIT_MIN:
+            print_unfinished(store, compute_only=True)
+            return EXIT_UNFINISHED
 
     # 未指定のときだけ既定値を入れる。
     # ここで無条件に上書きすると、実運用モードで銘柄数を変えても効かなくなる。
