@@ -568,6 +568,15 @@ VARIANTS: dict[str, dict[str, Any]] = {
         "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
         "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
     },
+    # ── 利回り順（9月26日の本番）を、本番の売り方・足切り3％で ──
+    # 株式分割の調整を入れたあとで、9月27日の「低PBR順に切り替える」判断を確かめ直すための相手。
+    # 利回りは配当も株価も分割調整済みなので、もともと分割の歪みを受けていない。
+    "yield_live_y30": {
+        "label": "利回りの高い順・本番の売り方・足切り3％",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+    },
 
     "switch36_flip": {
         "label": "市況で切り替え（36か月）・切り替わった月だけ入れ替える",
@@ -1644,8 +1653,19 @@ def _no_cut(values: list) -> bool | None:
     return all(h[i] >= h[i - 1] for i in range(1, len(h)))
 
 
-def fund_timeline(stmts: list[dict]) -> pd.DataFrame:
-    """開示日つきの通期の財務項目の系列。前年の純利益も持たせる（成長率用）。"""
+def fund_timeline(stmts: list[dict], px: pd.DataFrame | None = None) -> pd.DataFrame:
+    """開示日つきの通期の財務項目の系列。前年の純利益も持たせる（成長率用）。
+
+    株式分割の調整（2026年10月9日に追加）
+      株価（AdjC）は、過去の値を今の株数の基準に割り戻してある。
+      ところが決算の1株あたりの数字（EPS・BPS・年間配当）と株数は、開示した時点の株数のまま。
+      そのまま割ると、あとで分割した銘柄ほどPBR・PERが分割の倍率だけ低く出る
+      （例：三菱重工は1:10分割の前、PBRが約1.0なのに0.1と計算されていた）。
+      これは「あとで分割する＝そのあと値上がりした」という未来の情報で選ぶことになる。
+      px（分割の調整係数 adj つきの株価）を渡すと、開示日より後に起きた分割のぶんだけ
+      1株あたりの数字を掛け、株数を割って、今の基準に揃える。
+      本番の generate.py（split_adjustment_factor）と同じ考え方。
+    """
     recs = []
     for st in stmts:
         if st.get("CurPerType") not in ("FY", "4Q"):
@@ -1665,6 +1685,16 @@ def fund_timeline(stmts: list[dict]) -> pd.DataFrame:
     if not recs:
         return pd.DataFrame()
     df = pd.DataFrame(recs).sort_values("date").groupby("date", as_index=False).last()
+    if px is not None and not px.empty and "adj" in px.columns:
+        adj = px.set_index("date")["adj"].replace(0, 1.0).fillna(1.0)
+        cum = adj[::-1].cumprod()[::-1]                    # その日を含め、それ以降の累積係数
+        pos = cum.index.searchsorted(df["date"].values, side="right")   # 開示日より後の最初の日
+        fac = np.array([float(cum.iloc[p]) if p < len(cum) else 1.0 for p in pos])
+        for c in ("eps", "bps", "divann"):                 # 1株あたりの数字
+            if c in df.columns:
+                df[c] = pd.to_numeric(df[c], errors="coerce") * fac
+        if "sh" in df.columns:                             # 株数
+            df["sh"] = pd.to_numeric(df["sh"], errors="coerce") / fac
     df["np_prev"] = df["np"].shift(1)
     # その開示の時点までの履歴だけで判定する（あとから分かる情報は使わない）
     for col, fn, key in (("ok_sales", _stable, "sales"), ("ok_op", _stable, "op"),
@@ -1678,15 +1708,23 @@ def fund_timeline(stmts: list[dict]) -> pd.DataFrame:
 
 
 def add_fund_columns(store: dict, panel: pd.DataFrame) -> pd.DataFrame:
-    """パネルに財務項目を足す。その月までに開示されていた数字だけを使う。"""
+    """パネルに財務項目を足す。その月までに開示されていた数字だけを使う。
+
+    1株あたりの数字（EPS・BPS）と株数は、株価と同じく分割調整して今の基準に揃える
+    （fund_timeline に株価を渡す）。揃えないと、あとで分割した銘柄のPBRが低く出る。
+    """
     panel = panel.copy()
     cols = ["eps", "bps", "np", "eq", "sales", "sh", "np_prev",
             "op", "eqar", "payout", "ok_sales", "ok_op", "ok_np", "ok_div"]
     for c in cols:
         panel[c] = np.nan
     got = {c: 0 for c in cols}
+    n_split = 0
     for code, g in panel.groupby("code"):
-        ft = fund_timeline(store["stmts"].get(code, []))
+        px_ = quotes_to_df(store["quotes"].get(code, []))
+        if not px_.empty and (px_["adj"].replace(0, 1.0) != 1.0).any():
+            n_split += 1
+        ft = fund_timeline(store["stmts"].get(code, []), px_)
         if ft.empty:
             continue
         ft = ft.set_index("date").sort_index()
@@ -1703,6 +1741,7 @@ def add_fund_columns(store: dict, panel: pd.DataFrame) -> pd.DataFrame:
             panel.loc[g.index, c] = vals.to_numpy()
     for c in cols:
         log.info("  財務 %-8s … 取れた銘柄 %d社", c, got[c])
+    log.info("  株式分割があった銘柄 %d社 … 1株あたりの数字を今の株数の基準に揃えました", n_split)
     # 本番のエンジンで使う、全銘柄の中での順位（％）。
     #   pct_pbr / pct_per … 低いほど高い値（安い順）
     #   pct_size          … 時価総額が小さいほど高い値
