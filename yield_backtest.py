@@ -577,6 +577,53 @@ VARIANTS: dict[str, dict[str, Any]] = {
         "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
         "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
     },
+    # ── 本番と同じく、8条件を通った銘柄だけから買う版（2026年10月9日に追加）──
+    # 上の比較（pbr_live_y30・pbrroe50_live・yield_live_y30 など）は、売り方は本番と同じだが、
+    # 買う対象に8条件のスクリーニングをかけていなかった（全銘柄から選んでいた）。
+    # 本番の portfolio_engine は screening_pass を通った銘柄からしか買わないので、同じ形で確かめ直す。
+    # 名前の先頭を変えてあるのは、総当たりの勝敗表の見出し（先頭10文字）で見分けられるようにするため。
+    "yield_live_y30_scr": {
+        "label": "利回り順・足切り3％・8条件あり・本番の売り方",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+    },
+    "yield_live_y40_scr": {
+        "label": "利回り順・足切り4％・8条件あり・本番の売り方",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 4.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+    },
+    "pbrroe50_live_scr": {
+        "label": "割安50＋稼ぐ力50・足切り3％・8条件あり・本番の売り方",
+        "entry": [80], "exit": [], "measure": "pbrroe50", "priority": "tier", "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+    },
+    # ── うねりで細かく売買する（2026年10月9日に追加）──
+    # 土台は yield_live_y30_scr（利回り順・8条件・足切り3％・緊急時だけ売る）。
+    # そこに「レンジの中にいて上限近くまで来たら、その値段で降りる」を足す。
+    #   ・取得単価より上のときだけ降りる（安値で投げない）
+    #   ・降りた分の現金は、その月末に通常の順番（Tier→利回り）で買い直す。
+    #     同じ銘柄がまだ候補の上位なら、月末の値段で買い戻すことになる。
+    #   ・レンジの判定は「レンジの設定」の欄（既定 60日・値幅8〜20％・上限−2％で降りる）
+    # 以前の swing_full・swing_B_only は、9月以前の Q75 を土台にしていた。
+    # 本番の売らない設定（hold_tiers）は、レンジで降りる処理より前で止めてしまうため、
+    # 往復させる Tier は hold_tiers から外す。
+    "swing_all_y30_scr": {
+        "label": "うねり・全Tier・足切り3％・8条件あり",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "exit_on_cut": True, "exit_on_op": True,
+        "range_exit": {"fraction": 1.0, "min_gain": 0.0},
+    },
+    "swing_B_y30_scr": {
+        "label": "うねり・Bだけ・足切り3％・8条件あり",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A"], "exit_on_cut": True, "exit_on_op": True,
+        "range_exit": {"fraction": 1.0, "min_gain": 0.0},
+    },
 
     "switch36_flip": {
         "label": "市況で切り替え（36か月）・切り替わった月だけ入れ替える",
@@ -4177,10 +4224,19 @@ def main() -> int:
                      or VARIANTS.get(n_, {}).get("screen")
                      for n_ in _sel_names)
 
+    # レンジの上限で降りるルール（range_exit）を選んだら、「レンジ往復を検証」の欄が false でも
+    # レンジの列を足す。足さないと、そのルールは一度も降りず、土台とまったく同じ成績になり、
+    # 「効果なし」と見分けがつかない（2026年10月9日に追加）。
+    _need_range = bool(args.range_swing) or any(
+        VARIANTS.get(n_, {}).get("range_exit") for n_ in _sel_names)
+
     def _panel_for(lb_):
         pn_ = build_panel(store, args.years, lb_)
         if _need_fund and not pn_.empty:
             pn_ = add_fund_columns(store, pn_)
+        # 総当たりで分位の月数を変えてパネルを作り直すときも、レンジの列を忘れずに足す
+        if _need_range and not pn_.empty:
+            pn_ = add_range_columns(store, pn_, int(_d[0]), _d[1], _d[2], _d[4])
         return pn_
 
     global SWITCH_SIG
@@ -4207,8 +4263,8 @@ def main() -> int:
                      _n, _up, _dn, args.factor_win)
 
     # レンジ往復の検証では、月の途中で上限に届いたかを見る必要がある
-    if args.range_swing:
-        _d = [60.0, 0.08, 0.20, 0.02, 0.02, 0.0]
+    _d = [60.0, 0.08, 0.20, 0.02, 0.02, 0.0]
+    if _need_range:
         for _i, _x in enumerate([x.strip() for x in
                                  str(args.range_opts).split(",")][:6]):
             if _x:
