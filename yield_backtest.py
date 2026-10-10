@@ -2966,7 +2966,9 @@ def simulate_range(store: dict, panel: pd.DataFrame, cfg: dict,
                    capital: float, max_names: int,
                    slip_bps: float = 0.0, fee_bps: float = 0.0,
                    tax_rate: float = 0.0, min_yield: float = 0.0,
-                   years: int = 7) -> dict:
+                   years: int = 7, d_from=None, d_to=None,
+                   dividends: bool = False, daily: dict | None = None,
+                   bounds: dict | None = None) -> dict:
     """レンジの下限で買い、上限で売る。日次で判定する。
 
     cfg の項目
@@ -2975,7 +2977,18 @@ def simulate_range(store: dict, panel: pd.DataFrame, cfg: dict,
       buy_at     … 下限からどこまで近づいたら買うか（0.02 なら下限+2％以内）
       sell_at    … 上限からどこまで近づいたら売るか
       stop       … 下限をどれだけ割ったら諦めるか（None なら諦めない）
-      screen     … True ならスクリーニング通過銘柄だけを対象にする
+      gain_only  … True なら、上限で売るのは取得単価より上のときだけ（安値で投げない）
+      screen     … True なら、8条件を通り利回りが足切り以上の銘柄だけを対象にする
+
+    2026年10月10日に直したこと
+      ・screen：以前は利回りの足切りしか見ていなかった。8条件（screen_pass）も見る。
+      ・その月に買ってよい銘柄は「前の月末」の値で決める。以前はその月の月末の値を
+        月初から使っていた（月末の利回りは月の途中では分からない＝先の情報）。
+      ・パネルにない月（検証期間の前）は、何でも買えてしまっていた。買わないようにした。
+      ・dividends：本体のシミュレーションと同じく、権利月の月末に 年間DPS÷2 を受け取る。
+        損切りしない形ほど長く持つので、配当を入れないと不利に出る。
+      ・d_from／d_to：期間を区切って回せるようにした（窓をずらす検証のため）。
+      ・daily／bounds：同じ設定で何度も回すとき、日次の株価とレンジの計算を使い回す。
     """
     win = cfg.get("win", 60)
     w_min = cfg.get("w_min", 0.08)
@@ -2983,31 +2996,49 @@ def simulate_range(store: dict, panel: pd.DataFrame, cfg: dict,
     buy_at = cfg.get("buy_at", 0.02)
     sell_at = cfg.get("sell_at", 0.02)
     stop = cfg.get("stop")
+    gain_only = bool(cfg.get("gain_only", False))
     use_screen = cfg.get("screen", True)
 
     slip = slip_bps / 10000.0
     fee = fee_bps / 10000.0
 
-    daily = build_daily(store, years)
+    if daily is None:
+        daily = build_daily(store, years)
     if not daily:
         return {}
 
-    # スクリーニングを通った銘柄と、その時点の利回りを月次で引けるようにする
+    # 買ってよい銘柄（月ごと）。8条件を通り、利回りが足切り以上。
     ok_by_month = {}
-    if use_screen and not panel.empty:
-        p = panel.copy()
-        if min_yield > 0:
-            p = p[p["yield"] >= min_yield]
-        for d, g in p.groupby("date"):
-            ok_by_month[pd.Timestamp(d).to_period("M")] = set(g["code"])
+    div_info = {}
+    if not panel.empty:
+        if use_screen:
+            q = panel
+            if "screen_pass" in q.columns:
+                q = q[q["screen_pass"].fillna(False).astype(bool)]
+            if min_yield > 0:
+                q = q[q["yield"] >= min_yield]
+            for d, g in q.groupby("date"):
+                ok_by_month[pd.Timestamp(d).to_period("M")] = set(g["code"])
+        if dividends:
+            cols = [c for c in ("code", "date", "dps", "fiscal_month", "interim_month")
+                    if c in panel.columns]
+            if len(cols) == 5:
+                for r_ in panel[cols].itertuples(index=False):
+                    div_info[(r_.code, pd.Timestamp(r_.date).to_period("M"))] = \
+                        (r_.dps, r_.fiscal_month, r_.interim_month)
 
     # レンジの上下をあらかじめ全銘柄ぶん計算しておく
-    bounds = {}
-    for code, px in daily.items():
-        hi, lo, ok = box_bounds(px, win, w_min, w_max)
-        bounds[code] = (hi, lo, ok)
+    if bounds is None:
+        bounds = {}
+        for code, px in daily.items():
+            hi, lo, ok = box_bounds(px, win, w_min, w_max)
+            bounds[code] = (hi, lo, ok)
 
     dates = sorted({d for px in daily.values() for d in px.index})
+    if d_from is not None:
+        dates = [d for d in dates if d >= pd.Timestamp(d_from)]
+    if d_to is not None:
+        dates = [d for d in dates if d <= pd.Timestamp(d_to)]
     if not dates:
         return {}
 
@@ -3016,11 +3047,12 @@ def simulate_range(store: dict, panel: pd.DataFrame, cfg: dict,
     loss_pool = 0.0
     curve, trades = [], []
     diag = {"buys": 0, "sells": 0, "stops": 0, "tax": 0.0, "fee": 0.0,
-            "realized": 0.0, "hold_days": [], "boxes_seen": 0}
+            "realized": 0.0, "hold_days": [], "boxes_seen": 0, "dividend": 0.0}
 
-    for dt in dates:
+    for i_, dt in enumerate(dates):
         mp = pd.Timestamp(dt).to_period("M")
-        allowed = ok_by_month.get(mp) if use_screen else None
+        # その月に買ってよい銘柄は、前の月末の判定で決める
+        allowed = ok_by_month.get(mp - 1, set()) if use_screen else None
 
         # ── 売り ──
         for code in list(pos):
@@ -3035,6 +3067,9 @@ def simulate_range(store: dict, panel: pd.DataFrame, cfg: dict,
             st = pos[code]
 
             hit_top = price >= h * (1 - sell_at)
+            if hit_top and gain_only and \
+                    price * (1 - slip) * (1 - fee) <= st["cost"]:
+                hit_top = False       # 取得単価を下回るなら上限でも売らない
             hit_stop = stop is not None and price <= l * (1 - stop)
             if not (hit_top or hit_stop):
                 continue
@@ -3103,6 +3138,28 @@ def simulate_range(store: dict, panel: pd.DataFrame, cfg: dict,
                 trades.append({"code": code, "date": dt, "side": "buy",
                                "price": buy_eff, "shares": sh})
 
+        # ── 配当（権利月の月末に 年間DPS÷2。本体のシミュレーションと同じ扱い）──
+        if dividends and div_info:
+            last_of_month = (i_ + 1 == len(dates)) or \
+                (pd.Timestamp(dates[i_ + 1]).to_period("M") != mp)
+            if last_of_month:
+                mth = pd.Timestamp(dt).month
+                for code, st in pos.items():
+                    info = div_info.get((code, mp))
+                    if not info:
+                        continue
+                    dps, fm, im = info
+                    try:
+                        fm, im = int(fm or 0), int(im or 0)
+                    except (TypeError, ValueError):
+                        continue
+                    if dps is not None and not pd.isna(dps) and dps > 0 and mth in (fm, im):
+                        gross = float(dps) * 0.5 * st["sh"]
+                        net = gross * (1 - tax_rate)
+                        cash += net
+                        diag["dividend"] += net
+                        diag["tax"] += gross - net
+
         val = cash + sum(float(daily[c].loc[dt]) * s["sh"]
                          for c, s in pos.items() if dt in daily[c].index)
         curve.append({"date": dt, "value": val, "names": len(pos)})
@@ -3126,7 +3183,6 @@ def simulate_range(store: dict, panel: pd.DataFrame, cfg: dict,
     diag["full_slots"] = 0
     return {"curve": curve_m, "trades": trades, "diag": diag,
             "capital": capital}
-
 
 
 # ══════════════════════════════════════════
@@ -4265,11 +4321,12 @@ def main() -> int:
     # レンジ往復の検証では、月の途中で上限に届いたかを見る必要がある
     _d = [60.0, 0.08, 0.20, 0.02, 0.02, 0.0]
     if _need_range:
+        # 「/」で複数の設定が並んでいるとき（レンジ売買だけの検証用）は、最初の設定を使う
         for _i, _x in enumerate([x.strip() for x in
-                                 str(args.range_opts).split(",")][:6]):
+                                 str(args.range_opts).split("/")[0].split(",")][:6]):
             if _x:
                 _f = float(_x)
-                if _i >= 1 and _f > 1.0:
+                if _i >= 1 and _f >= 1.0:      # 1以上は百分率（「1」は1％。100％の買い幅はありえない）
                     _f = _f / 100.0
                 _d[_i] = _f
         log.info("レンジ判定：%d営業日 ／ 値幅 %.0f〜%.0f％ ／ 上限−%.0f％で降りる",
@@ -5063,152 +5120,183 @@ def main() -> int:
     #   「売らない」戦略と同じ費用条件で比べる。
     # ══════════════════════════════════════════
     if args.range_test:
-        # 「日数,幅の下限,幅の上限,買い幅,売り幅,諦める幅」を読む。
-        # 足りない分は既定値で補う。
-        _d = [60.0, 0.08, 0.20, 0.02, 0.02, 0.0]
-        _v = [x.strip() for x in str(args.range_opts).split(",")]
-        # 2番目以降は割合。1より大きければ百分率とみなして直す。
-        for _i, _x in enumerate(_v[:6]):
-            if _x:
-                try:
-                    _f = float(_x)
-                    if _i >= 1 and _f > 1.0:
-                        _f = _f / 100.0      # 8 と書かれたら 0.08
-                    _d[_i] = _f
-                except ValueError:
-                    sys.exit(f"レンジの設定「{args.range_opts}」を読めません。"
-                             "「60,0.08,0.20,0.02,0.02,0」の形で指定してください。")
-        args.range_win = int(_d[0])
-        wmin, wmax, b_at, s_at = _d[1], _d[2], _d[3], _d[4]
-        # 「5」と書かれたら5％、「0.05」と書かれても5％として扱う。
-        # 1より大きい値は百分率とみなす。
-        _st = _d[5]
-        if _st > 1.0:
-            _st = _st / 100.0
-        stop = _st if _st > 0 else None
-
-        log.info("レンジ売買の検証：%d営業日で判定 ／ 値幅 %.0f〜%.0f％ ／ "
-                 "下限+%.0f％で買い・上限−%.0f％で売り",
-                 args.range_win, wmin * 100, wmax * 100, b_at * 100, s_at * 100)
-        if stop:
-            log.info("  下限を %.0f％ 割ったら諦める", stop * 100)
-        else:
-            log.info("  諦めなし（レンジを割っても持ち続ける）")
-
-        base_cfg = {"win": args.range_win, "w_min": wmin, "w_max": wmax,
-                    "buy_at": b_at, "sell_at": s_at, "stop": stop}
-
-        runs = []
-        for label, ov in [
-            ("レンジ売買（スクリーニングあり）", {"screen": True}),
-            ("レンジ売買（全銘柄が対象）", {"screen": False}),
-        ]:
-            cfg = {**base_cfg, **ov}
-            r = simulate_range(store, panel, cfg, args.capital, args.max_names,
-                               slip_bps=args.slip_bps, fee_bps=args.fee_bps,
-                               tax_rate=args.tax / 100.0,
-                               min_yield=args.min_yield, years=args.years)
-            if r:
-                m = metrics(r)
-                if m:
-                    m["ルール"] = label
-                    runs.append((m, r))
-
-        # 比べる相手：売らない戦略と、全部買って放置
-        for n_ in ("live15_holdS_cut", "live15_holdall", "current_live"):
-            if n_ not in VARIANTS:
+        # ── レンジ売買だけの検証 ──
+        # 「レンジの設定」の欄：「日数,幅の下限,幅の上限,買い幅,売り幅,諦める幅,単価より上でだけ売る」
+        #   ・「/」で区切れば、いくつもの設定を一度に比べられる（2026年10月10日に追加）
+        #   ・7番目は 1 なら、上限で売るのは取得単価より上のときだけ（安値で投げない）。省けば 0
+        #   ・2〜6番目の割合は、1以上なら百分率とみなす（8 と書けば 0.08、1 と書けば 0.01）
+        # 比べる相手は「比較するルール」の欄のルール（空欄なら9月以前の古いルール）。
+        # 「この年数の窓を1年ずつずらして何度も検証」に数字を入れると、窓ごとに比べる。
+        cfgs = []
+        for part in str(args.range_opts).split("/"):
+            part = part.strip()
+            if not part:
                 continue
-            r = simulate(panel, VARIANTS[n_], args.capital, args.max_names,
-                         tier_budget=args.realistic, dividends=args.realistic,
-                         slip_bps=args.slip_bps, fee_bps=args.fee_bps,
-                         tax_rate=args.tax / 100.0,
-                         min_yield_override=args.min_yield or None)
-            m = metrics(r)
-            if m:
-                m["ルール"] = VARIANTS[n_]["label"]
-                runs.append((m, r))
+            _d = [60.0, 0.08, 0.20, 0.02, 0.02, 0.0, 0.0]
+            _v = [x.strip() for x in part.split(",")]
+            for _i, _x in enumerate(_v[:7]):
+                if _x:
+                    try:
+                        _f = float(_x)
+                    except ValueError:
+                        sys.exit(f"レンジの設定「{part}」を読めません。"
+                                 "「60,0.08,0.20,0.02,0.02,0」の形で指定してください。")
+                    if 1 <= _i <= 5 and _f >= 1.0:
+                        _f = _f / 100.0      # 8 と書かれたら 0.08、1 と書かれたら 0.01
+                    _d[_i] = _f
+            win_ = int(_d[0])
+            wmin, wmax, b_at, s_at, _st = _d[1], _d[2], _d[3], _d[4], _d[5]
+            stop = _st if _st > 0 else None
+            g_only = _d[6] >= 0.5
+            label = f"{win_}日・幅{wmin * 100:g}〜{wmax * 100:g}％"
+            if stop:
+                label += f"・撤退{stop * 100:g}％"
+            cfgs.append({"win": win_, "w_min": wmin, "w_max": wmax,
+                         "buy_at": b_at, "sell_at": s_at, "stop": stop,
+                         "gain_only": g_only, "screen": True, "label": label})
+            log.info("レンジ売買：%s（下限+%g％で買い・上限−%g％で売り・%s・%s）",
+                     label, b_at * 100, s_at * 100,
+                     f"下限を{stop * 100:g}％割ったら撤退" if stop else "撤退なし",
+                     "単価より上でだけ売る" if g_only else "上限なら売る")
+        if not cfgs:
+            sys.exit("レンジの設定が空です。")
+        if len({c["label"] for c in cfgs}) != len(cfgs):
+            # 日数と値幅が同じで、買い幅・売り幅だけ違う設定は名前が重なるので番号を付ける
+            for i_, c in enumerate(cfgs, 1):
+                c["label"] = f"{i_}:{c['label']}"
+        log.info("  対象は8条件を通り、前の月末の利回りが %.1f％ 以上の銘柄", args.min_yield)
 
-        if not runs:
+        comp = [x.strip() for x in (args.only or "").split(",")
+                if x.strip() and x.strip() in VARIANTS]
+        if not comp:
+            comp = [n_ for n_ in ("live15_holdS_cut", "live15_holdall", "current_live")
+                    if n_ in VARIANTS]
+        daily_ = build_daily(store, args.years)
+        bounds_ = [{c_: box_bounds(px_, c["win"], c["w_min"], c["w_max"])
+                    for c_, px_ in daily_.items()} for c in cfgs]
+
+        def _run_range(i_, a=None, b=None):
+            return simulate_range(store, panel, cfgs[i_], args.capital, args.max_names,
+                                  slip_bps=args.slip_bps, fee_bps=args.fee_bps,
+                                  tax_rate=args.tax / 100.0, min_yield=args.min_yield,
+                                  years=args.years, d_from=a, d_to=b,
+                                  dividends=args.realistic, daily=daily_,
+                                  bounds=bounds_[i_])
+
+        def _run_comp(n_, pn_):
+            return simulate(pn_, VARIANTS[n_], args.capital, args.max_names,
+                            tier_budget=args.realistic, dividends=args.realistic,
+                            slip_bps=args.slip_bps, fee_bps=args.fee_bps,
+                            tax_rate=args.tax / 100.0,
+                            min_yield_override=args.min_yield or None)
+
+        d0, d1 = panel["date"].min(), panel["date"].max()
+        if args.walk > 0:
+            wins = []
+            st_ = d1 - pd.DateOffset(years=args.walk)
+            while st_ >= d0:
+                wins.append((st_, st_ + pd.DateOffset(years=args.walk)))
+                st_ = st_ - pd.DateOffset(years=1)
+            wins.reverse()
+        else:
+            wins = []
+        wins.append((d0, d1))            # 全期間も1行として加える
+        log.info("レンジ売買 %d通り × 比べる相手 %d × 期間 %d", len(cfgs), len(comp), len(wins))
+
+        cols = [c["label"] for c in cfgs] + [VARIANTS[n_]["label"] for n_ in comp] \
+            + ["（基準）全部買って放置"]
+        rows_cagr, rows_dd, full_runs = [], [], {}
+        for a, b in wins:
+            sub = panel[(panel["date"] >= a) & (panel["date"] <= b)]
+            if sub["date"].nunique() < max(args.walk, 1) * 10:
+                continue
+            span = "全期間" if (a, b) == (d0, d1) else f"{a.date()}〜{b.date()}"
+            rc, rd = {"窓": span}, {"窓": span}
+            for i_, c in enumerate(cfgs):
+                r_ = _run_range(i_, a, b)
+                m_ = metrics(r_) if r_ else {}
+                rc[c["label"]] = m_.get("年率", float("nan"))
+                rd[c["label"]] = m_.get("最大下落", float("nan"))
+                if span == "全期間" and r_:
+                    full_runs[c["label"]] = (m_, r_)
+            for n_ in comp:
+                r_ = _run_comp(n_, sub)
+                m_ = metrics(r_) if r_ else {}
+                rc[VARIANTS[n_]["label"]] = m_.get("年率", float("nan"))
+                rd[VARIANTS[n_]["label"]] = m_.get("最大下落", float("nan"))
+                if span == "全期間" and r_:
+                    full_runs[VARIANTS[n_]["label"]] = (m_, r_)
+            bh_ = buy_and_hold(sub, args.tax / 100.0)
+            rc["（基準）全部買って放置"] = bh_["年率"] if bh_ else float("nan")
+            rd["（基準）全部買って放置"] = bh_["最大下落"] if bh_ else float("nan")
+            rows_cagr.append(rc)
+            rows_dd.append(rd)
+            log.info("  %s 完了", span)
+
+        if not rows_cagr:
             print("結果がありません。")
             return 1
 
-        bh = buy_and_hold(panel, args.tax / 100.0)
-        d0, d1 = panel["date"].min(), panel["date"].max()
-        yrs_ = max((d1 - d0).days / 365.25, 0.5)
+        print(f"\n■ レンジ売買の比較（{d0.date()} 〜 {d1.date()} / 元本 {args.capital:,.0f}円"
+              f"{' ／ 実運用条件・配当あり' if args.realistic else ''}）\n")
+        print("　 レンジ売買の対象は、8条件を通り、前の月末の利回りが "
+              f"{args.min_yield:.1f}％ 以上の銘柄。最大 {args.max_names}銘柄・等金額。\n")
+        for title, rows in (("年率", rows_cagr), ("最大下落", rows_dd)):
+            print(f"【{title}】\n")
+            print(f"{'窓':<24}" + "".join(f"{c[:14]:>16}" for c in cols))
+            print("-" * (24 + 16 * len(cols)))
+            for r in rows:
+                print(f"{r['窓']:<24}" + "".join(
+                    f"{r[c]:>15.1f}%" if not pd.isna(r[c]) else f"{'—':>16}" for c in cols))
+            print()
 
-        print(f"\n■ レンジ売買 vs 売らない戦略"
-              f"（{d0.date()} 〜 {d1.date()} / 元本 {args.capital:,.0f}円）\n")
-        print(f"{'ルール':<32}{'年率':>8}{'最大下落':>9}{'シャープ':>9}"
-              f"{'売買':>7}{'税金':>13}")
-        print("-" * 82)
-        for m, r in sorted(runs, key=lambda x: -x[0]["年率"]):
-            print(f"{m['ルール'][:30]:<32}{m['年率']:>7.1f}%{m['最大下落']:>8.1f}%"
-                  f"{m['シャープ']:>9.2f}{m['売買回数']:>7.0f}"
-                  f"{r['diag'].get('tax', 0):>12,.0f}円")
+        # 本番（比べる相手の最初のルール）との差を、設定ごとに並べる
+        base_lab = VARIANTS[comp[0]]["label"] if comp else None
+        if base_lab:
+            print(f"【「{base_lab[:30]}」との差（年率、プラスならレンジ売買が上）】\n")
+            print(f"{'設定':<24}{'最初の窓':>12}{'全期間':>12}{'上回った窓':>12}")
+            print("-" * 60)
+            win_rows = [r for r in rows_cagr if r["窓"] != "全期間"]
+            full_row = next((r for r in rows_cagr if r["窓"] == "全期間"), None)
+            for c in cfgs:
+                lab = c["label"]
+                first = (win_rows[0][lab] - win_rows[0][base_lab]) if win_rows else float("nan")
+                full = (full_row[lab] - full_row[base_lab]) if full_row else float("nan")
+                wins_ = sum(1 for r in win_rows if r[lab] > r[base_lab])
+                print(f"{lab[:22]:<24}{first:>+11.1f}pt{full:>+11.1f}pt"
+                      f"{wins_:>8}/{len(win_rows)}")
+            print()
 
-        if bh:
-            print(f"\n  比較の基準（全銘柄を等金額で買って放置） … "
-                  f"年率 {bh['年率']:.1f}%")
-            best = max(runs, key=lambda x: x[0]["年率"])
-            rng = [x for x in runs if "レンジ" in x[0]["ルール"]]
-            hold = [x for x in runs if "売らない" in x[0]["ルール"]
-                    or "手放す" in x[0]["ルール"]]
-            if rng and hold:
-                rb = max(rng, key=lambda x: x[0]["年率"])[0]["年率"]
-                hb = max(hold, key=lambda x: x[0]["年率"])[0]["年率"]
-                print(f"\n【判定】")
-                print(f"  レンジ売買のいちばん良い成績 … {rb:.1f}%")
-                print(f"  売らない戦略のいちばん良い成績 … {hb:.1f}%")
-                if rb > hb + 1.0:
-                    print(f"\n  → レンジ売買が {rb - hb:.1f}ポイント上回りました。")
-                    print("    ただしこれは1回の期間の結果です。")
-                    print("    期間を変えても成り立つかを確かめてください。")
-                elif rb < hb - 1.0:
-                    print(f"\n  → 売らない戦略が {hb - rb:.1f}ポイント上回りました。")
-                    print("    レンジ売買は、税金と往復のコストを"
-                          "取り戻せていません。")
-                else:
-                    print("\n  → ほぼ互角です。差は1ポイント未満。")
-
-        # レンジ売買の中身
-        for m, r in runs:
-            if "レンジ" not in m["ルール"]:
+        # レンジ売買の中身（全期間）
+        for c in cfgs:
+            if c["label"] not in full_runs:
                 continue
-            d = r["diag"]
+            m_, r_ = full_runs[c["label"]]
+            d = r_["diag"]
             hd = d.get("hold_days", [])
-            print(f"\n■ {m['ルール']} の中身\n")
-            print(f"  買った回数         … {d['buys']}回")
-            print(f"  売った回数         … {d['sells']}回")
-            if d.get("stops"):
-                print(f"    うち下限割れで撤退 … {d['stops']}回"
-                      f"（{d['stops'] / max(d['sells'], 1) * 100:.0f}％）")
+            print(f"■ {c['label']} の中身（全期間）")
+            print(f"  買った回数 {d['buys']}回 ／ 売った回数 {d['sells']}回"
+                  + (f"（うち撤退 {d['stops']}回）" if d.get("stops") else ""))
             if hd:
-                print(f"  平均の保有日数     … {sum(hd) / len(hd):.0f}日")
-            print(f"  確定した損益       … {d.get('realized', 0):,.0f}円")
-            print(f"  含み損益           … {d.get('unrealized', 0):,.0f}円")
-            print(f"  税金               … {d.get('tax', 0):,.0f}円"
-                  f"（元本の{d.get('tax', 0) / args.capital * 100:.1f}％）")
-            print(f"  手数料とずれ       … {d.get('fee', 0):,.0f}円")
-            if d["buys"]:
-                net = d.get("realized", 0) - d.get("tax", 0) - d.get("fee", 0)
-                print(f"\n  1回あたりの手取り … {net / d['buys']:,.0f}円")
-                print(f"  （確定損益 − 税金 − 手数料 ÷ 買った回数）")
+                print(f"  平均の保有日数 {sum(hd) / len(hd):.0f}日 ／ 平均の保有銘柄数 "
+                      f"{m_.get('平均保有銘柄', 0):.1f}")
+            print(f"  確定した売却益 {d.get('realized', 0):,.0f}円 ／ 配当（税引後） "
+                  f"{d.get('dividend', 0):,.0f}円 ／ 含み損益 {d.get('unrealized', 0):,.0f}円")
+            print(f"  税金 {d.get('tax', 0):,.0f}円 ／ 手数料とずれ {d.get('fee', 0):,.0f}円\n")
 
-        print("\n  ※ レンジ売買は日次で判定しています。")
-        print("    レンジの上下は、その日までの過去"
-              f"{args.range_win}営業日の終値から機械的に決めています。")
-        print("    目視での判断とは違いますが、"
-              "「線を引いて上下を取る」考え方は再現しています。")
+        print("  ※ レンジの上下は、その日までの過去N営業日の終値から機械的に決めています。")
+        print("    目視の線とは違いますが、「上下の線の間を取る」考え方は再現しています。")
+        print("  ※ 9月のレンジ売買の検証とは、対象（8条件）・配当・判定の時点が違うので、")
+        print("    数字は直接比べられません。")
 
         OUTDIR.mkdir(parents=True, exist_ok=True)
-        pd.DataFrame([m for m, _ in runs]).to_csv(
-            OUTDIR / "range_test.csv", index=False, encoding="utf-8-sig")
-        for m, r in runs:
-            if "レンジ" in m["ルール"] and r.get("trades"):
-                pd.DataFrame(r["trades"]).to_csv(
-                    OUTDIR / "range_trades.csv", index=False,
-                    encoding="utf-8-sig")
-                break
+        pd.DataFrame(rows_cagr).to_csv(OUTDIR / "range_test.csv", index=False,
+                                       encoding="utf-8-sig")
+        first_rng = next((full_runs[c["label"]][1] for c in cfgs
+                          if c["label"] in full_runs), None)
+        if first_rng and first_rng.get("trades"):
+            pd.DataFrame(first_rng["trades"]).to_csv(OUTDIR / "range_trades.csv",
+                                                     index=False, encoding="utf-8-sig")
         print("\n書き出しました: data/range_test.csv, data/range_trades.csv")
         return 0
 
