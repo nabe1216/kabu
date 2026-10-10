@@ -693,6 +693,46 @@ VARIANTS: dict[str, dict[str, Any]] = {
         "emg_rule": "actual", "skip_emg_buy": True, "tax_div_offset": True,
         "stop_loss": 0.30, "stop_cooldown": 12,
     },
+    # ── 落ち方で売り方を変える（2026年10月11日に追加）──
+    # 土台は sell_live_scr（本番どおり：実績の配当−10％以上か営業利益−20％以上で売る）。
+    # 変えるのは「何をもって減配・業績急変とみなすか」だけ。買い候補から外す判定も同じ基準に揃える。
+    #   emg_deep_scr   … 深いときだけ売る（配当−30％以上か赤字転落）。軽い減配・減益は持ち続ける
+    #   emg_both_scr   … 減配と業績急変が重なったときだけ売る（片方だけなら持ち続ける）
+    #   emg_fc10_scr   … 本番の判定に加えて、予想の配当が実績より10％以上低くなった時点でも売る
+    #                    （通期の決算を待たない。本番より早く動く）
+    #   emg_fcany_scr  … 予想の配当が実績を少しでも（1％以上）下回ったら売る（いちばん敏感な形）
+    "emg_deep_scr": {
+        "label": "深いときだけ売る（配当−30％か赤字転落）",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True,
+        "emg_cut_thr": 0.30, "emg_op_thr": 1.0,
+    },
+    "emg_both_scr": {
+        "label": "減配と業績急変が重なったときだけ売る",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True,
+        "emg_require_both": True,
+    },
+    "emg_fc10_scr": {
+        "label": "予想の減配（−10％）でも売る・本番の判定も残す",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True,
+        "emg_forecast": 0.10,
+    },
+    "emg_fcany_scr": {
+        "label": "予想が少しでも下がったら売る（−1％）・本番の判定も残す",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True,
+        "emg_forecast": 0.01,
+    },
 
     "switch36_flip": {
         "label": "市況で切り替え（36か月）・切り替わった月だけ入れ替える",
@@ -1830,15 +1870,22 @@ def fund_timeline(stmts: list[dict], px: pd.DataFrame | None = None) -> pd.DataF
             out.append(pv)
         return np.array(out, dtype=float)
 
-    for col_, key_, thr_ in (("div_cut10", "divann", -0.10), ("op_cut20", "op", -0.20)):
+    # 落ち方の深さも持たせる（2026年10月11日に追加）
+    #   div_chg … 実績の年間配当の、前の通期からの変化率（−0.3 なら30％減。−1.0 は無配）
+    #   op_chg  … 営業利益の変化率（−1.0 以下は赤字転落）
+    #   前の通期が0以下のときは比べられないので空（印も立たない）
+    for col_, key_, thr_, chg_col in (("div_cut10", "divann", -0.10, "div_chg"),
+                                      ("op_cut20", "op", -0.20, "op_chg")):
         if key_ in df.columns:
             cur_ = pd.to_numeric(df[key_], errors="coerce").to_numpy(dtype=float)
             prv_ = _prev_fy(cur_)
             with np.errstate(divide="ignore", invalid="ignore"):
                 chg_ = (cur_ - prv_) / prv_
             df[col_] = ((prv_ > 0) & (chg_ <= thr_)).astype(float)
+            df[chg_col] = np.where(prv_ > 0, chg_, np.nan)
         else:
             df[col_] = 0.0
+            df[chg_col] = np.nan
     # その開示の時点までの履歴だけで判定する（あとから分かる情報は使わない）
     for col, fn, key in (("ok_sales", _stable, "sales"), ("ok_op", _stable, "op"),
                          ("ok_np", _stable, "np"), ("ok_div", _no_cut, "divann")):
@@ -1859,7 +1906,7 @@ def add_fund_columns(store: dict, panel: pd.DataFrame) -> pd.DataFrame:
     panel = panel.copy()
     cols = ["eps", "bps", "np", "eq", "sales", "sh", "np_prev",
             "op", "eqar", "payout", "ok_sales", "ok_op", "ok_np", "ok_div",
-            "divann", "div_cut10", "op_cut20"]
+            "divann", "div_cut10", "op_cut20", "div_chg", "op_chg"]
     for c in cols:
         panel[c] = np.nan
     got = {c: 0 for c in cols}
@@ -1886,6 +1933,15 @@ def add_fund_columns(store: dict, panel: pd.DataFrame) -> pd.DataFrame:
     for c in cols:
         log.info("  財務 %-8s … 取れた銘柄 %d社", c, got[c])
     log.info("  株式分割があった銘柄 %d社 … 1株あたりの数字を今の株数の基準に揃えました", n_split)
+    # 予想の減配（2026年10月11日に追加）
+    #   fc_chg … その月末に分かっていた予想の年間配当（dps）が、直近の実績の年間配当（divann）から
+    #            どれだけ変わっているか。−0.1 なら「10％減の予想」。
+    #   実績の減配（div_cut10）は通期の決算が出て初めて立つので、期中の下方修正から半年〜1年遅れる。
+    #   予想の段階で分かっていたかを見るために持たせる。
+    #   注意：会社が「無配予想」と出した場合、予想の欄が0になり、このツールは実績の配当で代用する
+    #   （利回りの計算と同じ扱い）ため、無配の予想はここに出ない。
+    _dv = panel["divann"].where(panel["divann"] > 0)
+    panel["fc_chg"] = (panel["dps"] / _dv - 1.0).where(_dv.notna() & (panel["dps"] > 0))
     # 本番のエンジンで使う、全銘柄の中での順位（％）。
     #   pct_pbr / pct_per … 低いほど高い値（安い順）
     #   pct_size          … 時価総額が小さいほど高い値
@@ -2336,6 +2392,46 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
     # 本番の portfolio_engine は外している。以前の検証は外しておらず、
     # 売ったその月に同じ値段で買い直すことがあった。
     skip_emg_buy = bool(cfg.get("skip_emg_buy", False))
+    # 緊急撤退の判定を「落ち方」で変える（2026年10月11日に追加）。emg_rule が actual のときだけ。
+    #   emg_cut_thr      … 実績の年間配当が前の通期からこの率以上減ったら「減配」（既定 0.10）
+    #   emg_op_thr       … 営業利益がこの率以上減ったら「業績急変」（既定 0.20。1.0 なら赤字転落だけ）
+    #   emg_require_both … 減配と業績急変の両方が重なったときだけ売る
+    #   emg_forecast     … 予想の年間配当が直近の実績からこの率以上減った時点でも「減配」とみなす
+    #                      （通期の決算を待たずに売る。買い候補からも外す）
+    # どれも指定がなければ、以前からの列（div_cut10・op_cut20）をそのまま使う。
+    # 以前の結果を1円も変えないため。
+    emg_custom = any(k in cfg for k in ("emg_cut_thr", "emg_op_thr",
+                                         "emg_require_both", "emg_forecast"))
+    emg_cut_thr = float(cfg.get("emg_cut_thr", 0.10))
+    emg_op_thr = float(cfg.get("emg_op_thr", 0.20))
+    emg_both = bool(cfg.get("emg_require_both", False))
+    emg_fc = cfg.get("emg_forecast")
+    if emg_fc is None or emg_fc is False:
+        emg_fc_thr = None
+    elif emg_fc is True:
+        emg_fc_thr = emg_cut_thr
+    else:
+        emg_fc_thr = float(emg_fc)
+
+    def _num(v):
+        return v is not None and not pd.isna(v)
+
+    def emg_flags(row):
+        """(減配か, 業績急変か) を返す。本番の generate.py と同じ「実績」の判定が土台。"""
+        if not emg_custom:
+            _v, _w = row.get("div_cut10"), row.get("op_cut20")
+            return (_num(_v) and float(_v) > 0.5), (_num(_w) and float(_w) > 0.5)
+        _dc, _oc = row.get("div_chg"), row.get("op_chg")
+        cut = _num(_dc) and float(_dc) <= -emg_cut_thr
+        opd = _num(_oc) and float(_oc) <= -emg_op_thr
+        if emg_fc_thr is not None:
+            _fc = row.get("fc_chg")
+            if _num(_fc) and float(_fc) <= -emg_fc_thr:
+                cut = True
+        if emg_both:
+            both = cut and opd
+            return both, both
+        return cut, opd
     # 価格で損切りする（2026年10月11日に追加）
     #   stop_loss     … 平均取得単価からこの率以上下がったら、全部売る（0.20 なら −20％）
     #   stop_cooldown … 損切りした銘柄を何か月買い直さないか（既定12か月）。
@@ -2499,10 +2595,9 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
 
             # 減配は「売らない Tier」でも例外として手放す
             if emg_actual:
-                _v = row.get("div_cut10")
-                _emg = _v is not None and not pd.isna(_v) and float(_v) > 0.5
-                _w = row.get("op_cut20")
-                if exit_on_op and _w is not None and not pd.isna(_w) and float(_w) > 0.5:
+                _cut, _opd = emg_flags(row)
+                _emg = bool(_cut)
+                if exit_on_op and _opd:
                     _emg = True
             else:
                 _emg = bool(row.get("dps_cut"))
@@ -2750,9 +2845,7 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                 continue        # 損切りしてから決めた月数が過ぎるまでは買い直さない
             if skip_emg_buy:
                 if emg_actual:
-                    _v, _w = row.get("div_cut10"), row.get("op_cut20")
-                    _cut = _v is not None and not pd.isna(_v) and float(_v) > 0.5
-                    _opd = _w is not None and not pd.isna(_w) and float(_w) > 0.5
+                    _cut, _opd = emg_flags(row)
                 else:
                     _cut, _opd = bool(row.get("dps_cut")), bool(row.get("op_drop"))
                 if _cut or _opd:
@@ -5088,7 +5181,8 @@ def main() -> int:
         #   ・印が立った最初の月だけを1件と数える
         #   ・前の月に「保有候補」（8条件を通り、利回りが足切り以上）だった銘柄を主に見る
         #   ・同じ期間の市場（パネル全銘柄の等金額平均）と比べた差を出す
-        if "op_cut20" not in panel.columns or "screen_pass" not in panel.columns:
+        if "op_cut20" not in panel.columns or "screen_pass" not in panel.columns \
+                or "div_chg" not in panel.columns:
             log.info("財務の項目を足します…")
             panel = add_fund_columns(store, panel)
         my_ = args.min_yield if args.min_yield > 0 else 3.0
@@ -5111,7 +5205,9 @@ def main() -> int:
             g = g.sort_values("date").reset_index(drop=True)
             cut = g["div_cut10"].fillna(0).astype(float) > 0.5
             opd = g["op_cut20"].fillna(0).astype(float) > 0.5
-            for kind, flag in (("減配", cut), ("業績急変", opd)):
+            # 予想の減配：その月末の予想の年間配当が、直近の実績より10％以上低い
+            fcc = pd.to_numeric(g["fc_chg"], errors="coerce").fillna(0) <= -0.10
+            for kind, flag in (("減配", cut), ("業績急変", opd), ("予想の減配", fcc)):
                 start = flag & ~flag.shift(1, fill_value=False)
                 for i in np.flatnonzero(start.to_numpy()):
                     if i == 0:
@@ -5125,6 +5221,24 @@ def main() -> int:
                     i0, j = pos_of[r["date"]], col_of[code]
                     rec = {"code": code, "name": r.get("name", code), "date": r["date"],
                            "kind": kind, "px": p0, "候補": elig}
+                    # 落ち方（2026年10月11日に追加）
+                    #   深さ … 減配なら実績の配当の変化率、業績急変なら営業利益の変化率、
+                    #          予想の減配なら予想と実績の差
+                    #   重なり … もう一方の印もその月に立っていたか
+                    #   予想で先行 … 実績の減配の印が立つ前の15か月で、予想の減配が先に出ていたら、何か月前か
+                    if kind == "減配":
+                        _d = r.get("div_chg"); rec["重なり"] = bool(opd.iloc[i])
+                        _lo = max(0, i - 15)
+                        _seg = fcc.iloc[_lo:i].to_numpy()
+                        rec["予想で先行"] = float(i - (_lo + int(np.flatnonzero(_seg)[0]))) \
+                            if _seg.any() else np.nan
+                    elif kind == "業績急変":
+                        _d = r.get("op_chg"); rec["重なり"] = bool(cut.iloc[i])
+                        rec["予想で先行"] = np.nan
+                    else:
+                        _d = r.get("fc_chg"); rec["重なり"] = bool(opd.iloc[i])
+                        rec["予想で先行"] = np.nan
+                    rec["深さ"] = float(_d) if (_d is not None and not pd.isna(_d)) else np.nan
                     for m in hz:
                         if i0 + m < len(dts) and np.isfinite(arr[i0 + m, j]):
                             ch = (arr[i0 + m, j] / p0 - 1) * 100
@@ -5144,13 +5258,14 @@ def main() -> int:
               f"（{panel['date'].min().date()} 〜 {panel['date'].max().date()}）\n")
         print("　 減配 … 実績の年間配当が前の通期より10％以上減った（本番の緊急撤退と同じ判定）")
         print("　 業績急変 … 営業利益が前の通期より20％以上減った・赤字転落を含む（同じ）")
+        print("　 予想の減配 … 予想の年間配当が直近の実績より10％以上低くなった（本番は見ていない判定）")
         print("　 印が立った最初の月を1件と数えます。市場との差は、同じ期間のパネル全銘柄の")
         print("　 等金額平均の値動きを引いたもの。プラスなら市場より上、マイナスなら下。\n")
         for grp, sel in ((f"前の月に保有候補だった銘柄（8条件・利回り{my_:g}％以上）", ed["候補"]),
                          ("全銘柄（参考）", pd.Series(True, index=ed.index))):
             sub_e = ed[sel]
             print(f"━━ {grp} ━━\n")
-            for kind in ("減配", "業績急変"):
+            for kind in ("減配", "業績急変", "予想の減配"):
                 g = sub_e[sub_e["kind"] == kind]
                 print(f"【{kind}】{len(g)}件（{g['code'].nunique()}社）\n")
                 if len(g) < 5:
@@ -5181,10 +5296,89 @@ def main() -> int:
         print("    業績が崩れて上場廃止になった会社は含まれていないので、")
         print("    実際の数字は、ここに出るものより悪いはずです。")
 
+        # ── 落ち方で分ける（2026年10月11日に追加）──
+        # 「深い減配ほど戻らない」「減配と減益が重なると戻らない」が本当なら、
+        # 売る・売らないを落ち方で変える意味がある。区分ごとに、12か月後の市場との差で見る。
+        def _bucket(kind, d):
+            if pd.isna(d):
+                return "不明"
+            if kind == "業績急変":
+                return ("赤字転落" if d <= -0.999 else
+                        "−50〜100％（黒字）" if d <= -0.50 else "−20〜50％")
+            return ("−50％以上・無配" if d <= -0.50 else
+                    "−25〜50％" if d <= -0.25 else "−10〜25％")
+
+        def _verdict(x12, n):
+            if n < 20:
+                return "件数不足"
+            med = float(np.median(x12))
+            return ("売る方がよかった" if med <= -5.0 else
+                    "持つ方がよかった" if med >= 0.0 else "差が小さい")
+
+        def _table(title, rows_):
+            # rows_: [(区分名, DataFrame)]
+            print(f"【{title}】\n")
+            print(f"{'区分':<20}{'件数':>5}{'1年後：市場との差 中央値':>22}{'平均':>8}{'市場に勝った':>10}"
+                  f"{'2年後 中央値':>12}{'1年の最大下げ':>12}  判定")
+            print("-" * 104)
+            for lab_, g_ in rows_:
+                x12 = g_["x12"].dropna()
+                x24 = g_["x24"].dropna()
+                dd_ = g_["dd"].dropna()
+                if len(x12) == 0:
+                    print(f"{lab_:<20}{len(g_):>5}{'—':>22}{'—':>8}{'—':>10}{'—':>12}{'—':>12}  件数不足")
+                    continue
+                print(f"{lab_:<20}{len(g_):>5}{x12.median():>+21.1f}pt{x12.mean():>+7.1f}pt"
+                      f"{(x12 > 0).mean() * 100:>9.0f}%"
+                      f"{(x24.median() if len(x24) else float('nan')):>+11.1f}pt"
+                      f"{(dd_.median() if len(dd_) else float('nan')):>11.1f}%"
+                      f"  {_verdict(x12, len(x12))}")
+            print()
+
+        ec = ed[ed["候補"]]
+        print(f"\n■ 落ち方で分ける（前の月に保有候補だった銘柄・{len(ec)}件）\n")
+        print("　 判定は「1年後の市場との差の中央値」で決めます（結果を見る前に決めた基準）。")
+        print("　 　−5pt以下 … 売る方がよかった ／ 0pt以上 … 持つ方がよかった ／ その間 … 差が小さい")
+        print("　 　20件に満たない区分は判定しません（運と区別がつかないため）。\n")
+        for kind, ttl in (("減配", "減配の深さ（実績の年間配当の減り方）"),
+                          ("業績急変", "業績の落ち方（営業利益の減り方）"),
+                          ("予想の減配", "予想の減配の深さ（予想が実績をどれだけ下回ったか）")):
+            g = ec[ec["kind"] == kind].copy()
+            if g.empty:
+                continue
+            g["区分"] = [_bucket(kind, d) for d in g["深さ"]]
+            order = (["−20〜50％", "−50〜100％（黒字）", "赤字転落", "不明"] if kind == "業績急変"
+                     else ["−10〜25％", "−25〜50％", "−50％以上・無配", "不明"])
+            _table(ttl, [(b, g[g["区分"] == b]) for b in order if (g["区分"] == b).any()]
+                   + [("（全体）", g)])
+        for kind, other in (("減配", "業績急変"), ("業績急変", "減配")):
+            g = ec[ec["kind"] == kind]
+            if g.empty:
+                continue
+            _table(f"{kind}と{other}の重なり",
+                   [(f"{other}も同時", g[g["重なり"]]), (f"{kind}だけ", g[~g["重なり"]])])
+        # 予想の減配が、実績の減配をどれだけ先取りしていたか
+        g = ec[ec["kind"] == "減配"]
+        if len(g):
+            lead = g["予想で先行"].dropna()
+            print("【実績の減配は、予想の段階で分かっていたか】\n")
+            print(f"  実績の減配 {len(g)}件のうち、その前の15か月に予想の減配（−10％以上）が出ていたのは "
+                  f"{len(lead)}件（{len(lead) / len(g) * 100:.0f}％）。")
+            if len(lead):
+                print(f"  先に出ていた場合、実績の印より中央値で {lead.median():.0f}か月早い"
+                      f"（最短 {lead.min():.0f}か月・最長 {lead.max():.0f}か月）。")
+            print("  ※ 無配の予想は、このツールでは予想の欄に出ない（実績の配当で代用する）ため、数えられていません。\n")
+        print("【読み方】\n")
+        print("  ・「売る方がよかった」の区分だけ売り、「持つ方がよかった」の区分は持ち続ける、という")
+        print("    分け方に意味があるかは、このあとの総当たり（同じ実行で続けて回ります）で確かめます。")
+        print("  ・区分の件数が少ないほど、1〜2社の値動きで中央値が動きます。件数も見てください。")
+
         OUTDIR.mkdir(parents=True, exist_ok=True)
         ed.to_csv(OUTDIR / "after_event.csv", index=False, encoding="utf-8-sig")
         print("\n書き出しました: data/after_event.csv")
-        return 0
+        if not args.grid:
+            return 0
+        log.info("続けて総当たりを回します")
 
     # ══════════════════════════════════════════
     # 為替（ドル円）との関係を調べる
@@ -5792,7 +5986,9 @@ def main() -> int:
         # ── 損切りが働いた回数と、損切りした銘柄のその後（2026年10月11日に追加）──
         # 損切りが一度も働いていなければ、土台と同じ成績になり「効果なし」と区別がつかない。
         # 回数を出しておけば、成績の差が損切りから来ているのかを確かめられる。
-        if any(VARIANTS[n_].get("stop_loss") for n_ in nm):
+        _emg_keys = ("emg_cut_thr", "emg_op_thr", "emg_require_both", "emg_forecast")
+        if any(VARIANTS[n_].get("stop_loss") or any(k in VARIANTS[n_] for k in _emg_keys)
+               for n_ in nm):
             # 損切りが効くとすれば、暴落を含む期間のはず。期間ごとに並べて、
             # どの期間で差がついたのかを見えるようにする。
             _r0 = min(ramps)
