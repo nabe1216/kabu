@@ -4974,8 +4974,8 @@ def main() -> int:
     ap.add_argument("--random-test", action="store_true",
                     help="同じ候補の中からでたらめに選んだ場合と比べ、"
                          "いまのルールの優位が運ではないかを確かめる")
-    ap.add_argument("--random-n", type=int, default=25,
-                    help="でたらめに選ぶ回数（既定25）")
+    ap.add_argument("--random-n", type=int, default=20,
+                    help="でたらめに選ぶ回数（既定20。期間6通り×3種類なので、20回で360回まわる）")
     ap.add_argument("--blend", action="store_true",
                     help="動きの違う手法を同時に持つ形と、状況で使い分ける形を、"
                          "同じ土俵で比べる。悪いとき（最悪の年・最大下落）を見る")
@@ -5049,7 +5049,9 @@ def main() -> int:
     # 入力欄が上限（25個）に達しているので、新しいモードは
     # 「比較するルール」の欄に特別な言葉を入れて動かす。
     if (args.only or "").strip() == "random_test":
-        args.random_test, args.only = True, "pbr_low_tier,xs_any_tier"
+        # 本番どおり（配当の時期を正確に）と、SとAだけ買う形を、でたらめに選んだ場合と比べる
+        # （2026年10月12日に、いまの本番に合わせて作り直した）
+        args.random_test, args.only = True, "base_div_scr,tier_sa_scr"
     # 日本の長い歴史（J-Quants のデータは使わないので、ここで抜ける）
     if (args.only or "").strip() == "history_test":
         return history_test()
@@ -5518,66 +5520,255 @@ def main() -> int:
 
     # ══════════════════════════════════════════
     # 運の幅を測る（でたらめに選んだ場合との比較）
+    #   2026年10月12日に作り直した。以前は低PBR順など、いまは使っていないルールで比べていた。
     #
-    #   同じ候補（利回り4％以上）の中から、でたらめに選んだ場合を何十回も回す。
-    #   いまのルールがその分布のどこにいるかで、優位が「選び方」から来ているのか、
-    #   「候補が良かっただけ」なのかが分かる。
-    #     でたらめ（全部）    … Tierも無視して、候補から適当に選ぶ
-    #     でたらめ（Tier内）  … Tier順は守り、同じTierの中だけ適当に選ぶ
+    #   本番と同じ仕組みのまま「選ぶ順番」だけをでたらめにしたものを何十回も回し、
+    #   本番がその分布のどこにいるかを見る。情報を3段階で抜いていく。
+    #     tier … Tierの順番と予算は本番どおり。同じTierの中だけ、利回りの順をやめてでたらめに選ぶ
+    #     all  … 候補（8条件・利回り3％以上・減配や業績急変なし）と予算は本番どおり。順番をすべてでたらめに
+    #     univ … 条件をすべて外す。プライム全体から、本番と同じくらいの銘柄数を等金額ででたらめに選び、
+    #            売らずに持ち続ける（配当で現金が貯まれば、またでたらめに買い足す）
+    #   期間は総当たりと同じ6通り（4年の窓5つ＋全期間）。資金投入は0か月だけ。
+    #   判定の基準は結果を見る前に決めたもの（下の【判定】に書いてある）。
     # ══════════════════════════════════════════
     if args.random_test:
-        if "pct_pbr" not in panel.columns:
-            log.info("財務の項目を足します…")
-            panel = add_fund_columns(store, panel)
-        my = args.min_yield if args.min_yield > 0 else 4.0
-        pool = dict(VARIANTS["xs_any_tier"])
-        refs = [("低PBR順（いまの本番）", VARIANTS["pbr_low_tier"]),
-                ("利回りの高い順（ひとつ前）", VARIANTS["xs_any_tier"])]
+        import unicodedata
+
+        def _dw(x):
+            return sum(2 if unicodedata.east_asian_width(ch) in "WF" else 1 for ch in str(x))
+
+        def _lj(x, w):
+            x = str(x)
+            return x + " " * max(0, w - _dw(x))
+
+        def _rj(x, w):
+            x = str(x)
+            return " " * max(0, w - _dw(x)) + x
+
         K = max(5, args.random_n)
-        conds = [(0, "資金を初日に全額"), (12, "資金を12か月かけて入れる")]
-        cap = args.capital
+        base_key, sa_key = "base_div_scr", "tier_sa_scr"
+        base_cfg = VARIANTS[base_key]
+        tax_ = args.tax / 100.0
         common = dict(tier_budget=True, dividends=True, slip_bps=args.slip_bps,
-                      tax_rate=args.tax / 100.0, min_yield_override=my)
-        log.info("運の幅を測ります：でたらめ %d回 × 2通り × 条件%d つ（足切り %.1f％）",
-                 K, len(conds), my)
+                      fee_bps=args.fee_bps, tax_rate=tax_, ramp=0)
 
-        print(f"\n■ 運の幅を測る（{panel['date'].min().date()} 〜 {panel['date'].max().date()}"
-              f" ／ 利回り{my}％以上の候補から選ぶ ／ でたらめ {K}回）\n")
-        summary = []
-        for ramp, lbl in conds:
-            ref_r = {}
-            for nm, cfg in refs:
-                r = simulate(panel, cfg, cap, 20, ramp=ramp, **common)
-                ref_r[nm] = metrics(r)["年率"]
-            dist = {}
-            for mode, mlbl in (("all", "でたらめ（全部）"), ("tier", "でたらめ（Tier内）")):
-                vals = []
+        # 窓（総当たりと同じ作り方：4年の窓を1年ずつずらしたもの＋全期間）
+        wl = args.grid_window
+        d0_, d1_ = panel["date"].min(), panel["date"].max()
+        wins = []
+        st_ = d1_ - pd.DateOffset(years=wl)
+        while st_ >= d0_:
+            wins.append((st_, d1_ if not wins else st_ + pd.DateOffset(years=wl)))
+            st_ = st_ - pd.DateOffset(years=1)
+        wins = [(a, a + pd.DateOffset(years=wl)) for a, _ in wins]
+        wins.reverse()
+        wins.append((d0_, d1_))
+
+        fams = [("tier", "でたらめ（Tier内）"), ("all", "でたらめ（候補の中）"),
+                ("univ", "でたらめ（プライム全体）")]
+        log.info("運の幅を測ります：期間%d × でたらめ%d回 × %d通り ＝ %d回（ほかに本番とSとAだけ）",
+                 len(wins), K, len(fams), len(wins) * K * len(fams))
+
+        rows_r, refs, bhs, spans, nbs = [], {}, {}, [], {}
+        for a, b in wins:
+            sub = panel[(panel["date"] >= a) & (panel["date"] <= b)]
+            if sub["date"].nunique() < 24:
+                continue
+            span = f"{a.date()}〜{b.date()}"
+            spans.append(span)
+            bh_ = buy_and_hold(sub, tax_)
+            bhs[span] = bh_["年率"] if bh_ else float("nan")
+            for key in (base_key, sa_key):
+                r_ = simulate(sub, VARIANTS[key], args.capital, 20, **common)
+                m_ = metrics(r_)
+                refs[(span, key)] = {"年率": m_["年率"], "最大下落": m_["最大下落"],
+                                     "銘柄数": m_["平均保有銘柄"],
+                                     "緊急売り": r_.get("diag", {}).get("cut_exits", 0)}
+            # プライム全体から選ぶときの銘柄数は、本番の平均の銘柄数にそろえる
+            nb = max(5, int(round(refs[(span, base_key)]["銘柄数"])))
+            nbs[span] = nb
+            univ_cfg = {
+                "label": "でたらめ（プライム全体）",
+                "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": False,
+                "budget_weighted": True, "target_names": nb,
+                "tier_weight": {"S": 1.0, "A": 1.0, "B": 1.0},
+                "min_yield_fixed": 0.0, "hold_tiers": ["S", "A", "B"],
+                "exit_on_cut": False, "exit_on_op": False, "skip_emg_buy": False,
+                "div_split": True, "shuffle": "all",
+            }
+            for fam, flbl in fams:
                 for k in range(K):
-                    cfg = dict(pool, shuffle=mode, seed=1000 + k)
-                    r = simulate(panel, cfg, cap, 20, ramp=ramp, **common)
-                    vals.append(metrics(r)["年率"])
-                dist[mlbl] = np.array(vals)
-                log.info("  %s ／ %s … 平均 %.1f％", lbl, mlbl, np.mean(vals))
+                    if fam == "univ":
+                        cfg = dict(univ_cfg, seed=1000 + k)
+                    else:
+                        cfg = dict(base_cfg, shuffle=fam, seed=1000 + k)
+                    m_ = metrics(simulate(sub, cfg, args.capital, 20, **common))
+                    if not m_:
+                        continue
+                    rows_r.append({"期間": span, "種類": flbl, "回": k + 1, "年率": m_["年率"],
+                                   "最大下落": m_["最大下落"], "銘柄数": m_["平均保有銘柄"]})
+                _v = [x["年率"] for x in rows_r if x["期間"] == span and x["種類"] == flbl]
+                log.info("  %s ／ %s … 中央 %.1f％（本番 %.1f％）", span, flbl,
+                         float(np.median(_v)) if _v else float("nan"),
+                         refs[(span, base_key)]["年率"])
 
-            print(f"【{lbl}】\n")
-            print(f"{'':<24}{'平均':>8}{'下位5％':>9}{'中央':>8}{'上位5％':>9}{'最高':>8}")
-            print("-" * 68)
-            for mlbl, v in dist.items():
-                print(f"{mlbl:<24}{v.mean():>7.1f}%{np.percentile(v, 5):>8.1f}%"
-                      f"{np.median(v):>7.1f}%{np.percentile(v, 95):>8.1f}%{v.max():>7.1f}%")
-            print()
-            for nm, val in ref_r.items():
-                for mlbl, v in dist.items():
-                    pct = (v < val).mean() * 100
-                    print(f"  {nm:<26} {val:>5.1f}％ … {mlbl}の {pct:>3.0f}％ を上回る")
-                summary.append((lbl, nm, val, {k: (v < val).mean() * 100 for k, v in dist.items()}))
+        if not rows_r:
+            print("結果がありません。")
+            return 1
+        dfr = pd.DataFrame(rows_r)
+
+        def _vals(span, flbl, col="年率"):
+            return dfr[(dfr["期間"] == span) & (dfr["種類"] == flbl)][col].to_numpy()
+
+        def _beat(span, flbl, val):
+            v = _vals(span, flbl)
+            return float((v < val).mean() * 100) if len(v) else float("nan")
+
+        n_sp = len(spans)
+        W = 26          # 期間の欄の幅
+        print("\n■ 運の幅を測る（でたらめに選んだ場合との比較）\n")
+        print(f"　 期間 {n_sp}通り ／ 資金投入0か月 ／ でたらめ 各{K}回")
+        print(f"　 元本 {args.capital:,.0f}円 ／ 税率{args.tax:.3f}％ ／ 約定のずれ 片道{args.slip_bps:g}bps\n")
+        print("【比べる相手】\n")
+        print("  でたらめ（Tier内）       … Tierの順番と予算は本番どおり。同じTierの中だけ、利回りの順をやめて選ぶ")
+        print("  でたらめ（候補の中）     … 候補（8条件・利回り3％以上・減配や業績急変なし）と予算は本番どおり。")
+        print("                             Tierの順番も利回りの順もやめて選ぶ")
+        print("  でたらめ（プライム全体） … 条件なし。プライム全体から、本番と同じくらいの銘柄数を等金額で選び、")
+        print("                             売らずに持ち続ける")
+        print()
+
+        # 本番と、SとAだけ
+        print("【本番とSとAだけ（資金投入0か月）】\n")
+        hdr = (_lj("期間", W) + _rj("本番", 8) + _rj("SとAだけ", 10) + _rj("差", 8)
+               + _rj("銘柄数（本番）", 16) + _rj("（SとA）", 10)
+               + _rj("減配などの売り（本番）", 24) + _rj("（SとA）", 10))
+        print(hdr)
+        print("-" * _dw(hdr))
+        acc = {"b": [], "s": [], "nb": [], "ns": [], "cb": [], "cs": []}
+        for sp in spans:
+            rb, rs = refs[(sp, base_key)], refs[(sp, sa_key)]
+            print(_lj(sp, W) + _rj(f"{rb['年率']:.1f}%", 8) + _rj(f"{rs['年率']:.1f}%", 10)
+                  + _rj(f"{rs['年率'] - rb['年率']:+.1f}pt", 8)
+                  + _rj(f"{rb['銘柄数']:.1f}", 16) + _rj(f"{rs['銘柄数']:.1f}", 10)
+                  + _rj(f"{rb['緊急売り']}回", 24) + _rj(f"{rs['緊急売り']}回", 10))
+            acc["b"].append(rb["年率"]); acc["s"].append(rs["年率"])
+            acc["nb"].append(rb["銘柄数"]); acc["ns"].append(rs["銘柄数"])
+            acc["cb"].append(rb["緊急売り"]); acc["cs"].append(rs["緊急売り"])
+        sa_diff = float(np.mean(acc["s"]) - np.mean(acc["b"]))
+        print(_lj("平均", W) + _rj(f"{np.mean(acc['b']):.1f}%", 8) + _rj(f"{np.mean(acc['s']):.1f}%", 10)
+              + _rj(f"{sa_diff:+.1f}pt", 8)
+              + _rj(f"{np.mean(acc['nb']):.1f}", 16) + _rj(f"{np.mean(acc['ns']):.1f}", 10)
+              + _rj(f"{np.mean(acc['cb']):.1f}回", 24) + _rj(f"{np.mean(acc['cs']):.1f}回", 10))
+        print()
+        _rb = [c / max(n, 1e-9) for c, n in zip(acc["cb"], acc["nb"])]
+        _rs = [c / max(n, 1e-9) for c, n in zip(acc["cs"], acc["ns"])]
+        print(f"  1銘柄あたりの減配などの売り … 本番 {np.mean(_rb):.2f}回 ／ SとAだけ {np.mean(_rs):.2f}回"
+              "（銘柄数の違いをならした数字）")
+        print()
+
+        # でたらめの分布
+        stats = {}
+        for fam, flbl in fams:
+            print(f"【{flbl}】\n")
+            hdr = (_lj("期間", W) + _rj("本番", 8) + _rj("下位5％", 10) + _rj("中央", 8)
+                   + _rj("上位5％", 10) + _rj("本番が上回った割合", 20))
+            if fam == "univ":
+                hdr += _rj("全部買って放置", 16)
+            print(hdr)
+            print("-" * _dw(hdr))
+            beats, meds, p5s, p95s, above = [], [], [], [], 0
+            for sp in spans:
+                v = _vals(sp, flbl)
+                if not len(v):
+                    continue
+                bv = refs[(sp, base_key)]["年率"]
+                p5, md, p95 = (float(np.percentile(v, 5)), float(np.median(v)),
+                               float(np.percentile(v, 95)))
+                bt = _beat(sp, flbl, bv)
+                beats.append(bt); meds.append(md); p5s.append(p5); p95s.append(p95)
+                above += int(bv > md)
+                line = (_lj(sp, W) + _rj(f"{bv:.1f}%", 8) + _rj(f"{p5:.1f}%", 10)
+                        + _rj(f"{md:.1f}%", 8) + _rj(f"{p95:.1f}%", 10) + _rj(f"{bt:.0f}％", 20))
+                if fam == "univ":
+                    line += _rj(f"{bhs.get(sp, float('nan')):.1f}%", 16)
+                print(line)
+            line = (_lj("平均", W) + _rj(f"{np.mean(acc['b']):.1f}%", 8)
+                    + _rj(f"{np.mean(p5s):.1f}%", 10) + _rj(f"{np.mean(meds):.1f}%", 8)
+                    + _rj(f"{np.mean(p95s):.1f}%", 10) + _rj(f"{np.mean(beats):.0f}％", 20))
+            if fam == "univ":
+                line += _rj(f"{np.nanmean([bhs.get(sp, np.nan) for sp in spans]):.1f}%", 16)
+            print(line)
+            stats[fam] = {"beats": beats, "meds": meds, "p5": p5s, "p95": p95s, "above": above}
+            if fam == "univ":
+                _nn = [float(np.mean(_vals(sp, flbl, "銘柄数"))) for sp in spans if len(_vals(sp, flbl))]
+                print(f"\n  プライム全体のでたらめの平均の銘柄数 … {np.mean(_nn):.1f}"
+                      f"（本番 {np.mean(acc['nb']):.1f}）")
             print()
 
+        # 最大下落
+        print("【最大下落】（でたらめは中央）\n")
+        hdr = (_lj("期間", W) + _rj("本番", 8) + _rj("SとAだけ", 10) + _rj("Tier内", 10)
+               + _rj("候補の中", 10) + _rj("プライム全体", 14))
+        print(hdr)
+        print("-" * _dw(hdr))
+        dd_acc = {k: [] for k in ("b", "s", "tier", "all", "univ")}
+        for sp in spans:
+            vals_ = [refs[(sp, base_key)]["最大下落"], refs[(sp, sa_key)]["最大下落"]]
+            vals_ += [float(np.median(_vals(sp, fl, "最大下落"))) for _, fl in fams]
+            for k_, x in zip(("b", "s", "tier", "all", "univ"), vals_):
+                dd_acc[k_].append(x)
+            print(_lj(sp, W) + _rj(f"{vals_[0]:.1f}%", 8) + _rj(f"{vals_[1]:.1f}%", 10)
+                  + _rj(f"{vals_[2]:.1f}%", 10) + _rj(f"{vals_[3]:.1f}%", 10) + _rj(f"{vals_[4]:.1f}%", 14))
+        print(_lj("平均", W) + _rj(f"{np.mean(dd_acc['b']):.1f}%", 8) + _rj(f"{np.mean(dd_acc['s']):.1f}%", 10)
+              + _rj(f"{np.mean(dd_acc['tier']):.1f}%", 10) + _rj(f"{np.mean(dd_acc['all']):.1f}%", 10)
+              + _rj(f"{np.mean(dd_acc['univ']):.1f}%", 14))
+        print()
+
+        # 判定（結果を見る前に決めた基準）
+        print("【判定】（基準は結果を見る前に決めたもの）\n")
+        need = max(1, n_sp - 1)          # 6期間なら5期間
+        su = stats["univ"]
+        n95 = sum(1 for x in su["beats"] if x >= 95.0)
+        verdict = "運だけでは説明できない" if n95 >= need else "運の可能性を残す"
+        print(f"  ① ルール全体の力 … 本番が「プライム全体」のでたらめの95％以上を上回った期間 {n95}/{n_sp}"
+              f" → {verdict}")
+        print(f"       （基準：{need}期間以上なら「運だけでは説明できない」）")
+        n_sc = sum(1 for x, y in zip(stats["all"]["meds"], su["meds"]) if x > y)
+        d_sc = float(np.mean(stats["all"]["meds"]) - np.mean(su["meds"]))
+        verdict = "候補を絞るだけで上回っていた" if n_sc >= need else "絞るだけでは上回れなかった"
+        print(f"  ② 候補を絞る力 … 「候補の中」のでたらめ（中央）が「プライム全体」（中央）を上回った期間"
+              f" {n_sc}/{n_sp}、差の平均 {d_sc:+.1f}pt → {verdict}")
+        print(f"       （基準：{need}期間以上なら「候補を絞るだけで上回っていた」）")
+        for no, fam, what in (("③", "all", "順番の力（Tierの順番と利回りの順）"),
+                              ("④", "tier", "利回りの順の力（同じTierの中）")):
+            s_ = stats[fam]
+            mb = float(np.mean(s_["beats"]))
+            if mb >= 80 and s_["above"] >= need:
+                verdict = "価値がある"
+            elif 35 <= mb <= 65:
+                verdict = "でたらめと変わらない（飾り）"
+            else:
+                verdict = "どちらとも言えない"
+            print(f"  {no} {what} … 本番が上回った割合の平均 {mb:.0f}％、"
+                  f"中央を上回った期間 {s_['above']}/{n_sp} → {verdict}")
+        print("       （基準：平均80％以上かつ中央を上回った期間が"
+              f"{need}以上なら「価値がある」、平均35〜65％なら「飾り」）")
+        half = float(np.mean([b_ - a_ for a_, b_ in zip(stats["tier"]["p5"], stats["tier"]["p95"])])) / 2
+        print(f"  ⑤ 運の幅 … 同じ候補・同じTierの中で別の銘柄を選ぶだけで、年率は ±{half:.1f}pt 振れる"
+              "（Tier内のでたらめの下位5％〜上位5％の半分）")
+        verdict = ("運の幅に収まる。運と区別できない" if abs(sa_diff) < half
+                   else "運の幅を超える")
+        print(f"       SとAだけ買う：本番との差 {sa_diff:+.1f}pt → {verdict}")
+        print()
         print("【読み方】\n")
-        print("  ・「でたらめ（Tier内）の95％以上を上回る」なら、Tierの中での選び方に本当に価値がある。")
-        print("  ・50％前後なら、その選び方はでたらめと変わらない。成績は候補とTierのおかげ。")
-        print("  ・でたらめの「下位5％〜上位5％」の幅が、運だけで生まれる差の大きさの目安。")
-        print("    ルールどうしの差がこの幅より小さければ、運と区別がつかない。")
+        print("  ・本番が上回った割合 … でたらめの各回のうち、本番より成績が悪かった回の割合。")
+        print("  ・「プライム全体」に勝つのは、高配当で選ぶ考え方がこの期間に効いたということ。")
+        print("    この期間は高配当・割安株に追い風が吹いた時期を含み、この先も同じだけ効く保証ではない。")
+        print("  ・データに潰れた会社・上場廃止の会社が入っていないのは、でたらめの側も同じ。")
+        print("    この比較そのものは公平だが、どちらの成績も実際より良く出ている。")
+
+        OUTDIR.mkdir(parents=True, exist_ok=True)
+        dfr.to_csv(OUTDIR / "random_test.csv", index=False, encoding="utf-8-sig")
         return 0
 
     # ══════════════════════════════════════════
