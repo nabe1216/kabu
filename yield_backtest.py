@@ -772,6 +772,54 @@ VARIANTS: dict[str, dict[str, Any]] = {
         "emg_rule": "actual", "skip_emg_buy": True,
         "tp_gain": 0.30, "tp_frac": 0.5,
     },
+    # ── 売らずに動く・税金を減らしながら動く（2026年10月11日に追加）──
+    # 土台は本番どおり。どれも「損は配当とも相殺する」（特定口座で配当を口座で受け取る前提）。
+    # 比べる相手の base_tax_scr も同じ扱い（中身は stop_none_scr と同じ。名前だけ分かりやすくした）。
+    #   harvest_scr   … 12月末に含み損の銘柄を全部売り、同じ株数をすぐ買い戻す（年末の損出し）。
+    #                   含み損が2％未満の銘柄は売らない。約定のずれ（片道0.1％）で往復0.2％かかるので、
+    #                   含み損が1％程度だと、戻る税金（損の20.315％）より費用の方が大きくなるため
+    #   harvest10_scr … 同じく、含み損が10％以上の銘柄だけ（売買の回数を抑える）
+    #   topup_scr     … 毎月、買いのあとに残った現金で、目標を下回っている持ち株を買い増す
+    #   combo_scr     … 買い増しと12月の損出しの両方
+    "base_tax_scr": {
+        "label": "本番どおり（損は配当と相殺）",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "tax_div_offset": True,
+    },
+    "harvest_scr": {
+        "label": "12月に含み損を売って買い戻す（損出し・−2％以上）",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "tax_div_offset": True,
+        "harvest": {"month": 12, "min_loss": 0.02},
+    },
+    "harvest10_scr": {
+        "label": "12月に含み損10％以上を売って買い戻す",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "tax_div_offset": True,
+        "harvest": {"month": 12, "min_loss": 0.10},
+    },
+    "topup_scr": {
+        "label": "配当で比率の下がった持ち株を買い増す",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "tax_div_offset": True,
+        "topup": True,
+    },
+    "combo_scr": {
+        "label": "配当で買い増し＋12月の損出し",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "tax_div_offset": True,
+        "topup": True, "harvest": {"month": 12, "min_loss": 0.02},
+    },
 
     "switch36_flip": {
         "label": "市況で切り替え（36か月）・切り替わった月だけ入れ替える",
@@ -2503,6 +2551,21 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
     act_tp = cfg.get("tp_gain")
     act_frac = float(cfg.get("tp_frac", 1.0))
     act_cd = int(cfg.get("act_cooldown", 0))
+    # 売らずに動く形・税金を減らしながら動く形（2026年10月11日に追加）
+    #   harvest … {"month": 12, "min_loss": 0.0}。その月末に、平均取得単価より min_loss 以上
+    #             安くなっている銘柄を全部売り、同じ株数をすぐ買い戻す（年末の損出し）。
+    #             持ち株は変わらないので、成績の差は「税金」と「売買の費用」だけになる。
+    #             確定した損は売却益と、tax_div_offset があれば配当とも相殺する。
+    #             日本には同じ銘柄の買い戻しを制限する決まりがないので、実際に使える手。
+    #             実際は売りを先に約定させる（総平均法で、買いが先だと損が確定しないため）。
+    #   topup   … True なら、その月の買いのあとに残った現金で、持ち株のうち
+    #             目標の大きさ（新しく買うときの1銘柄の予算）をいちばん下回っている銘柄を買い増す。
+    #             配当を毎月再投資する形。買いの条件（8条件・利回りの足切り・減配や業績急変でない）を
+    #             満たす銘柄だけ。売らないので税金はかからない。
+    harvest = cfg.get("harvest")
+    hv_month = int(harvest.get("month", 12)) if harvest else 0
+    hv_min = float(harvest.get("min_loss", 0.0)) if harvest else 0.0
+    topup = bool(cfg.get("topup", False))
     # 市況の合図が切り替わった月に、持ち株を入れ替えるか
     sell_on_flip = bool(cfg.get("sell_on_flip", False))
     _rng_shuffle = np.random.default_rng(cfg.get("seed", 0))
@@ -2967,6 +3030,35 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                 if code in opened_at:
                     diag["hold_months"].append(mi - opened_at.pop(code))
 
+        # ── 年末の損出し ──
+        # 含み損の銘柄を売って損を確定させ、同じ株数をその場で買い戻す。持ち株は変わらない。
+        if harvest and pd.Timestamp(dt).month == hv_month:
+            for code in list(pos.keys()):
+                if code not in day.index:
+                    continue
+                st = pos[code]
+                if not st["lots"]:
+                    continue
+                _px = float(day.loc[code, "price"])
+                _shs = sum(sh for sh, _ in st["lots"])
+                _avg = sum(sh * pr for sh, pr in st["lots"]) / _shs if _shs else 0.0
+                if _avg <= 0 or _px >= _avg * (1 - hv_min):
+                    continue
+                # 特定口座の取得単価は平均（総平均法）。建玉を1つにまとめてから売る
+                st["lots"] = [(_shs, _avg)]
+                _loss = (_avg - _px * (1 - slip) * (1 - fee)) * _shs
+                _sell_shares(code, st, _shs, _px, dt)
+                _buy = _px * (1 + slip) * (1 + fee)
+                cash -= _shs * _buy
+                diag["fee"] = diag.get("fee", 0.0) + _shs * _px * (slip + fee)
+                st["lots"] = [(_shs, _buy)]
+                trades.append({"code": code, "date": dt, "side": "buy",
+                               "price": _px, "shares": _shs})
+                diag["harvests"] = diag.get("harvests", 0) + 1
+                diag["harvest_loss"] = diag.get("harvest_loss", 0.0) + _loss
+                diag.setdefault("harvest_log", []).append(
+                    {"code": code, "date": dt, "loss": _loss})
+
         # ── 買い候補 ──
         diag["months"] += 1
         cands = []
@@ -3316,6 +3408,69 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                 st["units"] += 1
                 trades.append({"code": code, "date": dt, "side": "buy",
                                "price": price, "shares": sh})
+
+        # ── 配当で買い増す ──
+        # 新しく買える銘柄を買ったあと、残った現金で、目標の大きさをいちばん下回っている
+        # 持ち株を買い増す。目標を超えない範囲で、買える単位（実運用なら100株）ずつ。
+        if topup and usable > 0 and pos:
+            _lot = 100 if tier_budget else 1
+            _avg_w = sum(tw.values()) / len(tw)
+            while True:
+                _best = None
+                for code, st in pos.items():
+                    if code not in day.index or not st["lots"]:
+                        continue
+                    row = day.loc[code]
+                    if use_screen and not bool(row.get("screen_pass", False)):
+                        continue
+                    if min_yield > 0 and row.get("yield", 0) < min_yield:
+                        continue
+                    if skip_emg_buy:
+                        if emg_actual:
+                            _c, _o = emg_flags(row)
+                        else:
+                            _c, _o = bool(row.get("dps_cut")), bool(row.get("op_drop"))
+                        if _c or _o:
+                            continue
+                    if stop_block and mi < stop_block.get(code, -1):
+                        continue
+                    _px = float(row["price"])
+                    _buy = _px * (1 + slip) * (1 + fee)
+                    if usable < _lot * _buy:
+                        continue
+                    _tier = row.get("tier", "B")
+                    if weighted:
+                        _tgt = total / target_n * (tw.get(_tier, 1.0) / _avg_w)
+                    elif tier_budget:
+                        _tgt = TIER_BUDGET.get(_tier, TIER_BUDGET["B"])
+                    else:
+                        _tgt = total / max_names
+                    _val = sum(sh for sh, _ in st["lots"]) * _px
+                    if _tgt - _val < _lot * _px:
+                        continue
+                    _ratio = _val / _tgt if _tgt > 0 else 9.9
+                    if _best is None or _ratio < _best[0]:
+                        _best = (_ratio, code, _px, _buy, _tgt - _val)
+                if _best is None:
+                    break
+                _, code, _px, _buy, _room = _best
+                _n = int(min(_room // (_lot * _px), usable // (_lot * _buy)))
+                if _n <= 0:
+                    break
+                sh = _n * _lot
+                cash -= sh * _buy
+                usable -= sh * _buy
+                diag["fee"] = diag.get("fee", 0.0) + sh * _px * (slip + fee)
+                st = pos[code]
+                # 特定口座と同じく、取得単価は平均でまとめる（建玉は1つのまま）
+                _s0 = sum(s for s, _ in st["lots"])
+                _c0 = sum(s * p for s, p in st["lots"])
+                st["lots"] = [(_s0 + sh, (_c0 + sh * _buy) / (_s0 + sh))]
+                st["cost_sum"] = st.get("cost_sum", 0.0) + sh * _buy
+                st["sh_sum"] = st.get("sh_sum", 0) + sh
+                trades.append({"code": code, "date": dt, "side": "buy",
+                               "price": _px, "shares": sh})
+                diag["topups"] = diag.get("topups", 0) + 1
 
         curve.append({"date": dt, "value": value_of(day),
                       "cash": cash, "names": len(pos)})
@@ -5953,6 +6108,7 @@ def main() -> int:
         rows_, done = [], 0
         stop_logs = {}       # 損切りの記録（全期間・資金投入がいちばん短い条件だけ取っておく）
         act_logs = {}        # 利確・利回り割れの記録（同じ条件だけ取っておく）
+        harvest_sum = {}     # 損出しの回数と確定させた損（同じ条件だけ取っておく）
         panels = {}
         for lb_ in lbs_:
             # 分位の期間ごとにパネルを作り直す（重いので一度だけ）
@@ -5993,8 +6149,16 @@ def main() -> int:
                             if _later and not _tr.empty:
                                 _act_m = {pd.Timestamp(x) for x in _tr["date"]}
                                 _m_act = sum(1 for d in _later if d in _act_m) / len(_later) * 100
+                                # 買い/年 … 最初の12か月（買い付けの時期）を除いた買いの回数を、残りの年数で割る
+                                _ld = set(_later)
+                                _n_buy = int(sum(1 for x, s in zip(_tr["date"], _tr["side"])
+                                                 if s == "buy" and pd.Timestamp(x) in _ld))
+                                _yrs_l = max((_later[-1] - _dts[11]).days / 365.25, 0.25) \
+                                    if len(_dts) > 12 else _yrs
+                                _b_yr = _n_buy / _yrs_l
                             else:
                                 _m_act = float("nan")
+                                _b_yr = float("nan")
                             rows_.append({
                                 "期間": span, "資金投入": rp, "利回り足切り": my,
                                 "分位": lb_, "保有上限": mx_,
@@ -6005,7 +6169,10 @@ def main() -> int:
                                 "緊急売り": d_.get("cut_exits", 0),
                                 "損切り": d_.get("stop_exits", 0),
                                 "利確・利回り割れ": d_.get("act_exits", 0) + d_.get("act_partial", 0),
+                                "損出し": d_.get("harvests", 0),
+                                "買い増し": d_.get("topups", 0),
                                 "売り/年": _n_sell / _yrs,
+                                "買い/年": _b_yr,
                                 "売買のあった月": _m_act})
                             if ((a, b) == (d0_, d1_) and rp == min(ramps) and lb_ == lbs_[0]
                                     and mx_ == mxs_[0] and my == mys[0]):
@@ -6013,6 +6180,9 @@ def main() -> int:
                                     stop_logs[n_] = (d_.get("stop_log", []), pnl)
                                 if d_.get("act_log"):
                                     act_logs[n_] = (d_.get("act_log", []), pnl)
+                                if VARIANTS[n_].get("harvest"):
+                                    harvest_sum[n_] = (d_.get("harvests", 0),
+                                                       d_.get("harvest_loss", 0.0), _yrs)
                     done += 1
                     if done % 5 == 0 or done == total:
                         log.info("  %d/%d 条件が完了", done, total)
@@ -6164,15 +6334,17 @@ def main() -> int:
                 print(f"{_p:<24}" + "".join(f"{_pv.at[_p, c]:>11.1f}%" for c in _cl)
                       + f"{_bh.get(_p, float('nan')):>11.1f}%")
         print("\n【売買の回数（1条件あたりの平均）】\n")
-        print(f"{'ルール':<34}{'減配・業績急変':>12}{'損切り':>8}{'利確・利回り割れ':>14}"
-              f"{'売り/年':>9}{'売買のあった月':>14}")
-        print("-" * 96)
+        print(f"{'ルール':<34}{'減配・業績急変':>10}{'損切り':>7}{'利確・利回り割れ':>11}"
+              f"{'損出し':>7}{'買い増し':>8}{'売り/年':>8}{'買い/年':>8}{'売買のあった月':>12}")
+        print("-" * 112)
         for lab, g in gf.groupby("ルール"):
-            print(f"{lab[:32]:<34}{g['緊急売り'].mean():>11.1f}回{g['損切り'].mean():>7.1f}回"
-                  f"{g['利確・利回り割れ'].mean():>13.1f}回{g['売り/年'].mean():>8.1f}回"
-                  f"{g['売買のあった月'].mean():>13.0f}%")
-        print("\n  売り/年 … 1年あたりに売った回数（一部だけ売った回も1回）。")
-        print("  売買のあった月 … 最初の12か月（買い付けの時期）を除き、売りか買いが1回でもあった月の割合。")
+            print(f"{lab[:32]:<34}{g['緊急売り'].mean():>9.1f}回{g['損切り'].mean():>6.1f}回"
+                  f"{g['利確・利回り割れ'].mean():>10.1f}回{g['損出し'].mean():>6.1f}回"
+                  f"{g['買い増し'].mean():>7.1f}回{g['売り/年'].mean():>7.1f}回"
+                  f"{g['買い/年'].mean():>7.1f}回{g['売買のあった月'].mean():>11.0f}%")
+        print("\n  売り/年 … 1年あたりに売った回数（一部だけ売った回、損出しで売った回も1回）。")
+        print("  買い/年 … 最初の12か月（買い付けの時期）を除いた、1年あたりの買いの回数（買い増し・買い戻しを含む）。")
+        print("  売買のあった月 … 最初の12か月を除き、売りか買いが1回でもあった月の割合。")
         print("  　　　　　　　 外から見て「動いている」と感じられるかの目安。")
 
         # 売買を増やす形の判定（結果を見る前に決めた基準）。比べる相手は「比較するルール」の最初のもの。
@@ -6180,32 +6352,47 @@ def main() -> int:
         #     ・平均年率の差が −0.5pt 以内
         #     ・最悪の年率の差が −1.0pt 以内
         #     ・相手が24条件の85％以上で上回っていない（＝相手が「堅く」勝っていない）
-        _act_keys = ("yield_exit", "tp_gain")
+        #   さらに、相手を24条件の85％以上で上回れば「本番を上回る」と付ける（本番に入れる価値がある）。
+        _act_keys = ("yield_exit", "tp_gain", "harvest", "topup")
         if any(any(k in VARIANTS[n_] for k in _act_keys) for n_ in nm) and len(nm) > 1:
             _base_lab = VARIANTS[nm[0]]["label"]
             if _base_lab in piv.columns:
                 _gb = gf[gf["ルール"] == _base_lab]
                 _ab, _wb = _gb["年率"].mean(), _gb["年率"].min()
-                _sb = _gb["売り/年"].mean()
+                _sb, _bb = _gb["売り/年"].mean(), _gb["買い/年"].mean()
                 print(f"\n【売買を増やす形の判定（相手：{_base_lab[:28]}）】\n")
                 print(f"　 相手の成績 … 平均年率 {_ab:.1f}％ ／ 最悪の年率 {_wb:.1f}％ ／ "
-                      f"最悪の下落 {_gb['最大下落'].max():.1f}％ ／ 売り {_sb:.1f}回/年\n")
-                print(f"{'ルール':<34}{'売り/年の差':>10}{'平均年率の差':>12}{'最悪の年率の差':>14}"
-                      f"{'相手が勝った割合':>14}  判定")
-                print("-" * 100)
+                      f"最悪の下落 {_gb['最大下落'].max():.1f}％ ／ 売り {_sb:.1f}回/年 ／ 買い {_bb:.1f}回/年\n")
+                print(f"{'ルール':<34}{'売り/年の差':>9}{'買い/年の差':>9}{'平均年率の差':>11}{'最悪の年率の差':>12}"
+                      f"{'相手が勝った':>10}{'上回った':>8}  判定")
+                print("-" * 112)
                 for n_ in nm[1:]:
                     lab = VARIANTS[n_]["label"]
                     if lab not in piv.columns:
                         continue
                     g = gf[gf["ルール"] == lab]
                     da, dw = g["年率"].mean() - _ab, g["年率"].min() - _wb
-                    ds = g["売り/年"].mean() - _sb
+                    ds, db = g["売り/年"].mean() - _sb, g["買い/年"].mean() - _bb
                     lose = float((piv[_base_lab] > piv[lab]).mean())
+                    win = float((piv[lab] > piv[_base_lab]).mean())
                     ok = (da >= -0.5) and (dw >= -1.0) and (lose < 0.85)
-                    print(f"{lab[:32]:<34}{ds:>+9.1f}回{da:>+11.2f}pt{dw:>+13.2f}pt"
-                          f"{lose * 100:>13.0f}%  {'使える' if ok else '使えない'}")
+                    verdict = ("使える・本番を上回る" if (ok and win >= 0.85) else
+                               "使える" if ok else "使えない")
+                    print(f"{lab[:32]:<34}{ds:>+8.1f}回{db:>+8.1f}回{da:>+10.2f}pt{dw:>+11.2f}pt"
+                          f"{lose * 100:>9.0f}%{win * 100:>7.0f}%  {verdict}")
                 print("\n  使える … 平均年率の差 −0.5pt以内・最悪の年率の差 −1.0pt以内・相手の勝ちが85％未満、のすべてを満たす。")
+                print("  本番を上回る … そのうえで、相手を24条件の85％以上で上回った（本番に入れる価値がある）。")
                 print("  使えない形でも、差の大きさは「売買を増やす代金」として読めます。")
+        if harvest_sum:
+            print(f"\n【損出しの中身（全期間・資金投入{min(ramps)}か月の条件）】\n")
+            print(f"{'ルール':<34}{'回数':>6}{'1年あたり':>9}{'確定させた損':>14}{'戻った税金の目安':>16}")
+            print("-" * 86)
+            for n_, (cnt, loss, yrs_h) in harvest_sum.items():
+                print(f"{VARIANTS[n_]['label'][:32]:<34}{cnt:>6}{cnt / yrs_h:>8.1f}回"
+                      f"{loss:>13,.0f}円{loss * args.tax / 100.0:>15,.0f}円")
+            print(f"\n  戻った税金の目安 … 確定させた損 × 税率{args.tax:.3f}％。配当や売却益と相殺しきれた場合の額。")
+            print("  損出しで取得単価が下がるので、のちに売ればその分の税金を払う（売るまでの先送り）。")
+            print("  売らずに持ち続ける限りは得のまま。")
         if stop_logs:
             print(f"\n【損切りした銘柄のその後（全期間・資金投入{min(ramps)}か月の条件）】\n")
             print(f"{'ルール':<34}{'回数':>6}{'売った時の損':>12}"
