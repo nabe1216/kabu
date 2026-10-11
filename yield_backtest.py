@@ -972,6 +972,43 @@ VARIANTS: dict[str, dict[str, Any]] = {
         "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
         "ex_first": True,
     },
+    # ── 3回目の候補（2026年10月11日に追加）──
+    # 土台は本番どおり（配当の時期を正確に）。変えるのは1か所だけ。
+    #   names10_scr  … 目標10銘柄（1銘柄の予算が厚くなる。集中）
+    #   names25_scr  … 目標25銘柄（保有の上限は30。分散）
+    #   cash20_scr   … 総資産の2割は常に現金で残す（売りはしないので、買いを控えて守る形）
+    #   tier_sa_scr  … S と A だけを買う（B は買わない）。2回目で Tier の順番が効いていたため
+    "names10_scr": {
+        "label": "目標10銘柄（集中）",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 10, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+    },
+    "names25_scr": {
+        "label": "目標25銘柄（分散・上限30）",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 25, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "max_names": 30,
+    },
+    "cash20_scr": {
+        "label": "現金を常に2割残す",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "cash_floor": 0.20,
+    },
+    "tier_sa_scr": {
+        "label": "SとAだけ買う（Bは買わない）",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "tiers_allowed": ["S", "A"],
+    },
     "rec_first_scr": {
         "label": "権利月が近い銘柄を先に買う（条件そのまま）",
         "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
@@ -2587,6 +2624,13 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
     """
     entry, exits = cfg["entry"], cfg.get("exit", [])
     dyn, cross = cfg.get("dynamic", False), cfg.get("cross", False)
+    # 3回目の候補（2026年10月11日に追加）
+    #   max_names     … 保有の上限をルールの側で決める（総当たりの「保有上限」より優先）。
+    #                   目標25銘柄を試すときに、上限20で頭打ちにならないようにするため
+    #   tiers_allowed … 新しく買う Tier を限る（例 ["S", "A"] なら B は買わない）
+    if cfg.get("max_names"):
+        max_names = int(cfg["max_names"])
+    tiers_allowed = set(cfg["tiers_allowed"]) if cfg.get("tiers_allowed") else None
     # measure: "pct"（パーセンタイル）か "z"（平均から何σ離れているか）
     measure = cfg.get("measure", "pct")
     # Tierごとに買いの基準を変える。
@@ -3329,6 +3373,8 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
             if max_yield is not None and row.get("yield", 0) > float(max_yield):
                 diag["max_yield_skip"] = diag.get("max_yield_skip", 0) + 1
                 continue        # 利回りが高すぎる銘柄は買わない
+            if tiers_allowed is not None and row.get("tier", "B") not in tiers_allowed:
+                continue        # この Tier は新しく買わない
             if skip_emg_buy:
                 if emg_actual:
                     _cut, _opd = emg_flags(row)
@@ -3575,7 +3621,10 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
         if ramp > 0:
             released = min(1.0, (mi + 1) / ramp)
             reserved = capital * (1.0 - released)
-            usable = max(0.0, cash - reserved)
+            # 現金の下限（cash_floor）があれば、そちらの制限も残す（2026年10月11日に修正）。
+            # 以前は資金投入を分けた条件で現金の下限が上書きされ、一度も効いていなかった。
+            # 現金の下限がないルールでは、以前と同じ値になる。
+            usable = max(0.0, min(usable, cash - reserved))
         # いま何をどの業種で持っているか
         sec_count = {}
         if max_sector:
@@ -5321,7 +5370,7 @@ def main() -> int:
         spread = float(piv.max().max() - piv.min().min())
         best_by_lb = piv.idxmax(axis=1)
         flipped = best_by_lb.nunique() > 1
-        piv_e = gf.pivot_table(index=cond_cols, columns="ルール", values="決済率")
+        piv_e = df.pivot(index="分位", columns="ルール", values="決済率")
         dup = piv_e.duplicated(keep=False)
         held = df["平均保有銘柄"].mean()
         print("【読み方】")
@@ -6635,7 +6684,8 @@ def main() -> int:
         #     ・相手が24条件の85％以上で上回っていない（＝相手が「堅く」勝っていない）
         #   さらに、相手を24条件の85％以上で上回れば「本番を上回る」と付ける（本番に入れる価値がある）。
         _act_keys = ("yield_exit", "tp_gain", "harvest", "topup", "rec_relax", "screen_drop",
-                     "max_yield", "ex_first", "max_per_sector", "tier_weight")
+                     "max_yield", "ex_first", "max_per_sector", "tier_weight",
+                     "tiers_allowed", "cash_floor", "max_names")
         if any(any(k in VARIANTS[n_] for k in _act_keys) for n_ in nm) and len(nm) > 1:
             _base_lab = VARIANTS[nm[0]]["label"]
             if _base_lab in piv.columns:
