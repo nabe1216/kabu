@@ -1030,6 +1030,28 @@ VARIANTS: dict[str, dict[str, Any]] = {
         "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
         "tier_col": "tier_pit_lead",
     },
+    # ── 7回目の候補（2026年10月12日に追加）：基準は「後出しなし（tier_pit_lead_scr）」 ──
+    #   drop_skip_pit     … 株価の下落だけで利回りが上がった銘柄は買わない
+    #                       （12か月で株価が20％以上下がり、1株配当は増えていない銘柄）
+    #   tier_pit_grow_scr … 累進配当・DOEのリスト（宣言の時期が分からず後出しになる）の代わりに、
+    #                       その時点までの増配の実績で Tier を決める（grow_timeline：直近3回の比べで
+    #                       2回以上増配・減配なし）。S＝首位級かつ増配、A＝どちらか、B＝それ以外
+    "drop_skip_pit": {
+        "label": "株価の下落だけで利回りが上がった銘柄は買わない",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "tier_col": "tier_pit_lead", "skip_price_drop": 0.20,
+    },
+    "tier_pit_grow_scr": {
+        "label": "後出しなし（首位級＋増配の実績でTier）",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "tier_col": "tier_pit_grow",
+    },
     "rec_first_scr": {
         "label": "権利月が近い銘柄を先に買う（条件そのまま）",
         "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
@@ -2559,6 +2581,7 @@ def add_pit_tiers(panel: pd.DataFrame) -> pd.DataFrame:
     panel["lead_pit"] = lead.to_numpy()
     panel["tier_pit_lead"] = np.where(lead, "A", "B")
     panel["tier_pit_mix"] = np.where(lead & qual, "S", np.where(lead | qual, "A", "B"))
+
     try:
         d0, d1 = panel["date"].min(), panel["date"].max()
         first = panel[panel["date"] == d0]
@@ -2566,6 +2589,7 @@ def add_pit_tiers(panel: pd.DataFrame) -> pd.DataFrame:
         n_lead = panel[panel["lead_pit"]].groupby("date").size()
         log.info("  後出しなしの業界首位級 … 1か月あたり平均 %.0f銘柄（その月末の時価総額で判定）",
                  float(n_lead.mean()) if len(n_lead) else 0.0)
+
         if "tier" in panel.columns:
             now_sa = set(last.loc[last["tier"].isin(["S", "A"]), "code"])
             was_lead = set(first.loc[first["lead_pit"], "code"])
@@ -2582,6 +2606,99 @@ def add_pit_tiers(panel: pd.DataFrame) -> pd.DataFrame:
                      str(pd.Timestamp(d1).date())[:7], same)
     except Exception as e:      # 記録だけなので、失敗しても検証は続ける
         log.warning("  後出しなしの Tier の記録に失敗: %s", e)
+    return panel
+
+
+def grow_timeline(stmts: list[dict], px: pd.DataFrame) -> pd.DataFrame:
+    """開示日ごとに「増配の実績がある会社か」を判定した系列（2026年10月12日に追加）。
+
+    増配の実績がある … 直近3回の通期どうしの比べ（前の通期→次の通期）のうち2回以上で年間配当（実績）が増え、
+                       記録のある範囲（最大10期）で一度も減っていない
+    その開示の時点で分かっていた通期の数字だけを使う（同じ通期の訂正は、あとの開示で置き換える）。
+    比べられる通期が2回分しかないうちは、2回とも増えていることが条件になる。
+    """
+    ft = fund_timeline(stmts, px)
+    if ft.empty or "divann" not in ft.columns:
+        return pd.DataFrame()
+    known: dict[str, float] = {}
+    recs = []
+    for _, r in ft.sort_values("date").iterrows():
+        fy, v = str(r.get("fy") or ""), r.get("divann")
+        if fy and v is not None and not pd.isna(v):
+            known[fy] = float(v)
+        vals = [known[k] for k in sorted(known)][-10:]
+        if len(vals) < 3:
+            recs.append({"date": r["date"], "grow": False})
+            continue
+        nocut = all(b >= a * 0.999 for a, b in zip(vals[:-1], vals[1:]))
+        last = vals[-4:]
+        ups = sum(1 for a, b in zip(last[:-1], last[1:]) if b > a * 1.001)
+        recs.append({"date": r["date"], "grow": bool(nocut and ups >= 2)})
+    return pd.DataFrame(recs).groupby("date", as_index=False)["grow"].last()
+
+
+def add_grow_tiers(store: dict, panel: pd.DataFrame) -> pd.DataFrame:
+    """増配の実績で Tier を作った列を足す（2026年10月12日に追加）。add_pit_tiers のあとに呼ぶ。
+
+      grow_pit      … その月末に、増配の実績がある会社か（grow_timeline）
+      tier_pit_grow … 首位級（その月末の時価総額）かつ増配の実績なら S、どちらかなら A、それ以外は B
+    累進配当・DOEのリスト（宣言の時期が分からず後出しになる）の代わりに使う。
+    """
+    if "lead_pit" not in panel.columns:
+        raise RuntimeError("lead_pit の列がありません。先に add_pit_tiers を呼んでください。")
+    panel = panel.copy()
+    panel["grow_pit"] = False
+    for code, g in panel.groupby("code"):
+        px = quotes_to_df(store["quotes"].get(code, []))
+        gt = grow_timeline(store["stmts"].get(code, []), px)
+        if gt.empty:
+            continue
+        ser = gt.set_index("date")["grow"]
+        vals = ser.reindex(ser.index.union(g["date"])).ffill().reindex(g["date"])
+        panel.loc[g.index, "grow_pit"] = vals.fillna(False).astype(bool).to_numpy()
+    lead = panel["lead_pit"].astype(bool)
+    grow = panel["grow_pit"].astype(bool)
+    panel["tier_pit_grow"] = np.where(lead & grow, "S", np.where(lead | grow, "A", "B"))
+    try:
+        n_grow = panel[grow].groupby("date").size()
+        share = float(panel.loc[panel.get("screen_pass", pd.Series(True, index=panel.index)).astype(bool), "grow_pit"]
+                      .mean() * 100) if "screen_pass" in panel.columns else float("nan")
+        log.info("  増配の実績がある会社（直近3回の比べで2回以上増配・減配なし） … 1か月あたり平均 %.0f銘柄"
+                 "（8条件を通った銘柄の %.0f％）", float(n_grow.mean()) if len(n_grow) else 0.0, share)
+    except Exception as e:      # 記録だけなので、失敗しても検証は続ける
+        log.warning("  増配の実績の記録に失敗: %s", e)
+    return panel
+
+
+def add_yield_reason_columns(store: dict, panel: pd.DataFrame) -> pd.DataFrame:
+    """利回りが上がった理由を見るための列を足す（2026年10月12日に追加）。
+
+      px_chg12  … その月末の株価（分割調整済み。配当は含まない）が、12か月前の月末から何％変わったか
+      dps_chg12 … その月末に分かっていた1株配当（予想。分割調整済み）が、12か月前の月末から何％変わったか
+    どちらもその月末までの情報だけを使う。パネルは検証期間で切ってあるので、切る前の株価から計算する
+    （build_panel と同じ株価・同じ1株配当の作り方）。
+    """
+    panel = panel.copy()
+    panel["px_chg12"] = np.nan
+    panel["dps_chg12"] = np.nan
+    n_ok = 0
+    for code, g in panel.groupby("code"):
+        px = quotes_to_df(store["quotes"].get(code, []))
+        if px.empty:
+            continue
+        m = px.set_index("date")["close"].resample("ME").last()      # 抜けた月は空のまま（12行前＝12か月前）
+        dps = dps_timeline(store["stmts"].get(code, []), px)
+        if dps.empty:
+            continue
+        d = dps.set_index("date")["dps"].reindex(m.index, method="ffill")
+        pc = m / m.shift(12) - 1.0
+        dc = d / d.shift(12) - 1.0
+        panel.loc[g.index, "px_chg12"] = pc.reindex(g["date"]).to_numpy()
+        panel.loc[g.index, "dps_chg12"] = dc.reindex(g["date"]).to_numpy()
+        n_ok += 1
+    drop = (panel["px_chg12"] <= -0.20) & ~(panel["dps_chg12"] > 0)
+    log.info("  利回りが上がった理由 … 取れた銘柄 %d社 ／ 株価が1年で20％以上下がり、配当は増えていない銘柄×月 %.0f％",
+             n_ok, float(drop.mean() * 100) if len(panel) else 0.0)
     return panel
 
 
@@ -2804,6 +2921,11 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
     tiers_allowed = set(cfg["tiers_allowed"]) if cfg.get("tiers_allowed") else None
     # 5回目の候補（2026年10月12日に追加）
     #   tier_col … Tier をこの列で置き換える（add_pit_tiers が作る、後出しなしで判定した Tier）
+    # 7回目の候補（2026年10月12日に追加）
+    #   skip_price_drop … 12か月で株価がこの率以上下がり、1株配当（予想）が増えていない銘柄は買わない
+    skip_drop = cfg.get("skip_price_drop")
+    if skip_drop is not None and "px_chg12" not in panel.columns:
+        raise RuntimeError("px_chg12 の列がありません。利回りが上がった理由の列が足されていません。")
     if cfg.get("tier_col"):
         _tc = cfg["tier_col"]
         if _tc not in panel.columns:
@@ -3560,6 +3682,12 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                     _cut, _opd = bool(row.get("dps_cut")), bool(row.get("op_drop"))
                 if _cut or _opd:
                     continue    # 本番と同じく、減配・業績急変の銘柄は買わない
+            if skip_drop is not None:
+                _pc, _dc = row.get("px_chg12"), row.get("dps_chg12")
+                if (_pc is not None and not pd.isna(_pc) and float(_pc) <= -float(skip_drop)
+                        and not (_dc is not None and not pd.isna(_dc) and float(_dc) > 0)):
+                    diag["drop_skip"] = diag.get("drop_skip", 0) + 1
+                    continue    # 株価の下落だけで利回りが上がった銘柄は買わない
             p = level(row)
             ent = entry_for(row)
             need = [required_pct(e, row, dyn) if measure == "pct" else e
@@ -5413,6 +5541,10 @@ def main() -> int:
                      for n_ in _sel_names)
     # 後出しなしで判定した Tier を使うルールがあれば、その列を足す（2026年10月12日に追加）
     _need_pit = any(VARIANTS.get(n_, {}).get("tier_col") for n_ in _sel_names)
+    # 利回りが上がった理由を使うルールがあれば、その列を足す（2026年10月12日に追加）
+    _need_reason = any(VARIANTS.get(n_, {}).get("skip_price_drop") is not None for n_ in _sel_names)
+    # 増配の実績で Tier を作るルールがあれば、その列を足す（2026年10月12日に追加）
+    _need_grow = any(VARIANTS.get(n_, {}).get("tier_col") == "tier_pit_grow" for n_ in _sel_names)
 
     # レンジの上限で降りるルール（range_exit）を選んだら、「レンジ往復を検証」の欄が false でも
     # レンジの列を足す。足さないと、そのルールは一度も降りず、土台とまったく同じ成績になり、
@@ -5426,6 +5558,10 @@ def main() -> int:
             pn_ = add_fund_columns(store, pn_)
         if _need_pit and not pn_.empty:
             pn_ = add_pit_tiers(pn_)
+        if _need_grow and not pn_.empty:
+            pn_ = add_grow_tiers(store, pn_)
+        if _need_reason and not pn_.empty:
+            pn_ = add_yield_reason_columns(store, pn_)
         # 総当たりで分位の月数を変えてパネルを作り直すときも、レンジの列を忘れずに足す
         if _need_range and not pn_.empty:
             pn_ = add_range_columns(store, pn_, int(_d[0]), _d[1], _d[2], _d[4])
@@ -5454,6 +5590,12 @@ def main() -> int:
     if _need_pit:
         log.info("Tier を後出しなしで判定し直すルールがあるので、その月末の時価総額で業界首位級を判定します…")
         panel = add_pit_tiers(panel)
+    if _need_grow:
+        log.info("増配の実績で Tier を作るルールがあるので、その時点までの年間配当の推移を調べます…")
+        panel = add_grow_tiers(store, panel)
+    if _need_reason:
+        log.info("利回りが上がった理由を使うルールがあるので、12か月の株価と配当の変化を足します…")
+        panel = add_yield_reason_columns(store, panel)
 
     # 外部要因を使う検証では、追い風か逆風かをパネルに足す
     if args.factor_test:
@@ -6916,6 +7058,7 @@ def main() -> int:
                                 "利確・利回り割れ": d_.get("act_exits", 0) + d_.get("act_partial", 0),
                                 "損出し": d_.get("harvests", 0),
                                 "買い増し": d_.get("topups", 0),
+                                "下落で見送り": d_.get("drop_skip", 0),
                                 "権利前の買い": d_.get("rec_buys", 0),
                                 "ゆるめ買い": d_.get("rec_relaxed", 0),
                                 "売り/年": _n_sell / _yrs,
@@ -7102,7 +7245,7 @@ def main() -> int:
         #   さらに、相手を24条件の85％以上で上回れば「本番を上回る」と付ける（本番に入れる価値がある）。
         _act_keys = ("yield_exit", "tp_gain", "harvest", "topup", "rec_relax", "screen_drop",
                      "max_yield", "ex_first", "max_per_sector", "tier_weight",
-                     "tiers_allowed", "cash_floor", "max_names", "tier_col")
+                     "tiers_allowed", "cash_floor", "max_names", "tier_col", "skip_price_drop")
         if any(any(k in VARIANTS[n_] for k in _act_keys) for n_ in nm) and len(nm) > 1:
             _base_lab = VARIANTS[nm[0]]["label"]
             if _base_lab in piv.columns:
@@ -7266,7 +7409,7 @@ def main() -> int:
         #     確かめられない       … 勝敗が35〜65％（本番の Tier の上乗せは後出しだったと読む）
         #     むしろ損             … Tierなし が85％以上で上回った
         #     どちらとも言えない   … それ以外
-        if any(VARIANTS[n_].get("tier_col") for n_ in nm):
+        if "base_div_scr" in nm and "tier_pit_lead_scr" in nm:
             _p5 = gf.pivot_table(index=cond_cols, columns="ルール", values="年率")
 
             def _lab5(key):
@@ -7327,6 +7470,52 @@ def main() -> int:
                 print(f"\n  外に出す過去の成績の目安（後出しなし） … 平均年率 {v['avg']:.1f}％ ／ 最悪の年率 {v['worst']:.1f}％"
                       f" ／ 最悪の下落 {v['dd']:.1f}％")
                 print("    ※ データに潰れた会社・上場廃止の会社が入っていないので、これでもまだ甘めの数字。")
+
+        # ── 7回目：利回りが上がった理由・増配の実績で Tier（2026年10月12日に追加。結果を見る前に決めた基準）──
+        #   相手は「後出しなし（tier_pit_lead_scr）」。24条件の85％以上で上回り、かつ「使える」なら本番に入れる候補。
+        #   増配の実績で Tier … 85％以上なら、手作業の累進配当リストを増配の実績で決める形に置き換える候補。
+        #                       35〜65％なら確かめられない（リストの部分の価値は確かめられないまま）。
+        _r7 = [n_ for n_ in nm[1:] if n_ in ("drop_skip_pit", "tier_pit_grow_scr")]
+        if _r7 and nm[0] == "tier_pit_lead_scr":
+            _p7 = gf.pivot_table(index=cond_cols, columns="ルール", values="年率")
+            _L0 = VARIANTS[nm[0]]["label"]
+            _g0 = gf[gf["ルール"] == _L0]
+            print(f"\n【7回目の判定】（相手：{_L0}。基準は結果を見る前に決めたもの）\n")
+            for n_ in _r7:
+                _L = VARIANTS[n_]["label"]
+                if _L not in _p7.columns or _L0 not in _p7.columns:
+                    continue
+                _g = gf[gf["ルール"] == _L]
+                _w = float((_p7[_L] > _p7[_L0]).mean())
+                _l = float((_p7[_L0] > _p7[_L]).mean())
+                _da = _g["年率"].mean() - _g0["年率"].mean()
+                _dw = _g["年率"].min() - _g0["年率"].min()
+                _dd = _g["最大下落"].max() - _g0["最大下落"].max()
+                _de = _g["緊急売り"].mean() - _g0["緊急売り"].mean()
+                _ok = (_da >= -0.5) and (_dw >= -1.0) and (_l < 0.85)
+                if _ok and _w >= 0.85:
+                    _v = "本番に入れる候補"
+                elif _ok:
+                    _v = "入れても損はしないが、入れる根拠もない"
+                else:
+                    _v = "入れない"
+                print(f"  {_L}")
+                print(f"    上回った {_w * 100:.0f}％（相手が上回った {_l * 100:.0f}％） ／ 平均年率 {_da:+.2f}pt ／ "
+                      f"最悪の年率 {_dw:+.2f}pt ／ 最悪の下落 {_dd:+.1f}pt ／ 減配などの売り {_de:+.1f}回 → {_v}")
+                if n_ == "drop_skip_pit":
+                    print(f"    見送った回数（1条件あたり） … {_g['下落で見送り'].mean():.0f}回（銘柄×月）")
+                if n_ == "tier_pit_grow_scr":
+                    if _ok and _w >= 0.85:
+                        _m = "増配した会社を先に買う考え方は本物。手作業の累進配当リストを、増配の実績で決める形に置き換える候補"
+                    elif 0.35 <= _w <= 0.65:
+                        _m = "確かめられない。累進配当リストの部分の価値は、後出しなしでは確かめられないまま"
+                    else:
+                        _m = "どちらとも言えない"
+                    print(f"    読み方 … {_m}")
+                print()
+            print("  （基準：24条件の85％以上で上回り、かつ「使える」（平均年率−0.5pt以内・最悪の年率−1.0pt以内・"
+                  "相手の勝ち85％未満）なら本番に入れる候補。使えるだけでは入れない）")
+            print("  最悪の下落の差はプラスなら深い。減配などの売りの差はマイナスなら少ない。")
 
         OUTDIR.mkdir(parents=True, exist_ok=True)
         gf.to_csv(OUTDIR / "grid.csv", index=False, encoding="utf-8-sig")
