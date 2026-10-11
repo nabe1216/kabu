@@ -859,6 +859,73 @@ VARIANTS: dict[str, dict[str, Any]] = {
         "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
         "rec_relax": {"yield": 2.5, "miss": 1},
     },
+    # ── 8条件を1つずつ外す（2026年10月11日に追加）──
+    # 土台は本番どおり（配当の時期を正確に）。利回り3％の足切りはそのまま。
+    # 外した条件が「効いている」なら本番がその形に勝ち、「飾り」なら差が出ない。
+    "drop_div_scr": {
+        "label": "外す：10期減配なし",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "screen_drop": ["div"],
+    },
+    "drop_sales_scr": {
+        "label": "外す：売上の安定",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "screen_drop": ["sales"],
+    },
+    "drop_op_scr": {
+        "label": "外す：営業利益の安定",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "screen_drop": ["op"],
+    },
+    "drop_np_scr": {
+        "label": "外す：純利益の安定",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "screen_drop": ["np"],
+    },
+    "drop_pay_scr": {
+        "label": "外す：配当性向50％以下",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "screen_drop": ["pay"],
+    },
+    "drop_eq_scr": {
+        "label": "外す：自己資本比率",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "screen_drop": ["eq"],
+    },
+    "drop_val_scr": {
+        "label": "外す：PER×PBR40以下",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "screen_drop": ["val"],
+    },
+    "drop_all_scr": {
+        "label": "外す：利回り以外の7つ全部",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "screen_drop": "all",
+    },
     "rec_first_scr": {
         "label": "権利月が近い銘柄を先に買う（条件そのまま）",
         "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
@@ -1899,6 +1966,12 @@ def op_timeline(stmts: list[dict]) -> pd.DataFrame:
     return df.groupby("date", as_index=False)["op"].last()
 
 
+# スクリーニング8条件のうち、利回り以外の7つ（2026年10月11日に追加。条件を1つずつ外す検証で使う）
+SCREEN_KEYS = ("div", "sales", "op", "np", "pay", "eq", "val")
+SCREEN_LABELS = {"div": "10期減配なし", "sales": "売上の安定", "op": "営業利益の安定",
+                 "np": "純利益の安定", "pay": "配当性向50％以下", "eq": "自己資本比率",
+                 "val": "PER×PBR40以下"}
+
 # 財務の項目名（V2 は短い略称）。候補を順に試す。
 FUND_FIELDS = {
     "eps":   ("EPS",),
@@ -2150,6 +2223,8 @@ def add_fund_columns(store: dict, panel: pd.DataFrame) -> pd.DataFrame:
                               panel["eqar"] / 100)
     res = []
     n_fail = []            # 満たしていない条件の数（2026年10月11日に追加。条件をゆるめる検証で使う）
+    # 条件ごとの通過（2026年10月11日に追加。条件を1つずつ外す検証で使う）。判定できないものは通過扱い
+    per_check = {k: [] for k in SCREEN_KEYS}
     prog = panel["progressive"] if "progressive" in panel.columns else pd.Series(False, index=panel.index)
     for i in panel.index:
         sec = panel.at[i, "sector"]
@@ -2170,8 +2245,18 @@ def add_fund_columns(store: dict, panel: pd.DataFrame) -> pd.DataFrame:
                   _tri(panel.at[i, "ok_np"]), pay_ok, eq_ok, val_ok]
         res.append(all(c is None or c for c in checks))
         n_fail.append(sum(1 for c in checks if c is not None and not c))
+        for k, c in zip(SCREEN_KEYS, checks):
+            per_check[k].append(c is None or bool(c))
     panel["screen_pass"] = res
     panel["screen_fail"] = n_fail
+    for k in SCREEN_KEYS:
+        panel["scr_" + k] = per_check[k]
+    # 条件ごとに、どれだけの銘柄を落としているか（その条件だけで落ちる＝ほかは通っている）
+    _only = {k: float(((~panel["scr_" + k]) & (panel["screen_fail"] == 1)).mean() * 100)
+             for k in SCREEN_KEYS}
+    _any = {k: float((~panel["scr_" + k]).mean() * 100) for k in SCREEN_KEYS}
+    log.info("  条件ごとに落ちる割合（銘柄×月） … " + " ／ ".join(
+        f"{SCREEN_LABELS[k]} {_any[k]:.0f}％（この条件だけで {_only[k]:.0f}％）" for k in SCREEN_KEYS))
     log.info("  スクリーニング8条件を通過した割合 … %.0f％（利回りの条件は別に判定）",
              panel["screen_pass"].mean() * 100)
     if got["eps"] == 0 and got["bps"] == 0:
@@ -2632,6 +2717,15 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
     #               期末だけの会社は期末に全額。割合が取れない会社は以前どおり半分ずつ。
     #               以前の結果を変えないため、既定は従来どおり（どの会社も半分ずつ）。
     div_split = bool(cfg.get("div_split", False))
+    # 8条件のうち、外す条件（2026年10月11日に追加。例 ["pay"]。"all" なら利回り以外を全部外す）
+    _sd = cfg.get("screen_drop") or []
+    screen_drop = set(SCREEN_KEYS) if _sd == "all" else set(_sd)
+
+    def screen_ok(row):
+        """8条件（利回り以外）を通ったか。外す条件があれば、それ以外だけで判定する。"""
+        if not screen_drop:
+            return bool(row["screen_pass"])
+        return all(bool(row["scr_" + k]) for k in SCREEN_KEYS if k not in screen_drop)
 
     def _int_share(row):
         """年間配当のうち中間で受け取る割合。取れなければ0.5。"""
@@ -3163,7 +3257,7 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
             if use_screen:
                 if "screen_pass" not in row.index:
                     raise RuntimeError("screen_pass の列がありません。財務の項目が足されていません。")
-                if not bool(row["screen_pass"]):
+                if not screen_ok(row):
                     _sf = row.get("screen_fail")
                     if not (_rn and rec_miss > 0 and _sf is not None and not pd.isna(_sf)
                             and int(_sf) <= rec_miss):
@@ -3541,7 +3635,7 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                     if code not in day.index or not st["lots"]:
                         continue
                     row = day.loc[code]
-                    if use_screen and not bool(row.get("screen_pass", False)):
+                    if use_screen and not screen_ok(row):
                         continue
                     if min_yield > 0 and row.get("yield", 0) < min_yield:
                         continue
@@ -6475,7 +6569,7 @@ def main() -> int:
         #     ・最悪の年率の差が −1.0pt 以内
         #     ・相手が24条件の85％以上で上回っていない（＝相手が「堅く」勝っていない）
         #   さらに、相手を24条件の85％以上で上回れば「本番を上回る」と付ける（本番に入れる価値がある）。
-        _act_keys = ("yield_exit", "tp_gain", "harvest", "topup", "rec_relax")
+        _act_keys = ("yield_exit", "tp_gain", "harvest", "topup", "rec_relax", "screen_drop")
         if any(any(k in VARIANTS[n_] for k in _act_keys) for n_ in nm) and len(nm) > 1:
             _base_lab = VARIANTS[nm[0]]["label"]
             if _base_lab in piv.columns:
@@ -6505,6 +6599,44 @@ def main() -> int:
                 print("\n  使える … 平均年率の差 −0.5pt以内・最悪の年率の差 −1.0pt以内・相手の勝ちが85％未満、のすべてを満たす。")
                 print("  本番を上回る … そのうえで、相手を24条件の85％以上で上回った（本番に入れる価値がある）。")
                 print("  使えない形でも、差の大きさは「その形を入れる代金」として読めます。")
+        # ── 8条件を1つずつ外した結果の判定（2026年10月11日に追加。結果を見る前に決めた基準）──
+        #   効いている        … 本番（相手）が24条件の85％以上で上回った → 残す
+        #   外した方がいい    … 外した形が85％以上で上回った → 外す
+        #   飾り              … 勝敗が35〜65％で、平均年率の差が ±0.3pt 以内、最悪の年率の差が −0.5pt 以内 → 外しても変わらない
+        #   決められない      … それ以外
+        if any(VARIANTS[n_].get("screen_drop") for n_ in nm) and len(nm) > 1:
+            _base_lab = VARIANTS[nm[0]]["label"]
+            if _base_lab in piv.columns:
+                _gb = gf[gf["ルール"] == _base_lab]
+                _ab, _wb, _db = _gb["年率"].mean(), _gb["年率"].min(), _gb["最大下落"].mean()
+                print(f"\n【条件を外した結果の判定（相手：{_base_lab[:28]}）】\n")
+                print(f"{'外した条件':<28}{'平均年率の差':>11}{'最悪の年率の差':>12}{'下落の平均の差':>12}"
+                      f"{'本番が勝った':>10}{'外した形が勝った':>12}  判定")
+                print("-" * 112)
+                for n_ in nm[1:]:
+                    lab = VARIANTS[n_]["label"]
+                    if lab not in piv.columns or not VARIANTS[n_].get("screen_drop"):
+                        continue
+                    g = gf[gf["ルール"] == lab]
+                    da, dw = g["年率"].mean() - _ab, g["年率"].min() - _wb
+                    dd = g["最大下落"].mean() - _db
+                    lose = float((piv[_base_lab] > piv[lab]).mean())
+                    win = float((piv[lab] > piv[_base_lab]).mean())
+                    if lose >= 0.85:
+                        v = "効いている（残す）"
+                    elif win >= 0.85:
+                        v = "外した方がいい"
+                    elif 0.35 <= lose <= 0.65 and abs(da) <= 0.3 and dw >= -0.5:
+                        v = "飾り（外しても変わらない）"
+                    elif lose < 0.35 and win < 0.85 and abs(da) <= 0.3 and dw >= -0.5:
+                        v = "飾り（外しても変わらない）"
+                    else:
+                        v = "決められない"
+                    print(f"{lab[:26]:<28}{da:>+10.2f}pt{dw:>+11.2f}pt{dd:>+11.2f}pt"
+                          f"{lose * 100:>9.0f}%{win * 100:>11.0f}%  {v}")
+                print("\n  効いている … 本番が85％以上で上回った。外した方がいい … 外した形が85％以上で上回った。")
+                print("  飾り … 勝敗が偏らず（本番の勝ちが65％以下）、平均年率の差が±0.3pt以内・最悪の年率の差が−0.5pt以内。")
+                print("  下落の平均の差 … プラスなら、外した形の方が下落が深い。")
         if any(VARIANTS[n_].get("rec_relax") for n_ in nm):
             print("\n【配当の権利確定月の前に新しく買った回数（1条件あたりの平均）】\n")
             print(f"{'ルール':<34}{'権利月の前に買った':>14}{'うち条件をゆるめて買えた':>18}")
