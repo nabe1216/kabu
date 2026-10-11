@@ -926,6 +926,52 @@ VARIANTS: dict[str, dict[str, Any]] = {
         "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
         "screen_drop": "all",
     },
+    # ── 2回目の候補（2026年10月11日に追加）──
+    # 土台は本番どおり（配当の時期を正確に）。変えるのは1か所だけ。
+    #   tier_none_scr   … Tier をやめる。順番は利回りの高い順だけ、予算は全銘柄同じ（総資産÷15）
+    #   tier_order_scr  … Tier の順番だけやめる（利回りの高い順）。予算の重み（S2・A1.5・B1）は残す
+    #   sector3_scr     … 同じ業種（33業種）は3銘柄まで
+    #   ycap6_scr       … 利回り6％超は買わない
+    #   exfirst_scr     … 同じ Tier の中で、権利落ちの直後の銘柄を先に買う
+    "tier_none_scr": {
+        "label": "Tierなし・利回り順・予算は同じ",
+        "entry": [0], "exit": [], "priority": "pct", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "tier_weight": {"S": 1.0, "A": 1.0, "B": 1.0},
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+    },
+    "tier_order_scr": {
+        "label": "Tierの順番なし・予算の重みは残す",
+        "entry": [0], "exit": [], "priority": "pct", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+    },
+    "sector3_scr": {
+        "label": "同じ業種は3銘柄まで",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "max_per_sector": 3,
+    },
+    "ycap6_scr": {
+        "label": "利回り6％超は買わない",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "max_yield": 6.0,
+    },
+    "exfirst_scr": {
+        "label": "権利落ち直後の銘柄を先に買う",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "ex_first": True,
+    },
     "rec_first_scr": {
         "label": "権利月が近い銘柄を先に買う（条件そのまま）",
         "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
@@ -2746,12 +2792,23 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
     rec_miss = int(rec_relax.get("miss", 0)) if rec_relax else 0
     rec_first = bool(rec_relax.get("first", False)) if rec_relax else False
 
-    def _rec_next(row, dt_):
-        """次の月末が配当の権利確定日か（配当を受け取る割合が0の月は除く）。"""
-        nm = pd.Timestamp(dt_).month % 12 + 1
+    def _rec_in(row, month_):
+        """その月の月末が配当の権利確定日か（配当を受け取る割合が0の月は除く）。"""
         fm_, im_ = int(row.get("fiscal_month", 0) or 0), int(row.get("interim_month", 0) or 0)
         s_ = _int_share(row) if div_split else 0.5
-        return (fm_ == nm and s_ < 1.0) or (im_ == nm and s_ > 0.0)
+        return (fm_ == month_ and s_ < 1.0) or (im_ == month_ and s_ > 0.0)
+
+    def _rec_next(row, dt_):
+        """次の月末が配当の権利確定日か（配当を受け取る割合が0の月は除く）。"""
+        return _rec_in(row, pd.Timestamp(dt_).month % 12 + 1)
+
+    # 2回目の候補（2026年10月11日に追加）
+    #   max_yield … 利回りがこの値（％）を超える銘柄は買わない。高すぎる利回りは、
+    #               株価が先に下がって減配を織り込みにいっている「罠」のことが多いため
+    #   ex_first  … 同じ Tier の中で、この月末に配当の権利が確定した銘柄（＝権利落ちの直後）を先に買う。
+    #               権利確定月の前に買う形の逆。配当にすぐ税金がかからず、権利落ちで下がった値段で買える
+    max_yield = cfg.get("max_yield")
+    ex_first = bool(cfg.get("ex_first", False))
     # 市況の合図が切り替わった月に、持ち株を入れ替えるか
     sell_on_flip = bool(cfg.get("sell_on_flip", False))
     _rng_shuffle = np.random.default_rng(cfg.get("seed", 0))
@@ -3269,6 +3326,9 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                 _relaxed.add(code)
             if stop_block and mi < stop_block.get(code, -1):
                 continue        # 損切りしてから決めた月数が過ぎるまでは買い直さない
+            if max_yield is not None and row.get("yield", 0) > float(max_yield):
+                diag["max_yield_skip"] = diag.get("max_yield_skip", 0) + 1
+                continue        # 利回りが高すぎる銘柄は買わない
             if skip_emg_buy:
                 if emg_actual:
                     _cut, _opd = emg_flags(row)
@@ -3298,6 +3358,11 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
             if rec_first:
                 # 同じ Tier の中で、次の月末に配当の権利が確定する銘柄を先にする
                 cands.sort(key=lambda x: (_ord.get(x[4], 9), 0 if _recn.get(x[1]) else 1, -x[0]))
+            elif ex_first:
+                # 同じ Tier の中で、この月末に配当の権利が確定した銘柄（権利落ちの直後）を先にする
+                _mth = pd.Timestamp(dt).month
+                _exf = {c: _rec_in(day.loc[c], _mth) for _, c, _, _, _ in cands}
+                cands.sort(key=lambda x: (_ord.get(x[4], 9), 0 if _exf.get(x[1]) else 1, -x[0]))
             else:
                 cands.sort(key=lambda x: (_ord.get(x[4], 9), -x[0]))
         elif cfg.get("priority") == "code":
@@ -6569,7 +6634,8 @@ def main() -> int:
         #     ・最悪の年率の差が −1.0pt 以内
         #     ・相手が24条件の85％以上で上回っていない（＝相手が「堅く」勝っていない）
         #   さらに、相手を24条件の85％以上で上回れば「本番を上回る」と付ける（本番に入れる価値がある）。
-        _act_keys = ("yield_exit", "tp_gain", "harvest", "topup", "rec_relax", "screen_drop")
+        _act_keys = ("yield_exit", "tp_gain", "harvest", "topup", "rec_relax", "screen_drop",
+                     "max_yield", "ex_first", "max_per_sector", "tier_weight")
         if any(any(k in VARIANTS[n_] for k in _act_keys) for n_ in nm) and len(nm) > 1:
             _base_lab = VARIANTS[nm[0]]["label"]
             if _base_lab in piv.columns:
