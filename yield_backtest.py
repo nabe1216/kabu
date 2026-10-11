@@ -820,6 +820,53 @@ VARIANTS: dict[str, dict[str, Any]] = {
         "emg_rule": "actual", "skip_emg_buy": True, "tax_div_offset": True,
         "topup": True, "harvest": {"month": 12, "min_loss": 0.02},
     },
+    # ── 配当の権利確定月の前に、買いの条件をゆるめる（2026年10月11日に追加）──
+    # 土台は本番どおり。どれも配当を受け取る月を正しくしてある（div_split。期末だけの会社は期末に全額）。
+    # 比べる相手の base_div_scr も同じ扱い。
+    # 次の月末に配当の権利が確定する銘柄に限って（＝権利確定月に入ってすぐ買う形）、
+    #   rec_y25_scr   … 利回りの足切りを3％→2.5％にゆるめる（8条件は必須のまま）
+    #   rec_miss1_scr … 8条件のうち1つ満たしていなくても買う（利回り3％は必須のまま）
+    #   rec_both_scr  … 両方ゆるめる
+    #   rec_first_scr … 条件はそのまま。同じ Tier の中で、こうした銘柄を先に買う
+    "base_div_scr": {
+        "label": "本番どおり（配当の時期を正確に）",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+    },
+    "rec_y25_scr": {
+        "label": "権利月の前は利回り2.5％まで買う",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "rec_relax": {"yield": 2.5, "miss": 0},
+    },
+    "rec_miss1_scr": {
+        "label": "権利月の前は8条件の1つ欠けまで買う",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "rec_relax": {"yield": None, "miss": 1},
+    },
+    "rec_both_scr": {
+        "label": "権利月の前は両方ゆるめる（2.5％・1つ欠け）",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "rec_relax": {"yield": 2.5, "miss": 1},
+    },
+    "rec_first_scr": {
+        "label": "権利月が近い銘柄を先に買う（条件そのまま）",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "rec_relax": {"yield": None, "miss": 0, "first": True},
+    },
 
     "switch36_flip": {
         "label": "市況で切り替え（36か月）・切り替わった月だけ入れ替える",
@@ -1864,6 +1911,9 @@ FUND_FIELDS = {
     "eqar":  ("EqAR",),
     "payout": ("PayoutRatioAnn",),
     "divann": ("DivAnn",),
+    # 中間配当の実績（2026年10月11日に追加）。年間配当のうち中間で払った分。
+    # 期末だけの会社（中間が0）を見分け、配当を受け取る月を正しくするために使う。
+    "div2q": ("Div2Q", "ResultDividendPerShare2ndQuarter"),
 }
 
 
@@ -1933,7 +1983,7 @@ def fund_timeline(stmts: list[dict], px: pd.DataFrame | None = None) -> pd.DataF
         cum = adj[::-1].cumprod()[::-1]                    # その日を含め、それ以降の累積係数
         pos = cum.index.searchsorted(df["date"].values, side="right")   # 開示日より後の最初の日
         fac = np.array([float(cum.iloc[p]) if p < len(cum) else 1.0 for p in pos])
-        for c in ("eps", "bps", "divann"):                 # 1株あたりの数字
+        for c in ("eps", "bps", "divann", "div2q"):        # 1株あたりの数字
             if c in df.columns:
                 df[c] = pd.to_numeric(df[c], errors="coerce") * fac
         if "sh" in df.columns:                             # 株数
@@ -1993,7 +2043,7 @@ def add_fund_columns(store: dict, panel: pd.DataFrame) -> pd.DataFrame:
     panel = panel.copy()
     cols = ["eps", "bps", "np", "eq", "sales", "sh", "np_prev",
             "op", "eqar", "payout", "ok_sales", "ok_op", "ok_np", "ok_div",
-            "divann", "div_cut10", "op_cut20", "div_chg", "op_chg"]
+            "divann", "div_cut10", "op_cut20", "div_chg", "op_chg", "div2q"]
     for c in cols:
         panel[c] = np.nan
     got = {c: 0 for c in cols}
@@ -2029,6 +2079,14 @@ def add_fund_columns(store: dict, panel: pd.DataFrame) -> pd.DataFrame:
     #   （利回りの計算と同じ扱い）ため、無配の予想はここに出ない。
     _dv = panel["divann"].where(panel["divann"] > 0)
     panel["fc_chg"] = (panel["dps"] / _dv - 1.0).where(_dv.notna() & (panel["dps"] > 0))
+    # 中間配当の割合（2026年10月11日に追加）
+    #   div_int_share … 直近の通期で、年間配当のうち中間で払った割合（0なら期末だけの会社）。
+    #   取れないときは空（その場合は以前どおり「中間と期末で半分ずつ」とみなす）。
+    _q2 = pd.to_numeric(panel["div2q"], errors="coerce")
+    panel["div_int_share"] = (_q2 / _dv).clip(0.0, 1.0).where(_dv.notna() & _q2.notna())
+    _last = panel.sort_values("date").groupby("code")["div_int_share"].last()
+    log.info("  配当の中間と期末の内訳 … 取れた銘柄 %d社（うち期末だけの会社 %d社）",
+             int(_last.notna().sum()), int((_last == 0).sum()))
     # 本番のエンジンで使う、全銘柄の中での順位（％）。
     #   pct_pbr / pct_per … 低いほど高い値（安い順）
     #   pct_size          … 時価総額が小さいほど高い値
@@ -2091,6 +2149,7 @@ def add_fund_columns(store: dict, panel: pd.DataFrame) -> pd.DataFrame:
     eqr = panel["eqar"].where(panel["eqar"].isna() | (panel["eqar"] <= 1.5),
                               panel["eqar"] / 100)
     res = []
+    n_fail = []            # 満たしていない条件の数（2026年10月11日に追加。条件をゆるめる検証で使う）
     prog = panel["progressive"] if "progressive" in panel.columns else pd.Series(False, index=panel.index)
     for i in panel.index:
         sec = panel.at[i, "sector"]
@@ -2110,7 +2169,9 @@ def add_fund_columns(store: dict, panel: pd.DataFrame) -> pd.DataFrame:
         checks = [div_ok, _tri(panel.at[i, "ok_sales"]), _tri(panel.at[i, "ok_op"]),
                   _tri(panel.at[i, "ok_np"]), pay_ok, eq_ok, val_ok]
         res.append(all(c is None or c for c in checks))
+        n_fail.append(sum(1 for c in checks if c is not None and not c))
     panel["screen_pass"] = res
+    panel["screen_fail"] = n_fail
     log.info("  スクリーニング8条件を通過した割合 … %.0f％（利回りの条件は別に判定）",
              panel["screen_pass"].mean() * 100)
     if got["eps"] == 0 and got["bps"] == 0:
@@ -2566,6 +2627,37 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
     hv_month = int(harvest.get("month", 12)) if harvest else 0
     hv_min = float(harvest.get("min_loss", 0.0)) if harvest else 0.0
     topup = bool(cfg.get("topup", False))
+    # 配当を受け取る月を正しくする（2026年10月11日に追加）
+    #   div_split … True なら、直近の通期の「中間配当÷年間配当」の割合で、中間と期末に分けて受け取る。
+    #               期末だけの会社は期末に全額。割合が取れない会社は以前どおり半分ずつ。
+    #               以前の結果を変えないため、既定は従来どおり（どの会社も半分ずつ）。
+    div_split = bool(cfg.get("div_split", False))
+
+    def _int_share(row):
+        """年間配当のうち中間で受け取る割合。取れなければ0.5。"""
+        v = row.get("div_int_share")
+        return float(v) if (v is not None and not pd.isna(v)) else 0.5
+
+    # 配当の権利が確定する月の前に、買いの条件をゆるめる（2026年10月11日に追加）
+    #   rec_relax … {"yield": 2.5, "miss": 1, "first": False}
+    #     次の月末が配当の権利確定日（中間か期末）の銘柄に限って、
+    #       yield … 利回りの足切りをこの値（％）までゆるめる（None ならゆるめない）
+    #       miss  … 8条件のうち、この数までなら満たしていなくても買う（0 ならゆるめない）
+    #       first … 同じ Tier の中で、こうした銘柄を先に買う（条件は変えない）
+    #   月末にしか売買しないので、「権利確定月に入ってすぐ買う」形になる。
+    #   権利確定月の月末の株価は、すでに配当の分だけ下がったあと（権利落ち）なので、
+    #   その月末に買っても配当はもらえない。1か月前の月末に買えば、翌月末に配当を受け取る。
+    rec_relax = cfg.get("rec_relax")
+    rec_yield = rec_relax.get("yield") if rec_relax else None
+    rec_miss = int(rec_relax.get("miss", 0)) if rec_relax else 0
+    rec_first = bool(rec_relax.get("first", False)) if rec_relax else False
+
+    def _rec_next(row, dt_):
+        """次の月末が配当の権利確定日か（配当を受け取る割合が0の月は除く）。"""
+        nm = pd.Timestamp(dt_).month % 12 + 1
+        fm_, im_ = int(row.get("fiscal_month", 0) or 0), int(row.get("interim_month", 0) or 0)
+        s_ = _int_share(row) if div_split else 0.5
+        return (fm_ == nm and s_ < 1.0) or (im_ == nm and s_ > 0.0)
     # 市況の合図が切り替わった月に、持ち株を入れ替えるか
     sell_on_flip = bool(cfg.get("sell_on_flip", False))
     _rng_shuffle = np.random.default_rng(cfg.get("seed", 0))
@@ -3062,14 +3154,25 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
         # ── 買い候補 ──
         diag["months"] += 1
         cands = []
+        _recn = {}              # 次の月末に配当の権利が確定する銘柄（条件をゆるめる形でだけ使う）
+        _relaxed = set()        # ゆるめた条件でだけ候補に入った銘柄
         for code, row in day.iterrows():
+            _rn = _rec_next(row, dt) if rec_relax else False
+            if rec_relax:
+                _recn[code] = _rn
             if use_screen:
                 if "screen_pass" not in row.index:
                     raise RuntimeError("screen_pass の列がありません。財務の項目が足されていません。")
                 if not bool(row["screen_pass"]):
-                    continue
+                    _sf = row.get("screen_fail")
+                    if not (_rn and rec_miss > 0 and _sf is not None and not pd.isna(_sf)
+                            and int(_sf) <= rec_miss):
+                        continue
+                    _relaxed.add(code)
             if min_yield > 0 and row.get("yield", 0) < min_yield:
-                continue        # 利回りが低すぎる銘柄は最初から除く
+                if not (_rn and rec_yield is not None and row.get("yield", 0) >= float(rec_yield)):
+                    continue        # 利回りが低すぎる銘柄は最初から除く
+                _relaxed.add(code)
             if stop_block and mi < stop_block.get(code, -1):
                 continue        # 損切りしてから決めた月数が過ぎるまでは買い直さない
             if skip_emg_buy:
@@ -3098,7 +3201,11 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
         #   tier … Tier順（S→A→B）。実運用の portfolio_engine と同じ優先順位。
         if cfg.get("priority") == "tier":
             _ord = {"S": 0, "A": 1, "B": 2}
-            cands.sort(key=lambda x: (_ord.get(x[4], 9), -x[0]))
+            if rec_first:
+                # 同じ Tier の中で、次の月末に配当の権利が確定する銘柄を先にする
+                cands.sort(key=lambda x: (_ord.get(x[4], 9), 0 if _recn.get(x[1]) else 1, -x[0]))
+            else:
+                cands.sort(key=lambda x: (_ord.get(x[4], 9), -x[0]))
         elif cfg.get("priority") == "code":
             # 銘柄コード順。判断を一切入れない並べ方。
             # これと差がなければ「順番を考えること」に価値がない。
@@ -3280,7 +3387,15 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                 for key in ("fiscal_month", "interim_month"):
                     if int(row.get(key, 0) or 0) == mth and row["dps"] > 0:
                         held = sum(sh for sh, _ in st["lots"])
-                        gross = row["dps"] * 0.5 * held
+                        if div_split:
+                            # 中間と期末の実際の割合で受け取る（期末だけの会社は中間に0）
+                            _fr = _int_share(row)
+                            _fr = _fr if key == "interim_month" else 1.0 - _fr
+                            if _fr <= 0:
+                                continue
+                            gross = row["dps"] * _fr * held
+                        else:
+                            gross = row["dps"] * 0.5 * held
                         if tax_div_offset and tax_rate > 0 and loss_pool > 0:
                             # 確定した損の残りと相殺してから課税する
                             _taxable = max(0.0, gross - loss_pool)
@@ -3391,6 +3506,11 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                     opened_at[code] = mi
                     if stop_loss:
                         st["chk_from"] = _dt_ns      # 損切りの判定は、買った月末の翌日から
+                    if rec_relax:
+                        if _recn.get(code):
+                            diag["rec_buys"] = diag.get("rec_buys", 0) + 1
+                        if code in _relaxed:
+                            diag["rec_relaxed"] = diag.get("rec_relaxed", 0) + 1
                     if max_sector:
                         _sc = day.loc[code].get("sector", "")
                         sec_count[_sc] = sec_count.get(_sc, 0) + 1
@@ -6171,6 +6291,8 @@ def main() -> int:
                                 "利確・利回り割れ": d_.get("act_exits", 0) + d_.get("act_partial", 0),
                                 "損出し": d_.get("harvests", 0),
                                 "買い増し": d_.get("topups", 0),
+                                "権利前の買い": d_.get("rec_buys", 0),
+                                "ゆるめ買い": d_.get("rec_relaxed", 0),
                                 "売り/年": _n_sell / _yrs,
                                 "買い/年": _b_yr,
                                 "売買のあった月": _m_act})
@@ -6353,14 +6475,14 @@ def main() -> int:
         #     ・最悪の年率の差が −1.0pt 以内
         #     ・相手が24条件の85％以上で上回っていない（＝相手が「堅く」勝っていない）
         #   さらに、相手を24条件の85％以上で上回れば「本番を上回る」と付ける（本番に入れる価値がある）。
-        _act_keys = ("yield_exit", "tp_gain", "harvest", "topup")
+        _act_keys = ("yield_exit", "tp_gain", "harvest", "topup", "rec_relax")
         if any(any(k in VARIANTS[n_] for k in _act_keys) for n_ in nm) and len(nm) > 1:
             _base_lab = VARIANTS[nm[0]]["label"]
             if _base_lab in piv.columns:
                 _gb = gf[gf["ルール"] == _base_lab]
                 _ab, _wb = _gb["年率"].mean(), _gb["年率"].min()
                 _sb, _bb = _gb["売り/年"].mean(), _gb["買い/年"].mean()
-                print(f"\n【売買を増やす形の判定（相手：{_base_lab[:28]}）】\n")
+                print(f"\n【本番との差と判定（相手：{_base_lab[:28]}）】\n")
                 print(f"　 相手の成績 … 平均年率 {_ab:.1f}％ ／ 最悪の年率 {_wb:.1f}％ ／ "
                       f"最悪の下落 {_gb['最大下落'].max():.1f}％ ／ 売り {_sb:.1f}回/年 ／ 買い {_bb:.1f}回/年\n")
                 print(f"{'ルール':<34}{'売り/年の差':>9}{'買い/年の差':>9}{'平均年率の差':>11}{'最悪の年率の差':>12}"
@@ -6382,7 +6504,20 @@ def main() -> int:
                           f"{lose * 100:>9.0f}%{win * 100:>7.0f}%  {verdict}")
                 print("\n  使える … 平均年率の差 −0.5pt以内・最悪の年率の差 −1.0pt以内・相手の勝ちが85％未満、のすべてを満たす。")
                 print("  本番を上回る … そのうえで、相手を24条件の85％以上で上回った（本番に入れる価値がある）。")
-                print("  使えない形でも、差の大きさは「売買を増やす代金」として読めます。")
+                print("  使えない形でも、差の大きさは「その形を入れる代金」として読めます。")
+        if any(VARIANTS[n_].get("rec_relax") for n_ in nm):
+            print("\n【配当の権利確定月の前に新しく買った回数（1条件あたりの平均）】\n")
+            print(f"{'ルール':<34}{'権利月の前に買った':>14}{'うち条件をゆるめて買えた':>18}")
+            print("-" * 70)
+            for n_ in nm:
+                lab = VARIANTS[n_]["label"]
+                g = gf[gf["ルール"] == lab]
+                if g.empty or not VARIANTS[n_].get("rec_relax"):
+                    continue
+                print(f"{lab[:32]:<34}{g['権利前の買い'].mean():>13.1f}回{g['ゆるめ買い'].mean():>17.1f}回")
+            print("\n  権利月の前に買った … 次の月末に配当の権利が確定する銘柄を、新しく買った回数。")
+            print("  うち条件をゆるめて買えた … 本番の条件（利回り3％・8条件）では買えなかった回数。")
+            print("  これが少ないと、ゆるめても成績はほとんど変わらない（資金が埋まっていて新しく買う機会が少ないため）。")
         if harvest_sum:
             print(f"\n【損出しの中身（全期間・資金投入{min(ramps)}か月の条件）】\n")
             print(f"{'ルール':<34}{'回数':>6}{'1年あたり':>9}{'確定させた損':>14}{'戻った税金の目安':>16}")
