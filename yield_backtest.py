@@ -1009,6 +1009,26 @@ VARIANTS: dict[str, dict[str, Any]] = {
         "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
         "tiers_allowed": ["S", "A"],
     },
+    # ── 5回目の候補（2026年10月12日に追加）：Tier の後出しを外す ──
+    #   本番の Tier は「いまの時価総額・いまの Core30・いまの累進配当/DOE のリスト」で決めている。
+    #   これを過去の全期間に当てはめると、あとで大きくなった会社や、あとで累進配当を宣言した会社を
+    #   最初から知っていたことになる。add_pit_tiers がその月末の情報だけで判定し直した列を使う。
+    "tier_pit_mix_scr": {
+        "label": "首位級だけその時点で判定（累進配当はいまのリスト）",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "tier_col": "tier_pit_mix",
+    },
+    "tier_pit_lead_scr": {
+        "label": "後出しなし（その時点の首位級だけでTier）",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "tier_col": "tier_pit_lead",
+    },
     "rec_first_scr": {
         "label": "権利月が近い銘柄を先に買う（条件そのまま）",
         "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
@@ -2414,6 +2434,60 @@ def assign_tiers(store: dict, last_price: dict[str, float]) -> dict[str, str]:
     return tiers
 
 
+def add_pit_tiers(panel: pd.DataFrame) -> pd.DataFrame:
+    """その月末に分かっていた情報だけで Tier を判定し直した列を足す（2026年10月12日に追加）。
+
+    本番の Tier（assign_tiers）は、いまの時価総額・いまの Core30・いまの累進配当/DOE のリストで決める。
+    実運用ではそれで正しいが、バックテストの全期間に当てはめると「あとで大きくなった会社」
+    「あとで累進配当を宣言した会社」を最初から知っていたことになる（後出し）。
+    ここでは「業界首位級」を、その月末の時価総額で判定し直す。
+      業界首位級 … その月末の時価総額（株価×その時点で開示されていた発行済株式数。どちらも分割調整済み）が
+                   全銘柄で上位30（TOPIX Core30 の代わり）、または同じ業種（33業種）で上位3
+      tier_pit_lead … 首位級なら A、それ以外は B。累進配当/DOE のリストは使わない（後出しなし）
+      tier_pit_mix  … 首位級はその月末で判定し、累進配当/DOE はいまのリストのまま
+                      （本番の形のうち、首位級の後出しだけを外したもの）
+    累進配当/DOE を宣言した時期はデータにないので、その部分は後出しなしでは作れない。
+    """
+    panel = panel.copy()
+    if "sh" not in panel.columns:
+        raise RuntimeError("sh（発行済株式数）の列がありません。財務の項目が足されていません。")
+    mc = pd.to_numeric(panel["price"], errors="coerce") * pd.to_numeric(panel["sh"], errors="coerce")
+    mc = mc.where(mc > 0)
+    sec = panel["sector"].fillna("").astype(str) if "sector" in panel.columns \
+        else pd.Series("", index=panel.index)
+    rk_all = mc.groupby(panel["date"]).rank(ascending=False, method="first")
+    rk_sec = mc.groupby([panel["date"], sec]).rank(ascending=False, method="first")
+    lead = ((rk_all <= 30) | ((rk_sec <= 3) & (sec != ""))).astype(bool)
+    qual = panel["code"].isin(PROGRESSIVE | DOE)
+    panel["lead_pit"] = lead.to_numpy()
+    panel["tier_pit_lead"] = np.where(lead, "A", "B")
+    panel["tier_pit_mix"] = np.where(lead & qual, "S", np.where(lead | qual, "A", "B"))
+    try:
+        d0, d1 = panel["date"].min(), panel["date"].max()
+        first = panel[panel["date"] == d0]
+        last = panel[panel["date"] == d1]
+        n_lead = panel[panel["lead_pit"]].groupby("date").size()
+        log.info("  後出しなしの業界首位級 … 1か月あたり平均 %.0f銘柄（その月末の時価総額で判定）",
+                 float(n_lead.mean()) if len(n_lead) else 0.0)
+        if "tier" in panel.columns:
+            now_sa = set(last.loc[last["tier"].isin(["S", "A"]), "code"])
+            was_lead = set(first.loc[first["lead_pit"], "code"])
+            lead_now = set(last.loc[last["lead_pit"], "code"])
+            # いまの Tier で S・A なのに、期間の最初の月には首位級でもリストの会社でもなかった銘柄
+            late = sorted((now_sa & lead_now) - was_lead - set(PROGRESSIVE | DOE))
+            nm_ = first.set_index("code")["name"].to_dict() if "name" in first.columns else {}
+            nm_.update(last.set_index("code")["name"].to_dict() if "name" in last.columns else {})
+            ex = "、".join(str(nm_.get(c, c))[:10] for c in late[:8])
+            log.info("  いまは首位級なのに、%s には首位級でなかった銘柄 … %d社%s",
+                     str(pd.Timestamp(d0).date())[:7], len(late), f"（例：{ex}）" if ex else "")
+            same = (last["tier"] == last["tier_pit_mix"]).mean() * 100 if len(last) else float("nan")
+            log.info("  最後の月（%s）で、本番の Tier と首位級だけ判定し直した Tier が一致する割合 … %.0f％",
+                     str(pd.Timestamp(d1).date())[:7], same)
+    except Exception as e:      # 記録だけなので、失敗しても検証は続ける
+        log.warning("  後出しなしの Tier の記録に失敗: %s", e)
+    return panel
+
+
 def add_factor_columns(panel: pd.DataFrame, mk: dict,
                        win: int = 6) -> pd.DataFrame:
     """外部要因が追い風か逆風かを、月ごとにパネルへ足す。
@@ -2631,6 +2705,13 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
     if cfg.get("max_names"):
         max_names = int(cfg["max_names"])
     tiers_allowed = set(cfg["tiers_allowed"]) if cfg.get("tiers_allowed") else None
+    # 5回目の候補（2026年10月12日に追加）
+    #   tier_col … Tier をこの列で置き換える（add_pit_tiers が作る、後出しなしで判定した Tier）
+    if cfg.get("tier_col"):
+        _tc = cfg["tier_col"]
+        if _tc not in panel.columns:
+            raise RuntimeError(f"{_tc} の列がありません。後出しなしの Tier が足されていません。")
+        panel = panel.assign(tier=panel[_tc].to_numpy())
     # measure: "pct"（パーセンタイル）か "z"（平均から何σ離れているか）
     measure = cfg.get("measure", "pct")
     # Tierごとに買いの基準を変える。
@@ -5230,7 +5311,10 @@ def main() -> int:
                      ("pbr", "per", "size", "pbr_sec", "value",
                       "pbrroe70", "pbrroe50", "pbrroe30", "switch36")
                      or VARIANTS.get(n_, {}).get("screen")
+                     or VARIANTS.get(n_, {}).get("tier_col")
                      for n_ in _sel_names)
+    # 後出しなしで判定した Tier を使うルールがあれば、その列を足す（2026年10月12日に追加）
+    _need_pit = any(VARIANTS.get(n_, {}).get("tier_col") for n_ in _sel_names)
 
     # レンジの上限で降りるルール（range_exit）を選んだら、「レンジ往復を検証」の欄が false でも
     # レンジの列を足す。足さないと、そのルールは一度も降りず、土台とまったく同じ成績になり、
@@ -5242,6 +5326,8 @@ def main() -> int:
         pn_ = build_panel(store, args.years, lb_)
         if _need_fund and not pn_.empty:
             pn_ = add_fund_columns(store, pn_)
+        if _need_pit and not pn_.empty:
+            pn_ = add_pit_tiers(pn_)
         # 総当たりで分位の月数を変えてパネルを作り直すときも、レンジの列を忘れずに足す
         if _need_range and not pn_.empty:
             pn_ = add_range_columns(store, pn_, int(_d[0]), _d[1], _d[2], _d[4])
@@ -5267,6 +5353,9 @@ def main() -> int:
     if _need_fund:
         log.info("PBR・PER・時価総額で選ぶルールがあるので、財務の項目を足します…")
         panel = add_fund_columns(store, panel)
+    if _need_pit:
+        log.info("Tier を後出しなしで判定し直すルールがあるので、その月末の時価総額で業界首位級を判定します…")
+        panel = add_pit_tiers(panel)
 
     # 外部要因を使う検証では、追い風か逆風かをパネルに足す
     if args.factor_test:
@@ -6876,7 +6965,7 @@ def main() -> int:
         #   さらに、相手を24条件の85％以上で上回れば「本番を上回る」と付ける（本番に入れる価値がある）。
         _act_keys = ("yield_exit", "tp_gain", "harvest", "topup", "rec_relax", "screen_drop",
                      "max_yield", "ex_first", "max_per_sector", "tier_weight",
-                     "tiers_allowed", "cash_floor", "max_names")
+                     "tiers_allowed", "cash_floor", "max_names", "tier_col")
         if any(any(k in VARIANTS[n_] for k in _act_keys) for n_ in nm) and len(nm) > 1:
             _base_lab = VARIANTS[nm[0]]["label"]
             if _base_lab in piv.columns:
@@ -7032,6 +7121,75 @@ def main() -> int:
             print("  12か月後の値動き … 売った値段から12か月後の月末の株価まで（中央値・配当は含まない）。")
             print("  売値より上 … 12か月後に、売った値段より株価が上だった割合。")
             print("  　　　　　　 高いほど「売らずに持っていれば、まだ伸びていた」ことが多い。")
+
+        # ── 5回目：Tier の後出しを外した結果の判定（2026年10月12日に追加。結果を見る前に決めた基準）──
+        #   後出しの上乗せ … 本番 − 後出しなし（その時点の首位級だけで Tier）の平均年率の差
+        #   首位級を先に買う価値（後出しなし同士で比べる：後出しなし vs Tierなし）
+        #     価値がある           … 後出しなしが24条件の85％以上で Tierなし を上回った
+        #     確かめられない       … 勝敗が35〜65％（本番の Tier の上乗せは後出しだったと読む）
+        #     むしろ損             … Tierなし が85％以上で上回った
+        #     どちらとも言えない   … それ以外
+        if any(VARIANTS[n_].get("tier_col") for n_ in nm):
+            _p5 = gf.pivot_table(index=cond_cols, columns="ルール", values="年率")
+
+            def _lab5(key):
+                return VARIANTS[key]["label"] if key in VARIANTS and key in nm else None
+
+            _Lb, _Lm = _lab5("base_div_scr"), _lab5("tier_pit_mix_scr")
+            _Ll, _Ln = _lab5("tier_pit_lead_scr"), _lab5("tier_none_scr")
+            _rows5 = [(x, t) for x, t in ((_Lb, "本番（いまの Tier・後出しあり）"),
+                                          (_Lm, "首位級だけその時点で判定"),
+                                          (_Ll, "後出しなし（その時点の首位級）"),
+                                          (_Ln, "Tierなし（利回り順）"))
+                      if x and x in _p5.columns]
+
+            def _st5(lab):
+                g = gf[gf["ルール"] == lab]
+                return {"avg": g["年率"].mean(), "worst": g["年率"].min(),
+                        "dd": g["最大下落"].max(), "dd_avg": g["最大下落"].mean(),
+                        "emg": g["緊急売り"].mean()}
+
+            _S5 = {x: _st5(x) for x, _ in _rows5}
+            print("\n【Tierの後出しを外した結果】（基準は結果を見る前に決めたもの）\n")
+            print(f"{'':<34}{'平均年率':>8}{'最悪の年率':>10}{'最悪の下落':>10}{'下落の平均':>10}{'減配などの売り':>14}")
+            print("-" * 92)
+            for x, t in _rows5:
+                v = _S5[x]
+                print(f"{t:<34}{v['avg']:>7.1f}%{v['worst']:>9.1f}%{v['dd']:>9.1f}%"
+                      f"{v['dd_avg']:>9.1f}%{v['emg']:>12.1f}回")
+            print()
+            if _Lb in _S5 and _Ll in _S5:
+                print(f"  後出しの上乗せ（本番 − 後出しなし） … 平均年率 {_S5[_Lb]['avg'] - _S5[_Ll]['avg']:+.2f}pt"
+                      f" ／ 最悪の年率 {_S5[_Lb]['worst'] - _S5[_Ll]['worst']:+.2f}pt")
+                if _Lm in _S5:
+                    print(f"    うち首位級の後出し（本番 − 首位級だけ直した形） … "
+                          f"{_S5[_Lb]['avg'] - _S5[_Lm]['avg']:+.2f}pt")
+                    print(f"    うち累進配当・DOEのリストの分（首位級だけ直した形 − 後出しなし） … "
+                          f"{_S5[_Lm]['avg'] - _S5[_Ll]['avg']:+.2f}pt")
+                    print("      （リストは宣言した時期が分からず、後出しかどうかを切り分けられない）")
+            if _Ll in _S5 and _Ln in _S5:
+                _w = float((_p5[_Ll] > _p5[_Ln]).mean())
+                _l = float((_p5[_Ln] > _p5[_Ll]).mean())
+                if _w >= 0.85:
+                    _v = "価値がある（本番の Tier を続ける根拠になる）"
+                elif _l >= 0.85:
+                    _v = "むしろ損（利回り順への切り替えを検討する）"
+                elif 0.35 <= _w <= 0.65:
+                    _v = "確かめられない（本番の Tier の上乗せは後出しだったと読む）"
+                else:
+                    _v = "どちらとも言えない"
+                print(f"\n  首位級を先に買う価値（後出しなし vs Tierなし） … 後出しなしが上回った {_w * 100:.0f}％"
+                      f" ／ Tierなしが上回った {_l * 100:.0f}％ → {_v}")
+                print(f"    平均年率の差 {_S5[_Ll]['avg'] - _S5[_Ln]['avg']:+.2f}pt ／ 最悪の年率の差 "
+                      f"{_S5[_Ll]['worst'] - _S5[_Ln]['worst']:+.2f}pt ／ 減配などの売り "
+                      f"{_S5[_Ll]['emg']:.1f}回 対 {_S5[_Ln]['emg']:.1f}回")
+                print("    （基準：85％以上で「価値がある」、35〜65％で「確かめられない」、"
+                      "Tierなしが85％以上で「むしろ損」）")
+            if _Ll in _S5:
+                v = _S5[_Ll]
+                print(f"\n  外に出す過去の成績の目安（後出しなし） … 平均年率 {v['avg']:.1f}％ ／ 最悪の年率 {v['worst']:.1f}％"
+                      f" ／ 最悪の下落 {v['dd']:.1f}％")
+                print("    ※ データに潰れた会社・上場廃止の会社が入っていないので、これでもまだ甘めの数字。")
 
         OUTDIR.mkdir(parents=True, exist_ok=True)
         gf.to_csv(OUTDIR / "grid.csv", index=False, encoding="utf-8-sig")
