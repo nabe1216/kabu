@@ -39,6 +39,7 @@ import os
 import io
 import sys
 import time
+import unicodedata
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -1747,6 +1748,102 @@ def fetch_markets() -> dict:
             log.info("%s を取得しました（%d件）", jname, len(d))
         except Exception as e:
             log.warning("%s を取得できませんでした（%s）", jname, e)
+    return out
+
+
+# ══════════════════════════════════════════
+# ストレステストの部品（2026年10月12日に追加）
+# ══════════════════════════════════════════
+STRESS_SCEN = [
+    ("逆風が全部来る", {"fx": -0.20, "rate": -1.5, "oil": -0.40, "spx": -0.25},
+     "円高20％・米金利1.5pt低下・原油40％安・米国株25％安"),
+    ("リーマン級", {"fx": -0.25, "rate": -2.0, "oil": -0.60, "spx": -0.45},
+     "円高25％・米金利2pt低下・原油60％安・米国株45％安"),
+    ("円高だけ", {"fx": -0.20, "rate": 0, "oil": 0, "spx": 0}, "円高20％"),
+    ("金利低下だけ", {"fx": 0, "rate": -1.5, "oil": 0, "spx": 0}, "米金利1.5pt低下"),
+    ("原油安だけ", {"fx": 0, "rate": 0, "oil": -0.40, "spx": 0}, "原油40％安"),
+    ("米国株安だけ", {"fx": 0, "rate": 0, "oil": 0, "spx": -0.30}, "米国株30％安"),
+]
+STRESS_FACTORS = ["fx", "rate", "oil", "spx"]
+# 単独の要因のシナリオと、その要因
+STRESS_SINGLE = {"円高だけ": "fx", "金利低下だけ": "rate", "原油安だけ": "oil", "米国株安だけ": "spx"}
+
+
+def stress_factor_changes(mk: dict) -> pd.DataFrame:
+    """外部要因の月ごとの変化（月末の資産の増減と時期をそろえたもの）。
+
+      fx   … ドル円の変化率（＋なら円安）。日次のデータなので月末の値で比べる
+      oil  … 原油（ブレント）の変化率。日次のデータなので月末の値で比べる
+      rate … 米10年金利の変化（％ポイント）
+      spx  … 米国株（S&P500）の変化率
+    米10年金利と S&P500 のデータは「その月の平均」で、月末の値ではない。
+    月平均どうしの変化は、前の月の半ばから今月の半ばまでの動きになり、
+    月末から月末までの資産の増減と半月ずれる。そのまま使うと反応の強さが小さく出るので、
+    その月と翌月の変化の平均を使って時期をそろえる（2026年10月12日に追加）。
+    """
+    need = ["usdjpy", "us10y", "brent", "sp500"]
+    fac = pd.DataFrame({k: mk[k].resample("ME").last() for k in need}).dropna()
+
+    def _center(x: pd.Series) -> pd.Series:
+        return (x + x.shift(-1)) / 2
+
+    return pd.DataFrame({
+        "fx": fac["usdjpy"].pct_change(),
+        "rate": _center(fac["us10y"].diff()),
+        "oil": fac["brent"].pct_change(),
+        "spx": _center(fac["sp500"].pct_change()),
+    }).dropna()
+
+
+def stress_fit(curve: pd.DataFrame, dX: pd.DataFrame, scen=None) -> dict | None:
+    """月ごとの資産の増減を外部要因の変化で説明する式を作り、シナリオの1年の増減を出す。
+
+    返す値：coef（切片＋各要因の反応の強さ）、r2（説明できる割合）、n（月数）、
+            worst12（実際の最悪の12か月）、hit（シナリオ名 → 外部要因の影響だけの1年の増減）、
+            hit_all（同じく、いつもの伸び＝切片×12 を足したもの）、ret（月ごとの増減）
+    """
+    scen = STRESS_SCEN if scen is None else scen
+    v = curve.set_index("date")["value"].resample("ME").last().pct_change().dropna()
+    df = pd.concat([v.rename("r"), dX], axis=1, join="inner").dropna()
+    if len(df) < 24:
+        return None
+    X = np.column_stack([np.ones(len(df))] + [df[k].to_numpy() for k in STRESS_FACTORS])
+    y = df["r"].to_numpy()
+    coef, *_ = np.linalg.lstsq(X, y, rcond=None)
+    resid = y - X @ coef
+    r2 = float(1 - resid.var() / y.var()) if y.var() > 0 else 0.0
+    worst12 = float(((1 + v).rolling(12).apply(np.prod, raw=True) - 1).min()) if len(v) >= 12 \
+        else float("nan")
+    hit, hit_all = {}, {}
+    for sname, shock, _d in scen:
+        h = float(sum(coef[i + 1] * shock[k] for i, k in enumerate(STRESS_FACTORS)))
+        hit[sname] = h
+        hit_all[sname] = h + float(coef[0]) * 12
+    return {"coef": coef, "r2": r2, "n": len(df), "worst12": worst12,
+            "hit": hit, "hit_all": hit_all, "ret": v}
+
+
+def stress_bad_months(rets: dict, dX: pd.DataFrame, q: float = 0.10) -> list:
+    """実際に逆風だった月（各要因の変化が悪い側から1割の月）の、月ごとの増減の平均。
+
+    返す値：[(要因, 月数, その境目の変化, {名前: 平均の増減}), …]
+    「悪い側」はどの要因も下がる側（円高・金利低下・原油安・米国株安）。
+    """
+    out = []
+    # 外部要因のデータは何十年分もあるので、資産の増減がそろっている期間だけに絞ってから1割を選ぶ
+    idx = None
+    for r in rets.values():
+        ix = r.dropna().index
+        idx = ix if idx is None else idx.intersection(ix)
+    d_ = dX.loc[dX.index.intersection(idx)] if idx is not None else dX.iloc[0:0]
+    for k in STRESS_FACTORS:
+        s_ = d_[k].dropna()
+        if s_.empty:
+            continue
+        thr = float(s_.quantile(q))
+        months = s_[s_ <= thr].index
+        avg = {nm: float(r.reindex(months).mean()) for nm, r in rets.items()}
+        out.append((k, len(months), thr, avg))
     return out
 
 
@@ -5138,7 +5235,8 @@ def main() -> int:
         return history_test()
     args.stress_test = False
     if (args.only or "").strip() == "stress_test":
-        args.stress_test, args.only = True, "pbr_low_tier,xs_any_tier"
+        # 後出しなし（その時点の首位級だけで Tier）と、本番どおりで回す（2026年10月12日に作り直し）
+        args.stress_test, args.only = True, "tier_pit_lead_scr,base_div_scr"
 
     OUTDIR.mkdir(parents=True, exist_ok=True)
 
@@ -5501,110 +5599,151 @@ def main() -> int:
 
     # ══════════════════════════════════════════
     # 逆風が来たら何％沈むか（ストレステスト）
+    #   2026年10月12日に作り直した。以前は低PBR順など、いまは使っていないルールで見ていた。
     #
-    #   この7年は円安・金利上昇・原油高が同時に来た、ルールに極端に有利な期間だった。
+    #   この8年は円安・金利上昇・原油高が重なった、高配当株に有利な期間で、本当の下げ相場はコロナだけ。
     #   その逆が来たときの下げを、外部要因への反応の強さから見積もる。
-    #
     #   月ごとの資産の増減を、ドル円・米金利・原油・米国株の月ごとの変化で説明する式を作り、
-    #   そこに「逆風のシナリオ」を入れて1年間の増減を計算する。
-    #   式は2020〜2026年の動きから作るので、それより大きな変化には当てはまらないことがある。
+    #   そこに「逆風のシナリオ」を入れて1年間の増減を計算する（部品は stress_fit など）。
+    #   あわせて、実際に逆風だった月（各要因が悪い側から1割の月）の平均の増減も並べる（式を使わない確かめ）。
+    #   比べるのは、後出しなし（その時点の首位級だけで Tier）・本番どおり・全部買って放置。
+    #   判定の基準は結果を見る前に決めたもの（下の【判定】に書いてある）。
     # ══════════════════════════════════════════
     if args.stress_test:
-        if "pct_pbr" not in panel.columns:
-            log.info("財務の項目を足します…")
-            panel = add_fund_columns(store, panel)
-        my = args.min_yield if args.min_yield > 0 else 4.0
+        def _dw(x):
+            return sum(2 if unicodedata.east_asian_width(ch) in "WF" else 1 for ch in str(x))
+
+        def _lj(x, w):
+            x = str(x)
+            return x + " " * max(0, w - _dw(x))
+
+        def _rj(x, w):
+            x = str(x)
+            return " " * max(0, w - _dw(x)) + x
+
         common = dict(tier_budget=True, dividends=True, slip_bps=args.slip_bps,
-                      tax_rate=args.tax / 100.0, min_yield_override=my)
+                      fee_bps=args.fee_bps, tax_rate=args.tax / 100.0)
+        T_, B_, M_ = "後出しなし", "本番（後出しあり）", "全部買って放置"
         curves = {}
-        for nm, key in (("低PBR順（いまの本番）", "pbr_low_tier"),
-                        ("利回りの高い順（ひとつ前）", "xs_any_tier")):
+        for nm, key in ((T_, "tier_pit_lead_scr"), (B_, "base_div_scr")):
             curves[nm] = simulate(panel, VARIANTS[key], args.capital, 20, **common)["curve"]
         bh = buy_and_hold(panel, args.tax / 100.0)
         if bh is not None:
-            curves["（基準）全部買って放置"] = bh["curve"]
+            curves[M_] = bh["curve"]
 
         mk = fetch_markets()
         need = [("usdjpy", "ドル円"), ("us10y", "米10年金利"), ("brent", "原油"), ("sp500", "米国株")]
         miss = [j for k, j in need if k not in mk]
         if miss:
             sys.exit("外部要因のデータが取れませんでした：" + "、".join(miss))
-        fac = pd.DataFrame({k: mk[k].resample("ME").last() for k, _ in need}).dropna()
-        dX = pd.DataFrame({
-            "fx": fac["usdjpy"].pct_change(),        # ＋なら円安
-            "rate": fac["us10y"].diff(),             # 金利の変化（％ポイント）
-            "oil": fac["brent"].pct_change(),
-            "spx": fac["sp500"].pct_change(),
-        }).dropna()
+        dX = stress_factor_changes(mk)
+        fits = {nm: stress_fit(c, dX) for nm, c in curves.items()}
+        fits = {nm: f for nm, f in fits.items() if f is not None}
+        if not fits:
+            sys.exit("外部要因と重なる期間が短すぎて、式を作れませんでした。")
+        nms = list(fits)
+        jn = {"fx": "円安＋1％", "rate": "米金利＋1pt", "oil": "原油＋1％", "spx": "米国株＋1％"}
+        f0 = fits[nms[0]]
+        _per = f0["ret"].index.intersection(dX.index)
+        print(f"\n■ 逆風が来たら何％沈むか（{_per.min().date()} 〜 {_per.max().date()} の"
+              f"{f0['n']}か月の動きから推定）\n")
+        print("　 比べるもの：後出しなし（その時点の首位級だけでTier）／本番どおり／全部買って放置")
+        print(f"　 元本 {args.capital:,.0f}円 ／ 税率{args.tax:.3f}％ ／ 約定のずれ 片道{args.slip_bps:g}bps"
+              " ／ 資金は初日に全額\n")
 
-        # 逆風のシナリオ（1年間の変化の合計）
-        scen = [
-            ("逆風が全部来る", {"fx": -0.20, "rate": -1.5, "oil": -0.40, "spx": -0.25},
-             "円高20％・米金利1.5pt低下・原油40％安・米国株25％安"),
-            ("リーマン級", {"fx": -0.25, "rate": -2.0, "oil": -0.60, "spx": -0.45},
-             "円高25％・米金利2pt低下・原油60％安・米国株45％安"),
-            ("円高だけ", {"fx": -0.20, "rate": 0, "oil": 0, "spx": 0}, "円高20％"),
-            ("金利低下だけ", {"fx": 0, "rate": -1.5, "oil": 0, "spx": 0}, "米金利1.5pt低下"),
-            ("原油安だけ", {"fx": 0, "rate": 0, "oil": -0.40, "spx": 0}, "原油40％安"),
-            ("米国株安だけ", {"fx": 0, "rate": 0, "oil": 0, "spx": -0.30}, "米国株30％安"),
-        ]
-        names = ["fx", "rate", "oil", "spx"]
-        jn = {"fx": "円安(+1％あたり)", "rate": "米金利(+1ptあたり)",
-              "oil": "原油(+1％あたり)", "spx": "米国株(+1％あたり)"}
-
-        _c0 = next(iter(curves.values()))["date"]
-        _a, _b = max(fac.index.min(), _c0.min()), min(fac.index.max(), _c0.max())
-        print(f"\n■ 逆風が来たら何％沈むか（{_a.date()} 〜 {_b.date()} の月ごとの動きから推定）\n")
-        res_tab, betas = {}, {}
-        for nm, c in curves.items():
-            v = c.set_index("date")["value"].resample("ME").last().pct_change().dropna()
-            df = pd.concat([v.rename("r"), dX], axis=1, join="inner").dropna()
-            if len(df) < 24:
-                continue
-            X = np.column_stack([np.ones(len(df))] + [df[k].to_numpy() for k in names])
-            y = df["r"].to_numpy()
-            coef, *_ = np.linalg.lstsq(X, y, rcond=None)
-            resid = y - X @ coef
-            r2 = 1 - resid.var() / y.var() if y.var() > 0 else 0.0
-            betas[nm] = (coef, r2, len(df))
-            worst12 = float(((1 + v).rolling(12).apply(np.prod, raw=True) - 1).min())
-            row = {}
-            for sname, shock, _d in scen:
-                hit = sum(coef[i + 1] * shock[k] for i, k in enumerate(names))
-                row[sname] = (hit, hit + coef[0] * 12)
-            res_tab[nm] = (row, worst12)
-
-        print("【外部要因への反応の強さ（月ごとの動きから推定）】\n")
-        print(f"{'':<28}" + "".join(f"{jn[k]:>18}" for k in names) + f"{'説明できる割合':>12}")
-        print("-" * 112)
-        for nm, (coef, r2, nobs) in betas.items():
-            print(f"{nm[:26]:<28}" + "".join(f"{coef[i + 1] * (1 if k == 'rate' else 0.01) * 100:>+17.2f}%"
-                                            for i, k in enumerate(names)) + f"{r2 * 100:>11.0f}%")
-        print("\n  円安・原油・米国株は「1％動いたら資産が何％動くか」、金利は「1pt動いたら何％か」。")
+        W = 22
+        print("【外部要因への反応の強さ】（その要因が動いたとき、1か月の資産が何％動くか）\n")
+        hdr = _lj("", W) + "".join(_rj(jn[k], 12) for k in STRESS_FACTORS) + _rj("説明できる割合", 16)
+        print(hdr)
+        print("-" * _dw(hdr))
+        for nm in nms:
+            c_ = fits[nm]["coef"]
+            print(_lj(nm, W) + "".join(_rj(f"{c_[i + 1] * (1 if k == 'rate' else 0.01) * 100:+.2f}%", 12)
+                                       for i, k in enumerate(STRESS_FACTORS))
+                  + _rj(f"{fits[nm]['r2'] * 100:.0f}%", 16))
+        print("\n  米金利と米国株のデータは月平均なので、その月と翌月の変化の平均で、月末の値動きと時期をそろえている。")
 
         print("\n【シナリオ別：1年間の資産の増減（外部要因の影響だけ）】\n")
-        print(f"{'シナリオ':<18}" + "".join(f"{nm[:14]:>18}" for nm in res_tab))
-        print("-" * (18 + 18 * len(res_tab)))
-        for sname, _s, desc in scen:
-            print(f"{sname:<18}" + "".join(f"{res_tab[nm][0][sname][0] * 100:>+17.1f}%" for nm in res_tab))
+        hdr = _lj("シナリオ", 16) + "".join(_rj(nm, 20) for nm in nms)
+        print(hdr)
+        print("-" * _dw(hdr))
+        for sname, _s, _d in STRESS_SCEN:
+            print(_lj(sname, 16) + "".join(_rj(f"{fits[nm]['hit'][sname] * 100:+.1f}%", 20) for nm in nms))
         print("\n  中身：")
-        for sname, _s, desc in scen:
+        for sname, _s, desc in STRESS_SCEN:
             print(f"    {sname} … {desc}")
 
-        print("\n【参考：いつもの上乗せ（この7年の平均的な伸び）も含めた場合】\n")
-        print(f"{'シナリオ':<18}" + "".join(f"{nm[:14]:>18}" for nm in res_tab))
-        print("-" * (18 + 18 * len(res_tab)))
-        for sname, _s, _d in scen[:2]:
-            print(f"{sname:<18}" + "".join(f"{res_tab[nm][0][sname][1] * 100:>+17.1f}%" for nm in res_tab))
-        print(f"{'実際の最悪の12か月':<18}" + "".join(f"{res_tab[nm][1] * 100:>+17.1f}%" for nm in res_tab))
+        print("\n【参考：この期間のいつもの伸びも足した場合と、実際の最悪の12か月】\n")
+        print(hdr)
+        print("-" * _dw(hdr))
+        for sname, _s, _d in STRESS_SCEN[:2]:
+            print(_lj(sname, 16) + "".join(_rj(f"{fits[nm]['hit_all'][sname] * 100:+.1f}%", 20) for nm in nms))
+        print(_lj("実際の最悪の12か月", 16) + "".join(_rj(f"{fits[nm]['worst12'] * 100:+.1f}%", 20) for nm in nms))
+
+        bad = stress_bad_months({nm: fits[nm]["ret"] for nm in nms}, dX)
+        lab_bad = {"fx": "円高が大きく進んだ月", "rate": "米金利が大きく下がった月",
+                   "oil": "原油が大きく下げた月", "spx": "米国株が大きく下げた月"}
+        print("\n【実際に逆風だった月の平均】（各要因の変化が悪い側から1割の月。式を使わない確かめ）\n")
+        hdr2 = _lj("", 26) + _rj("月数", 6) + "".join(_rj(nm, 20) for nm in nms)
+        if T_ in nms and M_ in nms:
+            hdr2 += _rj("後出しなし−放置", 18)
+        print(hdr2)
+        print("-" * _dw(hdr2))
+        emp = {}
+        for k, n_, thr, avg in bad:
+            line = _lj(lab_bad[k], 26) + _rj(f"{n_}", 6) + "".join(_rj(f"{avg[nm] * 100:+.1f}%", 20) for nm in nms)
+            if T_ in nms and M_ in nms:
+                emp[k] = avg[T_] - avg[M_]
+                line += _rj(f"{emp[k] * 100:+.1f}pt", 18)
+            print(line)
+        print("\n  1か月あたりの平均の増減。月数が少ないので、向きを見る程度に使う。")
+
+        # 判定（結果を見る前に決めた基準）
+        print("\n【判定】（基準は結果を見る前に決めたもの）\n")
+        if T_ in fits and M_ in fits:
+            ft, fm = fits[T_], fits[M_]
+            a_t, a_m = ft["hit"]["逆風が全部来る"], fm["hit"]["逆風が全部来る"]
+            l_t = ft["hit"]["リーマン級"]
+            print(f"  ① 逆風が全部来たとき（外部要因の影響だけ）の1年の増減 … 後出しなし {a_t * 100:+.1f}％"
+                  f" ／ 全部買って放置 {a_m * 100:+.1f}％（リーマン級では後出しなし {l_t * 100:+.1f}％）")
+            if ft["r2"] < 0.30:
+                print(f"  ④ 説明できる割合が {ft['r2'] * 100:.0f}％ で30％未満 → この見積もりは参考にとどめ、"
+                      "外向けの説明には使わない")
+            else:
+                d_ = a_t - a_m
+                if d_ <= -0.05:
+                    v_ = "市場全体より逆風に弱い（外向けにもそう書く）"
+                elif d_ >= 0.05:
+                    v_ = "市場全体より下げにくい"
+                else:
+                    v_ = "市場全体と同じくらい下がる"
+                print(f"  ② 全部買って放置との差 {d_ * 100:+.1f}pt → {v_}")
+                print("       （基準：5pt以上深ければ「市場全体より逆風に弱い」、5pt以内なら「同じくらい」、"
+                      "5pt以上浅ければ「下げにくい」）")
+                weak = []
+                for sname, k in STRESS_SINGLE.items():
+                    ds = ft["hit"][sname] - fm["hit"][sname]
+                    agree = ""
+                    if k in emp:
+                        agree = "（実際の逆風の月も同じ向き）" if (ds < 0) == (emp[k] < 0) \
+                            else "（実際の逆風の月とは逆の向き。確かではない）"
+                    mark = "弱点" if ds <= -0.03 else ("強い" if ds >= 0.03 else "差は小さい")
+                    if ds <= -0.03:
+                        weak.append(sname.replace("だけ", ""))
+                    print(f"  ③ {sname}：放置との差 {ds * 100:+.1f}pt → {mark}{agree}")
+                print("       （基準：放置より3pt以上深いものを「弱点」として名指しする）")
+                print("  ⑤ 外向けのリスクの説明 … 「円高・米金利低下・原油安・米国株安が同時に来ると、"
+                      f"1年で{a_t * 100:+.0f}％程度」" + (f"、弱点は{'・'.join(weak)}" if weak else ""))
+        print("  ⑥ 本番のルールはこの結果だけでは変えない（業種の上限や現金を残す形は、同じ期間の検証で成績を下げた）。"
+              "資金をいくら入れるかの判断材料にする。")
 
         print("\n【読み方】\n")
-        print("  ・「外部要因の影響だけ」は、いつもの伸びを0と置いた場合の下げ。こちらを主に見る。")
-        print("    この7年の伸びは追い風の中で出たもので、逆風の年にそのまま出る保証はない。")
-        print("  ・式は2020〜2026年の月ごとの動きから作っている。")
-        print("    リーマン級のように、この期間になかった大きさの変化では、実際の下げはもっと深くなりやすい。")
-        print("    （暴落時は、ふだん関係の薄いものまで一緒に下がるため）")
-        print("  ・「説明できる割合」が低いほど、外部要因以外で動いている部分が大きい。")
+        print("  ・「外部要因の影響だけ」は、この期間のいつもの伸びを0と置いた下げ。こちらを主に見る。")
+        print("    この期間の伸びは追い風の中で出たもので、逆風の年にそのまま出る保証はない。")
+        print("  ・式はこの期間の月ごとの動きから作っている。リーマン級のように、この期間になかった大きさの")
+        print("    変化では、実際の下げはもっと深くなりやすい（暴落時は、ふだん関係の薄いものまで一緒に下がる）。")
+        print("  ・「説明できる割合」が低いほど、外部要因以外で動いている部分が大きく、見積もりは当てにならない。")
+        print("  ・円高と米国株安のように一緒に動きやすい要因は、単独の数字がぶれやすい。①（全部来る）を主に見る。")
         return 0
 
     # ══════════════════════════════════════════
@@ -5621,8 +5760,6 @@ def main() -> int:
     #   判定の基準は結果を見る前に決めたもの（下の【判定】に書いてある）。
     # ══════════════════════════════════════════
     if args.random_test:
-        import unicodedata
-
         def _dw(x):
             return sum(2 if unicodedata.east_asian_width(ch) in "WF" else 1 for ch in str(x))
 
