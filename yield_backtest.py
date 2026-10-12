@@ -1153,6 +1153,47 @@ VARIANTS: dict[str, dict[str, Any]] = {
         "tier_col": "tier_pit_mix",
         "swing_daily": {"tag": "h3", "tiers": ["A", "B"]},
     },
+    # ── 11回目の候補（2026年10月12日に追加）：増配の実績がある銘柄だけで回す ──
+    #   増配の実績 … 直近3回の通期どうしの比べのうち2回以上で年間配当（実績）が増え、記録のある範囲（最大10期）で
+    #               一度も減っていない（grow_timeline。その時点で分かっていた数字だけ。7回目と同じ定義）
+    #   新しく買うのは、この実績がある銘柄だけ（月末の買いも、線の下での買いも）。持っている銘柄は売る理由にしない。
+    #   比べ方 … ① 1年・2年・3年線のうねり取りを「増配の実績だけ・全部持ち続ける」と比べる
+    #            ② 4つとも、今の本番（tier_pit_mix_scr）と比べる
+    "safe_hold_pit": {
+        "label": "増配の実績だけ・全部持ち続ける",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "tier_col": "tier_pit_mix", "require_col": "grow_pit",
+    },
+    "safe_line_1y_pit": {
+        "label": "増配の実績だけ・1年線でうねり取り",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "tier_col": "tier_pit_mix", "require_col": "grow_pit",
+        "swing_daily": {"tag": "h1", "tiers": ["A", "B"]},
+    },
+    "safe_line_2y_pit": {
+        "label": "増配の実績だけ・2年線でうねり取り",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "tier_col": "tier_pit_mix", "require_col": "grow_pit",
+        "swing_daily": {"tag": "h2", "tiers": ["A", "B"]},
+    },
+    "safe_line_3y_pit": {
+        "label": "増配の実績だけ・3年線でうねり取り",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "tier_col": "tier_pit_mix", "require_col": "grow_pit",
+        "swing_daily": {"tag": "h3", "tiers": ["A", "B"]},
+    },
     "rec_first_scr": {
         "label": "権利月が近い銘柄を先に買う（条件そのまま）",
         "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
@@ -3373,6 +3414,12 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
     # 7回目の候補（2026年10月12日に追加）
     #   skip_price_drop … 12か月で株価がこの率以上下がり、1株配当（予想）が増えていない銘柄は買わない
     skip_drop = cfg.get("skip_price_drop")
+    # 11回目の候補（2026年10月12日に追加）
+    #   require_col … この列が True の銘柄だけを新しく買う（例 "grow_pit"＝増配の実績がある会社）。
+    #                 月末の買いと、日々のうねりの買いの両方に効く。持っている銘柄を売る理由にはしない。
+    require_col = cfg.get("require_col")
+    if require_col and require_col not in panel.columns:
+        raise RuntimeError(f"{require_col} の列がありません。増配の実績の列が足されていません。")
     # 8回目の候補（2026年10月12日に追加）
     #   swing_entry … {"tag": "m", "tiers": ["A", "B"]}。この Tier の銘柄は、うねりの中にいるあいだは
     #                 下の線に届いたときだけ（その値段で）買う。うねりの中にいなければ、いつもどおり月末に買う。
@@ -3779,6 +3826,9 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                     continue
                 if min_yield > 0 and r_.get("yield", 0) < min_yield:
                     continue
+                if require_col and not (isinstance(r_.get(require_col), (bool, np.bool_))
+                                        and bool(r_.get(require_col))):
+                    continue        # 11回目：増配の実績がある銘柄だけ買う
                 if skip_emg_buy:
                     if emg_actual:
                         _cu, _op = emg_flags(r_)
@@ -3866,7 +3916,7 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                     cash -= sh_ * be_
                     diag["fee"] = diag.get("fee", 0.0) + sh_ * bp_ * (slip + fee)
                     pos[c_] = {"units": 1, "lots": [(sh_, be_)], "peak": bp_, "tier": tg_,
-                               "cost_sum": sh_ * be_, "sh_sum": sh_}
+                               "cost_sum": sh_ * be_, "sh_sum": sh_, "origin": "swing"}
                     if _ex_ns is not None and d_ns >= _ex_ns:
                         pos[c_]["no_div_mi"] = mi        # 権利落ちのあとに買ったので、この月の配当は受け取らない
                     diag["opened"] += 1
@@ -3976,6 +4026,16 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                     trades.append({"code": code, "date": dt, "side": "sell",
                                    "price": eff, "shares": sh})
                 diag["cut_exits"] = diag.get("cut_exits", 0) + 1
+                # 11回目：どう買った銘柄で緊急売りになったか（線の下で買った／月末に買った／最初の月に買った）と、
+                # 売ったときの損益（約定のずれ込み後・税引前、取得単価に対して）
+                _org = st.get("origin", "month")
+                _co = diag.setdefault("cut_by_origin", {})
+                _co[_org] = _co.get(_org, 0) + 1
+                _shs_c = sum(sh for sh, _ in st["lots"])
+                if _shs_c > 0:
+                    _avg_c = sum(sh * pr for sh, pr in st["lots"]) / _shs_c
+                    if _avg_c > 0:
+                        diag.setdefault("cut_ret", []).append(price * (1 - slip) * (1 - fee) / _avg_c - 1)
                 if st.get("sh_sum"):
                     avg = st["cost_sum"] / st["sh_sum"]
                     g_ = st.get("peak", avg) / avg - 1
@@ -4273,6 +4333,10 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
             if max_yield is not None and row.get("yield", 0) > float(max_yield):
                 diag["max_yield_skip"] = diag.get("max_yield_skip", 0) + 1
                 continue        # 利回りが高すぎる銘柄は買わない
+            if require_col and row.get(require_col) is not True and not (
+                    isinstance(row.get(require_col), (bool, np.bool_)) and bool(row.get(require_col))):
+                diag["req_skip"] = diag.get("req_skip", 0) + 1
+                continue        # 11回目：増配の実績がある銘柄だけ買う
             if tiers_allowed is not None and row.get("tier", "B") not in tiers_allowed:
                 continue        # この Tier は新しく買わない
             if skip_emg_buy:
@@ -4639,6 +4703,7 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                 if st["units"] == 0:
                     diag["opened"] += 1
                     opened_at[code] = mi
+                    st["origin"] = "first" if mi == 0 else "month"   # 11回目：緊急売りの内訳に使う
                     if stop_loss:
                         st["chk_from"] = _dt_ns      # 損切りの判定は、買った月末の翌日から
                     if rec_relax:
@@ -6033,6 +6098,12 @@ def main() -> int:
     if (args.only or "").strip() == "line_test":
         args.line_test, args.liq_metric = True, True
         args.only = "tier_pit_mix_scr,line_1y_pit,line_2y_pit,line_3y_pit,swing_d_m_pit"
+    # 11回目（2026年10月12日に追加）：増配の実績がある銘柄だけで、全部持ち続ける形と、1年・2年・3年線のうねり取り。
+    # 比べる相手は「増配の実績だけ・全部持ち続ける」と、今の本番（首位級だけその時点で判定）。年率は清算後で判定する。
+    args.safe_test = False
+    if (args.only or "").strip() == "safe_test":
+        args.safe_test, args.liq_metric = True, True
+        args.only = "tier_pit_mix_scr,safe_hold_pit,safe_line_1y_pit,safe_line_2y_pit,safe_line_3y_pit"
 
     OUTDIR.mkdir(parents=True, exist_ok=True)
 
@@ -6212,7 +6283,8 @@ def main() -> int:
     # 利回りが上がった理由を使うルールがあれば、その列を足す（2026年10月12日に追加）
     _need_reason = any(VARIANTS.get(n_, {}).get("skip_price_drop") is not None for n_ in _sel_names)
     # 増配の実績で Tier を作るルールがあれば、その列を足す（2026年10月12日に追加）
-    _need_grow = any(VARIANTS.get(n_, {}).get("tier_col") == "tier_pit_grow" for n_ in _sel_names)
+    _need_grow = any(VARIANTS.get(n_, {}).get("tier_col") == "tier_pit_grow"
+                     or VARIANTS.get(n_, {}).get("require_col") == "grow_pit" for n_ in _sel_names)
 
     # レンジの上限で降りるルール（range_exit）を選んだら、「レンジ往復を検証」の欄が false でも
     # レンジの列を足す。足さないと、そのルールは一度も降りず、土台とまったく同じ成績になり、
@@ -6275,7 +6347,7 @@ def main() -> int:
         log.info("Tier を後出しなしで判定し直すルールがあるので、その月末の時価総額で業界首位級を判定します…")
         panel = add_pit_tiers(panel)
     if _need_grow:
-        log.info("増配の実績で Tier を作るルールがあるので、その時点までの年間配当の推移を調べます…")
+        log.info("増配の実績を使うルールがあるので、その時点までの年間配当の推移を調べます…")
         panel = add_grow_tiers(store, panel)
     if _need_reason:
         log.info("利回りが上がった理由を使うルールがあるので、12か月の株価と配当の変化を足します…")
@@ -7758,6 +7830,11 @@ def main() -> int:
                                 "うねり1回の益": (d_.get("swing_gain_sum", 0.0) / d_["range_sells"]
                                               if d_.get("range_sells") else float("nan")),
                                 "権利前の買い": d_.get("rec_buys", 0),
+                                # 11回目：緊急売りの内訳（どう買った銘柄か）と、売ったときの損益の平均
+                                "緊急_線の下": d_.get("cut_by_origin", {}).get("swing", 0),
+                                "緊急_月末": d_.get("cut_by_origin", {}).get("month", 0),
+                                "緊急_最初の月": d_.get("cut_by_origin", {}).get("first", 0),
+                                "緊急の損益": (float(np.mean(d_["cut_ret"])) if d_.get("cut_ret") else float("nan")),
                                 "ゆるめ買い": d_.get("rec_relaxed", 0),
                                 "売り/年": _n_sell / _yrs,
                                 "買い/年": _b_yr,
@@ -7789,10 +7866,12 @@ def main() -> int:
               f"利回り足切り {mys} ％")
         print(f"　 元本 {args.capital:,.0f}円 ／ 税率{args.tax:.3f}％ ／ "
               f"約定のずれ 片道{args.slip_bps:.0f}bps\n")
-        _lt = bool(getattr(args, "line_test", False))
+        _lt = bool(getattr(args, "line_test", False) or getattr(args, "safe_test", False))
+        _l10 = bool(getattr(args, "line_test", False))
         if _liq:
+            _rn = "11" if getattr(args, "safe_test", False) else "10"
             print("　 年率は「最後の月末に全部売って、約定のずれと税を払った後」（清算後）で出しています。"
-                  "評価額の年率は【10回目の判定】に並べます。\n")
+                  f"評価額の年率は【{_rn}回目の判定】に並べます。\n")
 
         # ── 1. 基準に勝った割合 ──
         print("【全部買って放置に勝った割合】\n")
@@ -8286,7 +8365,7 @@ def main() -> int:
         #     使えない … それ以外（差がその形の代金）
         #   評価額の年率でも同じ基準で判定し、2つで分類が分かれたら「決められない」とする。
         #   1年・2年・3年の線のうち1つだけが通ったときは、たまたまの可能性が高いとして扱う。
-        if _lt and nm and nm[0] == "tier_pit_mix_scr":
+        if _l10 and nm and nm[0] == "tier_pit_mix_scr":
             _L0 = VARIANTS[nm[0]]["label"]
             _g0 = gf[gf["ルール"] == _L0]
             _pl = gf.pivot_table(index=cond_cols, columns="ルール", values="清算後年率")
@@ -8416,6 +8495,125 @@ def main() -> int:
             print("  売った後60営業日 … うねりで売った値段から60営業日後の終値まで。大きなプラスは、売った後も上がり続けた（上抜けを逃した）。")
             print("  買った後60営業日 … 線の下で買った値段から60営業日後まで。10％以上下がった割合は、下の線を割った（下抜け）目安。")
             print("  （売った後・買った後は、全期間・資金投入がいちばん短い条件の明細から数えたもの）")
+
+        # ── 11回目：増配の実績がある銘柄だけで回す（2026年10月12日に追加。結果を見る前に決めた基準）──
+        #   ① 1年・2年・3年線のうねり取りを「増配の実績だけ・全部持ち続ける」と比べる（安全な銘柄の中で、うねり取りが得か）
+        #   ② 4つとも、今の本番（首位級だけその時点で判定＝全部持ち続ける）と比べる（今より良くなるか）
+        #   判定は清算後の年率。基準はこれまでと同じ：24条件の85％以上で上回り、かつ「使える」なら採用候補。
+        #   「使える」＝平均年率の差 −0.5pt以内・最悪の年率の差 −1.0pt以内・相手の勝ちが85％未満。
+        #   評価額の年率でも同じ基準で判定し、分類が分かれたら「決められない」。
+        #   ①で上回らなければ、うねり取りの検証は終わりにする（11回目の前に決めたこと）。
+        if getattr(args, "safe_test", False) and nm and nm[0] == "tier_pit_mix_scr" \
+                and VARIANTS["safe_hold_pit"]["label"] in set(gf["ルール"]):
+            _pl11 = gf.pivot_table(index=cond_cols, columns="ルール", values="清算後年率")
+            _pm11 = gf.pivot_table(index=cond_cols, columns="ルール", values="評価額年率")
+
+            def _judge11(pv, col, lab_, ref_):
+                g_ = gf[gf["ルール"] == lab_]
+                r_ = gf[gf["ルール"] == ref_]
+                w_ = float((pv[lab_] > pv[ref_]).mean())
+                l_ = float((pv[ref_] > pv[lab_]).mean())
+                da_ = float(g_[col].mean() - r_[col].mean())
+                dw_ = float(g_[col].min() - r_[col].min())
+                ok_ = (da_ >= -0.5) and (dw_ >= -1.0) and (l_ < 0.85)
+                cat_ = "採用候補" if (ok_ and w_ >= 0.85) else ("使える" if ok_ else "使えない")
+                return w_, l_, da_, dw_, cat_
+
+            def _show11(lab_, ref_, short_):
+                if lab_ not in _pl11.columns or ref_ not in _pl11.columns:
+                    return None
+                wl_, ll_, dal_, dwl_, cl_ = _judge11(_pl11, "清算後年率", lab_, ref_)
+                wm_, lm_, dam_, dwm_, cm_ = _judge11(_pm11, "評価額年率", lab_, ref_)
+                fin_ = cl_ if cl_ == cm_ else f"決められない（清算後「{cl_}」・評価額「{cm_}」）"
+                cost_ = f"（代金 年{-dal_:.1f}pt）" if (fin_ == "使えない" and dal_ < 0) else ""
+                print(f"    {short_} … 清算後 上回った {wl_ * 100:.0f}％（相手 {ll_ * 100:.0f}％）・平均 {dal_:+.2f}pt・"
+                      f"最悪 {dwl_:+.2f}pt → {cl_} ／ 評価額 平均 {dam_:+.2f}pt・最悪 {dwm_:+.2f}pt → {cm_}")
+                print(f"      判定 … {fin_}{cost_}")
+                return fin_
+
+            _Lp = VARIANTS["tier_pit_mix_scr"]["label"]
+            _Ls = VARIANTS["safe_hold_pit"]["label"]
+            _sw11 = [("safe_line_1y_pit", "1年線"), ("safe_line_2y_pit", "2年線"), ("safe_line_3y_pit", "3年線")]
+            print("\n【11回目の判定：増配の実績がある銘柄だけで回す】（基準は結果を見る前に決めたもの）\n")
+            print("  判定は清算後（最後に全部売って、税と約定のずれを払った後）の年率。評価額でも同じ基準で判定し、"
+                  "分類が分かれたら「決められない」。\n")
+            print("  ① 増配の実績がある銘柄の中で、うねり取りは持ち続けるより得か（相手：増配の実績だけ・全部持ち続ける）")
+            _res1 = {}
+            for n_, sh_ in _sw11:
+                if n_ in nm:
+                    _res1[n_] = _show11(VARIANTS[n_]["label"], _Ls, sh_)
+            print("\n  ② 今の本番より良くなるか（相手：首位級だけその時点で判定＝今の本番）")
+            for n_, sh_ in [("safe_hold_pit", "全部持ち続ける")] + _sw11:
+                if n_ in nm:
+                    _show11(VARIANTS[n_]["label"], _Lp, sh_)
+            _pass1 = [n_ for n_, v_ in _res1.items() if v_ == "採用候補"]
+            _use1 = [n_ for n_, v_ in _res1.items() if v_ in ("採用候補", "使える")]
+            print()
+            if not _pass1:
+                print("  ① で持ち続ける形を上回ったうねり取りはなし → 決めておいたとおり、うねり取りの検証はここで終わり。")
+            elif len(_pass1) == 1:
+                print("  ※ ① で通ったのは3つの線のうち1つだけ。たまたまの可能性が高いとして扱う。")
+            if _use1 and not _pass1:
+                print("  　（「使える」＝見せるための売買として、ほぼ代金なしで使える形はある）")
+
+            # 緊急売りの内訳：どう買った銘柄で、減配・業績急変の売りになったか
+            print("\n  緊急売り（減配・営業利益の2割減・赤字転落）の内訳（1条件あたりの平均）")
+            for n_ in nm:
+                _L = VARIANTS[n_]["label"]
+                _g = gf[gf["ルール"] == _L]
+                if _g.empty:
+                    continue
+                _r = _g["緊急の損益"].mean() if _g["緊急の損益"].notna().any() else float("nan")
+                _rs = f"・売ったときの損益 平均 {_r * 100:+.0f}％" if _r == _r else ""
+                _sh = "本番" if n_ == "tier_pit_mix_scr" else _L.replace("増配の実績だけ・", "増配だけ・")
+                print(f"    {_sh[:22]:<22} … 計 {_g['緊急売り'].mean():.1f}回（線の下で買った {_g['緊急_線の下'].mean():.1f}／"
+                      f"月末に買った {_g['緊急_月末'].mean():.1f}／最初の月に買った {_g['緊急_最初の月'].mean():.1f}）{_rs}")
+
+            # うねり取りの中身（増配の実績だけの3つ）
+            print("\n  うねり取りの中身（増配の実績だけ）")
+            for n_, sh_ in _sw11:
+                if n_ not in nm:
+                    continue
+                _g = gf[gf["ルール"] == VARIANTS[n_]["label"]]
+                if _g.empty:
+                    continue
+                _yrs = []
+                for (_sp, _rp), _gg in _g.groupby(["期間", "資金投入"]):
+                    a_, b_ = [pd.Timestamp(x) for x in str(_sp).split("〜")]
+                    _yrs.append(max((b_ - a_).days / 365.25, 0.5))
+                _swy = float(_g["うねり売り"].mean() / np.mean(_yrs)) if _yrs else float("nan")
+                _gain = _g["うねり1回の益"].mean() if _g["うねり1回の益"].notna().any() else float("nan")
+                _txt = f"    {sh_} … うねりで売った 年{_swy:.1f}回・1回の益 " + (f"{_gain * 100:+.1f}％" if _gain == _gain else "—")
+                _tg = VARIANTS[n_]["swing_daily"]["tag"]
+                _arrs = (SWING_DAILY or {}).get(_tg, {})
+                _trs = swing_trades.get(n_)
+                _s60, _b60 = [], []
+                if _trs is not None and not _trs.empty:
+                    for _, x_ in _trs.iterrows():
+                        a_ = _arrs.get(x_["code"])
+                        if a_ is None or not (x_["price"] > 0):
+                            continue
+                        t_ns_ = pd.Timestamp(x_["day"]).value
+                        j_ = int(np.searchsorted(a_[0], t_ns_))
+                        if j_ < len(a_[0]) and int(a_[0][j_]) == t_ns_ and j_ + 60 < len(a_[0]):
+                            (_s60 if x_["side"] == "sell" else _b60).append(float(a_[1][j_ + 60]) / float(x_["price"]) - 1.0)
+                if _s60:
+                    _txt += f"・売った後60営業日 平均 {np.mean(_s60) * 100:+.1f}％（{len(_s60)}回）"
+                if _b60:
+                    _txt += f"・買った後60営業日で10％以上下がった {np.mean(np.array(_b60) <= -0.10) * 100:.0f}％（{len(_b60)}回）"
+                print(_txt)
+
+            # 増配の実績がある銘柄は、候補（8条件と利回り3％以上）のうちどれだけか
+            if "grow_pit" in panel.columns and "screen_pass" in panel.columns:
+                _cand = panel[panel["screen_pass"].fillna(False).astype(bool) & (panel["yield"] >= 3.0)]
+                if len(_cand):
+                    _sh_g = float(_cand["grow_pit"].astype(bool).mean() * 100)
+                    _n_m = _cand[_cand["grow_pit"].astype(bool)].groupby("date").size().mean()
+                    print(f"\n  増配の実績がある銘柄 … 候補（8条件・利回り3％以上）の {_sh_g:.0f}％"
+                          f"（1か月あたり平均 {_n_m:.0f}銘柄）")
+            print("  （基準：24条件の85％以上で上回り、かつ「使える」なら採用候補。「使える」＝平均年率の差 −0.5pt以内・"
+                  "最悪の年率の差 −1.0pt以内・相手の勝ち85％未満。それ以外は年率を払う形）")
+            print("  緊急売りの「最初の月に買った」は、検証を始めた月に買った銘柄。資金投入を分けた条件では、最初の月に買うのは一部だけ。")
 
         OUTDIR.mkdir(parents=True, exist_ok=True)
         gf.to_csv(OUTDIR / "grid.csv", index=False, encoding="utf-8-sig")
