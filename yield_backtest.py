@@ -1090,6 +1090,37 @@ VARIANTS: dict[str, dict[str, Any]] = {
         "range_exit": {"fraction": 1.0, "min_gain": 0.0, "top_col": "box_top_l"},
         "swing_entry": {"tag": "l", "tiers": ["A", "B"]},
     },
+    # ── 9回目の候補（2026年10月12日に追加）：うねりを日ごとに売り買いする ──
+    #   相手は8回目と同じ「首位級だけその時点で判定（tier_pit_mix_scr。全部持ち続ける）」。
+    #   S は持ち続け、A・B はうねりの中で、売り値に届いた日に売り、買い値に届いた日に買う（月に何往復でも）。
+    #   うねりの取り方は DAILY_BOX_SETS の3つ（細かい・短め・中くらい）。結果を見る前に決めたもの。
+    "swing_d_xs_pit": {
+        "label": "日ごとにうねり取り（細かい：20日・幅2〜5％）",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "tier_col": "tier_pit_mix",
+        "swing_daily": {"tag": "xs", "tiers": ["A", "B"]},
+    },
+    "swing_d_s_pit": {
+        "label": "日ごとにうねり取り（短め：20日・幅3〜8％）",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "tier_col": "tier_pit_mix",
+        "swing_daily": {"tag": "s", "tiers": ["A", "B"]},
+    },
+    "swing_d_m_pit": {
+        "label": "日ごとにうねり取り（中くらい：60日・幅4〜12％）",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "tier_col": "tier_pit_mix",
+        "swing_daily": {"tag": "m", "tiers": ["A", "B"]},
+    },
     "rec_first_scr": {
         "label": "権利月が近い銘柄を先に買う（条件そのまま）",
         "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
@@ -2989,6 +3020,57 @@ def build_daily_arrays(store: dict) -> dict:
 
 
 # ══════════════════════════════════════════
+# うねりを日ごとに売り買いする（9回目。2026年10月12日に追加）
+#   線の引き方は8回目と同じ（その前の日までの終値の90％点と10％点）。
+#   届いたとみなす位置だけを、うねりの幅に合わせて変える：
+#     売り … 上の線から「幅の15％」下　　買い … 下の線から「幅の15％」上
+#   （幅3％のうねりなら線から0.45％、幅10％なら1.5％。細かいうねりでも取れる幅が残るように）
+# ══════════════════════════════════════════
+DAILY_BOX_SETS = {
+    "xs": {"win": 20, "w_min": 0.02, "w_max": 0.05, "label": "細かい（20日・幅2〜5％）"},
+    "s": {"win": 20, "w_min": 0.03, "w_max": 0.08, "label": "短め（20日・幅3〜8％）"},
+    "m": {"win": 60, "w_min": 0.04, "w_max": 0.12, "label": "中くらい（60日・幅4〜12％）"},
+}
+SWING_TOUCH_FRAC = 0.15
+SWING_DAILY = None
+
+
+def box_lines(close: pd.Series, win: int, w_min: float, w_max: float,
+              k: float = SWING_TOUCH_FRAC) -> pd.DataFrame:
+    """日ごとのうねりの線と、売り値・買い値（その前の日までの終値だけを使う）。"""
+    prev = close.shift(1)
+    hi = prev.rolling(win, min_periods=win).quantile(BOX_Q[1])
+    lo = prev.rolling(win, min_periods=win).quantile(BOX_Q[0])
+    width = (hi - lo) / lo
+    ok = ((width >= w_min) & (width <= w_max)).fillna(False)
+    return pd.DataFrame({"close": close, "hi": hi, "lo": lo, "ok": ok,
+                         "sell_px": hi - k * (hi - lo), "buy_px": lo + k * (hi - lo)})
+
+
+def build_swing_daily(store: dict, tags) -> dict:
+    """銘柄ごとに、日々の（日付, 終値, 売り値, 買い値, うねりの中か）を配列にしておく。"""
+    out = {"_cal": None}
+    cal = set()
+    for t in tags:
+        out[t] = {}
+    for code, rows in store["quotes"].items():
+        px = quotes_to_df(rows)
+        if px.empty:
+            continue
+        close = px.set_index("date")["close"]
+        ds = px["date"].to_numpy(dtype="datetime64[ns]").astype(np.int64)
+        cal.update(ds.tolist())
+        for t in tags:
+            prm = DAILY_BOX_SETS[t]
+            bl = box_lines(close, prm["win"], prm["w_min"], prm["w_max"])
+            out[t][code] = (ds, bl["close"].to_numpy(dtype=float),
+                            bl["sell_px"].to_numpy(dtype=float), bl["buy_px"].to_numpy(dtype=float),
+                            bl["ok"].to_numpy(dtype=bool))
+    out["_cal"] = np.array(sorted(cal), dtype=np.int64)
+    return out
+
+
+# ══════════════════════════════════════════
 # 売買ルール
 # ══════════════════════════════════════════
 def required_pct(base: float, row: pd.Series, dynamic: bool) -> float:
@@ -3037,6 +3119,23 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
     #                 上の線で売るのは range_exit（top_col で列を選ぶ）。売った月のうちは買い直さない。
     swing_entry = cfg.get("swing_entry")
     swing_sold = {}
+    # 9回目の候補（2026年10月12日に追加）
+    #   swing_daily … {"tag": "m", "tiers": ["A", "B"], "min_gain": 0.0}。この Tier の持ち株は、
+    #                 うねりの中で売り値に届いた日に売る。買える候補は、うねりの中で買い値に届いた日に買う。
+    #                 月の中で何往復してもよい。月末の買いでは、うねりの中にいる銘柄は買わずに待つ。
+    swing_daily = cfg.get("swing_daily")
+    if swing_daily:
+        if SWING_DAILY is None or swing_daily.get("tag", "m") not in SWING_DAILY:
+            raise RuntimeError("日々のうねりの線（SWING_DAILY）が用意されていません。")
+        _swd = SWING_DAILY[swing_daily.get("tag", "m")]
+        _sw_tiers = set(swing_daily.get("tiers", ["A", "B"]))
+
+        def _box_ok_at(code_, t_ns):
+            arr_ = _swd.get(code_)
+            if arr_ is None:
+                return False
+            j_ = int(np.searchsorted(arr_[0], t_ns, side="right")) - 1
+            return bool(arr_[4][j_]) if j_ >= 0 else False
     if swing_entry:
         _t = swing_entry.get("tag", "m")
         if f"box_bot_{_t}" not in panel.columns:
@@ -3389,10 +3488,128 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                 v += sum(sh for sh, _ in st["lots"]) * day.loc[c, "price"]
         return v
 
+    prev_day = None
     for mi, dt in enumerate(dates):
         day = panel[panel["date"] == dt].set_index("code")
         day = day.assign(mkt_yield_z=float(mkt_z.get(dt, 0) or 0))
         _dt_ns = pd.Timestamp(dt).value        # 損切りの判定で、日々の終値と比べるため
+
+        _div_pending = []     # 権利落ち日以降にうねりで売った分（その月の配当は受け取る）
+        # ── うねりで日々売り買い（9回目）──
+        #   前の月末の翌日から今月末までの営業日を順に見る。
+        #   売り：A・B の持ち株が、うねりの中で売り値に届いた日に、その値段で全部売る（取得単価より上のときだけ）
+        #   買い：前の月末の時点で買える A・B の候補（8条件・利回り・緊急撤退）が、
+        #         うねりの中で買い値に届いた日に、その値段で買う。売った日のうちには買い直さない。
+        #   1銘柄の予算は前の月末の総資産で決める。取引の日付は、集計のためその月末で記録する（day に実際の日）。
+        if swing_daily and mi > 0 and prev_day is not None:
+            _cal = SWING_DAILY["_cal"]
+            _lo_ns = pd.Timestamp(dates[mi - 1]).value
+            _days = _cal[(_cal > _lo_ns) & (_cal <= _dt_ns)]
+            _mg = float(swing_daily.get("min_gain", 0.0))
+            _total0 = curve[-1]["value"] if curve else capital
+            _reserved = capital * (1.0 - min(1.0, (mi + 1) / ramp)) if ramp > 0 else 0.0
+            _ordt = {"S": 0, "A": 1, "B": 2}
+            _avg_w0 = sum(tw.values()) / len(tw)
+            _elig = []
+            for c_, r_ in prev_day.iterrows():
+                tg_ = r_.get("tier", "B")
+                if tg_ not in _sw_tiers or c_ not in _swd:
+                    continue
+                if use_screen and not screen_ok(r_):
+                    continue
+                if min_yield > 0 and r_.get("yield", 0) < min_yield:
+                    continue
+                if skip_emg_buy:
+                    if emg_actual:
+                        _cu, _op = emg_flags(r_)
+                    else:
+                        _cu, _op = bool(r_.get("dps_cut")), bool(r_.get("op_drop"))
+                    if _cu or _op:
+                        continue
+                _elig.append((_ordt.get(tg_, 9), -float(level(r_)), c_, tg_))
+            _elig.sort()
+            _slc = {}
+
+            def _day_of(c_, d_):
+                if c_ not in _slc:
+                    arr_ = _swd.get(c_)
+                    if arr_ is None:
+                        _slc[c_] = {}
+                    else:
+                        a_ = int(np.searchsorted(arr_[0], _lo_ns, side="right"))
+                        b_ = int(np.searchsorted(arr_[0], _dt_ns, side="right"))
+                        _slc[c_] = {int(arr_[0][i_]): (float(arr_[1][i_]), float(arr_[2][i_]),
+                                                       float(arr_[3][i_]), bool(arr_[4][i_]))
+                                    for i_ in range(a_, b_)}
+                return _slc[c_].get(d_)
+
+            _sold_on = {}
+            # 配当の権利（月末が権利確定日。受け渡しは2営業日後なので、月の最後から3営業日目が権利付き最終日）
+            #   最後の2営業日（権利落ち日と月末）に買った分は、その月の配当を受け取らない
+            #   最後の2営業日に売った分は、その月の配当を受け取る（権利付き最終日まで持っていたため）
+            _ex_ns = int(_days[-2]) if len(_days) >= 2 else None
+            for d_ns in _days:
+                d_ns = int(d_ns)
+                for c_ in list(pos.keys()):
+                    st_ = pos[c_]
+                    tg_ = prev_day.loc[c_].get("tier", "B") if c_ in prev_day.index else st_.get("tier", "B")
+                    if tg_ not in _sw_tiers or not st_["lots"]:
+                        continue
+                    v_ = _day_of(c_, d_ns)
+                    if v_ is None:
+                        continue
+                    cl_, sp_, bp_, ok_ = v_
+                    if not ok_ or not (cl_ >= sp_):
+                        continue
+                    shs_ = sum(sh for sh, _ in st_["lots"])
+                    avg_ = sum(sh * pr for sh, pr in st_["lots"]) / shs_ if shs_ else 0.0
+                    if not (avg_ > 0 and sp_ > avg_ * (1 + _mg)):
+                        continue
+                    _n0 = len(trades)
+                    if _ex_ns is not None and d_ns >= _ex_ns:
+                        _div_pending.append((c_, shs_))     # 権利付き最終日まで持っていたので、配当は受け取る
+                    _sell_shares(c_, st_, shs_, sp_, dt)
+                    for tr_ in trades[_n0:]:
+                        tr_["day"] = pd.Timestamp(d_ns)
+                    diag["range_sells"] = diag.get("range_sells", 0) + 1
+                    diag["swing_gain_sum"] = diag.get("swing_gain_sum", 0.0) + (sp_ * (1 - slip) * (1 - fee) / avg_ - 1)
+                    swing_sold[c_] = mi
+                    _sold_on[c_] = d_ns
+                    _close(c_, st_, mi, "うねりで売却")
+                for _o, _np, c_, tg_ in _elig:
+                    if c_ in pos or _sold_on.get(c_) == d_ns:
+                        continue
+                    if len(pos) >= max_names:
+                        break
+                    v_ = _day_of(c_, d_ns)
+                    if v_ is None:
+                        continue
+                    cl_, sp_, bp_, ok_ = v_
+                    if not ok_ or not (cl_ <= bp_):
+                        continue
+                    if weighted:
+                        unit_ = _total0 / target_n * (tw.get(tg_, 1.0) / _avg_w0) / n_tr
+                    else:
+                        unit_ = _total0 / max_names / n_tr
+                    usable_ = cash - _reserved
+                    if usable_ < unit_ or unit_ < bp_:
+                        continue
+                    sh_ = int(unit_ // bp_ // 100) * 100 if tier_budget else int(unit_ // bp_)
+                    if sh_ <= 0:
+                        continue
+                    be_ = bp_ * (1 + slip) * (1 + fee)
+                    cash -= sh_ * be_
+                    diag["fee"] = diag.get("fee", 0.0) + sh_ * bp_ * (slip + fee)
+                    pos[c_] = {"units": 1, "lots": [(sh_, be_)], "peak": bp_, "tier": tg_,
+                               "cost_sum": sh_ * be_, "sh_sum": sh_}
+                    if _ex_ns is not None and d_ns >= _ex_ns:
+                        pos[c_]["no_div_mi"] = mi        # 権利落ちのあとに買ったので、この月の配当は受け取らない
+                    diag["opened"] += 1
+                    opened_at[c_] = mi
+                    diag["tier_opened"][tg_] = diag["tier_opened"].get(tg_, 0) + 1
+                    diag["swing_buys"] = diag.get("swing_buys", 0) + 1
+                    trades.append({"code": c_, "date": dt, "side": "buy", "price": bp_,
+                                   "shares": sh_, "day": pd.Timestamp(d_ns)})
 
         # ── 売り ──
         for code in list(pos.keys()):
@@ -3800,6 +4017,12 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                     _cut, _opd = bool(row.get("dps_cut")), bool(row.get("op_drop"))
                 if _cut or _opd:
                     continue    # 本番と同じく、減配・業績急変の銘柄は買わない
+            if swing_daily and row.get("tier", "B") in _sw_tiers and code not in pos:
+                if swing_sold.get(code) == mi:
+                    continue    # うねりで売った月のうちは、月末に買い直さない
+                if _box_ok_at(code, _dt_ns):
+                    diag["swing_wait"] = diag.get("swing_wait", 0) + 1
+                    continue    # うねりの中にいる。買い値に届く日を待つ（日々の売り買いで買う）
             if swing_entry and row.get("tier", "B") in swing_entry.get("tiers", ["A", "B"]):
                 if swing_sold.get(code) == mi:
                     continue    # うねりで売った月のうちは買い直さない
@@ -4021,14 +4244,16 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
 
         # ── 配当（権利月に 年間DPS ÷ 2 を受け取る）──
         if dividends:
-            for code, st in pos.items():
+            _div_items = [(code, sum(sh for sh, _ in st["lots"])) for code, st in pos.items()
+                          if st.get("no_div_mi") != mi]
+            _div_items += _div_pending
+            for code, held in _div_items:
                 if code not in day.index:
                     continue
                 row = day.loc[code]
                 mth = pd.Timestamp(dt).month
                 for key in ("fiscal_month", "interim_month"):
                     if int(row.get(key, 0) or 0) == mth and row["dps"] > 0:
-                        held = sum(sh for sh, _ in st["lots"])
                         if div_split:
                             # 中間と期末の実際の割合で受け取る（期末だけの会社は中間に0）
                             _fr = _int_share(row)
@@ -4239,6 +4464,7 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
 
         curve.append({"date": dt, "value": value_of(day),
                       "cash": cash, "names": len(pos)})
+        prev_day = day
 
     # 期末に残っている含み損益（まだ確定していない分）
     unreal = 0.0
@@ -5707,6 +5933,16 @@ def main() -> int:
     # 価格で損切りするルールがあれば、日々の終値を用意する。
     # 月末の値だけで判定すると、月の途中で線を割っても月末に戻していれば売らないことになり、
     # 実際の損切り（毎日の値動きで判断する）と食い違うため。
+    global SWING_DAILY
+    _sw_tags = sorted({VARIANTS[n_]["swing_daily"].get("tag", "m") for n_ in _sel_names
+                       if VARIANTS.get(n_, {}).get("swing_daily")})
+    if _sw_tags:
+        log.info("うねりを日ごとに売り買いするルールがあるので、日々の上の線・下の線を用意します…")
+        SWING_DAILY = build_swing_daily(store, _sw_tags)
+        for _t in _sw_tags:
+            _okr = [float(np.mean(a[4])) for a in SWING_DAILY[_t].values() if len(a[4])]
+            log.info("  うねり（%s） … 日々のうちうねりの中にいた割合 平均 %.0f％",
+                     DAILY_BOX_SETS[_t]["label"], (float(np.mean(_okr)) * 100) if _okr else 0.0)
     global DAILY_PX
     if any(VARIANTS.get(n_, {}).get("stop_loss") for n_ in _sel_names):
         DAILY_PX = build_daily_arrays(store)
@@ -7201,6 +7437,8 @@ def main() -> int:
                                 "下落で見送り": d_.get("drop_skip", 0),
                                 "うねり売り": d_.get("range_sells", 0),
                                 "底で買い": d_.get("swing_buys", 0),
+                                "うねり1回の益": (d_.get("swing_gain_sum", 0.0) / d_["range_sells"]
+                                              if d_.get("range_sells") else float("nan")),
                                 "権利前の買い": d_.get("rec_buys", 0),
                                 "ゆるめ買い": d_.get("rec_relaxed", 0),
                                 "売り/年": _n_sell / _yrs,
@@ -7388,7 +7626,7 @@ def main() -> int:
         _act_keys = ("yield_exit", "tp_gain", "harvest", "topup", "rec_relax", "screen_drop",
                      "max_yield", "ex_first", "max_per_sector", "tier_weight",
                      "tiers_allowed", "cash_floor", "max_names", "tier_col", "skip_price_drop",
-                     "swing_entry")
+                     "swing_entry", "swing_daily")
         if any(any(k in VARIANTS[n_] for k in _act_keys) for n_ in nm) and len(nm) > 1:
             _base_lab = VARIANTS[nm[0]]["label"]
             if _base_lab in piv.columns:
@@ -7666,12 +7904,12 @@ def main() -> int:
         #   見せるための売買として使える … 「使える」（平均年率−0.5pt以内・最悪の年率−1.0pt以内・相手の勝ち85％未満）
         #   それ以外 … 年率を払う形（差が「うねり取りの代金」）
         #   3つの取り方のうち1つだけが通ったときは、たまたまの可能性が高いとして扱う。
-        _r8 = [n_ for n_ in nm[1:] if VARIANTS[n_].get("swing_entry")]
+        _r8 = [n_ for n_ in nm[1:] if VARIANTS[n_].get("swing_entry") or VARIANTS[n_].get("swing_daily")]
         if _r8 and nm[0] == "tier_pit_mix_scr":
             _p8 = gf.pivot_table(index=cond_cols, columns="ルール", values="年率")
             _L0 = VARIANTS[nm[0]]["label"]
             _g0 = gf[gf["ルール"] == _L0]
-            print(f"\n【8回目の判定】（相手：{_L0}。全部持ち続ける形。基準は結果を見る前に決めたもの）\n")
+            print(f"\n【うねり取りの判定】（相手：{_L0}。全部持ち続ける形。基準は結果を見る前に決めたもの）\n")
             _pass = []
             for n_ in _r8:
                 _L = VARIANTS[n_]["label"]
@@ -7703,6 +7941,9 @@ def main() -> int:
                       f"買い {(_g['買い/年'].mean() - _g0['買い/年'].mean()):+.1f}回/年 ／ 売買のあった月 "
                       f"{_g['売買のあった月'].mean():.0f}％（相手 {_g0['売買のあった月'].mean():.0f}％） ／ "
                       f"うねりで売った回数 年{_sw:.1f}回")
+                if "うねり1回の益" in _g.columns and _g["うねり1回の益"].notna().any():
+                    print(f"    うねりで売った1回あたりの益 … 平均 {_g['うねり1回の益'].mean() * 100:+.1f}％"
+                          "（取得単価に対して。約定のずれ込み・税引前）")
                 print()
             if len(_pass) == 1 and len(_r8) >= 3:
                 print("  ※ 3つの取り方のうち1つだけが通った。たまたまの可能性が高いとして扱う。")
