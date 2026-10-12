@@ -1121,6 +1121,38 @@ VARIANTS: dict[str, dict[str, Any]] = {
         "tier_col": "tier_pit_mix",
         "swing_daily": {"tag": "m", "tiers": ["A", "B"]},
     },
+    # ── 10回目の候補（2026年10月12日に追加）：手で引くような水平線でうねりを取る ──
+    #   相手は9回目と同じ「首位級だけその時点で判定（tier_pit_mix_scr。全部持ち続ける）」。
+    #   S は持ち続け、A・B は水平線の中で、上の線の手前（幅の10％下）に高値が届いた日に売り、
+    #   下の線の手前（幅の10％上）に安値が届いた日に買う。線の引き方は DAILY_BOX_SETS の h1・h2・h3。
+    #   売って空いたお金は、その月末に、ほかの買える候補へ回る（いつもの買いの順番）。
+    "line_1y_pit": {
+        "label": "1年線でうねり取り（250日・幅5〜25％）",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "tier_col": "tier_pit_mix",
+        "swing_daily": {"tag": "h1", "tiers": ["A", "B"]},
+    },
+    "line_2y_pit": {
+        "label": "2年線でうねり取り（500日・幅6〜35％）",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "tier_col": "tier_pit_mix",
+        "swing_daily": {"tag": "h2", "tiers": ["A", "B"]},
+    },
+    "line_3y_pit": {
+        "label": "3年線でうねり取り（750日・幅8〜50％）",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "tier_col": "tier_pit_mix",
+        "swing_daily": {"tag": "h3", "tiers": ["A", "B"]},
+    },
     "rec_first_scr": {
         "label": "権利月が近い銘柄を先に買う（条件そのまま）",
         "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
@@ -3030,6 +3062,13 @@ DAILY_BOX_SETS = {
     "xs": {"win": 20, "w_min": 0.02, "w_max": 0.05, "label": "細かい（20日・幅2〜5％）"},
     "s": {"win": 20, "w_min": 0.03, "w_max": 0.08, "label": "短め（20日・幅3〜8％）"},
     "m": {"win": 60, "w_min": 0.04, "w_max": 0.12, "label": "中くらい（60日・幅4〜12％）"},
+    # 10回目（2026年10月12日に追加）：目で引く「何度も止まった上下の横線」。引き方は hline_lines を参照
+    "h1": {"method": "hline", "win": 250, "piv": 10, "tol": 0.02, "w_min": 0.05, "w_max": 0.25,
+           "label": "1年線（250日・幅5〜25％）"},
+    "h2": {"method": "hline", "win": 500, "piv": 15, "tol": 0.02, "w_min": 0.06, "w_max": 0.35,
+           "label": "2年線（500日・幅6〜35％）"},
+    "h3": {"method": "hline", "win": 750, "piv": 20, "tol": 0.025, "w_min": 0.08, "w_max": 0.50,
+           "label": "3年線（750日・幅8〜50％）"},
 }
 SWING_TOUCH_FRAC = 0.15
 SWING_DAILY = None
@@ -3047,12 +3086,213 @@ def box_lines(close: pd.Series, win: int, w_min: float, w_max: float,
                          "sell_px": hi - k * (hi - lo), "buy_px": lo + k * (hi - lo)})
 
 
+# ══════════════════════════════════════════
+# 水平線でうねりを取る（10回目。2026年10月12日に追加）
+#   目で引く「何度も止まった上下の横線」を、機械で引き直す。
+#   ・山 … 前後 piv 日のなかでいちばん高い高値。谷 … いちばん安い安値（高値・安値がなければ終値）
+#   ・山と谷を、高さが ±tol 以内のものどうしで集める（集まった数＝その高さに触れた回数）
+#   ・上の線 … 期間の終値の真ん中より上の山で作る。触れた回数が「最多−1」以上（最低2回）の集まりのうち、
+#              いちばん高い集まりを選び、その集まりの上から4分の1の高さに引く（ヒゲ1本の飛び出しは無視する）
+#   ・下の線 … 真ん中より下の谷で同じように作り、いちばん安い集まりの下から4分の1の高さに引く
+#   ・線として認めるのは、次をすべて満たすとき
+#       上下とも2回以上触れている／幅（上÷下−1）が w_min〜w_max／期間の終値の75％以上が線の間（±tol）／
+#       終値が「上の線から幅の25％」と「下の線から幅の25％」の帯を3回以上行き来している／
+#       前の日の終値が線の間（±tol）にある
+#   ・線は5営業日ごとに引き直す。使うのはその日より前のデータだけ（山と谷は、後ろに piv 日あって確定したものだけ）
+#   ・売り … その日の高値が「上の線から幅の10％下」に届いたら、その値段で売る（指値）
+#     買い … その日の安値が「下の線から幅の10％上」に届いたら、その値段で買う（指値）
+#   2026年10月12日にいただいた3つのチャート（アイチコーポレーション・全国保証・アサヒグループHD）の形を
+#   読み取って試し、手で引いた線に近くなる引き方を選んだ（成績を見て選んだものではない）。
+# ══════════════════════════════════════════
+LINE_TOUCH_FRAC = 0.10      # 売り値・買い値を、線から幅の何割内側に置くか
+LINE_STEP = 5               # 線を引き直す間隔（営業日）
+LINE_INSIDE_MIN = 0.75      # 期間の終値のうち、線の間にいた割合の下限
+LINE_ALT_MIN = 3            # 上の帯と下の帯を行き来した回数の下限
+LINE_ZONE = 0.25            # 行き来を数える帯の厚み（幅に対する割合）
+LINE_EXAMPLES = ("6345", "7164", "2502")   # いただいたチャートの3銘柄（線の引き方の確認用に、いまの線を表示する）
+
+
+def quotes_hl(rows: list[dict]) -> pd.DataFrame:
+    """日々の終値に、高値・安値（分割を調整したもの）を足す。行は quotes_to_df と同じ。
+    調整済みの高値・安値が無ければ、生の高値・安値に「調整済み終値÷生の終値」を掛けて揃える。
+    どちらも無ければ終値で代用する（src に何を使ったかを残す）。"""
+    df = pd.DataFrame(rows)
+    if df.empty or "Date" not in df.columns:
+        return pd.DataFrame()
+    df["Date"] = pd.to_datetime(df["Date"])
+    close = pd.to_numeric(df.get("AdjC", df.get("AdjustmentClose", df.get("C", df.get("Close")))),
+                          errors="coerce")
+    hi = lo = None
+    src = "終値"
+
+    def _first(keys):
+        return next((k for k in keys if k in df.columns), None)
+
+    kh, kl = _first(("AdjH", "AdjustmentHigh")), _first(("AdjL", "AdjustmentLow"))
+    if kh and kl:
+        hi, lo, src = pd.to_numeric(df[kh], errors="coerce"), pd.to_numeric(df[kl], errors="coerce"), "高値・安値"
+    else:
+        kh, kl, kc = _first(("H", "High")), _first(("L", "Low")), _first(("C", "Close"))
+        if kh and kl and kc:
+            raw_c = pd.to_numeric(df[kc], errors="coerce")
+            ratio = (close / raw_c).where(raw_c > 0)
+            hi = pd.to_numeric(df[kh], errors="coerce") * ratio
+            lo = pd.to_numeric(df[kl], errors="coerce") * ratio
+            src = "高値・安値"
+    out = pd.DataFrame({"date": df["Date"], "close": close})
+    out["high"] = hi if hi is not None else np.nan
+    out["low"] = lo if lo is not None else np.nan
+    out = out.dropna(subset=["close"]).sort_values("date").reset_index(drop=True)
+    out["high"] = np.fmax(out["high"].fillna(out["close"]).to_numpy(dtype=float), out["close"].to_numpy(dtype=float))
+    out["low"] = np.fmin(out["low"].fillna(out["close"]).to_numpy(dtype=float), out["close"].to_numpy(dtype=float))
+    out.attrs["src"] = src
+    return out
+
+
+def _line_thin(idx: np.ndarray, gap: int) -> np.ndarray:
+    """同じ高さが続いたときに山（谷）が並ばないよう、gap 日以内の続きは最初の1つだけ残す。"""
+    if len(idx) == 0:
+        return idx.astype(np.int64)
+    keep = [int(idx[0])]
+    for i in idx[1:]:
+        if int(i) - keep[-1] > gap:
+            keep.append(int(i))
+    return np.array(keep, dtype=np.int64)
+
+
+def _line_pivots(h: np.ndarray, l: np.ndarray, piv: int) -> tuple[np.ndarray, np.ndarray]:
+    """山（前後 piv 日でいちばん高い高値）と谷（いちばん安い安値）の位置。端の piv 日は確定しないので出ない。"""
+    rmax = pd.Series(h).rolling(2 * piv + 1, center=True).max().to_numpy()
+    rmin = pd.Series(l).rolling(2 * piv + 1, center=True).min().to_numpy()
+    with np.errstate(invalid="ignore"):
+        ph = np.flatnonzero(h >= rmax)
+        pl = np.flatnonzero(l <= rmin)
+    return _line_thin(ph, piv), _line_thin(pl, piv)
+
+
+def _line_cluster(P: np.ndarray, tol: float, upper: bool) -> tuple[float, int]:
+    """高さの近い山（谷）を集め、線の高さと触れた回数を返す。"""
+    if len(P) == 0:
+        return float("nan"), 0
+    M = np.abs(P[None, :] - P[:, None]) <= tol * P[:, None]
+    cnt = M.sum(axis=1)
+    best = int(cnt.max())
+    cand = np.flatnonzero(cnt >= max(2, best - 1))
+    if len(cand) == 0:
+        return float(P[int(np.argmax(cnt))]), best
+    j = cand[int(np.argmax(P[cand]))] if upper else cand[int(np.argmin(P[cand]))]
+    mem = P[M[j]]
+    return float(np.percentile(mem, 75 if upper else 25)), int(cnt[j])
+
+
+def _hline_eval(c: np.ndarray, h: np.ndarray, l: np.ndarray, ph: np.ndarray, pl: np.ndarray,
+                t: int, prm: dict) -> dict:
+    """t 日目の前の日までのデータで線を引く。t 日目そのものは使わない。"""
+    win, piv, tol = int(prm["win"]), int(prm["piv"]), float(prm["tol"])
+    a, b = t - win, t
+    r = {"ok": False, "why": "", "U": float("nan"), "D": float("nan"), "nU": 0, "nD": 0,
+         "width": float("nan"), "inside": float("nan"), "alts": 0}
+    if a < 0:
+        r["why"] = "期間が足りない"
+        return r
+    wc = c[a:b]
+    med = float(np.median(wc))
+    hi_i = ph[np.searchsorted(ph, a):np.searchsorted(ph, b - 1 - piv, side="right")]
+    lo_i = pl[np.searchsorted(pl, a):np.searchsorted(pl, b - 1 - piv, side="right")]
+    H = h[hi_i]
+    H = H[H > med]
+    L = l[lo_i]
+    L = L[L < med]
+    U, nU = _line_cluster(H, tol, True)
+    D, nD = _line_cluster(L, tol, False)
+    r.update(U=U, D=D, nU=nU, nD=nD)
+    if nU < 2 or nD < 2:
+        r["why"] = "触れた回数が足りない"
+        return r
+    w = U / D - 1.0
+    r["width"] = w
+    if w < prm["w_min"]:
+        r["why"] = "幅が狭い"
+        return r
+    if w > prm["w_max"]:
+        r["why"] = "幅が広い"
+        return r
+    ins = float(np.mean((wc >= D * (1 - tol)) & (wc <= U * (1 + tol))))
+    z = LINE_ZONE * (U - D)
+    lab = np.where(wc >= U - z, 1, np.where(wc <= D + z, -1, 0))
+    nz = lab[lab != 0]
+    alts = int(np.count_nonzero(nz[1:] != nz[:-1])) if len(nz) > 1 else 0
+    r.update(inside=ins, alts=alts)
+    if ins < LINE_INSIDE_MIN:
+        r["why"] = "線の外にいた時間が長い"
+        return r
+    if alts < LINE_ALT_MIN:
+        r["why"] = "上下の行き来が足りない"
+        return r
+    r["ok"] = True
+    return r
+
+
+def hline_lines(hl: pd.DataFrame, prm: dict) -> pd.DataFrame:
+    """日ごとの水平線と、売り値・買い値（その日より前のデータだけを使う）。hl は quotes_hl の形。"""
+    c = hl["close"].to_numpy(dtype=float)
+    h = hl["high"].to_numpy(dtype=float)
+    l = hl["low"].to_numpy(dtype=float)
+    n = len(c)
+    hi = np.full(n, np.nan)
+    lo = np.full(n, np.nan)
+    val = np.zeros(n, dtype=bool)
+    win = int(prm["win"])
+    if n > win:
+        ph, pl = _line_pivots(h, l, int(prm["piv"]))
+        for t in range(win, n, LINE_STEP):
+            r = _hline_eval(c, h, l, ph, pl, t, prm)
+            if r["ok"]:
+                e = min(n, t + LINE_STEP)
+                hi[t:e], lo[t:e], val[t:e] = r["U"], r["D"], True
+    prev = np.r_[np.nan, c[:-1]]
+    tol = float(prm["tol"])
+    with np.errstate(invalid="ignore"):
+        ok = val & (prev >= lo * (1 - tol)) & (prev <= hi * (1 + tol))
+    k = LINE_TOUCH_FRAC
+    return pd.DataFrame({"close": c, "high": h, "low": l, "hi": hi, "lo": lo, "ok": ok,
+                         "sell_px": hi - k * (hi - lo), "buy_px": lo + k * (hi - lo)})
+
+
+def hline_snapshot(hl: pd.DataFrame, prm: dict) -> dict:
+    """いま（最後の日の終値まで）の線。表示用。"""
+    c = hl["close"].to_numpy(dtype=float)
+    h = hl["high"].to_numpy(dtype=float)
+    l = hl["low"].to_numpy(dtype=float)
+    ph, pl = _line_pivots(h, l, int(prm["piv"]))
+    r = _hline_eval(c, h, l, ph, pl, len(c), prm)
+    r["last"] = float(c[-1]) if len(c) else float("nan")
+    r["date"] = hl["date"].iloc[-1] if len(c) else None
+    # いまの終値が線のどこにいるか（線の外なら売り買いはしない）
+    tol = float(prm["tol"])
+    if np.isfinite(r["U"]) and np.isfinite(r["D"]) and np.isfinite(r["last"]):
+        if r["last"] > r["U"] * (1 + tol):
+            r["pos"] = "いまは上に抜けている"
+        elif r["last"] < r["D"] * (1 - tol):
+            r["pos"] = "いまは下に割れている"
+        else:
+            r["pos"] = "いまは線の中"
+        k = LINE_TOUCH_FRAC
+        r["sell_px"] = r["U"] - k * (r["U"] - r["D"])
+        r["buy_px"] = r["D"] + k * (r["U"] - r["D"])
+    else:
+        r["pos"] = ""
+    return r
+
+
 def build_swing_daily(store: dict, tags) -> dict:
-    """銘柄ごとに、日々の（日付, 終値, 売り値, 買い値, うねりの中か）を配列にしておく。"""
-    out = {"_cal": None}
+    """銘柄ごとに、日々の（日付, 終値, 売り値, 買い値, うねりの中か）を配列にしておく。
+    水平線（10回目）は、そのうしろに（高値, 安値）も付ける。売りは高値、買いは安値で届いたかを見るため。"""
+    out = {"_cal": None, "_snap": {}, "_hlsrc": {}}
     cal = set()
     for t in tags:
         out[t] = {}
+    _hl_tags = [t for t in tags if DAILY_BOX_SETS[t].get("method") == "hline"]
     for code, rows in store["quotes"].items():
         px = quotes_to_df(rows)
         if px.empty:
@@ -3060,8 +3300,28 @@ def build_swing_daily(store: dict, tags) -> dict:
         close = px.set_index("date")["close"]
         ds = px["date"].to_numpy(dtype="datetime64[ns]").astype(np.int64)
         cal.update(ds.tolist())
+        hl = quotes_hl(rows) if _hl_tags else None
+        if hl is not None and len(hl) != len(px):
+            hl = None
+        if hl is not None:
+            _s = hl.attrs.get("src", "終値")
+            out["_hlsrc"][_s] = out["_hlsrc"].get(_s, 0) + 1
+            # 終値・高値・安値は3つの線で同じものを使い回す（メモリを節約する）
+            _c_arr = hl["close"].to_numpy(dtype=float)
+            _h_arr = hl["high"].to_numpy(dtype=float)
+            _l_arr = hl["low"].to_numpy(dtype=float)
         for t in tags:
             prm = DAILY_BOX_SETS[t]
+            if prm.get("method") == "hline":
+                if hl is None:
+                    continue
+                bl = hline_lines(hl, prm)
+                out[t][code] = (ds, _c_arr,
+                                bl["sell_px"].to_numpy(dtype=float), bl["buy_px"].to_numpy(dtype=float),
+                                bl["ok"].to_numpy(dtype=bool), _h_arr, _l_arr)
+                if code in LINE_EXAMPLES:
+                    out["_snap"].setdefault(t, {})[code] = hline_snapshot(hl, prm)
+                continue
             bl = box_lines(close, prm["win"], prm["w_min"], prm["w_max"])
             out[t][code] = (ds, bl["close"].to_numpy(dtype=float),
                             bl["sell_px"].to_numpy(dtype=float), bl["buy_px"].to_numpy(dtype=float),
@@ -3538,8 +3798,13 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                     else:
                         a_ = int(np.searchsorted(arr_[0], _lo_ns, side="right"))
                         b_ = int(np.searchsorted(arr_[0], _dt_ns, side="right"))
+                        # 水平線（10回目）は高値・安値も持っている。売りは高値、買いは安値で届いたかを見る（指値）。
+                        # それ以外は終値で見る（9回目と同じ）。
+                        _hl = len(arr_) >= 7
                         _slc[c_] = {int(arr_[0][i_]): (float(arr_[1][i_]), float(arr_[2][i_]),
-                                                       float(arr_[3][i_]), bool(arr_[4][i_]))
+                                                       float(arr_[3][i_]), bool(arr_[4][i_]),
+                                                       float(arr_[5][i_]) if _hl else float(arr_[1][i_]),
+                                                       float(arr_[6][i_]) if _hl else float(arr_[1][i_]))
                                     for i_ in range(a_, b_)}
                 return _slc[c_].get(d_)
 
@@ -3558,8 +3823,8 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                     v_ = _day_of(c_, d_ns)
                     if v_ is None:
                         continue
-                    cl_, sp_, bp_, ok_ = v_
-                    if not ok_ or not (cl_ >= sp_):
+                    cl_, sp_, bp_, ok_, hi_, lo_ = v_
+                    if not ok_ or not (hi_ >= sp_):
                         continue
                     shs_ = sum(sh for sh, _ in st_["lots"])
                     avg_ = sum(sh * pr for sh, pr in st_["lots"]) / shs_ if shs_ else 0.0
@@ -3584,8 +3849,8 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                     v_ = _day_of(c_, d_ns)
                     if v_ is None:
                         continue
-                    cl_, sp_, bp_, ok_ = v_
-                    if not ok_ or not (cl_ <= bp_):
+                    cl_, sp_, bp_, ok_, hi_, lo_ = v_
+                    if not ok_ or not (lo_ <= bp_):
                         continue
                     if weighted:
                         unit_ = _total0 / target_n * (tw.get(tg_, 1.0) / _avg_w0) / n_tr
@@ -4475,6 +4740,23 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
             unreal += (last_day.loc[code, "price"] - avg) * st["sh_sum"]
     diag["unrealized"] = unreal
 
+    # 最後に全部売ったときの手取り（10回目。2026年10月12日に追加）
+    #   評価額は含み益に税がかかっていない。売る形は売るたびに税を払うので、そのままだと
+    #   持ち続ける形が有利に見える。最後の月末の終値で全部売り、約定のずれと税を払った後の額も出しておく。
+    #   税は、売却益の合計から繰り越した損（loss_pool）を引いた分にかける（特定口座の損益通算と同じ考え方）。
+    liq_value = cash
+    liq_gain = 0.0
+    for code, st in pos.items():
+        if last_day is None or code not in last_day.index or not st["lots"]:
+            continue        # 評価額（value_of）と同じく、最後の月にいない銘柄は数えない
+        eff_ = float(last_day.loc[code, "price"]) * (1 - slip) * (1 - fee)
+        for sh, pr in st["lots"]:
+            liq_value += sh * eff_
+            liq_gain += (eff_ - pr) * sh
+    liq_tax = tax_rate * max(0.0, liq_gain - loss_pool) if tax_rate > 0 else 0.0
+    liq_value -= liq_tax
+    diag["liq_tax"] = liq_tax
+
     # 期末に残っている建玉も、到達した含み益として記録しておく
     for code, st in pos.items():
         if st.get("sh_sum"):
@@ -4487,7 +4769,7 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                     break
 
     return {"curve": pd.DataFrame(curve), "trades": pd.DataFrame(trades),
-            "capital": capital, "diag": diag}
+            "capital": capital, "diag": diag, "liq_value": liq_value}
 
 
 def metrics(res: dict) -> dict:
@@ -4499,6 +4781,18 @@ def metrics(res: dict) -> dict:
     yrs = max((c["date"].iloc[-1] - c["date"].iloc[0]).days / 365.25, 0.5)
     total = v[-1] / cap - 1
     cagr = (v[-1] / cap) ** (1 / yrs) - 1
+    # 最後に全部売って、約定のずれと税を払った後の年率（10回目）。無ければ評価額の年率と同じにする
+    lv = res.get("liq_value")
+    if lv is not None and lv > 0:
+        liq_total, liq_cagr = lv / cap - 1, (lv / cap) ** (1 / yrs) - 1
+    else:
+        liq_total, liq_cagr = total, cagr
+    # 現金で置いていた割合（月末の平均）。最初の12か月（買い付けの時期）は除く
+    if "cash" in c.columns and len(c) > 12:
+        _cv = (c["cash"] / c["value"].where(c["value"] > 0)).iloc[12:]
+        cash_share = float(_cv.mean() * 100) if _cv.notna().any() else float("nan")
+    else:
+        cash_share = float("nan")
     dd = float((1 - v / np.maximum.accumulate(v)).max())
     r = pd.Series(v).pct_change().dropna()
     sharpe = float(r.mean() / r.std() * np.sqrt(12)) if r.std() > 0 else 0.0
@@ -4520,7 +4814,9 @@ def metrics(res: dict) -> dict:
             "売却益": d.get("realized", 0.0), "配当": d.get("dividend", 0.0),
             "含み損益": d.get("unrealized", 0.0),
             "決済率": exit_rate, "平均保有月数": avg_hold,
-            "入れ替え": d.get("rotations", 0)}
+            "入れ替え": d.get("rotations", 0),
+            "清算後総リターン": liq_total * 100, "清算後年率": liq_cagr * 100,
+            "現金比率": cash_share}
 
 
 # ── 比較の基準：対象銘柄を等金額で買って持ち続けた場合 ──
@@ -5584,12 +5880,15 @@ def buy_and_hold(pn: pd.DataFrame, tax_rate: float) -> dict | None:
     w = 1.0 / len(codes)
     base_px = first["price"].to_dict()
     vals, div_total = [], 0.0
+    gain_last = 0.0       # 最後の月の値上がり益（最後に全部売ったときの税の計算に使う）
     for dt in dts:
         day = pn[pn["date"] == dt].set_index("code")
         v = 0.0
+        g_px = 0.0
         for c in codes:
             if c in day.index and base_px.get(c):
                 v += w * day.loc[c, "price"] / base_px[c]
+                g_px += w * (day.loc[c, "price"] / base_px[c] - 1.0)
                 m = pd.Timestamp(dt).month
                 for key in ("fiscal_month", "interim_month"):
                     if int(day.loc[c].get(key, 0) or 0) == m and day.loc[c, "dps"] > 0:
@@ -5598,14 +5897,18 @@ def buy_and_hold(pn: pd.DataFrame, tax_rate: float) -> dict | None:
             else:
                 v += w        # 上場廃止などは取得時の値で据え置く
         vals.append(v + div_total)
+        gain_last = g_px
     arr = np.array(vals)
     yrs = max((pd.Timestamp(dts[-1]) - pd.Timestamp(dts[0])).days / 365.25, 0.5)
     dd = float((1 - arr / np.maximum.accumulate(arr)).max())
     r = pd.Series(arr).pct_change().dropna()
+    # 最後に全部売ったときの手取り（10回目）。値上がり益に税をかける（配当は受け取ったときに課税済み）
+    liq_last = arr[-1] - tax_rate * max(0.0, gain_last)
     return {"curve": pd.DataFrame({"date": pd.to_datetime(dts),
                                   "value": arr * 1.0}),
             "総リターン": (arr[-1] - 1) * 100,
             "年率": (arr[-1] ** (1 / yrs) - 1) * 100,
+            "清算後年率": ((liq_last ** (1 / yrs) - 1) * 100) if liq_last > 0 else float("nan"),
             "最大下落": dd * 100,
             "シャープ": float(r.mean() / r.std() * np.sqrt(12)) if r.std() > 0 else 0.0}
 
@@ -5722,6 +6025,14 @@ def main() -> int:
     if (args.only or "").strip() == "stress_test":
         # 後出しなし（その時点の首位級だけで Tier）と、本番どおりで回す（2026年10月12日に作り直し）
         args.stress_test, args.only = True, "tier_pit_lead_scr,base_div_scr"
+    # 10回目（2026年10月12日に追加）：手で引くような水平線でうねり取り（1年・2年・3年の線）と、
+    # 9回目の日ごとのうねり取り（中くらい）を、全部持ち続ける形と比べる。
+    # 年率は「最後に全部売って、約定のずれと税を払った後」（清算後）で判定し、評価額の年率も並べる。
+    args.line_test = False
+    args.liq_metric = False
+    if (args.only or "").strip() == "line_test":
+        args.line_test, args.liq_metric = True, True
+        args.only = "tier_pit_mix_scr,line_1y_pit,line_2y_pit,line_3y_pit,swing_d_m_pit"
 
     OUTDIR.mkdir(parents=True, exist_ok=True)
 
@@ -7372,6 +7683,9 @@ def main() -> int:
         stop_logs = {}       # 損切りの記録（全期間・資金投入がいちばん短い条件だけ取っておく）
         act_logs = {}        # 利確・利回り割れの記録（同じ条件だけ取っておく）
         harvest_sum = {}     # 損出しの回数と確定させた損（同じ条件だけ取っておく）
+        swing_trades = {}    # うねりの売り買いの明細（同じ条件だけ取っておく。売った後・買った後の値動きを見る）
+        # 10回目：年率を「最後に全部売って税を払った後」（清算後）で比べる。評価額の年率も列に残す
+        _liq = bool(getattr(args, "liq_metric", False))
         panels = {}
         for lb_ in lbs_:
             # 分位の期間ごとにパネルを作り直す（重いので一度だけ）
@@ -7389,7 +7703,8 @@ def main() -> int:
               for rp in ramps:
                 for my in mys:
                     bh_ = buy_and_hold(sub, args.tax / 100.0)
-                    base_r = bh_["年率"] if bh_ else float("nan")
+                    base_mtm = bh_["年率"] if bh_ else float("nan")
+                    base_r = (bh_.get("清算後年率", base_mtm) if _liq else base_mtm) if bh_ else float("nan")
                     for n_ in nm:
                         r_ = simulate(
                             sub, VARIANTS[n_], args.capital, mx_,
@@ -7422,13 +7737,16 @@ def main() -> int:
                             else:
                                 _m_act = float("nan")
                                 _b_yr = float("nan")
+                            _yr = m_.get("清算後年率", m_["年率"]) if _liq else m_["年率"]
                             rows_.append({
                                 "期間": span, "資金投入": rp, "利回り足切り": my,
                                 "分位": lb_, "保有上限": mx_,
                                 "ルール": VARIANTS[n_]["label"],
-                                "年率": m_["年率"], "最大下落": m_["最大下落"],
+                                "年率": _yr, "最大下落": m_["最大下落"],
+                                "評価額年率": m_["年率"], "清算後年率": m_.get("清算後年率", m_["年率"]),
+                                "現金比率": m_.get("現金比率", float("nan")),
                                 "シャープ": m_["シャープ"], "決済率": m_["決済率"],
-                                "基準": base_r, "基準差": m_["年率"] - base_r,
+                                "基準": base_r, "基準差": _yr - base_r, "基準_評価額": base_mtm,
                                 "緊急売り": d_.get("cut_exits", 0),
                                 "損切り": d_.get("stop_exits", 0),
                                 "利確・利回り割れ": d_.get("act_exits", 0) + d_.get("act_partial", 0),
@@ -7453,6 +7771,8 @@ def main() -> int:
                                 if VARIANTS[n_].get("harvest"):
                                     harvest_sum[n_] = (d_.get("harvests", 0),
                                                        d_.get("harvest_loss", 0.0), _yrs)
+                                if VARIANTS[n_].get("swing_daily") and not _tr.empty and "day" in _tr.columns:
+                                    swing_trades[n_] = _tr[_tr["day"].notna()].copy()
                     done += 1
                     if done % 5 == 0 or done == total:
                         log.info("  %d/%d 条件が完了", done, total)
@@ -7469,6 +7789,10 @@ def main() -> int:
               f"利回り足切り {mys} ％")
         print(f"　 元本 {args.capital:,.0f}円 ／ 税率{args.tax:.3f}％ ／ "
               f"約定のずれ 片道{args.slip_bps:.0f}bps\n")
+        _lt = bool(getattr(args, "line_test", False))
+        if _liq:
+            print("　 年率は「最後の月末に全部売って、約定のずれと税を払った後」（清算後）で出しています。"
+                  "評価額の年率は【10回目の判定】に並べます。\n")
 
         # ── 1. 基準に勝った割合 ──
         print("【全部買って放置に勝った割合】\n")
@@ -7516,76 +7840,79 @@ def main() -> int:
                     line += f"{(piv[a_] > piv[b_]).mean()*100:>11.0f}%"
             print(line)
 
-        # ── 3. 条件そのものの影響 ──
-        print("\n【条件による違い（全ルール平均）】\n")
-        for key, unit in [("資金投入", "か月"), ("利回り足切り", "％"),
-                          ("分位", "か月"), ("保有上限", "銘柄")]:
-            print(f"  {key}")
-            for v, g in gf.groupby(key):
-                print(f"    {v}{unit:<4} 平均年率 {g['年率'].mean():>5.1f}%   "
-                      f"基準との差 {g['基準差'].mean():>+5.1f}pt")
-            print()
+        # 10回目のモードでは、まとめの表（条件による違い・堅い結論・安定・決められなかったこと）を省く。
+        # Summary に出せる長さ（末尾14,000バイト）に判定の欄を収めるため。判定は【10回目の判定】にまとめる。
+        if not _lt:
+            # ── 3. 条件そのものの影響 ──
+            print("\n【条件による違い（全ルール平均）】\n")
+            for key, unit in [("資金投入", "か月"), ("利回り足切り", "％"),
+                              ("分位", "か月"), ("保有上限", "銘柄")]:
+                print(f"  {key}")
+                for v, g in gf.groupby(key):
+                    print(f"    {v}{unit:<4} 平均年率 {g['年率'].mean():>5.1f}%   "
+                          f"基準との差 {g['基準差'].mean():>+5.1f}pt")
+                print()
 
-        # ── 4. 堅い結論だけを取り出す ──
-        print("【条件を変えても崩れなかった結論】\n")
-        found = False
-        for a_ in cols:
-            for b_ in cols:
-                if a_ >= b_:
-                    continue
-                r = (piv[a_] > piv[b_]).mean()
-                if r >= 0.85:
-                    print(f"  ○ 「{a_[:26]}」は「{b_[:26]}」を "
-                          f"{r*100:.0f}％ の条件で上回った")
+            # ── 4. 堅い結論だけを取り出す ──
+            print("【条件を変えても崩れなかった結論】\n")
+            found = False
+            for a_ in cols:
+                for b_ in cols:
+                    if a_ >= b_:
+                        continue
+                    r = (piv[a_] > piv[b_]).mean()
+                    if r >= 0.85:
+                        print(f"  ○ 「{a_[:26]}」は「{b_[:26]}」を "
+                              f"{r*100:.0f}％ の条件で上回った")
+                        found = True
+                    elif r <= 0.15:
+                        print(f"  ○ 「{b_[:26]}」は「{a_[:26]}」を "
+                              f"{(1-r)*100:.0f}％ の条件で上回った")
+                        found = True
+            for rate, lab, w, n, ar, ad in agg:
+                if rate >= 0.85:
+                    print(f"  ○ 「{lab[:26]}」は基準を {rate*100:.0f}％ の条件で上回った")
                     found = True
-                elif r <= 0.15:
-                    print(f"  ○ 「{b_[:26]}」は「{a_[:26]}」を "
-                          f"{(1-r)*100:.0f}％ の条件で上回った")
+                elif rate <= 0.15:
+                    print(f"  ○ 「{lab[:26]}」は基準に {(1-rate)*100:.0f}％ の条件で負けた")
                     found = True
-        for rate, lab, w, n, ar, ad in agg:
-            if rate >= 0.85:
-                print(f"  ○ 「{lab[:26]}」は基準を {rate*100:.0f}％ の条件で上回った")
-                found = True
-            elif rate <= 0.15:
-                print(f"  ○ 「{lab[:26]}」は基準に {(1-rate)*100:.0f}％ の条件で負けた")
-                found = True
-        if not found:
-            print("  ありません。どの比較も条件次第で入れ替わります。")
+            if not found:
+                print("  ありません。どの比較も条件次第で入れ替わります。")
 
-        # 安定性の観点での最良
-        best_worst = max(st_rows)          # 最悪の年率がいちばんマシなもの
-        best_sd = min(st_rows, key=lambda x: x[2])
-        best_dd = min(st_rows, key=lambda x: x[3])
-        print("\n【安定を優先するなら】\n")
-        print(f"  最悪のときがいちばんマシ … {best_worst[1][:30]}"
-              f"（最悪 {best_worst[0]:.1f}％）")
-        print(f"  条件によるブレが最小   … {best_sd[1][:30]}"
-              f"（ばらつき {best_sd[2]:.1f}pt）")
-        print(f"  下落がいちばん浅い     … {best_dd[1][:30]}"
-              f"（平均 {best_dd[3]:.1f}％）")
-        names_top = {best_worst[1], best_sd[1], best_dd[1]}
-        if len(names_top) == 1:
-            print("\n  3つとも同じルールでした。安定性では明確に優れています。")
-        else:
-            print("\n  3つの観点で最良が分かれています。何を重視するかで選ぶことになります。")
+            # 安定性の観点での最良
+            best_worst = max(st_rows)          # 最悪の年率がいちばんマシなもの
+            best_sd = min(st_rows, key=lambda x: x[2])
+            best_dd = min(st_rows, key=lambda x: x[3])
+            print("\n【安定を優先するなら】\n")
+            print(f"  最悪のときがいちばんマシ … {best_worst[1][:30]}"
+                  f"（最悪 {best_worst[0]:.1f}％）")
+            print(f"  条件によるブレが最小   … {best_sd[1][:30]}"
+                  f"（ばらつき {best_sd[2]:.1f}pt）")
+            print(f"  下落がいちばん浅い     … {best_dd[1][:30]}"
+                  f"（平均 {best_dd[3]:.1f}％）")
+            names_top = {best_worst[1], best_sd[1], best_dd[1]}
+            if len(names_top) == 1:
+                print("\n  3つとも同じルールでした。安定性では明確に優れています。")
+            else:
+                print("\n  3つの観点で最良が分かれています。何を重視するかで選ぶことになります。")
 
-        print("\n【決められなかったこと】\n")
-        undecided = False
-        for a_ in cols:
-            for b_ in cols:
-                if a_ >= b_:
-                    continue
-                r = (piv[a_] > piv[b_]).mean()
-                if 0.35 <= r <= 0.65:
-                    print(f"  × 「{a_[:24]}」と「{b_[:24]}」 … "
-                          f"{r*100:.0f}％ 対 {(1-r)*100:.0f}％")
-                    undecided = True
-        if not undecided:
-            print("  ありません。")
+            print("\n【決められなかったこと】\n")
+            undecided = False
+            for a_ in cols:
+                for b_ in cols:
+                    if a_ >= b_:
+                        continue
+                    r = (piv[a_] > piv[b_]).mean()
+                    if 0.35 <= r <= 0.65:
+                        print(f"  × 「{a_[:24]}」と「{b_[:24]}」 … "
+                              f"{r*100:.0f}％ 対 {(1-r)*100:.0f}％")
+                        undecided = True
+            if not undecided:
+                print("  ありません。")
 
-        print("\n  ※ 85％以上で一貫していれば「堅い」、"
-              "35〜65％なら「決められない」としています。")
-        print("  ※ 条件は互いに重なる期間を含むため、完全に独立ではありません。")
+            print("\n  ※ 85％以上で一貫していれば「堅い」、"
+                  "35〜65％なら「決められない」としています。")
+            print("  ※ 条件は互いに重なる期間を含むため、完全に独立ではありません。")
 
         # ── 期間ごとの年率・売買の回数・売った銘柄のその後（2026年10月11日に追加）──
         # 売る形を変えても一度も売っていなければ、土台と同じ成績になり「効果なし」と区別がつかない。
@@ -7627,7 +7954,7 @@ def main() -> int:
                      "max_yield", "ex_first", "max_per_sector", "tier_weight",
                      "tiers_allowed", "cash_floor", "max_names", "tier_col", "skip_price_drop",
                      "swing_entry", "swing_daily")
-        if any(any(k in VARIANTS[n_] for k in _act_keys) for n_ in nm) and len(nm) > 1:
+        if any(any(k in VARIANTS[n_] for k in _act_keys) for n_ in nm) and len(nm) > 1 and not _lt:
             _base_lab = VARIANTS[nm[0]]["label"]
             if _base_lab in piv.columns:
                 _gb = gf[gf["ルール"] == _base_lab]
@@ -7905,7 +8232,7 @@ def main() -> int:
         #   それ以外 … 年率を払う形（差が「うねり取りの代金」）
         #   3つの取り方のうち1つだけが通ったときは、たまたまの可能性が高いとして扱う。
         _r8 = [n_ for n_ in nm[1:] if VARIANTS[n_].get("swing_entry") or VARIANTS[n_].get("swing_daily")]
-        if _r8 and nm[0] == "tier_pit_mix_scr":
+        if _r8 and nm[0] == "tier_pit_mix_scr" and not _lt:
             _p8 = gf.pivot_table(index=cond_cols, columns="ルール", values="年率")
             _L0 = VARIANTS[nm[0]]["label"]
             _g0 = gf[gf["ルール"] == _L0]
@@ -7949,6 +8276,146 @@ def main() -> int:
                 print("  ※ 3つの取り方のうち1つだけが通った。たまたまの可能性が高いとして扱う。")
             print("  （基準：24条件の85％以上で上回り、かつ「使える」なら本番に入れる候補。"
                   "「使える」だけなら、見せるための売買としてほぼ代金なしで使える。それ以外は年率を払う形）")
+
+        # ── 10回目：線でうねり取り（2026年10月12日に追加。結果を見る前に決めた基準）──
+        #   相手は「首位級だけその時点で判定（tier_pit_mix_scr。全部持ち続ける）」。
+        #   判定は清算後（最後の月末に全部売り、約定のずれと税を払った後）の年率で行う。基準はこれまでと同じ：
+        #     本番に入れる候補 … 24条件の85％以上で上回り、かつ「使える」
+        #     使える（見せるための売買として、ほぼ代金なし） … 平均年率の差 −0.5pt以内・最悪の年率の差 −1.0pt以内・
+        #                                                     相手の勝ちが85％未満
+        #     使えない … それ以外（差がその形の代金）
+        #   評価額の年率でも同じ基準で判定し、2つで分類が分かれたら「決められない」とする。
+        #   1年・2年・3年の線のうち1つだけが通ったときは、たまたまの可能性が高いとして扱う。
+        if _lt and nm and nm[0] == "tier_pit_mix_scr":
+            _L0 = VARIANTS[nm[0]]["label"]
+            _g0 = gf[gf["ルール"] == _L0]
+            _pl = gf.pivot_table(index=cond_cols, columns="ルール", values="清算後年率")
+            _pm = gf.pivot_table(index=cond_cols, columns="ルール", values="評価額年率")
+
+            def _judge10(pv, col, lab_):
+                g_ = gf[gf["ルール"] == lab_]
+                w_ = float((pv[lab_] > pv[_L0]).mean())
+                l_ = float((pv[_L0] > pv[lab_]).mean())
+                da_ = float(g_[col].mean() - _g0[col].mean())
+                dw_ = float(g_[col].min() - _g0[col].min())
+                ok_ = (da_ >= -0.5) and (dw_ >= -1.0) and (l_ < 0.85)
+                cat_ = "本番に入れる候補" if (ok_ and w_ >= 0.85) else ("使える" if ok_ else "使えない")
+                return w_, l_, da_, dw_, cat_
+
+            def _after60(tr_, arrs_, side_):
+                """うねりで売った（買った）値段から60営業日後の終値までの値動き。"""
+                out_ = []
+                if tr_ is None or tr_.empty:
+                    return out_
+                for _, x_ in tr_[tr_["side"] == side_].iterrows():
+                    a_ = arrs_.get(x_["code"])
+                    if a_ is None:
+                        continue
+                    t_ns_ = pd.Timestamp(x_["day"]).value
+                    j_ = int(np.searchsorted(a_[0], t_ns_))
+                    if j_ < len(a_[0]) and int(a_[0][j_]) == t_ns_ and j_ + 60 < len(a_[0]) and x_["price"] > 0:
+                        out_.append(float(a_[1][j_ + 60]) / float(x_["price"]) - 1.0)
+                return out_
+
+            _p0 = pd.Timestamp(panel["date"].min()).value
+            print(f"\n【10回目の判定：線でうねり取り】（相手：{_L0}＝全部持ち続ける形。基準は結果を見る前に決めたもの）\n")
+            print("  判定は清算後（最後に全部売って、税と約定のずれを払った後）の年率。評価額の年率でも同じ基準で判定し、"
+                  "分類が分かれたら「決められない」。\n")
+            _pass_lines, _n_lines = [], 0
+            for n_ in nm[1:]:
+                _L = VARIANTS[n_]["label"]
+                if _L not in _pl.columns or _L0 not in _pl.columns:
+                    continue
+                _g = gf[gf["ルール"] == _L]
+                wl_, ll_, dal_, dwl_, cl_ = _judge10(_pl, "清算後年率", _L)
+                wm_, lm_, dam_, dwm_, cm_ = _judge10(_pm, "評価額年率", _L)
+                _fin = cl_ if cl_ == cm_ else f"決められない（清算後は「{cl_}」、評価額は「{cm_}」）"
+                _tg = (VARIANTS[n_].get("swing_daily") or {}).get("tag", "")
+                _is_line = DAILY_BOX_SETS.get(_tg, {}).get("method") == "hline"
+                _n_lines += 1 if _is_line else 0
+                if _is_line and _fin == "本番に入れる候補":
+                    _pass_lines.append(_L)
+                _cost = f"（代金 年{-dal_:.1f}pt）" if (_fin == "使えない" and dal_ < 0) else ""
+                print(f"  {_L}")
+                print(f"    清算後 … 上回った {wl_ * 100:.0f}％（相手 {ll_ * 100:.0f}％） ／ 平均年率 {dal_:+.2f}pt ／ "
+                      f"最悪の年率 {dwl_:+.2f}pt → {cl_}")
+                print(f"    評価額 … 上回った {wm_ * 100:.0f}％（相手 {lm_ * 100:.0f}％） ／ 平均年率 {dam_:+.2f}pt ／ "
+                      f"最悪の年率 {dwm_:+.2f}pt → {cm_}")
+                print(f"    判定 … {_fin}{_cost}")
+                _yrs = []
+                for (_sp, _rp), _gg in _g.groupby(["期間", "資金投入"]):
+                    a_, b_ = [pd.Timestamp(x) for x in str(_sp).split("〜")]
+                    _yrs.append(max((b_ - a_).days / 365.25, 0.5))
+                _sw = float(_g["うねり売り"].mean() / np.mean(_yrs)) if _yrs else float("nan")
+                _gain = _g["うねり1回の益"].mean() if _g["うねり1回の益"].notna().any() else float("nan")
+                _gain_s = f"{_gain * 100:+.1f}％" if _gain == _gain else "—"
+                print(f"    売買 … うねりで売った回数 年{_sw:.1f}回 ／ 1回の益 {_gain_s} ／ 売買のあった月 "
+                      f"{_g['売買のあった月'].mean():.0f}％（相手 {_g0['売買のあった月'].mean():.0f}％） ／ "
+                      f"現金の割合 {_g['現金比率'].mean():.0f}％（相手 {_g0['現金比率'].mean():.0f}％）")
+                _arrs = (SWING_DAILY or {}).get(_tg, {})
+                _s60 = _after60(swing_trades.get(n_), _arrs, "sell")
+                _b60 = _after60(swing_trades.get(n_), _arrs, "buy")
+                if _s60 or _b60:
+                    _ms = f"平均 {np.mean(_s60) * 100:+.1f}％・10％以上上がった {np.mean(np.array(_s60) >= 0.10) * 100:.0f}％" \
+                        if _s60 else "—"
+                    _mb = f"平均 {np.mean(_b60) * 100:+.1f}％・10％以上下がった {np.mean(np.array(_b60) <= -0.10) * 100:.0f}％" \
+                        if _b60 else "—"
+                    print(f"    売った後60営業日 … {_ms}（{len(_s60)}回） ／ 買った後60営業日 … {_mb}（{len(_b60)}回）")
+                if _is_line and _arrs:
+                    _ds_all = np.concatenate([a_[0] for a_ in _arrs.values() if len(a_[0])])
+                    _ok_all = np.concatenate([a_[4] for a_ in _arrs.values() if len(a_[0])])
+                    _m = _ds_all >= _p0
+                    if _m.any():
+                        _yy = pd.to_datetime(_ds_all[_m]).year
+                        _cov = pd.Series(_ok_all[_m].astype(float)).groupby(np.asarray(_yy)).mean() * 100
+                        print("    線の中にいた割合（全銘柄・日） … "
+                              + "／".join(f"{int(y_)}年 {v_:.0f}" for y_, v_ in _cov.items()) + "（％）")
+                print()
+            if len(_pass_lines) == 1 and _n_lines >= 3:
+                print("  ※ 3つの線のうち1つだけが通った。たまたまの可能性が高いとして扱う。\n")
+            _snaps = (SWING_DAILY or {}).get("_snap", {})
+            if _snaps:
+                _names = {u.get("code"): u.get("name", "") for u in store.get("universe", [])}
+                _tn = {"h1": "1年線", "h2": "2年線", "h3": "3年線"}
+                print("  いただいたチャートの3銘柄の、いまの線（最後の日の終値まで）")
+                for code in LINE_EXAMPLES:
+                    _rs = [(t_, _snaps.get(t_, {}).get(code)) for t_ in ("h1", "h2", "h3")]
+                    _rs = [(t_, r_) for t_, r_ in _rs if r_ is not None]
+                    if not _rs:
+                        print(f"    {code} … データがありません")
+                        continue
+                    _last = _rs[0][1]
+                    _dts_ = pd.Timestamp(_last["date"]).date() if _last.get("date") is not None else ""
+                    print(f"    {_names.get(code, '') or code}（{code}） {_dts_} の終値 {_last['last']:,.0f}円")
+                    for t_, r_ in _rs:
+                        if r_["why"] == "期間が足りない":
+                            print(f"      {_tn[t_]} … データの期間が足りない")
+                            continue
+                        _s = f"      {_tn[t_]} … "
+                        if np.isfinite(r_["U"]) and np.isfinite(r_["D"]):
+                            _s += f"上 {r_['U']:,.0f}・下 {r_['D']:,.0f}（触れた回数 上{r_['nU']}・下{r_['nD']}"
+                            if np.isfinite(r_["width"]):
+                                _s += f"・幅{r_['width'] * 100:.0f}％"
+                            if r_["alts"]:
+                                _s += f"・行き来{r_['alts']}回"
+                            _s += "）"
+                        if r_["ok"]:
+                            _s += f" → 線あり・{r_.get('pos', '')}"
+                            if r_.get("pos") == "いまは線の中":
+                                _s += f"（売り {r_['sell_px']:,.0f}・買い {r_['buy_px']:,.0f}）"
+                        else:
+                            _s += f" → 線なし（{r_['why']}）"
+                        print(_s)
+                print()
+            _src = (SWING_DAILY or {}).get("_hlsrc", {})
+            if _src:
+                print("  線を引いたデータ … " + "／".join(f"{k_} {v_}社" for k_, v_ in _src.items())
+                      + "（高値・安値が無い銘柄は終値で代用）")
+            print("  （基準：清算後で24条件の85％以上で上回り、かつ「使える」なら本番に入れる候補。「使える」だけなら、"
+                  "見せるための売買としてほぼ代金なし。それ以外は年率を払う形）")
+            print("  売った後60営業日 … うねりで売った値段から60営業日後の終値まで。大きなプラスは、売った後も上がり続けた（上抜けを逃した）。")
+            print("  買った後60営業日 … 線の下で買った値段から60営業日後まで。10％以上下がった割合は、下の線を割った（下抜け）目安。")
+            print("  （売った後・買った後は、全期間・資金投入がいちばん短い条件の明細から数えたもの）")
 
         OUTDIR.mkdir(parents=True, exist_ok=True)
         gf.to_csv(OUTDIR / "grid.csv", index=False, encoding="utf-8-sig")
