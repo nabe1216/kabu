@@ -1052,6 +1052,44 @@ VARIANTS: dict[str, dict[str, Any]] = {
         "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
         "tier_col": "tier_pit_grow",
     },
+    # ── 8回目の候補（2026年10月12日に追加）：S は持ち続け、A・B はうねりの中で売り買いする ──
+    #   相手は「首位級だけその時点で判定（累進配当はいまのリスト）」（tier_pit_mix_scr。全部持ち続ける）。
+    #   A・B の銘柄がうねりの中にいれば、上の線で売り、下の線に戻るまで買い直さない。
+    #   売って空いたお金は、その月末に、ほかの買える候補へ回る（いつもの買いの順番）。
+    #   うねりの取り方は BOX_SETS の3つ（短め・中くらい・長め）。結果を見る前に決めたもの。
+    "swing_s_pit": {
+        "label": "A・Bだけうねり取り（短め：20日・幅3〜8％）",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "tier_col": "tier_pit_mix",
+        "hold_tiers": ["S"],
+        "range_exit": {"fraction": 1.0, "min_gain": 0.0, "top_col": "box_top_s"},
+        "swing_entry": {"tag": "s", "tiers": ["A", "B"]},
+    },
+    "swing_m_pit": {
+        "label": "A・Bだけうねり取り（中くらい：60日・幅4〜12％）",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "tier_col": "tier_pit_mix",
+        "hold_tiers": ["S"],
+        "range_exit": {"fraction": 1.0, "min_gain": 0.0, "top_col": "box_top_m"},
+        "swing_entry": {"tag": "m", "tiers": ["A", "B"]},
+    },
+    "swing_l_pit": {
+        "label": "A・Bだけうねり取り（長め：120日・幅6〜18％）",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "tier_col": "tier_pit_mix",
+        "hold_tiers": ["S"],
+        "range_exit": {"fraction": 1.0, "min_gain": 0.0, "top_col": "box_top_l"},
+        "swing_entry": {"tag": "l", "tiers": ["A", "B"]},
+    },
     "rec_first_scr": {
         "label": "権利月が近い銘柄を先に買う（条件そのまま）",
         "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
@@ -2722,6 +2760,75 @@ def add_factor_columns(panel: pd.DataFrame, mk: dict,
     return panel
 
 
+# ══════════════════════════════════════════
+# うねり（箱）の判定（2026年10月12日に追加。8回目の検証）
+#   目で引く「上の線・下の線」に近づけるため、最高値・最安値ではなく、
+#   その前の日までの終値の90％点を上の線、10％点を下の線にする（突き抜けたひげを無視する）。
+#   線どうしの幅が決めた範囲に入っていれば「うねりの中」とみなす。
+#   線から1％以内に来たら「届いた」とし、売りは上の線の1％下、買いは下の線の1％上の値段で約定したとみなす
+#   （指値を置いておく形。その日の終値がそこまで来た日だけ）。
+# ══════════════════════════════════════════
+BOX_SETS = {
+    "s": {"win": 20, "w_min": 0.03, "w_max": 0.08, "label": "短め（20日・幅3〜8％）"},
+    "m": {"win": 60, "w_min": 0.04, "w_max": 0.12, "label": "中くらい（60日・幅4〜12％）"},
+    "l": {"win": 120, "w_min": 0.06, "w_max": 0.18, "label": "長め（120日・幅6〜18％）"},
+}
+BOX_Q = (0.10, 0.90)
+BOX_TOUCH = 0.01
+
+
+def box_signals(close: pd.Series, win: int, w_min: float, w_max: float) -> pd.DataFrame:
+    """日々の終値から、うねりの線と「届いた日」を出す（その前の日までの終値だけを使う）。"""
+    prev = close.shift(1)
+    hi = prev.rolling(win, min_periods=win).quantile(BOX_Q[1])
+    lo = prev.rolling(win, min_periods=win).quantile(BOX_Q[0])
+    width = (hi - lo) / lo
+    ok = (width >= w_min) & (width <= w_max)
+    sell_px = hi * (1 - BOX_TOUCH)
+    buy_px = lo * (1 + BOX_TOUCH)
+    return pd.DataFrame({"close": close, "hi": hi, "lo": lo, "ok": ok.fillna(False),
+                         "top": (ok & (close >= sell_px)).fillna(False),
+                         "bot": (ok & (close <= buy_px)).fillna(False),
+                         "sell_px": sell_px, "buy_px": buy_px})
+
+
+def add_box_columns(store: dict, panel: pd.DataFrame, tags) -> pd.DataFrame:
+    """うねりの列を月ごとにパネルへ足す（tags は BOX_SETS のキー）。
+
+      box_top_<tag> … その月に初めて上の線に届いた日の売り値（届かなければ空）
+      box_bot_<tag> … その月に初めて下の線に届いた日の買い値（届かなければ空）
+      in_box_<tag>  … その月末の時点で、うねりの中にいるか
+    """
+    panel = panel.copy()
+    tags = [t for t in tags if t in BOX_SETS]
+    for t in tags:
+        panel[f"box_top_{t}"] = np.nan
+        panel[f"box_bot_{t}"] = np.nan
+        panel[f"in_box_{t}"] = False
+    for code, g in panel.groupby("code"):
+        px = quotes_to_df(store["quotes"].get(code, []))
+        if px.empty:
+            continue
+        close = px.set_index("date")["close"]
+        for t in tags:
+            prm = BOX_SETS[t]
+            sg = box_signals(close, prm["win"], prm["w_min"], prm["w_max"])
+            sg["m"] = sg.index.to_period("M")
+            top = sg[sg["top"]].groupby("m")["sell_px"].first()
+            bot = sg[sg["bot"]].groupby("m")["buy_px"].first()
+            last_ok = sg.groupby("m")["ok"].last()
+            mp = g["date"].dt.to_period("M")
+            panel.loc[g.index, f"box_top_{t}"] = mp.map(top).to_numpy(dtype=float)
+            panel.loc[g.index, f"box_bot_{t}"] = mp.map(bot).to_numpy(dtype=float)
+            panel.loc[g.index, f"in_box_{t}"] = mp.map(last_ok).fillna(False).astype(bool).to_numpy()
+    for t in tags:
+        log.info("  うねり（%s） … 月末にうねりの中にいた銘柄×月 %.0f％ ／ 上の線に届いた %.0f％ ／ 下の線に届いた %.0f％",
+                 BOX_SETS[t]["label"], float(panel[f"in_box_{t}"].mean() * 100),
+                 float(panel[f"box_top_{t}"].notna().mean() * 100),
+                 float(panel[f"box_bot_{t}"].notna().mean() * 100))
+    return panel
+
+
 def add_range_columns(store: dict, panel: pd.DataFrame, win: int,
                       w_min: float, w_max: float, sell_at: float) -> pd.DataFrame:
     """「その月のうちにレンジ上限へ届いたか、いくらで届いたか」を足す。
@@ -2924,6 +3031,16 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
     # 7回目の候補（2026年10月12日に追加）
     #   skip_price_drop … 12か月で株価がこの率以上下がり、1株配当（予想）が増えていない銘柄は買わない
     skip_drop = cfg.get("skip_price_drop")
+    # 8回目の候補（2026年10月12日に追加）
+    #   swing_entry … {"tag": "m", "tiers": ["A", "B"]}。この Tier の銘柄は、うねりの中にいるあいだは
+    #                 下の線に届いたときだけ（その値段で）買う。うねりの中にいなければ、いつもどおり月末に買う。
+    #                 上の線で売るのは range_exit（top_col で列を選ぶ）。売った月のうちは買い直さない。
+    swing_entry = cfg.get("swing_entry")
+    swing_sold = {}
+    if swing_entry:
+        _t = swing_entry.get("tag", "m")
+        if f"box_bot_{_t}" not in panel.columns:
+            raise RuntimeError(f"box_bot_{_t} の列がありません。うねりの列が足されていません。")
     if skip_drop is not None and "px_chg12" not in panel.columns:
         raise RuntimeError("px_chg12 の列がありません。利回りが上がった理由の列が足されていません。")
     if cfg.get("tier_col"):
@@ -3440,7 +3557,7 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
             # ── レンジの上限で降りる ──
             # 高配当のルールで買った銘柄が、たまたまレンジの中にいて
             # 上限まで来たら、そこで一度降りる。下がればまた買い直せる。
-            tp = row.get("box_top_px")
+            tp = row.get(range_exit.get("top_col", "box_top_px")) if range_exit else None
             if range_exit and st["lots"] and tp is not None and not pd.isna(tp):
                 sell_px = float(tp)
                 shs = sum(sh for sh, _ in st["lots"])
@@ -3475,6 +3592,7 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                             newlots.append((sh - take, pr))
                     if want > 0 and left < want:
                         diag["range_sells"] = diag.get("range_sells", 0) + 1
+                        swing_sold[code] = mi        # 同じ月のうちに買い直さない（8回目）
                         st["lots"] = newlots
                         if not st["lots"]:
                             del pos[code]
@@ -3682,6 +3800,19 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                     _cut, _opd = bool(row.get("dps_cut")), bool(row.get("op_drop"))
                 if _cut or _opd:
                     continue    # 本番と同じく、減配・業績急変の銘柄は買わない
+            if swing_entry and row.get("tier", "B") in swing_entry.get("tiers", ["A", "B"]):
+                if swing_sold.get(code) == mi:
+                    continue    # うねりで売った月のうちは買い直さない
+                _t = swing_entry.get("tag", "m")
+                _bot = row.get(f"box_bot_{_t}")
+                _inb = bool(row.get(f"in_box_{_t}", False))
+                if _bot is not None and not pd.isna(_bot) and code not in pos:
+                    row = row.copy()
+                    row["price"] = float(_bot)       # 下の線で買う（指値）
+                    diag["swing_buys"] = diag.get("swing_buys", 0) + 1
+                elif _inb and code not in pos:
+                    diag["swing_wait"] = diag.get("swing_wait", 0) + 1
+                    continue    # うねりの中にいる。下の線に届くまで待つ
             if skip_drop is not None:
                 _pc, _dc = row.get("px_chg12"), row.get("dps_chg12")
                 if (_pc is not None and not pd.isna(_pc) and float(_pc) <= -float(skip_drop)
@@ -5550,7 +5681,11 @@ def main() -> int:
     # レンジの列を足す。足さないと、そのルールは一度も降りず、土台とまったく同じ成績になり、
     # 「効果なし」と見分けがつかない（2026年10月9日に追加）。
     _need_range = bool(args.range_swing) or any(
-        VARIANTS.get(n_, {}).get("range_exit") for n_ in _sel_names)
+        VARIANTS.get(n_, {}).get("range_exit") and not VARIANTS[n_]["range_exit"].get("top_col")
+        for n_ in _sel_names)
+    # うねり（箱）の列（8回目。2026年10月12日に追加）
+    _box_tags = sorted({VARIANTS[n_]["swing_entry"].get("tag", "m") for n_ in _sel_names
+                        if VARIANTS.get(n_, {}).get("swing_entry")})
 
     def _panel_for(lb_):
         pn_ = build_panel(store, args.years, lb_)
@@ -5562,6 +5697,8 @@ def main() -> int:
             pn_ = add_grow_tiers(store, pn_)
         if _need_reason and not pn_.empty:
             pn_ = add_yield_reason_columns(store, pn_)
+        if _box_tags and not pn_.empty:
+            pn_ = add_box_columns(store, pn_, _box_tags)
         # 総当たりで分位の月数を変えてパネルを作り直すときも、レンジの列を忘れずに足す
         if _need_range and not pn_.empty:
             pn_ = add_range_columns(store, pn_, int(_d[0]), _d[1], _d[2], _d[4])
@@ -5596,6 +5733,9 @@ def main() -> int:
     if _need_reason:
         log.info("利回りが上がった理由を使うルールがあるので、12か月の株価と配当の変化を足します…")
         panel = add_yield_reason_columns(store, panel)
+    if _box_tags:
+        log.info("うねりで売り買いするルールがあるので、日々の終値から上の線と下の線を出します…")
+        panel = add_box_columns(store, panel, _box_tags)
 
     # 外部要因を使う検証では、追い風か逆風かをパネルに足す
     if args.factor_test:
@@ -7059,6 +7199,8 @@ def main() -> int:
                                 "損出し": d_.get("harvests", 0),
                                 "買い増し": d_.get("topups", 0),
                                 "下落で見送り": d_.get("drop_skip", 0),
+                                "うねり売り": d_.get("range_sells", 0),
+                                "底で買い": d_.get("swing_buys", 0),
                                 "権利前の買い": d_.get("rec_buys", 0),
                                 "ゆるめ買い": d_.get("rec_relaxed", 0),
                                 "売り/年": _n_sell / _yrs,
@@ -7245,7 +7387,8 @@ def main() -> int:
         #   さらに、相手を24条件の85％以上で上回れば「本番を上回る」と付ける（本番に入れる価値がある）。
         _act_keys = ("yield_exit", "tp_gain", "harvest", "topup", "rec_relax", "screen_drop",
                      "max_yield", "ex_first", "max_per_sector", "tier_weight",
-                     "tiers_allowed", "cash_floor", "max_names", "tier_col", "skip_price_drop")
+                     "tiers_allowed", "cash_floor", "max_names", "tier_col", "skip_price_drop",
+                     "swing_entry")
         if any(any(k in VARIANTS[n_] for k in _act_keys) for n_ in nm) and len(nm) > 1:
             _base_lab = VARIANTS[nm[0]]["label"]
             if _base_lab in piv.columns:
@@ -7516,6 +7659,55 @@ def main() -> int:
             print("  （基準：24条件の85％以上で上回り、かつ「使える」（平均年率−0.5pt以内・最悪の年率−1.0pt以内・"
                   "相手の勝ち85％未満）なら本番に入れる候補。使えるだけでは入れない）")
             print("  最悪の下落の差はプラスなら深い。減配などの売りの差はマイナスなら少ない。")
+
+        # ── 8回目：S は持ち続け、A・B はうねりの中で売り買い（2026年10月12日に追加。結果を見る前に決めた基準）──
+        #   相手は「首位級だけその時点で判定（tier_pit_mix_scr。全部持ち続ける）」。
+        #   本番に入れる候補 … 24条件の85％以上で上回り、かつ「使える」
+        #   見せるための売買として使える … 「使える」（平均年率−0.5pt以内・最悪の年率−1.0pt以内・相手の勝ち85％未満）
+        #   それ以外 … 年率を払う形（差が「うねり取りの代金」）
+        #   3つの取り方のうち1つだけが通ったときは、たまたまの可能性が高いとして扱う。
+        _r8 = [n_ for n_ in nm[1:] if VARIANTS[n_].get("swing_entry")]
+        if _r8 and nm[0] == "tier_pit_mix_scr":
+            _p8 = gf.pivot_table(index=cond_cols, columns="ルール", values="年率")
+            _L0 = VARIANTS[nm[0]]["label"]
+            _g0 = gf[gf["ルール"] == _L0]
+            print(f"\n【8回目の判定】（相手：{_L0}。全部持ち続ける形。基準は結果を見る前に決めたもの）\n")
+            _pass = []
+            for n_ in _r8:
+                _L = VARIANTS[n_]["label"]
+                if _L not in _p8.columns or _L0 not in _p8.columns:
+                    continue
+                _g = gf[gf["ルール"] == _L]
+                _w = float((_p8[_L] > _p8[_L0]).mean())
+                _l = float((_p8[_L0] > _p8[_L]).mean())
+                _da = _g["年率"].mean() - _g0["年率"].mean()
+                _dw = _g["年率"].min() - _g0["年率"].min()
+                _dd = _g["最大下落"].max() - _g0["最大下落"].max()
+                _ok = (_da >= -0.5) and (_dw >= -1.0) and (_l < 0.85)
+                if _ok and _w >= 0.85:
+                    _v = "本番に入れる候補"
+                    _pass.append(_L)
+                elif _ok:
+                    _v = "見せるための売買として、ほぼ代金なしで使える"
+                else:
+                    _v = f"年率を払う形（代金 年{-_da:.1f}pt）" if _da < 0 else "入れない"
+                _yrs = []
+                for (_sp, _rp), _gg in _g.groupby(["期間", "資金投入"]):
+                    a_, b_ = [pd.Timestamp(x) for x in str(_sp).split("〜")]
+                    _yrs.append(max((b_ - a_).days / 365.25, 0.5))
+                _sw = float(_g["うねり売り"].mean() / np.mean(_yrs)) if _yrs else float("nan")
+                print(f"  {_L}")
+                print(f"    上回った {_w * 100:.0f}％（相手が上回った {_l * 100:.0f}％） ／ 平均年率 {_da:+.2f}pt ／ "
+                      f"最悪の年率 {_dw:+.2f}pt ／ 最悪の下落 {_dd:+.1f}pt → {_v}")
+                print(f"    見える売買 … 売り {(_g['売り/年'].mean() - _g0['売り/年'].mean()):+.1f}回/年 ／ "
+                      f"買い {(_g['買い/年'].mean() - _g0['買い/年'].mean()):+.1f}回/年 ／ 売買のあった月 "
+                      f"{_g['売買のあった月'].mean():.0f}％（相手 {_g0['売買のあった月'].mean():.0f}％） ／ "
+                      f"うねりで売った回数 年{_sw:.1f}回")
+                print()
+            if len(_pass) == 1 and len(_r8) >= 3:
+                print("  ※ 3つの取り方のうち1つだけが通った。たまたまの可能性が高いとして扱う。")
+            print("  （基準：24条件の85％以上で上回り、かつ「使える」なら本番に入れる候補。"
+                  "「使える」だけなら、見せるための売買としてほぼ代金なしで使える。それ以外は年率を払う形）")
 
         OUTDIR.mkdir(parents=True, exist_ok=True)
         gf.to_csv(OUTDIR / "grid.csv", index=False, encoding="utf-8-sig")
