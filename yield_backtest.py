@@ -3423,6 +3423,161 @@ def hline_snapshot(hl: pd.DataFrame, prm: dict) -> dict:
     return r
 
 
+QUIZ_FROM = "2022-07-01"       # これより前の判断日は使わない（2年分の窓にコロナの急落が入らないように）
+QUIZ_AFTER = 120               # 判断のあと、答え合わせ用に何営業日分を持つか（採点は60営業日）
+QUIZ_SCORE_DAYS = 60
+QUIZ_PAST = 500                # 判断日までに見せる営業日数（約2年）
+QUIZ_N = 40                    # 「売る場面」「買う場面」をそれぞれ何問ずつ取るか
+QUIZ_SEED = 20261013
+
+
+def quotes_ohlcv(rows: list[dict]) -> pd.DataFrame:
+    """quotes_hl に、始値と出来高を足す（目隠しテストのローソク足用）。始値も分割を調整したもの。"""
+    hl = quotes_hl(rows)
+    if hl.empty:
+        return hl
+    df = pd.DataFrame(rows)
+    df["Date"] = pd.to_datetime(df["Date"])
+    close = pd.to_numeric(df.get("AdjC", df.get("AdjustmentClose", df.get("C", df.get("Close")))), errors="coerce")
+    op = None
+    for k in ("AdjO", "AdjustmentOpen"):
+        if k in df.columns:
+            op = pd.to_numeric(df[k], errors="coerce")
+            break
+    if op is None:
+        ko = next((k for k in ("O", "Open") if k in df.columns), None)
+        kc = next((k for k in ("C", "Close") if k in df.columns), None)
+        if ko and kc:
+            raw_c = pd.to_numeric(df[kc], errors="coerce")
+            op = pd.to_numeric(df[ko], errors="coerce") * (close / raw_c).where(raw_c > 0)
+    kv = next((k for k in ("AdjVo", "AdjustmentVolume", "Vo", "Volume") if k in df.columns), None)
+    vol = pd.to_numeric(df[kv], errors="coerce") if kv else None
+    ex = pd.DataFrame({"date": df["Date"], "close": close})
+    ex["open"] = op if op is not None else np.nan
+    ex["vol"] = vol if vol is not None else np.nan
+    ex = ex.dropna(subset=["close"]).sort_values("date").reset_index(drop=True)
+    hl["open"] = ex["open"].fillna(ex["close"]).to_numpy(dtype=float)
+    hl["vol"] = ex["vol"].to_numpy(dtype=float)
+    hl["open"] = np.clip(hl["open"].to_numpy(dtype=float), hl["low"].to_numpy(dtype=float), hl["high"].to_numpy(dtype=float))
+    return hl
+
+
+def quiz_export(store: dict, panel: pd.DataFrame, out_path) -> dict:
+    """目隠しテストの材料を書き出す（2026年10月13日に追加）。
+
+    実際の銘柄・日付から、2年線で「売る場面」（持っている銘柄が上の線の売り値に届いた日）と
+    「買う場面」（候補の銘柄が下の線の買い値に届いた日）を、それぞれ QUIZ_N 問ずつ選ぶ。
+      候補 … 前の月末に、8条件を通り、利回り3％以上、Tier が A か B（S はうねりで売らないので除く）
+      判断日 … その月のうちで最初に届いた日。QUIZ_FROM 以降で、あと60営業日以上データがある日
+      選び方 … 決まった乱数で並べ替えて上から取る。1銘柄1問まで（売る・買うをあわせて）
+    見せるのは判断日までの約2年分。値段は判断日の終値を100にそろえ、名前・コード・日付は答え合わせまで隠す。
+    """
+    prm = DAILY_BOX_SETS["h2"]
+    k = float(prm.get("inset", LINE_TOUCH_FRAC))
+    names = {u.get("code"): u.get("name", "") for u in store.get("universe", [])}
+    sectors = {u.get("code"): u.get("sector", "") for u in store.get("universe", [])}
+    t0 = pd.Timestamp(QUIZ_FROM)
+    cand = panel[panel["screen_pass"].fillna(False).astype(bool) & (panel["yield"] >= 3.0)
+                 & panel["tier_pit_mix"].isin(["A", "B"])][["code", "date", "yield", "tier_pit_mix"]]
+    by_code = {c: g.sort_values("date") for c, g in cand.groupby("code")}
+    sells, buys = [], []
+    n_src = {}
+    for code, g in by_code.items():
+        rows = store["quotes"].get(code)
+        if not rows:
+            continue
+        ox = quotes_ohlcv(rows)
+        if ox.empty or len(ox) < QUIZ_PAST + QUIZ_SCORE_DAYS + 5:
+            continue
+        n_src[ox.attrs.get("src", "終値")] = n_src.get(ox.attrs.get("src", "終値"), 0) + 1
+        hi, lo, ok = hline_core(ox, prm)
+        sp = hi - k * (hi - lo)
+        bp = lo + k * (hi - lo)
+        ds = ox["date"].to_numpy(dtype="datetime64[ns]")
+        H = ox["high"].to_numpy(dtype=float)
+        L = ox["low"].to_numpy(dtype=float)
+        for _, r in g.iterrows():
+            m0 = pd.Timestamp(r["date"])
+            m1 = m0 + pd.offsets.MonthEnd(1)
+            a = int(np.searchsorted(ds, np.datetime64(m0), side="right"))
+            b = int(np.searchsorted(ds, np.datetime64(m1), side="right"))
+            got_s = got_b = False
+            for j in range(a, b):
+                if pd.Timestamp(ds[j]) < t0 or j < QUIZ_PAST or j + QUIZ_SCORE_DAYS >= len(ds) or not ok[j]:
+                    continue
+                if not got_s and H[j] >= sp[j]:
+                    sells.append((code, j, float(r["yield"]), str(r["tier_pit_mix"])))
+                    got_s = True
+                if not got_b and L[j] <= bp[j]:
+                    buys.append((code, j, float(r["yield"]), str(r["tier_pit_mix"])))
+                    got_b = True
+                if got_s and got_b:
+                    break
+    rng = np.random.default_rng(QUIZ_SEED)
+    order_s = rng.permutation(len(sells))
+    order_b = rng.permutation(len(buys))
+    used, pick = set(), []
+    qs = [sells[i] for i in order_s]
+    qb = [buys[i] for i in order_b]
+    ns = nb = 0
+    i_s = i_b = 0
+    while (ns < QUIZ_N and i_s < len(qs)) or (nb < QUIZ_N and i_b < len(qb)):
+        if ns < QUIZ_N and i_s < len(qs):
+            c_, j_, y_, t_ = qs[i_s]
+            i_s += 1
+            if c_ not in used:
+                used.add(c_)
+                pick.append(("sell", c_, j_, y_, t_))
+                ns += 1
+        if nb < QUIZ_N and i_b < len(qb):
+            c_, j_, y_, t_ = qb[i_b]
+            i_b += 1
+            if c_ not in used:
+                used.add(c_)
+                pick.append(("buy", c_, j_, y_, t_))
+                nb += 1
+    order = rng.permutation(len(pick))
+    cases = []
+    for qi, ix in enumerate(order, 1):
+        typ, code, j, y_, t_ = pick[ix]
+        ox = quotes_ohlcv(store["quotes"][code])
+        hi, lo, ok = hline_core(ox, prm)
+        base = float(ox["close"].iloc[j])
+        past = ox.iloc[j - QUIZ_PAST + 1:j + 1]
+        fut = ox.iloc[j + 1:j + 1 + QUIZ_AFTER]
+        vmean = float(np.nanmean(past["vol"].to_numpy(dtype=float))) if past["vol"].notna().any() else float("nan")
+
+        def pack(df_):
+            out_ = []
+            for o_, h_, l_, c_, v_ in zip(df_["open"], df_["high"], df_["low"], df_["close"], df_["vol"]):
+                vv = round(float(v_) / vmean * 100, 1) if (vmean == vmean and vmean > 0 and v_ == v_) else None
+                out_.append([round(o_ / base * 100, 2), round(h_ / base * 100, 2), round(l_ / base * 100, 2),
+                             round(c_ / base * 100, 2), vv])
+            return out_
+
+        cl = ox["close"].to_numpy(dtype=float)
+        r60 = cl[j + QUIZ_SCORE_DAYS] / cl[j] - 1.0
+        r120 = (cl[j + QUIZ_AFTER] / cl[j] - 1.0) if j + QUIZ_AFTER < len(cl) else None
+        U, D = float(hi[j]), float(lo[j])
+        cases.append({
+            "id": qi, "type": typ, "code": code, "name": names.get(code, ""), "sector": sectors.get(code, ""),
+            "date": str(pd.Timestamp(ox["date"].iloc[j]).date()), "base": round(base, 2),
+            "yield": round(y_, 2), "tier": t_,
+            "past": pack(past), "future": pack(fut),
+            "line": {"upper": round(U / base * 100, 2), "lower": round(D / base * 100, 2),
+                     "sell": round((U - k * (U - D)) / base * 100, 2), "buy": round((D + k * (U - D)) / base * 100, 2)},
+            "r60": round(float(r60), 4), "r120": (round(float(r120), 4) if r120 is not None else None),
+        })
+    meta = {"created": str(pd.Timestamp.now().date()), "score_days": QUIZ_SCORE_DAYS, "past_days": QUIZ_PAST,
+            "from": QUIZ_FROM, "seed": QUIZ_SEED, "n_sell": ns, "n_buy": nb,
+            "pool_sell": len(sells), "pool_buy": len(buys), "line": prm.get("label", "2年線"), "hl_src": n_src}
+    out = {"meta": meta, "cases": cases}
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(out, f, ensure_ascii=False, separators=(",", ":"))
+    return meta
+
+
 def build_swing_daily(store: dict, tags) -> dict:
     """銘柄ごとに、日々の（日付, 終値, 売り値, 買い値, うねりの中か）を配列にしておく。
     水平線（10回目）は、そのうしろに（高値, 安値）も付ける。売りは高値、買いは安値で届いたかを見るため。"""
@@ -6237,6 +6392,11 @@ def main() -> int:
         args.only = "tier_pit_mix_scr,safe_hold_pit,safe_line_1y_pit,safe_line_2y_pit,safe_line_3y_pit"
     # 12回目（2026年10月12日に追加）：「増配の実績だけ・2年線」を崩しにいく検証（反証テスト）。
     #   ランダムな日の売り買いとの比較・銘柄を半分に分ける・重ならない前半と後半・線の設定を少し変える・業種別の中身。
+    args.quiz_export = False
+    if (args.only or "").strip() == "quiz_export":
+        # 目隠しテストの材料を書き出す（2026年10月13日に追加）。Tier を後出しなしで判定する列と、
+        # 8条件の列が要るので、それを使うルールの名前を入れておく（ルール自体は回さない）。
+        args.quiz_export, args.only = True, "tier_pit_mix_scr"
     args.robust_test = False
     if (args.only or "").strip() == "robust_test":
         args.robust_test, args.liq_metric = True, True
@@ -6530,6 +6690,19 @@ def main() -> int:
     log.info("判定できる時点: %d件 / 銘柄 %d / 期間 %s〜%s",
              len(panel), panel["code"].nunique(),
              panel["date"].min().date(), panel["date"].max().date())
+
+    # ── 目隠しテストの材料を書き出す（2026年10月13日に追加）──
+    if getattr(args, "quiz_export", False):
+        log.info("目隠しテストの材料を選んでいます（2年線・売る場面と買う場面を%d問ずつ）…", QUIZ_N)
+        _qm = quiz_export(store, panel, OUTDIR / "yield_backtest.json")
+        print("\n■ 目隠しテストの材料\n")
+        print(f"  売る場面 {_qm['n_sell']}問（候補 {_qm['pool_sell']}件から）／ 買う場面 {_qm['n_buy']}問"
+              f"（候補 {_qm['pool_buy']}件から）")
+        print(f"  判断日 {_qm['from']}以降 ／ 見せるのは判断日までの{_qm['past_days']}営業日 ／ "
+              f"採点は{_qm['score_days']}営業日後の終値 ／ 線は{_qm['line']}")
+        print("  線を引いたデータ … " + "／".join(f"{k_} {v_}社" for k_, v_ in _qm["hl_src"].items()))
+        print("\n書き出しました: data/yield_backtest.json（実行結果の Artifacts「yield-backtest-result」に入っています）")
+        return 0
 
     # ── 分位の期間を振って比べる ──
     # 検証期間（--years）は固定したまま分位の長さだけを変えるので、
