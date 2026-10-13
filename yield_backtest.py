@@ -1267,6 +1267,38 @@ VARIANTS: dict[str, dict[str, Any]] = {
         "tier_col": "tier_pit_mix", "require_col": "grow_pit",
         "swing_daily": {"tag": "h2i15", "tiers": ["A", "B"]},
     },
+    # ── 13回目の候補（2026年10月13日に追加）：目隠しテストの「うねり」の形（目の条件）で確かめ直す ──
+    #   銘柄の範囲は今の本番と同じ（増配の実績で絞らない。目隠しテストの候補と同じ）。
+    #   A … 目の条件の線の中だけで、上で売って下で買う（線の位置・売り値・買い値は2年線と同じ）
+    #   B … 目の条件の線の中にいる候補は、月末に買わずに下の線で買う。持っている銘柄は線では売らない（no_sell）
+    #   参考に、機械の2年線（幅6〜35％・行き来3回以上）で「下で買うだけ」も回す。
+    "eye_2y_pit": {
+        "label": "目の条件でうねり取り（幅15％以内・行き来8回以上）",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "tier_col": "tier_pit_mix",
+        "swing_daily": {"tag": "h2e", "tiers": ["A", "B"]},
+    },
+    "line_buy_pit": {
+        "label": "2年線の下で買うだけ（線では売らない）",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "tier_col": "tier_pit_mix",
+        "swing_daily": {"tag": "h2", "tiers": ["A", "B"], "no_sell": True},
+    },
+    "eye_buy_pit": {
+        "label": "目の条件の下で買うだけ（線では売らない）",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "tier_col": "tier_pit_mix",
+        "swing_daily": {"tag": "h2e", "tiers": ["A", "B"], "no_sell": True},
+    },
     "rec_first_scr": {
         "label": "権利月が近い銘柄を先に買う（条件そのまま）",
         "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
@@ -3193,6 +3225,11 @@ DAILY_BOX_SETS = {
               "inset": 0.05, "label": "2年線（売り買いの位置5％）"},
     "h2i15": {"method": "hline", "win": 500, "piv": 15, "tol": 0.02, "w_min": 0.06, "w_max": 0.35,
               "inset": 0.15, "label": "2年線（売り買いの位置15％）"},
+    # 13回目（2026年10月13日に追加）：目隠しテストで「うねり」として売り買いした場面の形を、そのまま条件にしたもの。
+    #   実行した12問は、幅の中央値11％（見送り21％）、上下の行き来の中央値11回（見送り5回）。
+    #   「幅15％以内・行き来8回以上」で12問中10問を再現できた。線の位置は2年線と同じ（幅と行き来の下限だけ変える）。
+    "h2e": {"method": "hline", "win": 500, "piv": 15, "tol": 0.02, "w_min": 0.06, "w_max": 0.15,
+            "alt_min": 8, "label": "目の条件（2年線・幅15％以内・行き来8回以上）"},
 }
 SWING_TOUCH_FRAC = 0.15
 SWING_DAILY = None
@@ -3356,7 +3393,7 @@ def _hline_eval(c: np.ndarray, h: np.ndarray, l: np.ndarray, ph: np.ndarray, pl:
     if ins < LINE_INSIDE_MIN:
         r["why"] = "線の外にいた時間が長い"
         return r
-    if alts < LINE_ALT_MIN:
+    if alts < int(prm.get("alt_min", LINE_ALT_MIN)):
         r["why"] = "上下の行き来が足りない"
         return r
     r["ok"] = True
@@ -3578,6 +3615,235 @@ def quiz_export(store: dict, panel: pd.DataFrame, out_path) -> dict:
     return meta
 
 
+# ══════════════════════════════════════════
+# 13回目：目の条件で、場面ごとに答え合わせする（2026年10月13日に追加。基準は結果を見る前に決めたもの）
+#   目隠しテストと同じ作り方で、全銘柄・全期間の「売る場面」「買う場面」を集める。
+#     候補 … 前の月末に、8条件を通り、利回り3％以上、Tier が A か B
+#     場面 … その月のうちで、2年線の中で最初に売り値（買い値）に届いた日。同じ銘柄・同じ場面は60営業日あける
+#     目の条件 … その日の線が「幅15％以内・行き来8回以上」（h2e）。それ以外は「機械の線だけ」
+#   見るもの … 60営業日後の値動きから、同じ日の「ほかの候補」の平均を引いた差（相場全体の上げ下げを除く）。
+#     売って空いたお金はほかの候補に回り、買うお金はほかの候補を買わなかった分なので、比べる相手はほかの候補。
+#   90％の幅 … 場面を四半期ごとにまとめて引き直す（同じ時期の場面は一緒に動くため）。
+#   判定に使うのは、目隠しテストに出していない期間（判断日が2022年7月より前）だけ。それ以降は参考。
+# ══════════════════════════════════════════
+EYE_SPLIT = "2022-07-01"
+EYE_DAYS = 60
+EYE_GAP = 60
+EYE_MIN_N = 30
+EYE_BOOT = 2000
+EYE_SEED = 20261014
+EYE_MIN_TRADES = 10        # 本番に組み込んだ場合：線での売り買いが1条件あたりこれ未満なら、差は売買で決まらないので判定しない
+
+
+def _eye_boot(v, q, v2=None, q2=None, n: int = EYE_BOOT, seed: int = EYE_SEED) -> tuple[float, float, float]:
+    """平均（v2 を渡すと「v の平均 − v2 の平均」）と、その90％の幅。四半期 q ごとにまとめて引き直す。"""
+    v = np.asarray(v, dtype=float)
+    q = np.asarray(q)
+    two = v2 is not None
+    if two:
+        v2 = np.asarray(v2, dtype=float)
+        q2 = np.asarray(q2)
+    if len(v) == 0 or (two and len(v2) == 0):
+        return float("nan"), float("nan"), float("nan")
+    keys = sorted(set(q.tolist()) | (set(q2.tolist()) if two else set()))
+    kpos = {k_: i_ for i_, k_ in enumerate(keys)}
+
+    def _sums(vv, qq):
+        s_ = np.zeros(len(keys))
+        c_ = np.zeros(len(keys))
+        for x_, k_ in zip(vv, qq):
+            s_[kpos[k_]] += x_
+            c_[kpos[k_]] += 1
+        return s_, c_
+
+    s1, c1 = _sums(v, q)
+    s2, c2 = _sums(v2, q2) if two else (None, None)
+    rng = np.random.default_rng(seed)
+    K = len(keys)
+    out = []
+    for _ in range(n):
+        ix = rng.integers(0, K, K)
+        n1 = c1[ix].sum()
+        if n1 == 0:
+            continue
+        m = s1[ix].sum() / n1
+        if two:
+            n2 = c2[ix].sum()
+            if n2 == 0:
+                continue
+            m -= s2[ix].sum() / n2
+        out.append(m)
+    point = float(v.mean() - (v2.mean() if two else 0.0))
+    if not out:
+        return point, float("nan"), float("nan")
+    return point, float(np.percentile(out, 5)), float(np.percentile(out, 95))
+
+
+def _eye_side(typ: str, n: int, lo: float, hi: float) -> str:
+    """場面ごとの判定（結果を見る前に決めた基準）。売りは差が低いほど良い、買いは高いほど良い。"""
+    if n < EYE_MIN_N or not (lo == lo and hi == hi):
+        return "件数が足りず判定しない"
+    if typ == "sell":
+        if hi < 0:
+            return "上の線で売る意味がある（売った後、ほかの候補より下がった）"
+        if lo > 0:
+            return "上の線で売ると逆効果（売った後も、ほかの候補より上がった）"
+    else:
+        if lo > 0:
+            return "下の線で買う意味がある（買った後、ほかの候補より上がった）"
+        if hi < 0:
+            return "下の線で買うと逆効果（買った後、ほかの候補より下がった）"
+    return "どちらとも言えない（90％の幅が0をまたぐ）"
+
+
+def eye_events(store: dict, panel: pd.DataFrame, out_path=None) -> dict:
+    """13回目：目の条件で、全銘柄・全場面の答え合わせをする。SWING_DAILY に h2 と h2e が要る。"""
+    sw = SWING_DAILY or {}
+    A_m, A_e = sw.get("h2", {}), sw.get("h2e", {})
+    if not A_m or not A_e:
+        raise RuntimeError("2年線（h2）と目の条件（h2e）の線が用意されていません。")
+    k = float(DAILY_BOX_SETS["h2"].get("inset", LINE_TOUCH_FRAC))
+    names = {u.get("code"): u.get("name", "") for u in store.get("universe", [])}
+    sectors = {u.get("code"): u.get("sector", "") for u in store.get("universe", [])}
+    cand = panel[panel["screen_pass"].fillna(False).astype(bool) & (panel["yield"] >= 3.0)
+                 & panel["tier_pit_mix"].isin(["A", "B"])][["code", "date"]]
+    pool = {pd.Timestamp(d): set(g["code"]) for d, g in cand.groupby("date")}
+    # 終値の表（候補になったことのある全銘柄）。同じ日のほかの候補と比べるため
+    ser = {}
+    for code in cand["code"].unique():
+        a = A_m.get(code)
+        if a is not None and len(a[0]):
+            ser[code] = pd.Series(np.asarray(a[1], dtype=float), index=pd.to_datetime(np.asarray(a[0])))
+    C = pd.DataFrame(ser).sort_index().ffill(limit=5)
+    cpos = {c_: i_ for i_, c_ in enumerate(C.columns)}
+    dpos = {int(t_.value): i_ for i_, t_ in enumerate(C.index)}
+    Cv = C.to_numpy(dtype=float)
+    R = {}
+    for h_ in (EYE_DAYS, 2 * EYE_DAYS):
+        with np.errstate(invalid="ignore", divide="ignore"):
+            fut = np.full_like(Cv, np.nan)
+            if len(Cv) > h_:
+                fut[:-h_] = Cv[h_:]
+            R[h_] = fut / Cv - 1.0
+    pool_cols = {}
+    ev = []
+    for code, g in cand.groupby("code"):
+        a, e = A_m.get(code), A_e.get(code)
+        if a is None or e is None or len(a[0]) != len(e[0]):
+            continue
+        ds, sp, bp, ok = a[0], a[2], a[3], a[4]
+        H, L = (a[5], a[6]) if len(a) >= 7 else (a[1], a[1])
+        ok_e = e[4]
+        last = {"sell": -10 ** 9, "buy": -10 ** 9}
+        for m0 in sorted(pd.Timestamp(x) for x in g["date"]):
+            m1 = m0 + pd.offsets.MonthEnd(1)
+            i0 = int(np.searchsorted(ds, m0.value, side="right"))
+            i1 = int(np.searchsorted(ds, m1.value, side="right"))
+            got = {"sell": False, "buy": False}
+            for j in range(i0, i1):
+                if not ok[j]:
+                    continue
+                for typ, hit in (("sell", H[j] >= sp[j]), ("buy", L[j] <= bp[j])):
+                    if got[typ] or not hit:
+                        continue
+                    got[typ] = True
+                    if j - last[typ] < EYE_GAP:
+                        continue
+                    last[typ] = j
+                    ev.append((typ, code, int(ds[j]), bool(ok_e[j]), m0, float(sp[j]), float(bp[j])))
+                if got["sell"] and got["buy"]:
+                    break
+    rows = []
+    split_ns = pd.Timestamp(EYE_SPLIT).value
+    for typ, code, dns, eye, m0, sp_, bp_ in ev:
+        i_ = dpos.get(dns)
+        c_ = cpos.get(code)
+        if i_ is None or c_ is None:
+            continue
+        r60 = R[EYE_DAYS][i_, c_]
+        if not np.isfinite(r60):
+            continue
+        if m0 not in pool_cols:
+            pool_cols[m0] = np.array([cpos[x] for x in pool.get(m0, ()) if x in cpos], dtype=np.int64)
+        pc = pool_cols[m0]
+        pc = pc[pc != c_]
+        b60 = R[EYE_DAYS][i_, pc] if len(pc) else np.array([])
+        b60 = b60[np.isfinite(b60)]
+        if len(b60) < 5:
+            continue
+        r120 = R[2 * EYE_DAYS][i_, c_]
+        b120 = R[2 * EYE_DAYS][i_, pc] if len(pc) else np.array([])
+        b120 = b120[np.isfinite(b120)]
+        ex120 = float(r120 - b120.mean()) if (np.isfinite(r120) and len(b120) >= 5) else None
+        W = (sp_ - bp_) / (1 - 2 * k)
+        U, D = sp_ + k * W, bp_ - k * W
+        d_ = pd.Timestamp(dns)
+        rows.append({"type": typ, "code": code, "name": names.get(code, ""), "sector": sectors.get(code, ""),
+                     "date": str(d_.date()), "q": f"{d_.year}Q{(d_.month - 1) // 3 + 1}",
+                     "period": "test" if dns < split_ns else "ref", "eye": eye,
+                     "width": round(float(U / D - 1.0), 4) if D > 0 else None,
+                     "r60": round(float(r60), 4), "ex60": round(float(r60 - b60.mean()), 4),
+                     "r120": (round(float(r120), 4) if np.isfinite(r120) else None),
+                     "ex120": (round(ex120, 4) if ex120 is not None else None)})
+    df = pd.DataFrame(rows)
+    res = {"rows": df, "stats": {}, "diff": {}, "verdict": {}, "span": {}}
+    if df.empty:
+        return res
+    for per in ("test", "ref"):
+        dp = df[df["period"] == per]
+        if dp.empty:
+            continue
+        res["span"][per] = (dp["date"].min(), dp["date"].max())
+        for typ in ("sell", "buy"):
+            for grp, sel in (("eye", True), ("mach", False)):
+                s_ = dp[(dp["type"] == typ) & (dp["eye"] == sel)]
+                if s_.empty:
+                    res["stats"][(per, typ, grp)] = {"n": 0}
+                    continue
+                m_, lo_, hi_ = _eye_boot(s_["ex60"].to_numpy(), s_["q"].to_numpy())
+                e120 = s_["ex120"].dropna()
+                res["stats"][(per, typ, grp)] = {
+                    "n": int(len(s_)), "codes": int(s_["code"].nunique()), "r60": float(s_["r60"].mean()),
+                    "ex60": m_, "lo": lo_, "hi": hi_, "pos": float((s_["ex60"] > 0).mean()),
+                    "ex120": float(e120.mean()) if len(e120) else float("nan")}
+            a_ = dp[(dp["type"] == typ) & dp["eye"]]
+            b_ = dp[(dp["type"] == typ) & ~dp["eye"]]
+            dm, dlo, dhi = _eye_boot(a_["ex60"].to_numpy(), a_["q"].to_numpy(),
+                                     b_["ex60"].to_numpy(), b_["q"].to_numpy())
+            res["diff"][(per, typ)] = {"d": dm, "lo": dlo, "hi": dhi, "na": int(len(a_)), "nb": int(len(b_))}
+    for typ in ("sell", "buy"):
+        s_ = res["stats"].get(("test", typ, "eye"), {"n": 0})
+        res["verdict"][typ] = _eye_side(typ, s_.get("n", 0), s_.get("lo", float("nan")), s_.get("hi", float("nan")))
+        d_ = res["diff"].get(("test", typ))
+        if not d_ or min(d_["na"], d_["nb"]) < EYE_MIN_N or not (d_["lo"] == d_["lo"]):
+            res["verdict"][typ + "_diff"] = "件数が足りず判定しない"
+        else:
+            good_lo = (d_["hi"] < 0) if typ == "sell" else (d_["lo"] > 0)
+            bad = (d_["lo"] > 0) if typ == "sell" else (d_["hi"] < 0)
+            res["verdict"][typ + "_diff"] = ("目の条件で絞ると良くなる" if good_lo else
+                                             ("目の条件で絞ると悪くなる" if bad else "絞っても差は言えない"))
+    vs, vb = res["verdict"]["sell"], res["verdict"]["buy"]
+    if vs.startswith("件数が足りず") and vb.startswith("件数が足りず"):
+        res["verdict"]["all"] = "件数が足りず判定しない"
+    elif vs.startswith("上の線で売る意味がある") and vb.startswith("下の線で買う意味がある"):
+        res["verdict"]["all"] = "目の条件のうねり取りは、場面ごとには意味がある（上で売る・下で買うの両方）"
+    elif vs.startswith("上の線で売る意味がある"):
+        res["verdict"]["all"] = "上の線で売る側だけ意味がある"
+    elif vb.startswith("下の線で買う意味がある"):
+        res["verdict"]["all"] = "下の線で買う側だけ意味がある（うねり取りではなく、押し目買いとして）"
+    else:
+        res["verdict"]["all"] = "場面ごとには、目の条件の売り買いに意味は見えない"
+    if out_path is not None:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        meta = {"created": str(pd.Timestamp.now().date()), "split": EYE_SPLIT, "days": EYE_DAYS, "gap": EYE_GAP,
+                "line": DAILY_BOX_SETS["h2"]["label"], "eye": DAILY_BOX_SETS["h2e"]["label"],
+                "verdict": res["verdict"]}
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump({"meta": meta, "events": df.to_dict(orient="records")}, f, ensure_ascii=False,
+                      separators=(",", ":"))
+    return res
+
+
 def build_swing_daily(store: dict, tags) -> dict:
     """銘柄ごとに、日々の（日付, 終値, 売り値, 買い値, うねりの中か）を配列にしておく。
     水平線（10回目）は、そのうしろに（高値, 安値）も付ける。売りは高値、買いは安値で届いたかを見るため。"""
@@ -3609,7 +3875,8 @@ def build_swing_daily(store: dict, tags) -> dict:
             if prm.get("method") == "hline":
                 if hl is None:
                     continue
-                _key = (prm["win"], prm["piv"], prm["tol"], prm["w_min"], prm["w_max"])
+                _key = (prm["win"], prm["piv"], prm["tol"], prm["w_min"], prm["w_max"],
+                        int(prm.get("alt_min", LINE_ALT_MIN)))
                 if _key not in _geo:
                     _geo[_key] = hline_core(hl, prm)
                 _hi, _lo, _ok = _geo[_key]
@@ -4130,9 +4397,11 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
             #   最後の2営業日（権利落ち日と月末）に買った分は、その月の配当を受け取らない
             #   最後の2営業日に売った分は、その月の配当を受け取る（権利付き最終日まで持っていたため）
             _ex_ns = int(_days[-2]) if len(_days) >= 2 else None
+            # 13回目：no_sell … 線では売らない（下の線で買うだけ）。売りの判定そのものを飛ばす
+            _no_sell = bool(swing_daily.get("no_sell", False))
             for d_ns in _days:
                 d_ns = int(d_ns)
-                for c_ in list(pos.keys()):
+                for c_ in ([] if _no_sell else list(pos.keys())):
                     st_ = pos[c_]
                     tg_ = prev_day.loc[c_].get("tier", "B") if c_ in prev_day.index else st_.get("tier", "B")
                     if tg_ not in _sw_tiers or not st_["lots"]:
@@ -6402,6 +6671,13 @@ def main() -> int:
         args.robust_test, args.liq_metric = True, True
         args.only = ("tier_pit_mix_scr,safe_hold_pit,safe_line_2y_pit,safe_hold_a,safe_2y_a,safe_hold_b,safe_2y_b,"
                      "safe_2y_t15,safe_2y_t25,safe_2y_i05,safe_2y_i15")
+    # 13回目（2026年10月13日に追加）：目隠しテストの「うねり」の形（目の条件：幅15％以内・行き来8回以上）で確かめ直す。
+    #   1. 場面ごとの答え合わせ（全銘柄・全場面） 2. 本番のルールに組み込んだ場合（総当たり。窓は13回目用に固定）
+    #   総当たりで回すので、「総当たり」の欄が false でも true として扱う。
+    args.eye_test = False
+    if (args.only or "").strip() == "eye_test":
+        args.eye_test, args.liq_metric, args.grid = True, True, True
+        args.only = "tier_pit_mix_scr,line_2y_pit,eye_2y_pit,line_buy_pit,eye_buy_pit"
 
     OUTDIR.mkdir(parents=True, exist_ok=True)
 
@@ -6703,6 +6979,25 @@ def main() -> int:
         print("  線を引いたデータ … " + "／".join(f"{k_} {v_}社" for k_, v_ in _qm["hl_src"].items()))
         print("\n書き出しました: data/yield_backtest.json（実行結果の Artifacts「yield-backtest-result」に入っています）")
         return 0
+
+    # ── 13回目：目の条件で、場面ごとに答え合わせする（2026年10月13日に追加）──
+    _eye_res = None
+    if getattr(args, "eye_test", False):
+        log.info("13回目：目の条件で、全銘柄・全場面の答え合わせをしています…")
+        _eye_res = eye_events(store, panel, OUTDIR / "yield_backtest.json")
+        _ed = _eye_res["rows"]
+        if _ed.empty:
+            log.info("  場面が見つかりませんでした。")
+        else:
+            for _per, _pl in (("test", "問題に出していない期間"), ("ref", "問題と同じ期間（参考）")):
+                _dp = _ed[_ed["period"] == _per]
+                if _dp.empty:
+                    continue
+                log.info("  %s %s〜%s … 売る場面 %d件（うち目の条件 %d件）／ 買う場面 %d件（うち目の条件 %d件）",
+                         _pl, _dp["date"].min(), _dp["date"].max(),
+                         int((_dp["type"] == "sell").sum()), int(((_dp["type"] == "sell") & _dp["eye"]).sum()),
+                         int((_dp["type"] == "buy").sum()), int(((_dp["type"] == "buy") & _dp["eye"]).sum()))
+        log.info("  場面の明細を data/yield_backtest.json に書き出しました。続けて、本番のルールに組み込んで回します。")
 
     # ── 分位の期間を振って比べる ──
     # 検証期間（--years）は固定したまま分位の長さだけを変えるので、
@@ -8051,6 +8346,22 @@ def main() -> int:
         wins = [(a, a + pd.DateOffset(years=wl)) for a, _ in wins]
         wins.reverse()
         wins.append((d0_, d1_))          # 全期間も1通りとして加える
+        _eye_spans = ([], [])
+        if getattr(args, "eye_test", False):
+            # 13回目：窓は結果を見る前に決めたもの。判定は目隠しテストに出していない期間（2022年6月末まで）の3つ、
+            # 参考に、目隠しテストと同じ期間（2022年6月末から最後まで）を1つ。
+            #   2018-08-31〜 … 全部 ／ 2019-06-30〜 … 2年線が引けるようになってから ／ 2020-06-30〜 … 後半の2年
+            _wd = [("2018-08-31", "2022-06-30"), ("2019-06-30", "2022-06-30"), ("2020-06-30", "2022-06-30")]
+            wins = []
+            for a_s, b_s in _wd:
+                w_ = (max(pd.Timestamp(a_s), d0_), min(pd.Timestamp(b_s), d1_))
+                if w_[0] < w_[1] and w_ not in wins:
+                    wins.append(w_)
+            _eye_spans = ([f"{a.date()}〜{b.date()}" for a, b in wins], [])
+            _wr = (max(pd.Timestamp("2022-06-30"), d0_), d1_)
+            if _wr[0] < _wr[1]:
+                wins.append(_wr)
+                _eye_spans[1].append(f"{_wr[0].date()}〜{_wr[1].date()}")
 
         total = len(ramps) * len(mys) * len(wins) * len(lbs_) * len(mxs_)
         log.info("総当たり：期間%d × 資金投入%d × 足切り%d × 分位%d × 保有上限%d"
@@ -8209,9 +8520,9 @@ def main() -> int:
         print(f"　 元本 {args.capital:,.0f}円 ／ 税率{args.tax:.3f}％ ／ "
               f"約定のずれ 片道{args.slip_bps:.0f}bps\n")
         _lt = bool(getattr(args, "line_test", False) or getattr(args, "safe_test", False)
-                   or getattr(args, "robust_test", False))
+                   or getattr(args, "robust_test", False) or getattr(args, "eye_test", False))
         _l10 = bool(getattr(args, "line_test", False))
-        if _liq and getattr(args, "robust_test", False):
+        if _liq and (getattr(args, "robust_test", False) or getattr(args, "eye_test", False)):
             print("　 年率は「最後の月末に全部売って、約定のずれと税を払った後」（清算後）で出しています。\n")
         elif _liq:
             _rn = "11" if getattr(args, "safe_test", False) else "10"
@@ -8219,7 +8530,8 @@ def main() -> int:
                   f"評価額の年率は【{_rn}回目の判定】に並べます。\n")
 
         # 12回目のモードでは、ルールが11あって表が長くなるので、共通の表はすべて省き、【12回目】の欄にまとめる
-        if not getattr(args, "robust_test", False):
+        # 13回目も同じ（【13回目】の欄にまとめる）
+        if not (getattr(args, "robust_test", False) or getattr(args, "eye_test", False)):
             # ── 1. 基準に勝った割合 ──
             print("【全部買って放置に勝った割合】\n")
             print(f"{'ルール':<34}{'勝ち':>8}{'割合':>8}{'平均年率':>10}{'平均の差':>10}")
@@ -9109,6 +9421,109 @@ def main() -> int:
             print(f"    1 {'○' if _t1 else '×'} ／ 2 {'○' if _t2 else '×'} ／ 3 {'○' if _t3 else '×'} ／ 4 {'○' if _t4 else '×'}"
                   f" → {_v}")
             print("  （本番に入れるかどうかの基準＝24条件の85％以上で上回る、は変えていない）")
+
+        # ── 13回目：目の条件で確かめ直す（2026年10月13日に追加。基準は結果を見る前に決めたもの）──
+        #   1. 場面ごと（eye_events）… 目の条件の「売る場面」「買う場面」の、60営業日後の「ほかの候補との差」。
+        #      売り：90％の幅がすべてマイナスなら「売る意味がある」、すべてプラスなら「逆効果」。買いは逆。30件未満は判定しない。
+        #      目の条件で絞る意味：目の条件 − 機械の線だけ の差の90％の幅で同じように判定する。
+        #   2. 本番のルールに組み込んだ場合 … 問題に出していない期間の3つの窓 × 資金投入の数 の条件で、
+        #      これまでと同じ基準（使える＝平均年率の差 −0.5pt以内・最悪の年率の差 −1.0pt以内・相手の勝ち85％未満。
+        #      本番に入れる候補＝使える かつ 85％以上の条件で上回る）。清算後と評価額で分かれたら「決められない」。
+        #      線での売り買い（売り＋買い）が1条件あたり平均10回未満なら、差は売買で決まらないので判定しない。
+        #   目隠しテストからの予想：売りは逆効果、買いは意味がある（結果を見る前に書いておく）。
+        if getattr(args, "eye_test", False) and nm and nm[0] == "tier_pit_mix_scr":
+            _L0 = VARIANTS[nm[0]]["label"]
+            _sh = {"line_2y_pit": "機械の2年線でうねり取り", "eye_2y_pit": "A 目の条件でうねり取り",
+                   "line_buy_pit": "機械の2年線の下で買うだけ", "eye_buy_pit": "B 目の条件の下で買うだけ"}
+            print("\n【13回目：目隠しテストの「うねり」の形（幅15％以内・行き来8回以上）で確かめ直す】"
+                  "（基準は結果を見る前に決めたもの）")
+            print("  目隠しテストからの予想 … 上の線で売るのは逆効果、下の線で買うのは意味がある")
+            if _eye_res is not None and not _eye_res["rows"].empty:
+                print(f"\n  1. 場面ごとの答え合わせ（全銘柄・全場面。{EYE_DAYS}営業日後の値動きと、"
+                      "同じ日のほかの候補の平均との差）")
+                _gn = {("sell", "eye"): "売る・目の条件", ("sell", "mach"): "売る・機械の線だけ",
+                       ("buy", "eye"): "買う・目の条件", ("buy", "mach"): "買う・機械の線だけ"}
+                for _per, _pl in (("test", "問題に出していない期間（判定に使う）"), ("ref", "問題と同じ期間（参考）")):
+                    if _per not in _eye_res["span"]:
+                        continue
+                    _a, _b = _eye_res["span"][_per]
+                    print(f"    {_pl} {_a}〜{_b}")
+                    for _ty in ("sell", "buy"):
+                        for _gp in ("eye", "mach"):
+                            _s = _eye_res["stats"].get((_per, _ty, _gp), {"n": 0})
+                            if not _s.get("n"):
+                                print(f"      {_gn[(_ty, _gp)]:<10} … 0件")
+                                continue
+                            _e120 = f"{_s['ex120'] * 100:+.1f}" if _s["ex120"] == _s["ex120"] else "—"
+                            print(f"      {_gn[(_ty, _gp)]:<10} … {_s['n']}件（{_s['codes']}社） 値動き "
+                                  f"{_s['r60'] * 100:+.1f}％ ／ 差 {_s['ex60'] * 100:+.1f}pt（90％の幅 "
+                                  f"{_s['lo'] * 100:+.1f}〜{_s['hi'] * 100:+.1f}） ／ 差がプラス {_s['pos'] * 100:.0f}％ ／ "
+                                  f"120日後の差 {_e120}pt")
+                    _dd = [_eye_res["diff"].get((_per, _ty)) for _ty in ("sell", "buy")]
+                    print("      目の条件 − 機械の線だけ … " + " ／ ".join(
+                        f"{'売る' if _ty == 'sell' else '買う'} {d_['d'] * 100:+.1f}pt（{d_['lo'] * 100:+.1f}〜"
+                        f"{d_['hi'] * 100:+.1f}）" if (d_ and d_["lo"] == d_["lo"]) else f"{'売る' if _ty == 'sell' else '買う'} —"
+                        for _ty, d_ in zip(("sell", "buy"), _dd)))
+                _v = _eye_res["verdict"]
+                print("    判定（問題に出していない期間）")
+                print(f"      上の線で売る（目の条件） … {_v['sell']}")
+                print(f"      下の線で買う（目の条件） … {_v['buy']}")
+                print(f"      目の条件で絞る意味 … 売る：{_v['sell_diff']} ／ 買う：{_v['buy_diff']}")
+                print(f"      → {_v['all']}")
+            else:
+                print("\n  1. 場面ごとの答え合わせ … 場面が見つかりませんでした")
+
+            def _j13(spans, n_, col):
+                g_ = gf[gf["期間"].isin(spans)]
+                pv_ = g_.pivot_table(index=cond_cols, columns="ルール", values=col)
+                L_ = VARIANTS[n_]["label"]
+                if L_ not in pv_.columns or _L0 not in pv_.columns:
+                    return None
+                d_ = (pv_[L_] - pv_[_L0]).dropna()
+                if d_.empty:
+                    return None
+                w_, l_ = float((d_ > 0).mean()), float((d_ < 0).mean())
+                da_, dw_ = float(d_.mean()), float(pv_[L_].min() - pv_[_L0].min())
+                ok_ = (da_ >= -0.5) and (dw_ >= -1.0) and (l_ < 0.85)
+                cat_ = "本番に入れる候補" if (ok_ and w_ >= 0.85) else ("使える" if ok_ else "使えない")
+                return {"n": int(len(d_)), "w": w_, "l": l_, "da": da_, "dw": dw_, "cat": cat_}
+
+            _ts, _rs = _eye_spans
+            _g0 = gf[(gf["ルール"] == _L0) & gf["期間"].isin(_ts)]
+            print(f"\n  2. 本番のルールに組み込んだ場合（清算後の年率。問題に出していない期間の{len(_ts)}つの窓 × "
+                  f"資金投入{len(ramps)}通り）")
+            print("    窓 … " + "・".join(_ts))
+            if not _g0.empty:
+                print(f"    本番（全部持ち続ける） … 平均 {_g0['清算後年率'].mean():.1f}％・最悪 {_g0['清算後年率'].min():.1f}％")
+            _cats = {}
+            for n_ in ("eye_2y_pit", "eye_buy_pit", "line_2y_pit", "line_buy_pit"):
+                if n_ not in nm:
+                    continue
+                _jl = _j13(_ts, n_, "清算後年率")
+                _jm = _j13(_ts, n_, "評価額年率")
+                if _jl is None:
+                    continue
+                _fin = _jl["cat"] if (_jm is None or _jl["cat"] == _jm["cat"]) else \
+                    f"決められない（清算後「{_jl['cat']}」・評価額「{_jm['cat']}」）"
+                _gr = gf[(gf["ルール"] == VARIANTS[n_]["label"]) & gf["期間"].isin(_ts)]
+                _ntr = float(_gr["うねり売り"].mean() + _gr["底で買い"].mean()) if not _gr.empty else 0.0
+                if _ntr < EYE_MIN_TRADES:
+                    _fin = f"線での売り買いがほとんど起きず、判定しない（1条件あたり{_ntr:.1f}回）"
+                _cats[n_] = _fin
+                _ref = _j13(_rs, n_, "清算後年率") if _rs else None
+                _rf = f" ／ 参考（問題と同じ期間）{_ref['da']:+.2f}pt・上回った {_ref['w'] * 100:.0f}％" if _ref else ""
+                _tag = "" if n_.startswith("eye") else "（参考）"
+                print(f"    {_sh[n_]}{_tag} … 平均 {_jl['da']:+.2f}pt ／ 最悪 {_jl['dw']:+.2f}pt ／ 上回った "
+                      f"{_jl['w'] * 100:.0f}％（{_jl['n']}条件） → {_fin}")
+                print(f"      線で売った {_gr['うねり売り'].mean():.1f}回・線の下で買った {_gr['底で買い'].mean():.1f}回"
+                      f"（1条件あたり） ／ 現金の割合 {_gr['現金比率'].mean():.0f}％（本番 {_g0['現金比率'].mean():.0f}％）{_rf}")
+            print("\n  総合（結果を見る前に決めた基準）")
+            if _eye_res is not None and not _eye_res["rows"].empty:
+                print(f"    場面ごと … {_eye_res['verdict']['all']}")
+            print(f"    本番に組み込むと … A（目の条件でうねり取り） {_cats.get('eye_2y_pit', '—')} ／ "
+                  f"B（目の条件の下で買うだけ） {_cats.get('eye_buy_pit', '—')}")
+            print("  （差＝60営業日後の値動き − 同じ日のほかの候補の平均。売りはマイナス、買いはプラスなら当たり）")
+            print("  （場面の明細は data/yield_backtest.json、総当たりの明細は data/grid.csv）")
 
         OUTDIR.mkdir(parents=True, exist_ok=True)
         gf.to_csv(OUTDIR / "grid.csv", index=False, encoding="utf-8-sig")
