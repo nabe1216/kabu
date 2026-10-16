@@ -74,6 +74,13 @@ FETCH_BUDGET_MIN = float(os.environ.get("FETCH_BUDGET_MIN", "130"))
 COMPUTE_START_LIMIT_MIN = float(os.environ.get("COMPUTE_START_LIMIT_MIN", "140"))
 FETCH_SAVE_EVERY_MIN = 15.0      # 取得の途中もこの間隔で保存する
 EXIT_UNFINISHED = 3              # 途中で止めたときの終了コード（緑にしないため）
+# 15回目（2026年10月17日に追加）：生き残った銘柄だけで検証している偏りを確かめる
+MARKET_TSE1 = "0101"             # 東証一部（2022年4月3日まで）。名前（「第一部」）でも確かめる
+PRIME_START = "2022-04-04"       # プライム市場が始まった日
+PIT_FROM = "2018-01"             # その時点の銘柄一覧を取り始める月
+DELIST_EXIT = False              # 株価が途切れた（上場廃止）持ち株を、最後の値段で現金にする（15回目のときだけ）
+UNI_HIST = None                  # 各月の、その時点の一部・プライムの銘柄 {"YYYY-MM": set(codes)}
+UNI_NOW = None                   # いまのプライムの銘柄（set）
 
 
 def _elapsed_min() -> float:
@@ -1277,6 +1284,27 @@ VARIANTS: dict[str, dict[str, Any]] = {
     #   下の線では買い戻さない。売ったお金は、その月末にいつもの順番（Tier → 低PBR）で買える候補へ回す。
     #   売った銘柄は、売った月のうちは買い直さない。線の中にいる候補も、月末にはいつもどおり買う。
     #   参考に、税がかからない場合（NISA の想定）も、本番と並べて回す（tax_override＝0）。
+    # ── 15回目の候補（2026年10月17日に追加）：生き残った銘柄だけで検証している偏りを確かめる ──
+    #   どちらも本番（tier_pit_mix_scr）と同じルール。違うのは、新しく買ってよい銘柄の範囲だけ。
+    #   いまの一覧 … いまプライムにいる銘柄（今までの検証と同じ範囲）
+    #   その時点の一覧 … その月に東証一部（2022年4月3日まで）・プライム（4日以降）にいた銘柄
+    #   上場廃止になった持ち株は、最後の値段で現金にする（どちらも同じ扱い）。
+    "base_now_uni": {
+        "label": "本番・いまの銘柄一覧",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "tier_col": "tier_pit_mix", "uni_col": "in_uni_now",
+    },
+    "base_pit_uni": {
+        "label": "本番・その時点の銘柄一覧",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "tier_col": "tier_pit_mix", "uni_col": "in_uni_pit",
+    },
     "line_rot_pit": {
         "label": "上の線で売って月末の候補へ回す（2年線）",
         "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
@@ -2371,6 +2399,135 @@ def fetch_all(jq: JQ, years: int, limit: int,
         store["topix"] = pd.DataFrame()
     store["complete"] = True
     return store
+
+
+def _pit_months(store: dict) -> list[pd.Timestamp]:
+    """株価のある営業日から、各月の最後の営業日を出す（PIT_FROM 以降）。"""
+    ds = set()
+    for code in list(store.get("quotes", {}))[:60]:
+        for r in store["quotes"][code]:
+            d = r.get("Date")
+            if d:
+                ds.add(str(d)[:10])
+    if not ds:
+        return []
+    s_ = pd.Series(pd.to_datetime(sorted(ds)))
+    last = s_.groupby(s_.dt.to_period("M")).max()
+    return [d for d in last.tolist() if d.strftime("%Y-%m") >= PIT_FROM]
+
+
+def _in_top_market(row: dict, d: pd.Timestamp) -> bool:
+    """その日に、東証一部（2022年4月3日まで）かプライム（4日以降）にいたか。"""
+    mk, nm = str(row.get("Mkt") or ""), str(row.get("MktNm") or "")
+    if d < pd.Timestamp(PRIME_START):
+        return mk == MARKET_TSE1 or "第一部" in nm
+    return mk == MARKET_PRIME or "プライム" in nm
+
+
+def fetch_pit_universe(jq: "JQ", store: dict) -> bool:
+    """15回目：その時点の銘柄一覧（各月の最後の営業日）と、いまの一覧にない銘柄の株価・財務を取る。
+
+    取ったものは store の別の場所（uni_hist・x_universe・x_quotes・x_stmts）に入れ、
+    今までの検証で使う quotes・stmts・universe には混ぜない。終わったら True、時間切れなら False。
+    """
+    hist = store.setdefault("uni_hist", {})
+    meta = store.setdefault("x_universe", {})
+    xq = store.setdefault("x_quotes", {})
+    xs = store.setdefault("x_stmts", {})
+    nodata = set(store.setdefault("x_nodata", []))
+    months = _pit_months(store)
+    need = [d for d in months if d.strftime("%Y-%m") not in hist]
+    if need:
+        log.info("15回目：その時点の銘柄一覧を取っています（%dか月分）…", len(need))
+    seen_mk = {}
+    for d in need:
+        if _elapsed_min() >= FETCH_BUDGET_MIN:
+            save_store(store, "その時点の銘柄一覧を途中まで保存しました")
+            return False
+        time.sleep(API_SLEEP)
+        rows = jq.get("/v2/equities/master", {"date": d.strftime("%Y-%m-%d")})
+        codes = []
+        for r in rows:
+            k_ = (str(r.get("Mkt") or ""), str(r.get("MktNm") or ""))
+            seen_mk[k_] = seen_mk.get(k_, 0) + 1
+            if not _in_top_market(r, d):
+                continue
+            c = norm_code(r.get("Code", ""))
+            if not c:
+                continue
+            codes.append(c)
+            meta[c] = {"code": c, "name": r.get("CoName", "") or r.get("CoNameEn", ""),
+                       "sector": r.get("S33Nm", ""), "scale": r.get("ScaleCat", "")}
+        hist[d.strftime("%Y-%m")] = sorted(set(codes))
+        if d.strftime("%Y-%m") in (months[0].strftime("%Y-%m"), "2022-03", "2022-04", months[-1].strftime("%Y-%m")):
+            log.info("  %s 時点 … %d銘柄", d.date(), len(set(codes)))
+    if seen_mk:
+        log.info("  受け取った市場区分 … " + "／".join(f"{a}:{b} {n}" for (a, b), n in
+                                                   sorted(seen_mk.items(), key=lambda x: -x[1])[:8]))
+    # 東証一部は約2,100社、いまのプライムは約1,600社。その半分もいなければ、市場の見分け方が合っていない
+    _min_n = max(50, int(len(store.get("universe", [])) * 0.5))
+    early = [k for k, v in hist.items() if k < PRIME_START[:7] and len(v) < _min_n]
+    if early:
+        sys.exit("2022年3月までの銘柄一覧で、東証一部の銘柄がほとんど見つかりませんでした（" + ", ".join(early[:3])
+                 + " …）。市場区分のコードが想定と違う可能性があります。ログの「受け取った市場区分」を添えてご連絡ください。")
+    now = set(store.get("quotes", {}))
+    want = sorted({c for v in hist.values() for c in v} - now - set(xq) - nodata)
+    if want:
+        log.info("15回目：いまのプライムにない銘柄 %d社の株価と財務を取ります（使ってよい時間 %.0f分・開始から%.0f分）",
+                 len(want), FETCH_BUDGET_MIN, _elapsed_min())
+    last_save = time.monotonic()
+    for i, code in enumerate(want, 1):
+        if _elapsed_min() >= FETCH_BUDGET_MIN:
+            store["x_nodata"] = sorted(nodata)
+            save_store(store, "いまの一覧にない銘柄を途中まで保存しました")
+            return False
+        try:
+            q, st = _fetch_one(jq, code)
+        except Exception as e:
+            log.warning("取得失敗 %s: %s", code, e)
+            continue
+        if q is None:
+            nodata.add(code)
+        else:
+            xq[code], xs[code] = q, st
+        if i % 100 == 0:
+            log.info("  取得 %d/%d（開始から%.0f分）", i, len(want), _elapsed_min())
+        if (time.monotonic() - last_save) / 60 >= FETCH_SAVE_EVERY_MIN:
+            store["x_nodata"] = sorted(nodata)
+            save_store(store, "途中まで保存しました")
+            last_save = time.monotonic()
+    store["x_nodata"] = sorted(nodata)
+    store["pit_complete"] = True
+    save_store(store)
+    return True
+
+
+def merge_pit_store(store: dict) -> dict:
+    """15回目：いまの一覧と、その時点の一覧にだけある銘柄を合わせた store（保存はしない）。"""
+    now = {u["code"] for u in store["universe"]}
+    xu = store.get("x_universe", {})
+    xq = store.get("x_quotes", {})
+    m = dict(store)
+    m["universe"] = list(store["universe"]) + [xu[c] for c in sorted(xq) if c not in now and c in xu]
+    m["quotes"] = {**store["quotes"], **{c: v for c, v in xq.items() if c not in now}}
+    m["stmts"] = {**store["stmts"], **{c: v for c, v in store.get("x_stmts", {}).items() if c not in now}}
+    return m
+
+
+def add_uni_columns(panel: pd.DataFrame) -> pd.DataFrame:
+    """15回目：in_uni_now（いまプライムにいる銘柄）と in_uni_pit（その月に一部・プライムにいた銘柄）を足す。"""
+    if UNI_HIST is None or UNI_NOW is None or panel.empty:
+        return panel
+    panel = panel.copy()
+    keys = sorted(UNI_HIST)
+    mk = pd.to_datetime(panel["date"]).dt.strftime("%Y-%m")
+    look = {}
+    for k in sorted(set(mk)):
+        prev = [x for x in keys if x <= k]
+        look[k] = UNI_HIST[prev[-1]] if prev else set()
+    panel["in_uni_pit"] = [c in look[k] for c, k in zip(panel["code"], mk)]
+    panel["in_uni_now"] = panel["code"].isin(UNI_NOW).to_numpy()
+    return panel
 
 
 def print_unfinished(store: dict, compute_only: bool) -> None:
@@ -3971,6 +4128,10 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
     #   require_col … この列が True の銘柄だけを新しく買う（例 "grow_pit"＝増配の実績がある会社）。
     #                 月末の買いと、日々のうねりの買いの両方に効く。持っている銘柄を売る理由にはしない。
     require_col = cfg.get("require_col")
+    # 15回目（2026年10月17日に追加）：uni_col … この列が True の銘柄だけを新しく買う（in_uni_now / in_uni_pit）
+    uni_col = cfg.get("uni_col")
+    if uni_col and uni_col not in panel.columns:
+        raise RuntimeError(f"{uni_col} の列がありません。その時点の銘柄一覧の列が足されていません。")
     # 12回目（2026年10月12日に追加）：銘柄を決まった方法で半分に分け、片方だけを買う（0 か 1）。
     #   分け方は銘柄コードの CRC32 の偶奇（毎回同じ分かれ方になる）。別々の銘柄群で同じ結果が出るかを見るため。
     code_half = cfg.get("code_half")
@@ -4359,10 +4520,30 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
         return v
 
     prev_day = None
+    # 15回目：株価が途切れた銘柄（上場廃止）の最後の月と、持ち株の最後の値段
+    _code_last = panel.groupby("code")["date"].max() if DELIST_EXIT else None
+    _last_px = {}
     for mi, dt in enumerate(dates):
         day = panel[panel["date"] == dt].set_index("code")
         day = day.assign(mkt_yield_z=float(mkt_z.get(dt, 0) or 0))
         _dt_ns = pd.Timestamp(dt).value        # 損切りの判定で、日々の終値と比べるため
+        if _code_last is not None:
+            # 持ち株の株価がこの月から先にもう無い（上場廃止。TOB・合併・破綻など）→ 最後の値段で現金にする
+            for c_ in list(pos.keys()):
+                if c_ in day.index or c_ not in _last_px:
+                    continue
+                _ld = _code_last.get(c_)
+                if _ld is None or pd.Timestamp(_ld) >= pd.Timestamp(dt):
+                    continue
+                st_ = pos[c_]
+                _sh = sum(sh for sh, _ in st_["lots"])
+                _avg = (sum(sh * pr for sh, pr in st_["lots"]) / _sh) if _sh else 0.0
+                if _sh > 0:
+                    _sell_shares(c_, st_, _sh, _last_px[c_], dt)
+                diag["delist_exits"] = diag.get("delist_exits", 0) + 1
+                if _avg > 0:
+                    diag.setdefault("delist_gain", []).append(_last_px[c_] / _avg - 1.0)
+                _close(c_, st_, mi, "上場廃止で現金化")
 
         _div_pending = []     # 権利落ち日以降にうねりで売った分（その月の配当は受け取る）
         # ── うねりで日々売り買い（9回目）──
@@ -4392,6 +4573,8 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                 if require_col and not (isinstance(r_.get(require_col), (bool, np.bool_))
                                         and bool(r_.get(require_col))):
                     continue        # 11回目：増配の実績がある銘柄だけ買う
+                if uni_col and not bool(r_.get(uni_col, False)):
+                    continue        # 15回目：その銘柄一覧にいる銘柄だけ買う
                 if code_half is not None and code_half_of(c_) != int(code_half):
                     continue        # 12回目：決めた半分の銘柄だけ買う
                 if skip_emg_buy:
@@ -4923,6 +5106,9 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                     isinstance(row.get(require_col), (bool, np.bool_)) and bool(row.get(require_col))):
                 diag["req_skip"] = diag.get("req_skip", 0) + 1
                 continue        # 11回目：増配の実績がある銘柄だけ買う
+            if uni_col and not bool(row.get(uni_col, False)):
+                diag["uni_skip"] = diag.get("uni_skip", 0) + 1
+                continue        # 15回目：その銘柄一覧にいる銘柄だけ買う
             if tiers_allowed is not None and row.get("tier", "B") not in tiers_allowed:
                 continue        # この Tier は新しく買わない
             if skip_emg_buy:
@@ -5188,6 +5374,9 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                             net = gross * (1 - tax_rate)
                         cash += net
                         diag["dividend"] = diag.get("dividend", 0) + net
+                        _dk = pd.Timestamp(dt)
+                        diag.setdefault("div_by_month", {})
+                        diag["div_by_month"][_dk] = diag["div_by_month"].get(_dk, 0.0) + net
                         diag["tax"] = diag.get("tax", 0.0) + (gross - net)
 
         # ── 買い ──
@@ -5381,6 +5570,13 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
 
         curve.append({"date": dt, "value": value_of(day),
                       "cash": cash, "names": len(pos)})
+        for c_ in pos:
+            if c_ in day.index:
+                _last_px[c_] = float(day.loc[c_, "price"])
+        if pd.Timestamp(dt).month == 12:
+            # 15回目：12月末の持ち株（翌年、同じ株のままで配当がどう変わったかを見るため）
+            diag.setdefault("hold_dec", {})[pd.Timestamp(dt).year] = {
+                c_: sum(sh for sh, _ in st_["lots"]) for c_, st_ in pos.items()}
         prev_day = day
 
     # 期末に残っている含み損益（まだ確定していない分）
@@ -6520,17 +6716,24 @@ EXPLORE = [
 ]
 
 
-def buy_and_hold(pn: pd.DataFrame, tax_rate: float) -> dict | None:
+def buy_and_hold(pn: pd.DataFrame, tax_rate: float, uni_col: str | None = None,
+                 carry_last: bool = False) -> dict | None:
+    """初日に等金額で全部買って放置する基準。
+    15回目：uni_col … 初日にこの列が True の銘柄だけ買う。carry_last … 株価が途切れた銘柄は、
+    取得時の値ではなく最後の値段で据え置く（上場廃止で現金になったのと同じ）。"""
     dts = sorted(pn["date"].unique())
     if len(dts) < 12:
         return None
     first = pn[pn["date"] == dts[0]].set_index("code")
+    if uni_col and uni_col in first.columns:
+        first = first[first[uni_col].fillna(False).astype(bool)]
     codes = list(first.index)
     if not codes:
         return None
     # 初日に等金額で買い、あとは何もしない
     w = 1.0 / len(codes)
     base_px = first["price"].to_dict()
+    last_seen = dict(base_px)
     vals, div_total = [], 0.0
     gain_last = 0.0       # 最後の月の値上がり益（最後に全部売ったときの税の計算に使う）
     for dt in dts:
@@ -6541,11 +6744,15 @@ def buy_and_hold(pn: pd.DataFrame, tax_rate: float) -> dict | None:
             if c in day.index and base_px.get(c):
                 v += w * day.loc[c, "price"] / base_px[c]
                 g_px += w * (day.loc[c, "price"] / base_px[c] - 1.0)
+                last_seen[c] = day.loc[c, "price"]
                 m = pd.Timestamp(dt).month
                 for key in ("fiscal_month", "interim_month"):
                     if int(day.loc[c].get(key, 0) or 0) == m and day.loc[c, "dps"] > 0:
                         g = w * (day.loc[c, "dps"] * 0.5) / base_px[c]
                         div_total += g * (1 - tax_rate)
+            elif carry_last and base_px.get(c):
+                v += w * last_seen[c] / base_px[c]     # 上場廃止は最後の値段で据え置く
+                g_px += w * (last_seen[c] / base_px[c] - 1.0)
             else:
                 v += w        # 上場廃止などは取得時の値で据え置く
         vals.append(v + div_total)
@@ -6708,6 +6915,12 @@ def main() -> int:
     #   総当たりで回すので、「総当たり」の欄が false でも true として扱う。
     # 14回目（2026年10月15日に追加）：上の線で売って、売ったお金を月末の買い候補に回す（乗り換え）。
     #   本番（税あり）と比べて判定する。税なし（NISAの想定）の2つは参考。窓はこれまでと同じ（24条件）。
+    # 15回目（2026年10月17日に追加）：生き残った銘柄だけで検証している偏りと、配当がどれだけ「固定収入」だったか。
+    #   初回は、その時点の銘柄一覧と、いまの一覧にない銘柄の株価・財務を取る（時間がかかる。途中なら次の実行で続き）。
+    args.survivor_test = False
+    if (args.only or "").strip() == "survivor_test":
+        args.survivor_test, args.liq_metric, args.grid = True, True, True
+        args.only = "base_now_uni,base_pit_uni"
     args.rot_test = False
     if (args.only or "").strip() == "rot_test":
         args.rot_test, args.liq_metric, args.grid = True, True, True
@@ -6775,6 +6988,30 @@ def main() -> int:
         log.info("窓をずらす検証のため、対象期間を最大まで広げます（%d年→9年）",
                  args.years)
         args.years = 9
+
+    # ── 15回目：その時点の銘柄一覧と、いまの一覧にない銘柄のデータ ──
+    global DELIST_EXIT, UNI_HIST, UNI_NOW
+    if getattr(args, "survivor_test", False):
+        if not store.get("pit_complete"):
+            key = os.environ.get("J_QUANTS_API_KEY")
+            if not key:
+                log.error("J_QUANTS_API_KEY が設定されていません")
+                return 2
+            if not fetch_pit_universe(JQ(key), store):
+                print("\n■ まだ終わっていません（その時点の銘柄一覧と、いまの一覧にない銘柄のデータを取っている途中です）")
+                print(f"　 取った分は保存しました（開始から{_elapsed_min():.0f}分）。同じ設定のまま、もう一度「Run workflow」を押してください。")
+                return EXIT_UNFINISHED
+            if _elapsed_min() > COMPUTE_START_LIMIT_MIN:
+                print("\n■ まだ終わっていません（データは取り終えましたが、計算の時間が残っていません）")
+                print("　 同じ設定のまま、もう一度「Run workflow」を押してください。今度は計算から始まります。")
+                return EXIT_UNFINISHED
+        UNI_NOW = {u["code"] for u in store["universe"]}
+        UNI_HIST = {k: set(v) for k, v in store.get("uni_hist", {}).items()}
+        _nx = len([c for c in store.get("x_quotes", {}) if c not in UNI_NOW])
+        log.info("15回目：いまの一覧 %d銘柄 ＋ その時点の一覧にだけある銘柄 %d銘柄（株価が取れなかった %d銘柄）で回します",
+                 len(UNI_NOW), _nx, len(store.get("x_nodata", [])))
+        store = merge_pit_store(store)
+        DELIST_EXIT = True
 
     if args.realistic:
         log.info("実運用モード：元本%s万・Tier別予算・最大%d銘柄・配当あり",
@@ -6923,6 +7160,8 @@ def main() -> int:
         # 総当たりで分位の月数を変えてパネルを作り直すときも、レンジの列を忘れずに足す
         if _need_range and not pn_.empty:
             pn_ = add_range_columns(store, pn_, int(_d[0]), _d[1], _d[2], _d[4])
+        if UNI_HIST is not None and not pn_.empty:
+            pn_ = add_uni_columns(pn_)
         return pn_
 
     # 価格で損切りするルールがあれば、日々の終値を用意する。
@@ -6967,6 +7206,12 @@ def main() -> int:
     if _box_tags:
         log.info("うねりで売り買いするルールがあるので、日々の終値から上の線と下の線を出します…")
         panel = add_box_columns(store, panel, _box_tags)
+    if UNI_HIST is not None:
+        panel = add_uni_columns(panel)
+        _pm = panel.groupby("date")[["in_uni_now", "in_uni_pit"]].sum()
+        log.info("  1か月あたりの銘柄数 … いまの一覧 平均%.0f ／ その時点の一覧 平均%.0f（最初の月 %d・最後の月 %d）",
+                 float(_pm["in_uni_now"].mean()), float(_pm["in_uni_pit"].mean()),
+                 int(_pm["in_uni_pit"].iloc[0]), int(_pm["in_uni_pit"].iloc[-1]))
 
     # 外部要因を使う検証では、追い風か逆風かをパネルに足す
     if args.factor_test:
@@ -8559,10 +8804,10 @@ def main() -> int:
               f"約定のずれ 片道{args.slip_bps:.0f}bps\n")
         _lt = bool(getattr(args, "line_test", False) or getattr(args, "safe_test", False)
                    or getattr(args, "robust_test", False) or getattr(args, "eye_test", False)
-                   or getattr(args, "rot_test", False))
+                   or getattr(args, "rot_test", False) or getattr(args, "survivor_test", False))
         _l10 = bool(getattr(args, "line_test", False))
         if _liq and (getattr(args, "robust_test", False) or getattr(args, "eye_test", False)
-                     or getattr(args, "rot_test", False)):
+                     or getattr(args, "rot_test", False) or getattr(args, "survivor_test", False)):
             print("　 年率は「最後の月末に全部売って、約定のずれと税を払った後」（清算後）で出しています。\n")
         elif _liq:
             _rn = "11" if getattr(args, "safe_test", False) else "10"
@@ -8572,7 +8817,7 @@ def main() -> int:
         # 12回目のモードでは、ルールが11あって表が長くなるので、共通の表はすべて省き、【12回目】の欄にまとめる
         # 13回目も同じ（【13回目】の欄にまとめる）
         if not (getattr(args, "robust_test", False) or getattr(args, "eye_test", False)
-                or getattr(args, "rot_test", False)):
+                or getattr(args, "rot_test", False) or getattr(args, "survivor_test", False)):
             # ── 1. 基準に勝った割合 ──
             print("【全部買って放置に勝った割合】\n")
             print(f"{'ルール':<34}{'勝ち':>8}{'割合':>8}{'平均年率':>10}{'平均の差':>10}")
@@ -9632,6 +9877,140 @@ def main() -> int:
             print("\n  総合（結果を見る前に決めた基準）")
             print(f"    税あり … {_cat14.get('line_rot_pit', '—')} ／ 税なし（参考） … {_cat14.get('line_rot_nisa', '—')}")
             print("  （税なしは、全額がNISAに入ると仮定した参考。実際のNISAは枠に上限がある）")
+
+        # ── 15回目：生き残った銘柄だけで検証している偏り・配当がどれだけ「固定収入」だったか ──
+        #   （2026年10月17日に追加。基準は結果を見る前に決めたもの。年率は清算後）
+        #   1. 偏り … その時点の一覧 − いまの一覧（同じ本番のルール、24条件）の平均の差 d で判定する
+        #        |d| ≤ 1.0pt → 偏りは小さい（今までの結論はそのまま使える）
+        #        d < −1.0pt → 今までの数字は高めに出ていた（noteではその時点の一覧の数字を使う）
+        #        d > +1.0pt → 今までの数字は控えめだった
+        #   2. 市場平均との比べ … その時点の一覧で、本番 − 全部買って放置（同じ一覧・上場廃止は最後の値段）が
+        #        プラスの条件が85％以上 → 堅く上回る ／ 15％以下 → 負ける ／ それ以外 → 条件次第
+        #   3. 配当 … 全期間・資金投入0か月で、1年ごとの配当（税引き後）と、前年末の持ち株のままで
+        #        1株配当がどう変わったか（同じ株のままの変化）を出す。判定はしない（数字をそのまま出す）。
+        if getattr(args, "survivor_test", False) and "in_uni_pit" in panels[lbs_[0]].columns:
+            _pn = panels[lbs_[0]]
+            Ln, Lp = VARIANTS["base_now_uni"]["label"], VARIANTS["base_pit_uni"]["label"]
+            _pl = gf.pivot_table(index=cond_cols, columns="ルール", values="清算後年率")
+            _pm = gf.pivot_table(index=cond_cols, columns="ルール", values="評価額年率")
+            print("\n【15回目：生き残った銘柄だけで検証している偏り・配当は「固定収入」だったか】"
+                  "（基準は結果を見る前に決めたもの。年率は清算後）")
+            _cnt = _pn.groupby("date")[["in_uni_now", "in_uni_pit"]].sum()
+            _lastd = _pn.groupby("code")["date"].max()
+            _ever = {c for v in (UNI_HIST or {}).values() for c in v}
+            _gone = [c for c, d in _lastd.items() if pd.Timestamp(d) < pd.Timestamp(d1_) - pd.Timedelta(days=40)
+                     and c in _ever]
+            print(f"  銘柄の数（1か月あたり） … いまの一覧 {_cnt['in_uni_now'].mean():.0f} ／ その時点の一覧 "
+                  f"{_cnt['in_uni_pit'].mean():.0f}（最初の月 {int(_cnt['in_uni_pit'].iloc[0])}・最後の月 "
+                  f"{int(_cnt['in_uni_pit'].iloc[-1])}） ／ 期間中に上場廃止になった銘柄 {len(_gone)}社")
+            if Ln in _pl.columns and Lp in _pl.columns:
+                _d = (_pl[Lp] - _pl[Ln]).dropna()
+                _dmv = (_pm[Lp] - _pm[Ln]).dropna() if (Ln in _pm.columns and Lp in _pm.columns) else _d
+                print("\n  1. 偏り（同じ本番のルールで、買ってよい銘柄の範囲だけ変える・24条件）")
+                for L_, sh_ in ((Ln, "いまの一覧（今までと同じ）"), (Lp, "その時点の一覧")):
+                    g_ = gf[gf["ルール"] == L_]
+                    print(f"    {sh_:<14} … 平均 {g_['清算後年率'].mean():.1f}％・最悪の年 {g_['清算後年率'].min():.1f}％・"
+                          f"最悪の下落 {g_['最大下落'].max():.1f}％")
+                _dm = float(_d.mean())
+                print(f"    その時点 − いま … 平均 {_dm:+.2f}pt（{_d.min():+.1f}〜{_d.max():+.1f}pt） ／ "
+                      f"その時点の方が高い条件 {(_d > 0).mean() * 100:.0f}％ ／ 評価額の年率で 平均 {_dmv.mean():+.2f}pt")
+                if abs(_dm) <= 1.0:
+                    _v1 = "偏りは小さい（今までの結論はそのまま使える）"
+                elif _dm < 0:
+                    _v1 = "今までの数字は高めに出ていた（noteではその時点の一覧の数字を使う）"
+                else:
+                    _v1 = "今までの数字は控えめだった"
+                print(f"    → {_v1}")
+                # 2. 市場平均との比べ
+                _bh = {}
+                for a_, b_ in wins:
+                    sub_ = _pn[(_pn["date"] >= a_) & (_pn["date"] <= b_)]
+                    sp_ = f"{a_.date()}〜{b_.date()}"
+                    bn_ = buy_and_hold(sub_, args.tax / 100.0, "in_uni_now", True)
+                    bp_ = buy_and_hold(sub_, args.tax / 100.0, "in_uni_pit", True)
+                    if bn_ and bp_:
+                        _bh[sp_] = (bn_["清算後年率"], bp_["清算後年率"])
+                _rows = []
+                for idx_, r_ in _pl.iterrows():
+                    sp_ = idx_[cond_cols.index("期間")]
+                    if sp_ in _bh:
+                        _rows.append((r_[Ln] - _bh[sp_][0], r_[Lp] - _bh[sp_][1]))
+                if _rows:
+                    _en = np.array([x for x, _ in _rows])
+                    _ep = np.array([y for _, y in _rows])
+                    print("\n  2. 市場平均（同じ一覧を初日に全部買って放置）との比べ")
+                    print(f"    全部買って放置 … いまの一覧 平均 {np.mean([v[0] for v in _bh.values()]):.1f}％ ／ "
+                          f"その時点の一覧 平均 {np.mean([v[1] for v in _bh.values()]):.1f}％（{len(_bh)}期間）")
+                    print(f"    本番 − 放置 … いまの一覧 平均 {_en.mean():+.1f}pt（上回った {(_en > 0).mean() * 100:.0f}％） ／ "
+                          f"その時点の一覧 平均 {_ep.mean():+.1f}pt（上回った {(_ep > 0).mean() * 100:.0f}％）")
+                    _sh_ = float((_ep > 0).mean())
+                    _v2 = ("その時点の一覧でも、市場平均を堅く上回る" if _sh_ >= 0.85 else
+                           ("その時点の一覧では、市場平均に負ける" if _sh_ <= 0.15 else "市場平均との勝ち負けは条件次第"))
+                    print(f"    → {_v2}")
+            # 3. 配当（全期間・資金投入0か月）
+            _full = _pn
+            _res = {}
+            for n_ in ("base_now_uni", "base_pit_uni"):
+                _res[n_] = simulate(_full, VARIANTS[n_], args.capital, mxs_[0],
+                                    tier_budget=args.realistic, dividends=args.realistic,
+                                    slip_bps=args.slip_bps, fee_bps=args.fee_bps,
+                                    tax_rate=args.tax / 100.0, ramp=0, min_yield_override=mys[0])
+            _dp = _res["base_pit_uni"]["diag"]
+            _dl = _dp.get("delist_gain", [])
+            print(f"\n  上場廃止で現金にした持ち株（その時点の一覧・全期間・資金投入0か月） … {_dp.get('delist_exits', 0)}回"
+                  + (f"（そのときの益 平均 {np.mean(_dl) * 100:+.0f}％）" if _dl else ""))
+            _dv = pd.Series(_dp.get("div_by_month", {}), dtype=float)
+            _cv = _res["base_pit_uni"]["curve"].copy()
+            if not _dv.empty and not _cv.empty:
+                _cv["date"] = pd.to_datetime(_cv["date"])
+                _cv = _cv.set_index("date")["value"]
+                _dy = _dv.groupby(pd.to_datetime(_dv.index).year).sum()
+                _dps = _full.set_index(["code", "date"])["dps"]
+                _decs = {pd.Timestamp(d).year: pd.Timestamp(d) for d in sorted(_full["date"].unique())
+                         if pd.Timestamp(d).month == 12}
+                _hd = _dp.get("hold_dec", {})
+                _m0, _m1 = pd.Timestamp(_full["date"].min()), pd.Timestamp(_full["date"].max())
+                print("\n  3. 配当（その時点の一覧・全期間・資金投入0か月・税引き後）")
+                print(f"    {'年':<12}{'受け取った配当':>12}{'年初の資産に対して':>14}{'前年比':>8}{'同じ株のままの1株配当':>18}")
+                _prev = None
+                _worst_tot, _worst_org = None, None
+                for y_ in sorted(_dy.index):
+                    _lab = f"{y_}年"
+                    if y_ == _m0.year and _m0.month > 1:
+                        _lab += f"（{_m0.month}月〜）"
+                    if y_ == _m1.year and _m1.month < 12:
+                        _lab += f"（〜{_m1.month}月）"
+                    _v0 = _cv[_cv.index < pd.Timestamp(f"{y_}-01-01")]
+                    _base = float(_v0.iloc[-1]) if len(_v0) else float(args.capital)
+                    _full_year = not (y_ == _m0.year and _m0.month > 1) and not (y_ == _m1.year and _m1.month < 12)
+                    _yoy = ""
+                    if _prev is not None and _full_year and _prev[1]:
+                        _ch = _dy[y_] / _prev[0] - 1
+                        _yoy = f"{_ch * 100:+.0f}％"
+                        _worst_tot = _ch if _worst_tot is None else min(_worst_tot, _ch)
+                    _org = "—"
+                    if (y_ - 1) in _hd and (y_ - 1) in _decs and y_ in _decs:
+                        _num = _den = 0.0
+                        for c_, sh_ in _hd[y_ - 1].items():
+                            a_ = _dps.get((c_, _decs[y_ - 1]))
+                            b_ = _dps.get((c_, _decs[y_]))
+                            if a_ is None or not (a_ == a_) or a_ <= 0:
+                                continue
+                            _den += sh_ * float(a_)
+                            _num += sh_ * (float(b_) if (b_ is not None and b_ == b_) else float(a_))
+                        if _den > 0:
+                            _oc = _num / _den - 1
+                            _org = f"{_oc * 100:+.1f}％"
+                            _worst_org = _oc if _worst_org is None else min(_worst_org, _oc)
+                    print(f"    {_lab:<12}{_dy[y_] / 1e4:>10,.0f}万円{_dy[y_] / _base * 100:>12.1f}％{_yoy:>8}{_org:>16}")
+                    _prev = (_dy[y_], _full_year)
+                print(f"    いちばん悪かった年 … 受け取った配当の前年比 "
+                      + (f"{_worst_tot * 100:+.0f}％" if _worst_tot is not None else "—")
+                      + " ／ 同じ株のままの1株配当 "
+                      + (f"{_worst_org * 100:+.1f}％" if _worst_org is not None else "—"))
+                print("    同じ株のままの1株配当 … 前年12月末に持っていた株を1株も動かさなかったとして、"
+                      "1株配当（会社の予想）が12月末どうしでどれだけ変わったか")
+                print("    受け取った配当 … 受け取った配当は次の買いに回しているので、資産が増えるほど増える（毎年同じ額を受け取る形とは別）")
 
         OUTDIR.mkdir(parents=True, exist_ok=True)
         gf.to_csv(OUTDIR / "grid.csv", index=False, encoding="utf-8-sig")
