@@ -1272,6 +1272,37 @@ VARIANTS: dict[str, dict[str, Any]] = {
     #   A … 目の条件の線の中だけで、上で売って下で買う（線の位置・売り値・買い値は2年線と同じ）
     #   B … 目の条件の線の中にいる候補は、月末に買わずに下の線で買う。持っている銘柄は線では売らない（no_sell）
     #   参考に、機械の2年線（幅6〜35％・行き来3回以上）で「下で買うだけ」も回す。
+    # ── 14回目の候補（2026年10月15日に追加）：上の線で売り、売ったお金を月末の買い候補に回す ──
+    #   2年線の上の線（幅の10％手前）に高値が届いたら売る（取得単価より上のときだけ。S は売らない）。
+    #   下の線では買い戻さない。売ったお金は、その月末にいつもの順番（Tier → 低PBR）で買える候補へ回す。
+    #   売った銘柄は、売った月のうちは買い直さない。線の中にいる候補も、月末にはいつもどおり買う。
+    #   参考に、税がかからない場合（NISA の想定）も、本番と並べて回す（tax_override＝0）。
+    "line_rot_pit": {
+        "label": "上の線で売って月末の候補へ回す（2年線）",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "tier_col": "tier_pit_mix",
+        "swing_daily": {"tag": "h2", "tiers": ["A", "B"], "no_buy": True},
+    },
+    "base_nisa_pit": {
+        "label": "本番・税なし（NISAの想定）",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "tier_col": "tier_pit_mix", "tax_override": 0.0,
+    },
+    "line_rot_nisa": {
+        "label": "上の線で売って回す・税なし（NISAの想定）",
+        "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "tier_col": "tier_pit_mix", "tax_override": 0.0,
+        "swing_daily": {"tag": "h2", "tiers": ["A", "B"], "no_buy": True},
+    },
     "eye_2y_pit": {
         "label": "目の条件でうねり取り（幅15％以内・行き来8回以上）",
         "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
@@ -4437,7 +4468,7 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                     swing_sold[c_] = mi
                     _sold_on[c_] = d_ns
                     _close(c_, st_, mi, "うねりで売却")
-                for _o, _np, c_, tg_ in _elig:
+                for _o, _np, c_, tg_ in ([] if swing_daily.get("no_buy") else _elig):
                     if c_ in pos or _sold_on.get(c_) == d_ns:
                         continue
                     if len(pos) >= max_names:
@@ -4904,7 +4935,8 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
             if swing_daily and row.get("tier", "B") in _sw_tiers and code not in pos:
                 if swing_sold.get(code) == mi:
                     continue    # うねりで売った月のうちは、月末に買い直さない
-                if _box_ok_at(code, _dt_ns):
+                # 14回目：no_buy（下の線では買わない）なら、線の中の銘柄も月末にいつもどおり買う
+                if not swing_daily.get("no_buy") and _box_ok_at(code, _dt_ns):
                     diag["swing_wait"] = diag.get("swing_wait", 0) + 1
                     continue    # うねりの中にいる。買い値に届く日を待つ（日々の売り買いで買う）
             if swing_entry and row.get("tier", "B") in swing_entry.get("tiers", ["A", "B"]):
@@ -6674,6 +6706,12 @@ def main() -> int:
     # 13回目（2026年10月13日に追加）：目隠しテストの「うねり」の形（目の条件：幅15％以内・行き来8回以上）で確かめ直す。
     #   1. 場面ごとの答え合わせ（全銘柄・全場面） 2. 本番のルールに組み込んだ場合（総当たり。窓は13回目用に固定）
     #   総当たりで回すので、「総当たり」の欄が false でも true として扱う。
+    # 14回目（2026年10月15日に追加）：上の線で売って、売ったお金を月末の買い候補に回す（乗り換え）。
+    #   本番（税あり）と比べて判定する。税なし（NISAの想定）の2つは参考。窓はこれまでと同じ（24条件）。
+    args.rot_test = False
+    if (args.only or "").strip() == "rot_test":
+        args.rot_test, args.liq_metric, args.grid = True, True, True
+        args.only = "tier_pit_mix_scr,line_rot_pit,base_nisa_pit,line_rot_nisa"
     args.eye_test = False
     if (args.only or "").strip() == "eye_test":
         args.eye_test, args.liq_metric, args.grid = True, True, True
@@ -8408,7 +8446,7 @@ def main() -> int:
                             sub, VARIANTS[n_], args.capital, mx_,
                             tier_budget=args.realistic, dividends=args.realistic,
                             slip_bps=args.slip_bps, fee_bps=args.fee_bps,
-                            tax_rate=args.tax / 100.0, ramp=rp,
+                            tax_rate=float(VARIANTS[n_].get("tax_override", args.tax / 100.0)), ramp=rp,
                             min_yield_override=my)
                         m_ = metrics(r_)
                         if m_:
@@ -8520,9 +8558,11 @@ def main() -> int:
         print(f"　 元本 {args.capital:,.0f}円 ／ 税率{args.tax:.3f}％ ／ "
               f"約定のずれ 片道{args.slip_bps:.0f}bps\n")
         _lt = bool(getattr(args, "line_test", False) or getattr(args, "safe_test", False)
-                   or getattr(args, "robust_test", False) or getattr(args, "eye_test", False))
+                   or getattr(args, "robust_test", False) or getattr(args, "eye_test", False)
+                   or getattr(args, "rot_test", False))
         _l10 = bool(getattr(args, "line_test", False))
-        if _liq and (getattr(args, "robust_test", False) or getattr(args, "eye_test", False)):
+        if _liq and (getattr(args, "robust_test", False) or getattr(args, "eye_test", False)
+                     or getattr(args, "rot_test", False)):
             print("　 年率は「最後の月末に全部売って、約定のずれと税を払った後」（清算後）で出しています。\n")
         elif _liq:
             _rn = "11" if getattr(args, "safe_test", False) else "10"
@@ -8531,7 +8571,8 @@ def main() -> int:
 
         # 12回目のモードでは、ルールが11あって表が長くなるので、共通の表はすべて省き、【12回目】の欄にまとめる
         # 13回目も同じ（【13回目】の欄にまとめる）
-        if not (getattr(args, "robust_test", False) or getattr(args, "eye_test", False)):
+        if not (getattr(args, "robust_test", False) or getattr(args, "eye_test", False)
+                or getattr(args, "rot_test", False)):
             # ── 1. 基準に勝った割合 ──
             print("【全部買って放置に勝った割合】\n")
             print(f"{'ルール':<34}{'勝ち':>8}{'割合':>8}{'平均年率':>10}{'平均の差':>10}")
@@ -9524,6 +9565,73 @@ def main() -> int:
                   f"B（目の条件の下で買うだけ） {_cats.get('eye_buy_pit', '—')}")
             print("  （差＝60営業日後の値動き − 同じ日のほかの候補の平均。売りはマイナス、買いはプラスなら当たり）")
             print("  （場面の明細は data/yield_backtest.json、総当たりの明細は data/grid.csv）")
+
+        # ── 14回目：上の線で売って、月末の買い候補に回す（2026年10月15日に追加。基準は結果を見る前に決めたもの）──
+        #   相手は本番（全部持ち続ける・税あり）。清算後の年率で、これまでと同じ基準：
+        #     使える＝平均年率の差 −0.5pt以内・最悪の年率の差 −1.0pt以内・本番の勝ち85％未満
+        #     本番に入れる候補＝使える かつ 85％以上の条件で上回る。評価額で分類が分かれたら「決められない」。
+        #     線で売った回数が1条件あたり平均10回未満なら判定しない。
+        #   税なし（NISAの想定）は、税なしの本番と比べる（参考。同じ基準で分類だけ出す）。
+        #   予想（結果を見る前に書いておく）：税ありでは「使えない」、税なしでは差が縮む。
+        if getattr(args, "rot_test", False) and nm and nm[0] == "tier_pit_mix_scr":
+            def _j14(n_a, n_b, col):
+                pv_ = gf.pivot_table(index=cond_cols, columns="ルール", values=col)
+                La, Lb = VARIANTS[n_a]["label"], VARIANTS[n_b]["label"]
+                if La not in pv_.columns or Lb not in pv_.columns:
+                    return None
+                d_ = (pv_[La] - pv_[Lb]).dropna()
+                if d_.empty:
+                    return None
+                w_, l_ = float((d_ > 0).mean()), float((d_ < 0).mean())
+                da_, dw_ = float(d_.mean()), float(pv_[La].min() - pv_[Lb].min())
+                ok_ = (da_ >= -0.5) and (dw_ >= -1.0) and (l_ < 0.85)
+                cat_ = "本番に入れる候補" if (ok_ and w_ >= 0.85) else ("使える" if ok_ else "使えない")
+                return {"n": int(len(d_)), "w": w_, "da": da_, "dw": dw_, "cat": cat_}
+
+            print("\n【14回目：上の線で売って、売ったお金を月末の買い候補に回す】（基準は結果を見る前に決めたもの。年率は清算後）")
+            print("  予想 … 税ありでは「使えない」、税なしでは差が縮む")
+            for n_, sh_ in (("tier_pit_mix_scr", "本番（税あり）"), ("line_rot_pit", "乗り換え（税あり）"),
+                            ("base_nisa_pit", "本番（税なし）"), ("line_rot_nisa", "乗り換え（税なし）")):
+                g_ = gf[gf["ルール"] == VARIANTS[n_]["label"]]
+                if g_.empty:
+                    continue
+                print(f"    {sh_:<10} … 平均 {g_['清算後年率'].mean():.1f}％・最悪の年 {g_['清算後年率'].min():.1f}％・"
+                      f"最悪の下落 {g_['最大下落'].max():.1f}％・線で売った 年{g_['売り/年'].mean():.1f}回")
+            _cat14 = {}
+            for n_a, n_b, sh_ in (("line_rot_pit", "tier_pit_mix_scr", "税あり（判定）"),
+                                  ("line_rot_nisa", "base_nisa_pit", "税なし（参考）")):
+                jl = _j14(n_a, n_b, "清算後年率")
+                jm = _j14(n_a, n_b, "評価額年率")
+                if jl is None:
+                    continue
+                fin = jl["cat"] if (jm is None or jl["cat"] == jm["cat"]) else \
+                    f"決められない（清算後「{jl['cat']}」・評価額「{jm['cat']}」）"
+                g_ = gf[gf["ルール"] == VARIANTS[n_a]["label"]]
+                nsell = float(g_["うねり売り"].mean()) if not g_.empty else 0.0
+                if nsell < EYE_MIN_TRADES:
+                    fin = f"線で売った回数が少なく、判定しない（1条件あたり{nsell:.1f}回）"
+                _cat14[n_a] = fin
+                gain = g_["うねり1回の益"].mean() if g_["うねり1回の益"].notna().any() else float("nan")
+                gs = f"{gain * 100:+.1f}％" if gain == gain else "—"
+                print(f"\n  乗り換え − 本番　{sh_}")
+                print(f"    清算後 … 平均 {jl['da']:+.2f}pt ／ 最悪の年 {jl['dw']:+.2f}pt ／ 上回った {jl['w'] * 100:.0f}％"
+                      f"（{jl['n']}条件）" + (f" ／ 評価額 平均 {jm['da']:+.2f}pt" if jm else ""))
+                print(f"    売った回数 1条件あたり {nsell:.1f}回 ／ 売ったときの益 平均 {gs} → {fin}")
+            # 期間ごと（資金投入がいちばん短い条件）
+            _r0 = min(ramps)
+            _g0 = gf[gf["資金投入"] == _r0]
+            if not _g0.empty:
+                _pv = _g0.pivot_table(index="期間", columns="ルール", values="清算後年率")
+                _cols = [(VARIANTS[n_]["label"], s_) for n_, s_ in (("tier_pit_mix_scr", "本番"), ("line_rot_pit", "乗換"),
+                                                                    ("base_nisa_pit", "本番非課税"), ("line_rot_nisa", "乗換非課税"))
+                         if VARIANTS[n_]["label"] in _pv.columns]
+                print(f"\n  期間ごと（資金投入{_r0}か月・清算後の年率）")
+                print("    " + f"{'期間':<24}" + "".join(f"{s_:>8}" for _, s_ in _cols))
+                for _p in _pv.index:
+                    print("    " + f"{_p:<24}" + "".join(f"{_pv.at[_p, L_]:>7.1f}％" for L_, _ in _cols))
+            print("\n  総合（結果を見る前に決めた基準）")
+            print(f"    税あり … {_cat14.get('line_rot_pit', '—')} ／ 税なし（参考） … {_cat14.get('line_rot_nisa', '—')}")
+            print("  （税なしは、全額がNISAに入ると仮定した参考。実際のNISAは枠に上限がある）")
 
         OUTDIR.mkdir(parents=True, exist_ok=True)
         gf.to_csv(OUTDIR / "grid.csv", index=False, encoding="utf-8-sig")
