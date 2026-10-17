@@ -1315,6 +1315,24 @@ VARIANTS: dict[str, dict[str, Any]] = {
         "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
         "tier_col": "tier_live_pit", "uni_col": "in_uni_live",
     },
+    # ── 18回目の候補（2026年10月17日に追加）：1銘柄の比率の上限（いまの本番に足す）──
+    #   上限は結果を見る前に 15％ と 20％ に決めた（S の買い始めは約8.9％なので、上がって約1.7倍・2.2倍になったら削る形）
+    "live_cap15": {
+        "label": "いまの本番＋1銘柄15％まで",
+        "entry": [80], "exit": [], "measure": "pbr_live", "priority": "tier", "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "tier_col": "tier_live_pit", "uni_col": "in_uni_live", "weight_cap": 0.15,
+    },
+    "live_cap20": {
+        "label": "いまの本番＋1銘柄20％まで",
+        "entry": [80], "exit": [], "measure": "pbr_live", "priority": "tier", "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "tier_col": "tier_live_pit", "uni_col": "in_uni_live", "weight_cap": 0.20,
+    },
     # ── 17回目の候補（2026年10月17日に追加）：14回目（上の線で売って月末の候補へ回す）を、いまの本番の買い方で ──
     "live_rot_small1": {
         "label": "いまの本番＋上の線で売って回す",
@@ -5632,6 +5650,31 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                         diag["div_by_month"][_dk] = diag["div_by_month"].get(_dk, 0.0) + net
                         diag["tax"] = diag.get("tax", 0.0) + (gross - net)
 
+        # ── 18回目（2026年10月17日に追加）：1銘柄の比率の上限 ──
+        #   weight_cap … 月末に、持ち株1銘柄の評価額が総資産のこの割合を超えていたら、超えた分を売る（100株単位）。
+        #                売ったお金は、この月末の買い（いつもの順番）に回る。S も含めて全部に効く。
+        _wcap = cfg.get("weight_cap")
+        if _wcap:
+            _tot = value_of(day)
+            for c_ in list(pos.keys()):
+                if c_ not in day.index or _tot <= 0:
+                    continue
+                st_ = pos[c_]
+                _px = float(day.loc[c_, "price"])
+                _sh = sum(sh for sh, _ in st_["lots"])
+                _v = _sh * _px
+                if _px <= 0 or _v <= _tot * float(_wcap):
+                    continue
+                _cut = (_v - _tot * float(_wcap)) / _px
+                _cut = int(np.ceil(_cut / 100.0) * 100) if tier_budget else int(np.ceil(_cut))
+                _cut = min(_cut, _sh)
+                if _cut <= 0:
+                    continue
+                _sell_shares(c_, st_, _cut, _px, dt)
+                diag["trims"] = diag.get("trims", 0) + 1
+                if not st_["lots"]:
+                    _close(c_, st_, mi, "比率の上限で全部売却")
+
         # ── 買い ──
         total = value_of(day)
         # まだ解放されていない資金は使えない
@@ -5823,6 +5866,12 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
 
         curve.append({"date": dt, "value": value_of(day),
                       "cash": cash, "names": len(pos)})
+        # 18回目：月末の、いちばん大きい1銘柄の比率
+        _tv = value_of(day)
+        if _tv > 0 and pos:
+            _mw = max((sum(sh for sh, _ in st_["lots"]) * float(day.loc[c_, "price"]) for c_, st_ in pos.items()
+                       if c_ in day.index), default=0.0) / _tv
+            diag.setdefault("max_w", []).append(_mw)
         for c_ in pos:
             if c_ in day.index:
                 _last_px[c_] = float(day.loc[c_, "price"])
@@ -7174,6 +7223,11 @@ def main() -> int:
     #   ツールの results.json と突き合わせる。15回目のデータ（その時点の銘柄一覧）を使う。
     # 17回目（2026年10月17日に追加）：14回目（上の線で売って月末の候補へ回す）を、いまの本番の買い方
     #   （低PBR順・ツールと同じ範囲・その時点の銘柄一覧）を土台にして回し直す。基準は14回目と同じ。
+    # 18回目（2026年10月17日に追加）：1銘柄の比率の上限（15％・20％）を、いまの本番に足して比べる
+    args.cap_test = False
+    if (args.only or "").strip() == "cap_test":
+        args.cap_test, args.liq_metric, args.grid = True, True, True
+        args.only = "live_small1_pit,live_cap15,live_cap20"
     args.rot_live = False
     if (args.only or "").strip() == "rot_live":
         args.rot_live, args.liq_metric, args.grid = True, True, True
@@ -7256,7 +7310,8 @@ def main() -> int:
 
     # ── 15回目：その時点の銘柄一覧と、いまの一覧にない銘柄のデータ ──
     global DELIST_EXIT, UNI_HIST, UNI_NOW, UNI_SCALE
-    _need_scale = getattr(args, "live_check", False) or getattr(args, "rot_live", False)
+    _need_scale = (getattr(args, "live_check", False) or getattr(args, "rot_live", False)
+                   or getattr(args, "cap_test", False))
     if getattr(args, "survivor_test", False) or _need_scale:
         if not store.get("pit_complete") or (_need_scale and not store.get("pit_scale_complete")):
             key = os.environ.get("J_QUANTS_API_KEY")
@@ -9005,6 +9060,9 @@ def main() -> int:
                                 "緊急売り": d_.get("cut_exits", 0),
                                 "損切り": d_.get("stop_exits", 0),
                                 "利確・利回り割れ": d_.get("act_exits", 0) + d_.get("act_partial", 0),
+                                "比率の最大": (float(max(d_["max_w"])) if d_.get("max_w") else float("nan")),
+                                "比率の平均最大": (float(np.mean(d_["max_w"])) if d_.get("max_w") else float("nan")),
+                                "比率で売った": d_.get("trims", 0),
                                 "損出し": d_.get("harvests", 0),
                                 "買い増し": d_.get("topups", 0),
                                 "下落で見送り": d_.get("drop_skip", 0),
@@ -9079,11 +9137,13 @@ def main() -> int:
         _lt = bool(getattr(args, "line_test", False) or getattr(args, "safe_test", False)
                    or getattr(args, "robust_test", False) or getattr(args, "eye_test", False)
                    or getattr(args, "rot_test", False) or getattr(args, "survivor_test", False)
-                   or getattr(args, "live_check", False) or getattr(args, "rot_live", False))
+                   or getattr(args, "live_check", False) or getattr(args, "rot_live", False)
+                   or getattr(args, "cap_test", False))
         _l10 = bool(getattr(args, "line_test", False))
         if _liq and (getattr(args, "robust_test", False) or getattr(args, "eye_test", False)
                      or getattr(args, "rot_test", False) or getattr(args, "survivor_test", False)
-                     or getattr(args, "live_check", False) or getattr(args, "rot_live", False)):
+                     or getattr(args, "live_check", False) or getattr(args, "rot_live", False)
+                     or getattr(args, "cap_test", False)):
             print("　 年率は「最後の月末に全部売って、約定のずれと税を払った後」（清算後）で出しています。\n")
         elif _liq:
             _rn = "11" if getattr(args, "safe_test", False) else "10"
@@ -9094,7 +9154,8 @@ def main() -> int:
         # 13回目も同じ（【13回目】の欄にまとめる）
         if not (getattr(args, "robust_test", False) or getattr(args, "eye_test", False)
                 or getattr(args, "rot_test", False) or getattr(args, "survivor_test", False)
-                or getattr(args, "live_check", False) or getattr(args, "rot_live", False)):
+                or getattr(args, "live_check", False) or getattr(args, "rot_live", False)
+                or getattr(args, "cap_test", False)):
             # ── 1. 基準に勝った割合 ──
             print("【全部買って放置に勝った割合】\n")
             print(f"{'ルール':<34}{'勝ち':>8}{'割合':>8}{'平均年率':>10}{'平均の差':>10}")
@@ -10380,6 +10441,66 @@ def main() -> int:
                         json.dump({"live_check": _rc}, f_, ensure_ascii=False, default=str)
                 except Exception as e_:
                     log.warning("突き合わせの明細を書き出せませんでした: %s", e_)
+
+        # ── 18回目：1銘柄の比率の上限（2026年10月17日に追加。基準は結果を見る前に決めたもの。年率は清算後）──
+        #   目的は年率を上げることではなく、1銘柄の崩れで全体が沈まないようにすること。判定は次のとおり：
+        #     守りとして使える … 年率が「使える」（平均の差 −0.5pt以内・最悪の年の差 −1.0pt以内・本番の勝ち85％未満）で、
+        #                         かつ最大下落が浅くなる（24条件の平均も、いちばん深いものも、本番より浅い）
+        #     本番に入れる候補 … 上に加えて、年率で85％以上の条件で上回る
+        #     効果なし         … 年率は「使える」が、下落が浅くならない
+        #     使えない         … 年率が「使える」に入らない
+        #     比率で売った回数が1条件あたり平均1回未満なら、判定しない
+        #   予想（結果を見る前に書いておく）：年率は少し下がり、下落はほとんど変わらない（上がった銘柄を削ることになるため）
+        if getattr(args, "cap_test", False) and nm and nm[0] == "live_small1_pit":
+            L0 = VARIANTS["live_small1_pit"]["label"]
+            _pl = gf.pivot_table(index=cond_cols, columns="ルール", values="清算後年率")
+            _pm = gf.pivot_table(index=cond_cols, columns="ルール", values="評価額年率")
+            _pd = gf.pivot_table(index=cond_cols, columns="ルール", values="最大下落")
+            print("\n【18回目：1銘柄の比率の上限】（基準は結果を見る前に決めたもの。年率は清算後）")
+            print("  予想 … 年率は少し下がり、下落はほとんど変わらない")
+            for n_, sh_ in (("live_small1_pit", "本番（上限なし）"), ("live_cap20", "1銘柄20％まで"), ("live_cap15", "1銘柄15％まで")):
+                g_ = gf[gf["ルール"] == VARIANTS[n_]["label"]]
+                if g_.empty:
+                    continue
+                print(f"    {sh_:<10} … 平均 {g_['清算後年率'].mean():.1f}％・最悪の年 {g_['清算後年率'].min():.1f}％ ／ "
+                      f"最大下落 平均 {g_['最大下落'].mean():.1f}％・いちばん深い {g_['最大下落'].max():.1f}％ ／ "
+                      f"1銘柄の比率 いちばん大きい月 {g_['比率の最大'].max() * 100:.0f}％（月ごとの最大の平均 "
+                      f"{g_['比率の平均最大'].mean() * 100:.0f}％） ／ 比率で売った {g_['比率で売った'].mean():.1f}回")
+            _c18 = {}
+            for n_, sh_ in (("live_cap20", "20％まで"), ("live_cap15", "15％まで")):
+                L_ = VARIANTS[n_]["label"]
+                if L_ not in _pl.columns or L0 not in _pl.columns:
+                    continue
+                d_ = (_pl[L_] - _pl[L0]).dropna()
+                dm_ = (_pm[L_] - _pm[L0]).dropna()
+                w_, l_ = float((d_ > 0).mean()), float((d_ < 0).mean())
+                da_, dw_ = float(d_.mean()), float(_pl[L_].min() - _pl[L0].min())
+                ok_ = (da_ >= -0.5) and (dw_ >= -1.0) and (l_ < 0.85)
+                ok_m = (float(dm_.mean()) >= -0.5) and (float(_pm[L_].min() - _pm[L0].min()) >= -1.0) and \
+                    (float((dm_ < 0).mean()) < 0.85)
+                ddm = float(_pd[L_].mean() - _pd[L0].mean())        # マイナスなら浅くなった
+                ddw = float(_pd[L_].max() - _pd[L0].max())
+                shallow = ddm < 0 and ddw < 0
+                _ntrim = float(gf[gf["ルール"] == L_]["比率で売った"].mean())
+                if _ntrim < 1.0:
+                    cat_ = f"上限に届くことがほとんどなく、判定しない（比率で売った 1条件あたり{_ntrim:.1f}回）"
+                elif ok_ != ok_m:
+                    cat_ = f"決められない（清算後「{'使える' if ok_ else '使えない'}」・評価額「{'使える' if ok_m else '使えない'}」）"
+                elif not ok_:
+                    cat_ = "使えない（年率を払うだけ）"
+                elif not shallow:
+                    cat_ = "効果なし（下落が浅くならない）"
+                elif w_ >= 0.85:
+                    cat_ = "本番に入れる候補"
+                else:
+                    cat_ = "守りとして使える"
+                _c18[n_] = cat_
+                print(f"\n  {sh_} − 本番 … 年率 平均 {da_:+.2f}pt ／ 最悪の年 {dw_:+.2f}pt ／ 上回った {w_ * 100:.0f}％（{len(d_)}条件） ／ "
+                      f"評価額 {dm_.mean():+.2f}pt")
+                print(f"    最大下落 … 平均 {ddm:+.1f}pt ／ いちばん深いもの {ddw:+.1f}pt（マイナスなら浅くなった） → {cat_}")
+            print("\n  総合（結果を見る前に決めた基準）")
+            print(f"    20％まで … {_c18.get('live_cap20', '—')} ／ 15％まで … {_c18.get('live_cap15', '—')}")
+            print("  （1銘柄の比率は月末の評価額で測る。本番の買い始めは S 約8.9％・A 約6.7％・B 約4.4％）")
 
         OUTDIR.mkdir(parents=True, exist_ok=True)
         gf.to_csv(OUTDIR / "grid.csv", index=False, encoding="utf-8-sig")
