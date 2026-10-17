@@ -81,6 +81,9 @@ PIT_FROM = "2018-01"             # その時点の銘柄一覧を取り始める
 DELIST_EXIT = False              # 株価が途切れた（上場廃止）持ち株を、最後の値段で現金にする（15回目のときだけ）
 UNI_HIST = None                  # 各月の、その時点の一部・プライムの銘柄 {"YYYY-MM": set(codes)}
 UNI_NOW = None                   # いまのプライムの銘柄（set）
+# 16回目（2026年10月17日に追加）：本番のツール（generate.py）と同じ範囲・同じ買い方で確かめる
+LIVE_SCALES = {"TOPIX Core30", "TOPIX Large70", "TOPIX Mid400", "TOPIX Small 1"}   # UNIVERSE_SCOPE='small1'
+UNI_SCALE = None                 # 各月の規模区分 {"YYYY-MM": {code: ScaleCat}}
 
 
 def _elapsed_min() -> float:
@@ -1289,6 +1292,29 @@ VARIANTS: dict[str, dict[str, Any]] = {
     #   いまの一覧 … いまプライムにいる銘柄（今までの検証と同じ範囲）
     #   その時点の一覧 … その月に東証一部（2022年4月3日まで）・プライム（4日以降）にいた銘柄
     #   上場廃止になった持ち株は、最後の値段で現金にする（どちらも同じ扱い）。
+    # ── 16回目の候補（2026年10月17日に追加）：本番のツールと同じ買い方（低PBR順）で確かめ直す ──
+    #   10回目〜15回目で「本番」と呼んで比べてきた tier_pit_mix_scr（と base_now_uni・base_pit_uni）は、
+    #   同じ Tier の中を「利回りの高い順」に買う形で、9月27日までの本番だった。いまの本番（generate.py の
+    #   BUY_MODE='pbr'）は「PBRが安い側20％に入る銘柄だけを、Tier順・PBRの低い順」に買う。ここで揃える。
+    #   live_prime_pit  … いまの本番の買い方。範囲はその時点の一部・プライム全部。PBRの順位もその範囲の中で
+    #   live_small1_pit … いまの本番の買い方。範囲はツールと同じ（規模区分 Small 1 まで）。PBRの順位も
+    #                     業界首位級（同じ33業種で時価総額上位3社）も、その範囲の中で決める（ツールと同じ）
+    "live_prime_pit": {
+        "label": "いまの本番の買い方・一部プライム全部",
+        "entry": [80], "exit": [], "measure": "pbr_pit", "priority": "tier", "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "tier_col": "tier_pit_mix", "uni_col": "in_uni_pit",
+    },
+    "live_small1_pit": {
+        "label": "いまの本番の買い方・ツールと同じ範囲",
+        "entry": [80], "exit": [], "measure": "pbr_live", "priority": "tier", "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "tier_col": "tier_live_pit", "uni_col": "in_uni_live",
+    },
     "base_now_uni": {
         "label": "本番・いまの銘柄一覧",
         "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
@@ -2502,6 +2528,35 @@ def fetch_pit_universe(jq: "JQ", store: dict) -> bool:
     return True
 
 
+def fetch_pit_scale(jq: "JQ", store: dict) -> bool:
+    """16回目：その時点の銘柄一覧と同じ月ごとに、規模区分（ScaleCat）を取る。終わったら True。"""
+    hist = store.get("uni_hist", {})
+    sc = store.setdefault("uni_hist_scale", {})
+    months = {d.strftime("%Y-%m"): d for d in _pit_months(store)}
+    need = [m for m in sorted(hist) if m not in sc and m in months]
+    if need:
+        log.info("16回目：その時点の規模区分を取っています（%dか月分）…", len(need))
+    for m in need:
+        if _elapsed_min() >= FETCH_BUDGET_MIN:
+            save_store(store, "規模区分を途中まで保存しました")
+            return False
+        d = months[m]
+        time.sleep(API_SLEEP)
+        rows = jq.get("/v2/equities/master", {"date": d.strftime("%Y-%m-%d")})
+        sc[m] = {norm_code(r.get("Code", "")): str(r.get("ScaleCat") or "") for r in rows
+                 if _in_top_market(r, d) and norm_code(r.get("Code", ""))}
+    if need:
+        _m0, _m1 = sorted(sc)[0], sorted(sc)[-1]
+        for m in (_m0, _m1):
+            n_live = sum(1 for v in sc[m].values() if v in LIVE_SCALES)
+            log.info("  %s … 一部・プライム %d銘柄のうち、ツールの範囲（Small 1 まで） %d銘柄", m, len(sc[m]), n_live)
+        store["pit_scale_complete"] = True
+        save_store(store)
+    else:
+        store["pit_scale_complete"] = True
+    return True
+
+
 def merge_pit_store(store: dict) -> dict:
     """15回目：いまの一覧と、その時点の一覧にだけある銘柄を合わせた store（保存はしない）。"""
     now = {u["code"] for u in store["universe"]}
@@ -2527,7 +2582,175 @@ def add_uni_columns(panel: pd.DataFrame) -> pd.DataFrame:
         look[k] = UNI_HIST[prev[-1]] if prev else set()
     panel["in_uni_pit"] = [c in look[k] for c, k in zip(panel["code"], mk)]
     panel["in_uni_now"] = panel["code"].isin(UNI_NOW).to_numpy()
+    # 16回目：ツールと同じ範囲（その月の一部・プライムのうち、規模区分が Small 1 まで）と、
+    #         その範囲の中での PBR の順位・業界首位級（同じ33業種で時価総額上位3社。ツールと同じ）
+    if UNI_SCALE and {"price", "bps"} <= set(panel.columns):
+        skeys = sorted(UNI_SCALE)
+        slook = {}
+        for k in sorted(set(mk)):
+            prev = [x for x in skeys if x <= k]
+            slook[k] = UNI_SCALE[prev[-1]] if prev else {}
+        panel["scale_pit"] = [slook[k].get(c, "") for c, k in zip(panel["code"], mk)]
+        panel["in_uni_live"] = panel["in_uni_pit"].to_numpy() & panel["scale_pit"].isin(LIVE_SCALES).to_numpy()
+        _pbr = pd.to_numeric(panel["price"], errors="coerce") / pd.to_numeric(panel["bps"], errors="coerce").where(
+            pd.to_numeric(panel["bps"], errors="coerce") > 0)
+        for col_, flag_ in (("pct_pbr_pit", "in_uni_pit"), ("pct_pbr_live", "in_uni_live")):
+            v_ = _pbr.where(panel[flag_].astype(bool))
+            panel[col_] = v_.groupby(panel["date"]).rank(pct=True, ascending=False) * 100
+        if "sh" in panel.columns:
+            mc = (pd.to_numeric(panel["price"], errors="coerce") * pd.to_numeric(panel["sh"], errors="coerce"))
+            mc = mc.where((mc > 0) & panel["in_uni_live"].astype(bool))
+            sec = panel["sector"].fillna("").astype(str) if "sector" in panel.columns else pd.Series("", index=panel.index)
+            rk = mc.groupby([panel["date"], sec]).rank(ascending=False, method="first")
+            lead = ((rk <= 3) & (sec != "")).fillna(False).astype(bool)
+            qual = panel["code"].isin(PROGRESSIVE | DOE)
+            panel["tier_live_pit"] = np.where(lead & qual, "S", np.where(lead | qual, "A", "B"))
     return panel
+
+
+def reconcile_live(panel: pd.DataFrame, cfg: dict, results_path, sim_kw: dict, top_n: int = 20) -> dict:
+    """16回目：最新の月の「買う順番」を、検証（cfg）とツール（results.json）で突き合わせる。
+
+    検証の側 … 最後の月だけのパネルで simulate を回し、その月の候補の並び（何も持っていない状態）を取る。
+    ツールの側 … results.json の銘柄のうち、signal が BUY・8条件を通過・緊急撤退でないものを、
+                 Tier（S→A→B）→ buy_sort（PBR の低い順）で並べる（portfolio_engine と同じ）。
+    食い違った銘柄は、どの条件で外れたかを両方の数字で示す。
+    """
+    out = {"ok": False}
+    try:
+        with open(results_path, encoding="utf-8") as f:
+            live = json.load(f)
+    except Exception as e:
+        out["error"] = f"results.json を読めませんでした（{e}）"
+        return out
+    last = panel["date"].max()
+    sub = panel[panel["date"] == last]
+    r = simulate(sub, cfg, **sim_kw)
+    bt = [c for c, _, _ in r["diag"].get("cands_last", [])]
+    bt_tier = {c: t for c, t, _ in r["diag"].get("cands_last", [])}
+    st = {s_["code"]: s_ for s_ in live.get("stocks", [])}
+    lv_c = [s_ for s_ in st.values() if s_.get("signal") == "BUY" and s_.get("screening_pass")
+            and not s_.get("emergency_exit")]
+    _o = {"S": 0, "A": 1, "B": 2}
+    lv_c.sort(key=lambda s_: (_o.get(s_.get("tier", "B"), 99), s_.get("buy_sort", -(s_.get("current_yield") or 0))))
+    lv = [s_["code"] for s_ in lv_c]
+    top_n = max(1, min(top_n, max(len(bt), len(lv))))    # 候補が20に満たなければ、その数で比べる
+    row = sub.set_index("code")
+    bt_top, lv_top = bt[:top_n], lv[:top_n]
+    common = [c for c in bt_top if c in set(lv_top)]
+
+    def _why_bt_missing(c):
+        """ツールでは上位なのに、検証の上位にいない理由（検証の側の数字）。"""
+        if c in bt:
+            return f"検証では{bt.index(c) + 1}位"
+        if c not in row.index:
+            return "検証のデータにない"
+        x = row.loc[c]
+        if not bool(x.get(cfg.get("uni_col", ""), True)):
+            return f"検証ではツールの範囲外（規模区分 {x.get('scale_pit', '') or '不明'}）"
+        if not bool(x.get("screen_pass", False)):
+            return "検証では8条件を通らない"
+        if float(x.get("yield", 0) or 0) < float(cfg.get("min_yield_fixed", 0) or 0):
+            return f"検証では利回り {float(x.get('yield', 0) or 0):.2f}％"
+        _m = "pct_" + cfg.get("measure", "pbr")
+        if _m in row.columns and not (float(x.get(_m, -99) if x.get(_m) == x.get(_m) else -99) >= 80):
+            return f"検証ではPBRの順位 {float(x.get(_m)) if x.get(_m) == x.get(_m) else float('nan'):.0f}（80以上で買う）"
+        return "検証では減配・業績急変で買わない"
+
+    def _why_lv_missing(c):
+        """検証では上位なのに、ツールの上位にいない理由（ツールの側の数字）。"""
+        if c in lv:
+            return f"ツールでは{lv.index(c) + 1}位"
+        s_ = st.get(c)
+        if s_ is None:
+            return "ツールの対象外（results.json にない）"
+        if not s_.get("screening_pass"):
+            return "ツールでは8条件を通らない"
+        if s_.get("emergency_exit"):
+            return "ツールでは緊急撤退の判定"
+        if s_.get("signal") != "BUY":
+            y_ = s_.get("current_yield")
+            pr_ = s_.get("pbr_rank")
+            return f"ツールでは買いでない（利回り {y_}％・PBRの順位 {pr_}）"
+        return "ツールでは買い（理由不明）"
+
+    diffs = []
+    for c in bt_top:
+        if c not in set(lv_top):
+            diffs.append(("検証だけ", c, _why_lv_missing(c)))
+    for c in lv_top:
+        if c not in set(bt_top):
+            diffs.append(("ツールだけ", c, _why_bt_missing(c)))
+    # 両方にいる銘柄の数字の違い
+    t_mis, y_d, p_d = 0, [], []
+    for c in common:
+        s_, x = st.get(c, {}), row.loc[c] if c in row.index else None
+        if x is None:
+            continue
+        if s_.get("tier") and bt_tier.get(c) and s_.get("tier") != bt_tier.get(c):
+            t_mis += 1
+        if s_.get("current_yield") is not None:
+            y_d.append(float(x.get("yield", np.nan)) - float(s_["current_yield"]))
+        if s_.get("pbr") and x.get("bps") and float(x.get("bps")) > 0:
+            p_d.append(float(x["price"]) / float(x["bps"]) / float(s_["pbr"]) - 1)
+    names = {c: (st.get(c, {}).get("name") or (row.loc[c].get("name") if c in row.index else "")) for c in set(bt_top) | set(lv_top)}
+    out.update({"ok": True, "bt_n": len(bt), "lv_n": len(lv), "overlap": len(common), "top_n": top_n,
+                "bt_top": bt_top, "lv_top": lv_top, "diffs": diffs, "names": names,
+                "tier_mismatch": t_mis, "n_common": len(common),
+                "yield_diff": float(np.nanmedian(np.abs(y_d))) if y_d else float("nan"),
+                "pbr_diff": float(np.nanmedian(np.abs(p_d))) if p_d else float("nan"),
+                "live_date": str(live.get("generated_at", ""))[:10], "panel_date": str(pd.Timestamp(last).date()),
+                "live_universe": live.get("universe_count"), "live_thresholds": live.get("thresholds", {})})
+    return out
+
+
+def print_dividend_table(res: dict, full: pd.DataFrame, capital: float, title: str) -> None:
+    """15回目・16回目：1年ごとの配当（税引き後）と、前年末の持ち株のままでの1株配当の変化を出す。"""
+    _dp = res["diag"]
+    _dv = pd.Series(_dp.get("div_by_month", {}), dtype=float)
+    _cv = res["curve"].copy()
+    if _dv.empty or _cv.empty:
+        return
+    _cv["date"] = pd.to_datetime(_cv["date"])
+    _cv = _cv.set_index("date")["value"]
+    _dy = _dv.groupby(pd.to_datetime(_dv.index).year).sum()
+    _dps = full.set_index(["code", "date"])["dps"]
+    _decs = {pd.Timestamp(d).year: pd.Timestamp(d) for d in sorted(full["date"].unique()) if pd.Timestamp(d).month == 12}
+    _hd = _dp.get("hold_dec", {})
+    _m0, _m1 = pd.Timestamp(full["date"].min()), pd.Timestamp(full["date"].max())
+    print(f"\n  {title}")
+    print(f"    {'年':<12}{'受け取った配当':>12}{'年初の資産に対して':>14}{'前年比':>8}{'同じ株のままの1株配当':>18}")
+    _prev, _wt, _wo = None, None, None
+    for y_ in sorted(_dy.index):
+        part0 = y_ == _m0.year and _m0.month > 1
+        part1 = y_ == _m1.year and _m1.month < 12
+        _lab = f"{y_}年" + (f"（{_m0.month}月〜）" if part0 else "") + (f"（〜{_m1.month}月）" if part1 else "")
+        _v0 = _cv[_cv.index < pd.Timestamp(f"{y_}-01-01")]
+        _base = float(_v0.iloc[-1]) if len(_v0) else float(capital)
+        full_y = not part0 and not part1
+        _yoy = ""
+        if _prev is not None and full_y and _prev[1]:
+            _ch = _dy[y_] / _prev[0] - 1
+            _yoy = f"{_ch * 100:+.0f}％"
+            _wt = _ch if _wt is None else min(_wt, _ch)
+        _org = "—"
+        if (y_ - 1) in _hd and (y_ - 1) in _decs and y_ in _decs:
+            _num = _den = 0.0
+            for c_, sh_ in _hd[y_ - 1].items():
+                a_ = _dps.get((c_, _decs[y_ - 1]))
+                b_ = _dps.get((c_, _decs[y_]))
+                if a_ is None or not (a_ == a_) or a_ <= 0:
+                    continue
+                _den += sh_ * float(a_)
+                _num += sh_ * (float(b_) if (b_ is not None and b_ == b_) else float(a_))
+            if _den > 0:
+                _oc = _num / _den - 1
+                _org = f"{_oc * 100:+.1f}％"
+                _wo = _oc if _wo is None else min(_wo, _oc)
+        print(f"    {_lab:<12}{_dy[y_] / 1e4:>10,.0f}万円{_dy[y_] / _base * 100:>12.1f}％{_yoy:>8}{_org:>16}")
+        _prev = (_dy[y_], full_y)
+    print("    いちばん悪かった年 … 受け取った配当の前年比 " + (f"{_wt * 100:+.0f}％" if _wt is not None else "—")
+          + " ／ 同じ株のままの1株配当 " + (f"{_wo * 100:+.1f}％" if _wo is not None else "—"))
 
 
 def print_unfinished(store: dict, compute_only: bool) -> None:
@@ -4201,7 +4424,7 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
             v = row.get("zscore")
             return float(v) if v is not None and not pd.isna(v) else -99.0
         if measure in ("pbr", "per", "size", "pbr_sec", "value",
-                       "pbrroe70", "pbrroe50", "pbrroe30", "switch36"):
+                       "pbrroe70", "pbrroe50", "pbrroe30", "switch36", "pbr_pit", "pbr_live"):
             # 全銘柄の中での順位（％）。pbr/per は低いほど、size は小さいほど高い値になる
             if "pct_" + measure not in row.index:
                 raise RuntimeError(f"pct_{measure} の列がありません。財務の項目が足されていません。")
@@ -5180,6 +5403,9 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
         else:
             cands.sort(key=lambda x: -x[0])
 
+        if mi == len(dates) - 1:
+            # 16回目：最後の月の買う順番（ツールの買う順番と突き合わせるため）
+            diag["cands_last"] = [(c_, t_, float(p_)) for p_, c_, _, _, t_ in cands]
         # でたらめに並べる（運の幅を測るため）。
         #   all  … 候補の中から完全にでたらめに選ぶ
         #   tier … Tier順（S→A→B）は守り、同じTierの中だけでたらめ
@@ -6917,6 +7143,12 @@ def main() -> int:
     #   本番（税あり）と比べて判定する。税なし（NISAの想定）の2つは参考。窓はこれまでと同じ（24条件）。
     # 15回目（2026年10月17日に追加）：生き残った銘柄だけで検証している偏りと、配当がどれだけ「固定収入」だったか。
     #   初回は、その時点の銘柄一覧と、いまの一覧にない銘柄の株価・財務を取る（時間がかかる。途中なら次の実行で続き）。
+    # 16回目（2026年10月17日に追加）：本番のツールと同じ範囲・同じ買い方で回し直し、最新の月の買う順番を
+    #   ツールの results.json と突き合わせる。15回目のデータ（その時点の銘柄一覧）を使う。
+    args.live_check = False
+    if (args.only or "").strip() == "live_check":
+        args.live_check, args.liq_metric, args.grid = True, True, True
+        args.only = "live_small1_pit,live_prime_pit,base_pit_uni"
     args.survivor_test = False
     if (args.only or "").strip() == "survivor_test":
         args.survivor_test, args.liq_metric, args.grid = True, True, True
@@ -6990,14 +7222,18 @@ def main() -> int:
         args.years = 9
 
     # ── 15回目：その時点の銘柄一覧と、いまの一覧にない銘柄のデータ ──
-    global DELIST_EXIT, UNI_HIST, UNI_NOW
-    if getattr(args, "survivor_test", False):
-        if not store.get("pit_complete"):
+    global DELIST_EXIT, UNI_HIST, UNI_NOW, UNI_SCALE
+    if getattr(args, "survivor_test", False) or getattr(args, "live_check", False):
+        if not store.get("pit_complete") or (getattr(args, "live_check", False)
+                                             and not store.get("pit_scale_complete")):
             key = os.environ.get("J_QUANTS_API_KEY")
             if not key:
                 log.error("J_QUANTS_API_KEY が設定されていません")
                 return 2
-            if not fetch_pit_universe(JQ(key), store):
+            _ok_ = fetch_pit_universe(JQ(key), store) if not store.get("pit_complete") else True
+            if _ok_ and getattr(args, "live_check", False):
+                _ok_ = fetch_pit_scale(JQ(key), store)
+            if not _ok_:
                 print("\n■ まだ終わっていません（その時点の銘柄一覧と、いまの一覧にない銘柄のデータを取っている途中です）")
                 print(f"　 取った分は保存しました（開始から{_elapsed_min():.0f}分）。同じ設定のまま、もう一度「Run workflow」を押してください。")
                 return EXIT_UNFINISHED
@@ -7007,6 +7243,8 @@ def main() -> int:
                 return EXIT_UNFINISHED
         UNI_NOW = {u["code"] for u in store["universe"]}
         UNI_HIST = {k: set(v) for k, v in store.get("uni_hist", {}).items()}
+        if getattr(args, "live_check", False):
+            UNI_SCALE = store.get("uni_hist_scale") or None
         _nx = len([c for c in store.get("x_quotes", {}) if c not in UNI_NOW])
         log.info("15回目：いまの一覧 %d銘柄 ＋ その時点の一覧にだけある銘柄 %d銘柄（株価が取れなかった %d銘柄）で回します",
                  len(UNI_NOW), _nx, len(store.get("x_nodata", [])))
@@ -7209,6 +7447,9 @@ def main() -> int:
     if UNI_HIST is not None:
         panel = add_uni_columns(panel)
         _pm = panel.groupby("date")[["in_uni_now", "in_uni_pit"]].sum()
+        if "in_uni_live" in panel.columns:
+            log.info("  1か月あたりの銘柄数 … ツールと同じ範囲 平均%.0f",
+                     float(panel.groupby("date")["in_uni_live"].sum().mean()))
         log.info("  1か月あたりの銘柄数 … いまの一覧 平均%.0f ／ その時点の一覧 平均%.0f（最初の月 %d・最後の月 %d）",
                  float(_pm["in_uni_now"].mean()), float(_pm["in_uni_pit"].mean()),
                  int(_pm["in_uni_pit"].iloc[0]), int(_pm["in_uni_pit"].iloc[-1]))
@@ -8804,10 +9045,12 @@ def main() -> int:
               f"約定のずれ 片道{args.slip_bps:.0f}bps\n")
         _lt = bool(getattr(args, "line_test", False) or getattr(args, "safe_test", False)
                    or getattr(args, "robust_test", False) or getattr(args, "eye_test", False)
-                   or getattr(args, "rot_test", False) or getattr(args, "survivor_test", False))
+                   or getattr(args, "rot_test", False) or getattr(args, "survivor_test", False)
+                   or getattr(args, "live_check", False))
         _l10 = bool(getattr(args, "line_test", False))
         if _liq and (getattr(args, "robust_test", False) or getattr(args, "eye_test", False)
-                     or getattr(args, "rot_test", False) or getattr(args, "survivor_test", False)):
+                     or getattr(args, "rot_test", False) or getattr(args, "survivor_test", False)
+                     or getattr(args, "live_check", False)):
             print("　 年率は「最後の月末に全部売って、約定のずれと税を払った後」（清算後）で出しています。\n")
         elif _liq:
             _rn = "11" if getattr(args, "safe_test", False) else "10"
@@ -8817,7 +9060,8 @@ def main() -> int:
         # 12回目のモードでは、ルールが11あって表が長くなるので、共通の表はすべて省き、【12回目】の欄にまとめる
         # 13回目も同じ（【13回目】の欄にまとめる）
         if not (getattr(args, "robust_test", False) or getattr(args, "eye_test", False)
-                or getattr(args, "rot_test", False) or getattr(args, "survivor_test", False)):
+                or getattr(args, "rot_test", False) or getattr(args, "survivor_test", False)
+                or getattr(args, "live_check", False)):
             # ── 1. 基準に勝った割合 ──
             print("【全部買って放置に勝った割合】\n")
             print(f"{'ルール':<34}{'勝ち':>8}{'割合':>8}{'平均年率':>10}{'平均の差':>10}")
@@ -9841,7 +10085,7 @@ def main() -> int:
                 if g_.empty:
                     continue
                 print(f"    {sh_:<10} … 平均 {g_['清算後年率'].mean():.1f}％・最悪の年 {g_['清算後年率'].min():.1f}％・"
-                      f"最悪の下落 {g_['最大下落'].max():.1f}％・線で売った 年{g_['売り/年'].mean():.1f}回")
+                      f"最悪の下落 {g_['最大下落'].max():.1f}％・売り 年{g_['売り/年'].mean():.1f}回（緊急売りも含む）")
             _cat14 = {}
             for n_a, n_b, sh_ in (("line_rot_pit", "tier_pit_mix_scr", "税あり（判定）"),
                                   ("line_rot_nisa", "base_nisa_pit", "税なし（参考）")):
@@ -10011,6 +10255,91 @@ def main() -> int:
                 print("    同じ株のままの1株配当 … 前年12月末に持っていた株を1株も動かさなかったとして、"
                       "1株配当（会社の予想）が12月末どうしでどれだけ変わったか")
                 print("    受け取った配当 … 受け取った配当は次の買いに回しているので、資産が増えるほど増える（毎年同じ額を受け取る形とは別）")
+
+        # ── 16回目：本番のツールと同じ範囲・同じ買い方で確かめ直す（2026年10月17日に追加。基準は結果を見る前に決めたもの）──
+        #   1. 範囲の違い … ツールと同じ範囲 − 一部プライム全部（どちらも、いまの本番の買い方）の平均の差 d
+        #        |d| ≤ 1.0pt → ツールの範囲でも同じ結論 ／ それ以外 → 成績の数字はツールの範囲で出し直す
+        #   2. 市場平均との比べ … ツールと同じ範囲で、本番 − 全部買って放置（同じ範囲）がプラスの条件 85％以上 → 堅く上回る
+        #   3. 配当 … ツールと同じ範囲で、15回目と同じ表を出す（判定はしない）
+        #   4. 買う順番 … 最新の月の上位20銘柄が、ツール（results.json）と18銘柄以上同じなら「一致」
+        #   参考 … 10〜15回目で「本番」と呼んでいた形（利回り順）との差も出す
+        if getattr(args, "live_check", False) and "in_uni_live" in panels[lbs_[0]].columns:
+            _pn = panels[lbs_[0]]
+            Ls = VARIANTS["live_small1_pit"]["label"]
+            Lp = VARIANTS["live_prime_pit"]["label"]
+            Lo = VARIANTS["base_pit_uni"]["label"]
+            _pl = gf.pivot_table(index=cond_cols, columns="ルール", values="清算後年率")
+            _pm = gf.pivot_table(index=cond_cols, columns="ルール", values="評価額年率")
+            print("\n【16回目：本番のツールと同じ範囲・同じ買い方で確かめ直す】（基準は結果を見る前に決めたもの。年率は清算後）")
+            _cnt = _pn.groupby("date")[["in_uni_pit", "in_uni_live"]].sum()
+            print(f"  銘柄の数（1か月あたり） … 一部・プライム全部 {_cnt['in_uni_pit'].mean():.0f} ／ ツールと同じ範囲 "
+                  f"{_cnt['in_uni_live'].mean():.0f}（最後の月 {int(_cnt['in_uni_live'].iloc[-1])}）")
+            print("  いまの本番の買い方 … 8条件・利回り3％以上・PBRが範囲の中で安い側20％、Tier順・PBRの低い順")
+            for L_, sh_ in ((Ls, "ツールと同じ範囲"), (Lp, "一部・プライム全部"), (Lo, "参考：利回り順（10〜15回目の「本番」）")):
+                g_ = gf[gf["ルール"] == L_]
+                if not g_.empty:
+                    print(f"    {sh_:<22} … 平均 {g_['清算後年率'].mean():.1f}％・最悪の年 {g_['清算後年率'].min():.1f}％・"
+                          f"最悪の下落 {g_['最大下落'].max():.1f}％")
+            if Ls in _pl.columns and Lp in _pl.columns:
+                _d = (_pl[Ls] - _pl[Lp]).dropna()
+                _dmv = (_pm[Ls] - _pm[Lp]).dropna()
+                _dm = float(_d.mean())
+                print(f"\n  1. 範囲の違い（ツールと同じ範囲 − 一部プライム全部・24条件） … 平均 {_dm:+.2f}pt"
+                      f"（{_d.min():+.1f}〜{_d.max():+.1f}pt） ／ ツールの範囲の方が高い条件 {(_d > 0).mean() * 100:.0f}％ ／ "
+                      f"評価額で {_dmv.mean():+.2f}pt")
+                print("    → " + ("ツールの範囲でも同じ結論" if abs(_dm) <= 1.0 else
+                                   "範囲で成績が変わる。成績の数字はツールの範囲で出し直す"))
+                if Lo in _pl.columns:
+                    _do = (_pl[Ls] - _pl[Lo]).dropna()
+                    print(f"    参考：ツールと同じ範囲の本番 − 利回り順（一部プライム全部） … 平均 {_do.mean():+.2f}pt"
+                          f"（上回った {(_do > 0).mean() * 100:.0f}％）")
+                # 2. 市場平均
+                _bh = {}
+                for a_, b_ in wins:
+                    sub_ = _pn[(_pn["date"] >= a_) & (_pn["date"] <= b_)]
+                    bl_ = buy_and_hold(sub_, args.tax / 100.0, "in_uni_live", True)
+                    if bl_:
+                        _bh[f"{a_.date()}〜{b_.date()}"] = bl_["清算後年率"]
+                _e = np.array([r_[Ls] - _bh[idx_[cond_cols.index("期間")]] for idx_, r_ in _pl.iterrows()
+                               if idx_[cond_cols.index("期間")] in _bh])
+                if len(_e):
+                    _sh_ = float((_e > 0).mean())
+                    print(f"\n  2. 市場平均（ツールと同じ範囲を初日に全部買って放置） … 放置 平均 {np.mean(list(_bh.values())):.1f}％ ／ "
+                          f"本番 − 放置 平均 {_e.mean():+.1f}pt（上回った {_sh_ * 100:.0f}％）")
+                    print("    → " + ("ツールの範囲でも、市場平均を堅く上回る" if _sh_ >= 0.85 else
+                                       ("市場平均に負ける" if _sh_ <= 0.15 else "市場平均との勝ち負けは条件次第")))
+            _kw = dict(capital=args.capital, max_names=mxs_[0], tier_budget=args.realistic, dividends=args.realistic,
+                       slip_bps=args.slip_bps, fee_bps=args.fee_bps, tax_rate=args.tax / 100.0, ramp=0,
+                       min_yield_override=mys[0])
+            _rf = simulate(_pn, VARIANTS["live_small1_pit"], **_kw)
+            print_dividend_table(_rf, _pn, args.capital, "3. 配当（ツールと同じ範囲・全期間・資金投入0か月・税引き後）")
+            _dl = _rf["diag"].get("delist_gain", [])
+            print(f"    上場廃止で現金にした持ち株 … {_rf['diag'].get('delist_exits', 0)}回"
+                  + (f"（そのときの益 平均 {np.mean(_dl) * 100:+.0f}％）" if _dl else ""))
+            # 4. 買う順番の突き合わせ
+            _rc = reconcile_live(_pn, VARIANTS["live_small1_pit"], OUTDIR / "results.json", _kw)
+            print("\n  4. 最新の月の買う順番（検証 と ツールの results.json）")
+            if not _rc.get("ok"):
+                print(f"    {_rc.get('error', '突き合わせできませんでした')}")
+            else:
+                _qd = max((str(v[-1].get("Date", ""))[:10] for v in list(store["quotes"].values())[:80] if v), default="")
+                print(f"    日付 … 検証 {_qd}（キャッシュの最後の株価） ／ ツール {_rc['live_date']} ／ "
+                      f"ツールの対象 {_rc['live_universe']}銘柄 ／ 買い方 {_rc['live_thresholds'].get('buy_mode', '')}")
+                print(f"    買える候補 … 検証 {_rc['bt_n']}銘柄 ／ ツール {_rc['lv_n']}銘柄 ／ 上位{_rc['top_n']}のうち同じ銘柄 "
+                      f"{_rc['overlap']}銘柄")
+                print(f"    両方にいる銘柄の数字の違い（中央値） … 利回り {_rc['yield_diff']:.2f}pt ／ PBR {_rc['pbr_diff'] * 100:.1f}％ ／ "
+                      f"Tier が違う {_rc['tier_mismatch']}/{_rc['n_common']}銘柄")
+                for side_, c_, why_ in _rc["diffs"][:16]:
+                    print(f"    {side_:<6} {c_} {str(_rc['names'].get(c_, ''))[:10]:<10} … {why_}")
+                if len(_rc["diffs"]) > 16:
+                    print(f"    ほか {len(_rc['diffs']) - 16}銘柄（data/yield_backtest.json）")
+                _ok4 = _rc["overlap"] >= _rc["top_n"] - 2
+                print("    → " + ("一致（日付の違いで説明できる範囲）" if _ok4 else "食い違いあり（上の理由を見て、ツールか検証のどちらかを直す）"))
+                try:
+                    with open(OUTDIR / "yield_backtest.json", "w", encoding="utf-8") as f_:
+                        json.dump({"live_check": _rc}, f_, ensure_ascii=False, default=str)
+                except Exception as e_:
+                    log.warning("突き合わせの明細を書き出せませんでした: %s", e_)
 
         OUTDIR.mkdir(parents=True, exist_ok=True)
         gf.to_csv(OUTDIR / "grid.csv", index=False, encoding="utf-8-sig")
