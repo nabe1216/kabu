@@ -108,6 +108,8 @@ ETF_DIST = {
              ("2025-04-07", 4000), ("2025-07-07", 600), ("2025-10-07", 3900), ("2026-01-07", 800),
              ("2026-04-07", 3800), ("2026-07-07", 900), ("2026-10-07", 4900)),
 }
+LUCK_N_ALL = 20                  # 20回目：でたらめ（候補の中）を、期間ごとに何回回すか
+LUCK_N_TIER = 10                 # 20回目：でたらめ（Tier内）を、期間ごとに何回回すか
 ETF_YIELD_OK = (0.5, 8.0)        # 1年の分配金利回り（％）の中央値がこの外なら、口数の基準が株価と合っていないとみて使わない
 
 
@@ -1357,6 +1359,57 @@ VARIANTS: dict[str, dict[str, Any]] = {
         "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
         "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
         "tier_col": "tier_live_pit", "uni_col": "in_uni_live", "weight_cap": 0.20,
+    },
+    # ── 21回目の候補（2026年10月17日に追加）：いまの本番から設定を1つずつずらす（近い設定でも同じくらい出るか）──
+    #   どの結果でも乗り換えの候補にはしない（6つ試すと、どれかがたまたま良く出やすいため）。
+    #   銘柄数は、保有の上限と1銘柄の予算（総資産 ÷ 目標銘柄数）を同じ割合で変える（20:15 → 15:11.25・25:18.75）。
+    "near_pbr90": {
+        "label": "近い設定：PBRが安い側10％",
+        "entry": [90], "exit": [], "measure": "pbr_live", "priority": "tier", "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "tier_col": "tier_live_pit", "uni_col": "in_uni_live",
+    },
+    "near_pbr70": {
+        "label": "近い設定：PBRが安い側30％",
+        "entry": [70], "exit": [], "measure": "pbr_live", "priority": "tier", "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "tier_col": "tier_live_pit", "uni_col": "in_uni_live",
+    },
+    "near_y35": {
+        "label": "近い設定：利回り3.5％以上",
+        "entry": [80], "exit": [], "measure": "pbr_live", "priority": "tier", "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.5,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "tier_col": "tier_live_pit", "uni_col": "in_uni_live",
+    },
+    "near_y40": {
+        "label": "近い設定：利回り4％以上",
+        "entry": [80], "exit": [], "measure": "pbr_live", "priority": "tier", "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 4.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "tier_col": "tier_live_pit", "uni_col": "in_uni_live",
+    },
+    "near_n15": {
+        "label": "近い設定：最大15銘柄",
+        "entry": [80], "exit": [], "measure": "pbr_live", "priority": "tier", "screen": True,
+        "budget_weighted": True, "target_names": 11.25, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "tier_col": "tier_live_pit", "uni_col": "in_uni_live", "max_names": 15,
+    },
+    "near_n25": {
+        "label": "近い設定：最大25銘柄",
+        "entry": [80], "exit": [], "measure": "pbr_live", "priority": "tier", "screen": True,
+        "budget_weighted": True, "target_names": 18.75, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "tier_col": "tier_live_pit", "uni_col": "in_uni_live", "max_names": 25,
     },
     # ── 17回目の候補（2026年10月17日に追加）：14回目（上の線で売って月末の候補へ回す）を、いまの本番の買い方で ──
     "live_rot_small1": {
@@ -7211,6 +7264,48 @@ def income_share(dist_by_month: dict, curve: pd.DataFrame, capital: float, m0, m
     return out
 
 
+def etf_ready(etf_px: dict, quotes: dict, d0) -> tuple[dict, pd.Timestamp, list]:
+    """20回目・21回目：19回目と同じ確かめ（株の最後の日に揃える・期間の初めにある・分配金利回りの桁）をして、
+    使えるETFの株価だけを返す。使えなかったものは理由を notes に入れる。"""
+    qlast = max((pd.Timestamp(str(v[-1].get("Date", ""))[:10]) for v in list(quotes.values())[:200]
+                 if v and v[-1].get("Date")), default=None)
+    out, notes = {}, []
+    for c_, n_ in ETF_LIST:
+        px_ = etf_px.get(c_)
+        if px_ is None or px_.empty or qlast is None:
+            notes.append(f"{n_}：株価なし")
+            continue
+        px_ = px_[px_.index <= qlast]
+        if px_.empty or px_.index.max() < qlast - pd.Timedelta(days=7):
+            notes.append(f"{n_}：株の最後の日まで株価がない")
+            continue
+        if px_.index.min() > pd.Timestamp(d0) + pd.Timedelta(days=10):
+            notes.append(f"{n_}：期間の初めに株価がない")
+            continue
+        ok_, med_, _ = etf_yield_check(px_, ETF_DIST.get(c_, ()))
+        if not ok_:
+            notes.append(f"{n_}：分配金利回りの桁が合わない（中央値 {med_:.2f}％）")
+            continue
+        out[c_] = px_
+    return out, qlast, notes
+
+
+def code_gains(res: dict, sub: pd.DataFrame) -> pd.Series:
+    """20回目：銘柄ごとの値上がり益（円。売った額 ＋ 最後の月末の評価額 − 買った額）。大きい順。配当は入れない。"""
+    tr = res.get("trades")
+    if tr is None or tr.empty:
+        return pd.Series(dtype=float)
+    last = sub[sub["date"] == sub["date"].max()].set_index("code")["price"]
+    g = {}
+    for c_, t_ in tr.groupby("code"):
+        b_ = t_[t_["side"] == "buy"]
+        s_ = t_[t_["side"] == "sell"]
+        held = float(b_["shares"].sum() - s_["shares"].sum())
+        val = held * float(last.get(c_, 0.0)) if held > 0 and c_ in last.index else 0.0
+        g[c_] = float((s_["shares"] * s_["price"]).sum()) + val - float((b_["shares"] * b_["price"]).sum())
+    return pd.Series(g, dtype=float).sort_values(ascending=False)
+
+
 # ══════════════════════════════════════════
 def main() -> int:
     # 結果（print）と進み具合（log）の順番を、ファイルに書き出したときも崩さない。
@@ -7362,6 +7457,16 @@ def main() -> int:
     #   （低PBR順・ツールと同じ範囲・その時点の銘柄一覧）を土台にして回し直す。基準は14回目と同じ。
     # 18回目（2026年10月17日に追加）：1銘柄の比率の上限（15％・20％）を、いまの本番に足して比べる
     # 19回目（2026年10月17日に追加）：いまの本番と、ETF（TOPIX・日経225・日経高配当株50）を買って持ち続けた場合を比べる
+    # 20回目（2026年10月17日に追加）：運（同じ候補からでたらめに選ぶ）・偏り（儲けの大きかった銘柄を抜く）・始めた月ごと
+    # 21回目（2026年10月17日に追加）：近い設定（PBRの範囲・利回りの足切り・銘柄数を1つずつずらす）でも同じくらい出るか
+    args.luck_test = False
+    if (args.only or "").strip() == "luck_test":
+        args.luck_test, args.liq_metric, args.grid = True, True, True
+        args.only = "live_small1_pit"
+    args.near_test = False
+    if (args.only or "").strip() == "near_test":
+        args.near_test, args.liq_metric, args.grid = True, True, True
+        args.only = "live_small1_pit,near_pbr90,near_pbr70,near_y35,near_y40,near_n15,near_n25"
     args.etf_test = False
     if (args.only or "").strip() == "etf_test":
         args.etf_test, args.liq_metric, args.grid = True, True, True
@@ -7453,7 +7558,7 @@ def main() -> int:
     # ── 19回目：ETFの株価（毎回取り直す。3銘柄なので数秒。取れなければ前回の分を使う）──
     #   いまの一覧・その時点の一覧のデータ（quotes・x_quotes）には混ぜず、別の場所（etf_quotes）に入れる。
     _etf_px = {}
-    if getattr(args, "etf_test", False):
+    if getattr(args, "etf_test", False) or getattr(args, "luck_test", False) or getattr(args, "near_test", False):
         _eq = store.setdefault("etf_quotes", {})
         key = os.environ.get("J_QUANTS_API_KEY")
         if key:
@@ -7481,7 +7586,8 @@ def main() -> int:
     # ── 15回目：その時点の銘柄一覧と、いまの一覧にない銘柄のデータ ──
     global DELIST_EXIT, UNI_HIST, UNI_NOW, UNI_SCALE
     _need_scale = (getattr(args, "live_check", False) or getattr(args, "rot_live", False)
-                   or getattr(args, "cap_test", False) or getattr(args, "etf_test", False))
+                   or getattr(args, "cap_test", False) or getattr(args, "etf_test", False)
+                   or getattr(args, "luck_test", False) or getattr(args, "near_test", False))
     if getattr(args, "survivor_test", False) or _need_scale:
         if not store.get("pit_complete") or (_need_scale and not store.get("pit_scale_complete")):
             key = os.environ.get("J_QUANTS_API_KEY")
@@ -9308,12 +9414,14 @@ def main() -> int:
                    or getattr(args, "robust_test", False) or getattr(args, "eye_test", False)
                    or getattr(args, "rot_test", False) or getattr(args, "survivor_test", False)
                    or getattr(args, "live_check", False) or getattr(args, "rot_live", False)
-                   or getattr(args, "cap_test", False) or getattr(args, "etf_test", False))
+                   or getattr(args, "cap_test", False) or getattr(args, "etf_test", False)
+                   or getattr(args, "luck_test", False) or getattr(args, "near_test", False))
         _l10 = bool(getattr(args, "line_test", False))
         if _liq and (getattr(args, "robust_test", False) or getattr(args, "eye_test", False)
                      or getattr(args, "rot_test", False) or getattr(args, "survivor_test", False)
                      or getattr(args, "live_check", False) or getattr(args, "rot_live", False)
-                     or getattr(args, "cap_test", False) or getattr(args, "etf_test", False)):
+                     or getattr(args, "cap_test", False) or getattr(args, "etf_test", False)
+                     or getattr(args, "luck_test", False) or getattr(args, "near_test", False)):
             print("　 年率は「最後の月末に全部売って、約定のずれと税を払った後」（清算後）で出しています。\n")
         elif _liq:
             _rn = "11" if getattr(args, "safe_test", False) else "10"
@@ -9325,7 +9433,8 @@ def main() -> int:
         if not (getattr(args, "robust_test", False) or getattr(args, "eye_test", False)
                 or getattr(args, "rot_test", False) or getattr(args, "survivor_test", False)
                 or getattr(args, "live_check", False) or getattr(args, "rot_live", False)
-                or getattr(args, "cap_test", False) or getattr(args, "etf_test", False)):
+                or getattr(args, "cap_test", False) or getattr(args, "etf_test", False)
+                or getattr(args, "luck_test", False) or getattr(args, "near_test", False)):
             # ── 1. 基準に勝った割合 ──
             print("【全部買って放置に勝った割合】\n")
             print(f"{'ルール':<34}{'勝ち':>8}{'割合':>8}{'平均年率':>10}{'平均の差':>10}")
@@ -10846,6 +10955,320 @@ def main() -> int:
                 print("  （どれも2018年8月〜の1回きりの相場での結果。高配当・割安株が強かった時期なので、指数との差はこの時期の分も含む）")
                 if not _ef.empty:
                     gf = pd.concat([gf, _ef], ignore_index=True)
+
+        # ── 20回目：運と偏り・始めた月ごと（2026年10月17日に追加。基準は結果を見る前に決めたもの。年率は清算後）──
+        #   1. 運 … 同じ買い候補から、でたらめな順番で買う（予算の決め方・売り方・範囲は本番と同じ）。期間6通り・資金投入0か月。
+        #        でたらめ（候補の中）20回 … Tier も PBR も見ずに順番を決める
+        #        でたらめ（Tier内）10回 … Tier順は守り、同じ Tier の中だけでたらめ（PBRの低い順の意味を見る。参考）
+        #      本番が、でたらめ（候補の中）の何％を上回ったか（期間ごとの割合の平均）P で判定：
+        #        P ≥ 80％ → 選ぶ順番に意味がある ／ P ≤ 20％ → 順番が裏目 ／ それ以外 → 順番の意味は見えない（効いているのは候補の集まり）
+        #      清算後と評価額で分類が分かれたら「決められない」。でたらめに選んでも 1489 を上回れたかも出す。
+        #   2. 偏り … 期間ごとに、値上がり益（円）の大きかった上位1・3・5銘柄を、期間のはじめから買えなかったことにして回し直す。
+        #        「本番 − 1489」の期間平均を、抜く前 D0・上位3を抜いたあと D3 とする：
+        #        D3 が D0 の半分以上残る → 数銘柄頼みではない ／ D3 が +1.0pt 以下 → 数銘柄頼み ／ それ以外 → 一部は数銘柄頼み
+        #   3. 始めた月ごと … 毎月末を始まりにして4年持つ（約50通り）。資金投入0か月と12か月。ETFも同じ日・同じ速さで買う。
+        #        本番が上回った割合が、両方の資金投入で85％以上 → いつ始めても勝ちやすい ／ 両方で15％以下 → 負けやすい
+        #        それ以外 → 始める時期しだい。清算後と評価額で分類が分かれたら「決められない」。
+        #        窓どうしは重なっているので、約50回のばらばらな試行ではない（割合は目安）。
+        #   予想（結果を見る前に書いておく）：1は「順番の意味は見えない」、2は「一部は数銘柄頼み」、
+        #   3はTOPIXに「いつ始めても勝ちやすい」・1489に「始める時期しだい」。
+        if getattr(args, "luck_test", False) and nm and nm[0] == "live_small1_pit":
+            L0 = VARIANTS["live_small1_pit"]["label"]
+            _pn = panels[lbs_[0]]
+            _r0 = min(ramps)
+            _skw = dict(tier_budget=args.realistic, dividends=args.realistic, slip_bps=args.slip_bps,
+                        fee_bps=args.fee_bps, tax_rate=args.tax / 100.0, min_yield_override=mys[0])
+            _kwe = dict(tax_rate=args.tax / 100.0, slip_bps=args.slip_bps, fee_bps=args.fee_bps)
+            _ex, _ql, _notes = etf_ready(_etf_px, store["quotes"], _pn["date"].min())
+            _short = {"1306": "TOPIX", "1321": "日経225", "1489": "高配当50"}
+            _nm20 = (_pn.drop_duplicates("code").set_index("code")["name"].to_dict() if "name" in _pn.columns else {})
+            print("\n【20回目：運と偏り・始めた月ごと】（基準は結果を見る前に決めたもの。年率は清算後）")
+            print("  予想 … 1は「順番の意味は見えない」、2は「一部は数銘柄頼み」、3はTOPIXに「いつ始めても勝ちやすい」・"
+                  "1489に「始める時期しだい」")
+            if _notes:
+                print("  使えなかったETF … " + "・".join(_notes))
+            _wl = []
+            for a_, b_ in wins:
+                sub_ = _pn[(_pn["date"] >= a_) & (_pn["date"] <= b_)]
+                if sub_["date"].nunique() >= 24:
+                    _wl.append((f"{a_.date()}〜{b_.date()}", sub_))
+            _e0 = {}
+            for sp_, sub_ in _wl:
+                for c_ in _ex:
+                    _e0[(c_, sp_)] = etf_hold(_ex[c_], sorted(sub_["date"].unique()), args.capital, _r0,
+                                              dist=ETF_DIST[c_], **_kwe)
+
+            def _e20(c_, sp_, col="清算後年率"):
+                r_ = _e0.get((c_, sp_))
+                return float(r_[col]) if r_ else float("nan")
+
+            # 1. 運
+            log.info("20回目 1：同じ候補からでたらめに選びます（期間%d × (候補の中%d回 ＋ Tier内%d回) ＝ %d回）",
+                     len(_wl), LUCK_N_ALL, LUCK_N_TIER, len(_wl) * (LUCK_N_ALL + LUCK_N_TIER))
+            _b0, _rr = {}, []
+            for wi_, (sp_, sub_) in enumerate(_wl):
+                mb_ = metrics(simulate(sub_, VARIANTS["live_small1_pit"], args.capital, mxs_[0], ramp=_r0, **_skw))
+                _b0[sp_] = (mb_.get("清算後年率", mb_["年率"]), mb_["年率"])
+                for fam_, K_ in (("all", LUCK_N_ALL), ("tier", LUCK_N_TIER)):
+                    for k_ in range(K_):
+                        cfg_ = dict(VARIANTS["live_small1_pit"], shuffle=fam_, seed=2000 + 100 * wi_ + k_)
+                        m_ = metrics(simulate(sub_, cfg_, args.capital, mxs_[0], ramp=_r0, **_skw))
+                        if m_:
+                            _rr.append({"期間": sp_, "種類": fam_, "回": k_ + 1,
+                                        "清算後年率": m_.get("清算後年率", m_["年率"]), "評価額年率": m_["年率"]})
+                log.info("  %d/%d 期間が完了", wi_ + 1, len(_wl))
+            _rf = pd.DataFrame(_rr)
+            print(f"\n  1. 運の確かめ（同じ買い候補から、でたらめな順番で買う・資金投入{_r0}か月）")
+            print(f"    候補の中 … Tier も PBR も見ずに順番を決める（各期間{LUCK_N_ALL}回） ／ "
+                  f"Tier内 … Tier順は守り、同じTierの中だけでたらめ（{LUCK_N_TIER}回）")
+            print("    " + f"{'期間':<24}{'本番':>7}{'候補の中':>9}{'勝ち':>6}{'Tier内':>8}{'勝ち':>6}{'高配当50':>9}")
+            _P = {"清算後年率": [], "評価額年率": []}
+            _Pt, _beat_e, _nr_e, _tie = [], 0, 0, []
+            for sp_, _ in _wl:
+                ra_ = _rf[(_rf["期間"] == sp_) & (_rf["種類"] == "all")] if not _rf.empty else _rf
+                rt_ = _rf[(_rf["期間"] == sp_) & (_rf["種類"] == "tier")] if not _rf.empty else _rf
+                if ra_.empty:
+                    continue
+                for j_, col_ in enumerate(("清算後年率", "評価額年率")):
+                    _P[col_].append(float((ra_[col_] < _b0[sp_][j_]).mean()))
+                _tie.append(float((ra_["清算後年率"] - _b0[sp_][0]).abs().lt(1e-9).mean()))
+                wt_ = float((rt_["清算後年率"] < _b0[sp_][0]).mean()) if not rt_.empty else float("nan")
+                _Pt.append(wt_)
+                e_ = _e20("1489", sp_)
+                if e_ == e_:
+                    _beat_e += int((ra_["清算後年率"] > e_).sum())
+                    _nr_e += len(ra_)
+                es_ = f"{e_:>8.1f}％" if e_ == e_ else f"{'—':>9}"
+                print("    " + f"{sp_:<24}{_b0[sp_][0]:>6.1f}％{ra_['清算後年率'].median():>8.1f}％{_P['清算後年率'][-1] * 100:>5.0f}％"
+                      + (f"{rt_['清算後年率'].median():>7.1f}％{wt_ * 100:>5.0f}％" if not rt_.empty else f"{'—':>8}{'—':>6}") + es_)
+            print("    （候補の中・Tier内はでたらめの中央値。勝ち＝本番がでたらめの何％を上回ったか）")
+
+            def _v20(P):
+                return ("選ぶ順番に意味がある" if P >= 0.80 else
+                        ("順番が裏目（でたらめの方が良い）" if P <= 0.20 else "順番の意味は見えない（効いているのは候補の集まり）"))
+            _c20 = {}
+            if _P["清算後年率"]:
+                Pl_, Pm_ = float(np.mean(_P["清算後年率"])), float(np.mean(_P["評価額年率"]))
+                vl_, vm_ = _v20(Pl_), _v20(Pm_)
+                _c20[1] = vl_ if vl_ == vm_ else f"決められない（清算後「{vl_}」・評価額「{vm_}」）"
+                _rec = _P["清算後年率"][-3:-1] if len(_P["清算後年率"]) >= 3 else []
+                print(f"    本番がでたらめ（候補の中）を上回った割合 … 平均 {Pl_ * 100:.0f}％（評価額 {Pm_ * 100:.0f}％）"
+                      + (f" ／ 直近の4年窓2つでは {np.mean(_rec) * 100:.0f}％" if _rec else "")
+                      + (f" ／ 参考：Tier内でたらめを上回った割合 {np.nanmean(_Pt) * 100:.0f}％" if _Pt else ""))
+                if _tie and max(_tie) > 0:
+                    print(f"    でたらめと本番がまったく同じ結果になった回 … {np.mean(_tie) * 100:.0f}％"
+                          "（候補が少なく、順番に関係なく同じ銘柄を買えた回。この回は「上回った」に数えない）")
+                if _nr_e:
+                    print(f"    でたらめ（候補の中）でも 1489 を上回った割合 … {_beat_e / _nr_e * 100:.0f}％（{_nr_e}回のうち）")
+                print(f"    → {_c20[1]}")
+
+            # 2. 偏り
+            log.info("20回目 2：儲けの大きかった銘柄を抜いて回し直します（期間%d × 3通り）", len(_wl))
+            _rows2, _top_full = [], None
+            for sp_, sub_ in _wl:
+                rb_ = simulate(sub_, VARIANTS["live_small1_pit"], args.capital, mxs_[0], ramp=_r0, **_skw)
+                g_ = code_gains(rb_, sub_)
+                if sp_ == _wl[-1][0]:
+                    _top_full = g_
+                row_ = {"期間": sp_, 0: metrics(rb_).get("清算後年率")}
+                for k_ in (1, 3, 5):
+                    mk_ = metrics(simulate(sub_[~sub_["code"].isin(list(g_.index[:k_]))], VARIANTS["live_small1_pit"],
+                                           args.capital, mxs_[0], ramp=_r0, **_skw))
+                    row_[k_] = mk_.get("清算後年率", float("nan")) if mk_ else float("nan")
+                row_["e"] = _e20("1489", sp_)
+                _rows2.append(row_)
+            print(f"\n  2. 偏りの確かめ（期間ごとに、値上がり益の大きかった銘柄を、はじめから買えなかったことにする・資金投入{_r0}か月）")
+            print("    " + f"{'期間':<24}{'本番':>7}{'上位1抜き':>9}{'上位3抜き':>9}{'上位5抜き':>9}{'高配当50':>9}")
+            for r_ in _rows2:
+                es_ = f"{r_['e']:>8.1f}％" if r_["e"] == r_["e"] else f"{'—':>9}"
+                print("    " + f"{r_['期間']:<24}{r_[0]:>6.1f}％{r_[1]:>8.1f}％{r_[3]:>8.1f}％{r_[5]:>8.1f}％" + es_)
+            if _top_full is not None and not _top_full.empty:
+                pos_ = float(_top_full[_top_full > 0].sum())
+                tx_ = "・".join(f"{str(_nm20.get(c_, c_))[:10]}（{c_}）{v_ / 1e4:+,.0f}万円" for c_, v_ in _top_full.head(3).items())
+                print(f"    全期間の上位3銘柄 … {tx_}"
+                      + (f" ／ 儲けた銘柄の値上がり益の合計のうち {_top_full.head(3).sum() / pos_ * 100:.0f}％" if pos_ > 0 else ""))
+            _d2 = pd.DataFrame(_rows2)
+            if not _d2.empty and _d2["e"].notna().any():
+                _dd = {k_: float((_d2[k_] - _d2["e"]).mean()) for k_ in (0, 1, 3, 5)}
+                print(f"    本番 − 1489（期間の平均） … 抜く前 {_dd[0]:+.1f}pt ／ 上位1抜き {_dd[1]:+.1f}pt ／ "
+                      f"上位3抜き {_dd[3]:+.1f}pt ／ 上位5抜き {_dd[5]:+.1f}pt")
+                if _dd[0] <= 0:
+                    _c20[2] = "もともと1489を上回っていないので判定しない"
+                elif _dd[3] >= _dd[0] / 2:
+                    _c20[2] = "数銘柄頼みではない"
+                elif _dd[3] <= 1.0:
+                    _c20[2] = "数銘柄頼み"
+                else:
+                    _c20[2] = "一部は数銘柄頼み"
+                print(f"    → {_c20[2]}")
+            else:
+                _c20[2] = "1489がないので判定しない"
+                print(f"    → {_c20[2]}")
+
+            # 3. 始めた月ごと
+            _dl = sorted(pd.Timestamp(d) for d in _pn["date"].unique())
+            _starts = [d for d in _dl if d + pd.DateOffset(years=4) <= _dl[-1] + pd.Timedelta(days=3)]
+            _rps = [r for r in (0, 12) if r in ramps] or [_r0]
+            log.info("20回目 3：毎月末を始まりにして4年持ちます（%d通り × 資金投入%d通り）", len(_starts), len(_rps))
+            _rows3 = []
+            for i_, a_ in enumerate(_starts):
+                sub_ = _pn[(_pn["date"] >= a_) & (_pn["date"] <= a_ + pd.DateOffset(years=4))]
+                dts_ = sorted(sub_["date"].unique())
+                for rp_ in _rps:
+                    m_ = metrics(simulate(sub_, VARIANTS["live_small1_pit"], args.capital, mxs_[0], ramp=rp_, **_skw))
+                    if not m_:
+                        continue
+                    row_ = {"始め": a_, "資金投入": rp_, "本番": m_.get("清算後年率", m_["年率"]), "本番_評価額": m_["年率"]}
+                    for c_ in _ex:
+                        e_ = etf_hold(_ex[c_], dts_, args.capital, rp_, dist=ETF_DIST[c_], **_kwe)
+                        if e_:
+                            row_[c_], row_[c_ + "_評価額"] = e_["清算後年率"], e_["年率"]
+                    _rows3.append(row_)
+                if (i_ + 1) % 10 == 0 or i_ + 1 == len(_starts):
+                    log.info("  %d/%d 通りが完了", i_ + 1, len(_starts))
+            _s3 = pd.DataFrame(_rows3)
+            _c3 = {}
+            if not _s3.empty:
+                print(f"\n  3. 始めた月ごと（毎月末を始まりにして4年持つ。{_starts[0].date()}〜{_starts[-1].date()}に始めた"
+                      f"{len(_starts)}通り）")
+
+                def _v3(sh):
+                    return ("いつ始めても勝ちやすい" if all(x >= 0.85 for x in sh) else
+                            ("負けやすい" if all(x <= 0.15 for x in sh) else "始める時期しだい"))
+                for c_, n_ in ETF_LIST:
+                    if c_ not in _s3.columns:
+                        continue
+                    parts_, shl_, shm_ = [], [], []
+                    for rp_ in _rps:
+                        g_ = _s3[_s3["資金投入"] == rp_]
+                        d_ = (g_["本番"] - g_[c_]).dropna()
+                        dm_ = (g_["本番_評価額"] - g_[c_ + "_評価額"]).dropna()
+                        if d_.empty:
+                            continue
+                        shl_.append(float((d_ > 0).mean()))
+                        shm_.append(float((dm_ > 0).mean()))
+                        w_ = g_.loc[d_.idxmin(), "始め"]
+                        parts_.append(f"資金投入{rp_}か月 上回った {shl_[-1] * 100:.0f}％・平均 {d_.mean():+.1f}pt・"
+                                      f"いちばん悪い始め方 {w_.year}年{w_.month}月末 {d_.min():+.1f}pt")
+                    if not parts_:
+                        continue
+                    vl_, vm_ = _v3(shl_), _v3(shm_)
+                    _c3[c_] = vl_ if vl_ == vm_ else f"決められない（清算後「{vl_}」・評価額「{vm_}」）"
+                    print(f"    {n_}")
+                    for p_ in parts_:
+                        print(f"      {p_}")
+                    print(f"      → {_c3[c_]}")
+                _yc = [c_ for c_ in ("1489", "1306") if c_ in _s3.columns]
+                if _yc:
+                    g_ = _s3[_s3["資金投入"] == _rps[0]].copy()
+                    g_["年"] = g_["始め"].dt.year
+                    print(f"    始めた年ごと（資金投入{_rps[0]}か月。勝ち／通り・平均の差）")
+                    print("    " + f"{'始めた年':<10}" + "".join(f"{_short[c_]:>18}" for c_ in _yc))
+                    for y_, gy_ in g_.groupby("年"):
+                        line_ = "    " + f"{str(y_) + '年':<10}"
+                        for c_ in _yc:
+                            d_ = (gy_["本番"] - gy_[c_]).dropna()
+                            line_ += f"{int((d_ > 0).sum()):>8}/{len(d_)}・{d_.mean():+6.1f}pt"
+                        print(line_)
+            print("\n  総合（結果を見る前に決めた基準）")
+            print(f"    1 運 … {_c20.get(1, '—')} ／ 2 偏り … {_c20.get(2, '—')}")
+            if _c3:
+                print("    3 始めた月ごと … " + " ／ ".join(f"{_short.get(c_, c_)} {v_}" for c_, v_ in _c3.items()))
+            print("  （3の窓どうしは重なっているので、約50回のばらばらな試行ではない。割合は目安）")
+            print("  （2の値上がり益は配当を含まない。抜いた銘柄は、期間のはじめから候補にいなかったことにした）")
+            try:
+                if not _rf.empty:
+                    _rf.to_csv(OUTDIR / "luck_random.csv", index=False, encoding="utf-8-sig")
+                if not _s3.empty:
+                    _s3.to_csv(OUTDIR / "luck_starts.csv", index=False, encoding="utf-8-sig")
+            except Exception as e_:
+                log.warning("20回目の明細を書き出せませんでした: %s", e_)
+
+        # ── 21回目：近い設定でも同じくらい出るか（2026年10月17日に追加。基準は結果を見る前に決めたもの。年率は清算後）──
+        #   いまの本番から1つずつずらす：PBRの範囲（安い側20％ → 10％・30％）、利回りの足切り（3％ → 3.5％・4％）、
+        #   銘柄数（最大20 → 15・25。1銘柄の予算も同じ割合で変える）。24条件で回す。
+        #   g ＝（6つの近い設定それぞれの24条件の平均年率）の平均 − 本番の24条件の平均年率 で判定：
+        #     |g| ≤ 2.0pt → 近い設定でも同じくらい（合わせすぎの心配は小さい）
+        #     g < −2.0pt → いまの設定だけが高い（合わせすぎの疑い。noteの数字には近い設定の平均も添える）
+        #     g > +2.0pt → いまの設定に特別な強さはない
+        #     清算後と評価額で分類が分かれたら「決められない」
+        #   どの結果でも、設定は乗り換えない（6つ試すと、どれかがたまたま良く出やすいため）。
+        #   あわせて、近い設定ごとに 1489 との差（24条件）を出す。
+        #   予想（結果を見る前に書いておく）：近い設定でも同じくらい。
+        if getattr(args, "near_test", False) and nm and nm[0] == "live_small1_pit":
+            L0 = VARIANTS["live_small1_pit"]["label"]
+            _pn = panels[lbs_[0]]
+            _pl = gf.pivot_table(index=cond_cols, columns="ルール", values="清算後年率")
+            _pm = gf.pivot_table(index=cond_cols, columns="ルール", values="評価額年率")
+            _kwe = dict(tax_rate=args.tax / 100.0, slip_bps=args.slip_bps, fee_bps=args.fee_bps)
+            _ex, _ql, _notes = etf_ready(_etf_px, store["quotes"], _pn["date"].min())
+            _span = {f"{a_.date()}〜{b_.date()}": (a_, b_) for a_, b_ in wins}
+            print("\n【21回目：近い設定でも同じくらい出るか】（基準は結果を見る前に決めたもの。年率は清算後）")
+            print("  予想 … 近い設定でも同じくらい")
+            if _notes:
+                print("  使えなかったETF … " + "・".join(_notes))
+            _e21 = pd.Series(dtype=float)
+            if "1489" in _ex and L0 in _pl.columns:
+                _cache21, _vals = {}, {}
+                for idx_ in _pl.index:
+                    sp_ = idx_[cond_cols.index("期間")]
+                    rp_ = int(idx_[cond_cols.index("資金投入")])
+                    if sp_ not in _span:
+                        continue
+                    if (sp_, rp_) not in _cache21:
+                        a_, b_ = _span[sp_]
+                        _cache21[(sp_, rp_)] = etf_hold(_ex["1489"], sorted(_pn[(_pn["date"] >= a_) & (_pn["date"] <= b_)]["date"].unique()),
+                                                        args.capital, rp_, dist=ETF_DIST["1489"], **_kwe)
+                    r_ = _cache21[(sp_, rp_)]
+                    if r_:
+                        _vals[idx_] = r_["清算後年率"]
+                _e21 = pd.Series(_vals, dtype=float)
+                if not _e21.empty:
+                    _e21.index = pd.MultiIndex.from_tuples(_e21.index, names=cond_cols)
+            _near = [("live_small1_pit", "本番（安い側20％・3％・20銘柄）"), ("near_pbr90", "PBRが安い側10％"),
+                     ("near_pbr70", "PBRが安い側30％"), ("near_y35", "利回り3.5％以上"), ("near_y40", "利回り4％以上"),
+                     ("near_n15", "最大15銘柄"), ("near_n25", "最大25銘柄")]
+            print(f"\n  {'設定':<22}{'平均':>7}{'低い条件':>9}{'下落 平均':>10}{'最深':>7}{'− 本番':>9}{'勝ち':>6}{'− 高配当50':>12}{'勝ち':>6}")
+            _gl, _gm, _beat85, _vs_e = [], [], [], []
+            for n_, sh_ in _near:
+                L_ = VARIANTS[n_]["label"]
+                if L_ not in _pl.columns:
+                    continue
+                g_ = gf[gf["ルール"] == L_]
+                line_ = (f"  {sh_:<22}{g_['清算後年率'].mean():>6.1f}％{g_['清算後年率'].min():>8.1f}％"
+                         f"{g_['最大下落'].mean():>9.1f}％{g_['最大下落'].max():>6.1f}％")
+                if n_ != "live_small1_pit":
+                    d_ = (_pl[L_] - _pl[L0]).dropna()
+                    line_ += f"{d_.mean():>+8.1f}pt{(d_ > 0).mean() * 100:>5.0f}％"
+                    _gl.append(float(_pl[L_].mean() - _pl[L0].mean()))
+                    _gm.append(float(_pm[L_].mean() - _pm[L0].mean()))
+                    if float((d_ > 0).mean()) >= 0.85:
+                        _beat85.append(sh_)
+                else:
+                    line_ += f"{'—':>10}{'':>6}"
+                if not _e21.empty:
+                    de_ = (_pl[L_] - _e21.reindex(_pl.index)).dropna()
+                    line_ += f"{de_.mean():>+10.1f}pt{(de_ > 0).mean() * 100:>5.0f}％"
+                    if n_ != "live_small1_pit":
+                        _vs_e.append(float(de_.mean()))
+                print(line_)
+            if _gl:
+                def _v21(g):
+                    return ("近い設定でも同じくらい（合わせすぎの心配は小さい）" if abs(g) <= 2.0 else
+                            ("いまの設定だけが高い（合わせすぎの疑い。noteの数字には近い設定の平均も添える）" if g < 0 else
+                             "いまの設定に特別な強さはない"))
+                gl_, gm_ = float(np.mean(_gl)), float(np.mean(_gm))
+                vl_, vm_ = _v21(gl_), _v21(gm_)
+                fin_ = vl_ if vl_ == vm_ else f"決められない（清算後「{vl_}」・評価額「{vm_}」）"
+                print(f"\n  近い設定6つの平均 − 本番 … 清算後 {gl_:+.1f}pt ／ 評価額 {gm_:+.1f}pt "
+                      f"（いちばん低い近い設定 {min(_gl):+.1f}pt・いちばん高い {max(_gl):+.1f}pt）")
+                if _vs_e:
+                    print(f"  1489 との差 … 近い設定6つの平均 {np.mean(_vs_e):+.1f}pt ／ 平均で 1489 を上回った近い設定 "
+                          f"{sum(1 for x in _vs_e if x > 0)}/{len(_vs_e)}")
+                if _beat85:
+                    print("  参考：85％以上の条件で本番を上回った近い設定 … " + "・".join(_beat85) + "（乗り換えの候補にはしない）")
+                print(f"  → {fin_}")
+            print("  （どの結果でも、設定は乗り換えない。6つ試すと、どれかがたまたま良く出やすいため）")
 
         OUTDIR.mkdir(parents=True, exist_ok=True)
         gf.to_csv(OUTDIR / "grid.csv", index=False, encoding="utf-8-sig")
