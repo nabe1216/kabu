@@ -1315,6 +1315,33 @@ VARIANTS: dict[str, dict[str, Any]] = {
         "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
         "tier_col": "tier_live_pit", "uni_col": "in_uni_live",
     },
+    # ── 17回目の候補（2026年10月17日に追加）：14回目（上の線で売って月末の候補へ回す）を、いまの本番の買い方で ──
+    "live_rot_small1": {
+        "label": "いまの本番＋上の線で売って回す",
+        "entry": [80], "exit": [], "measure": "pbr_live", "priority": "tier", "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "tier_col": "tier_live_pit", "uni_col": "in_uni_live",
+        "swing_daily": {"tag": "h2", "tiers": ["A", "B"], "no_buy": True},
+    },
+    "live_small1_nisa": {
+        "label": "いまの本番・税なし（NISAの想定）",
+        "entry": [80], "exit": [], "measure": "pbr_live", "priority": "tier", "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "tier_col": "tier_live_pit", "uni_col": "in_uni_live", "tax_override": 0.0,
+    },
+    "live_rot_small1_nisa": {
+        "label": "いまの本番＋上の線で売って回す・税なし",
+        "entry": [80], "exit": [], "measure": "pbr_live", "priority": "tier", "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "tier_col": "tier_live_pit", "uni_col": "in_uni_live", "tax_override": 0.0,
+        "swing_daily": {"tag": "h2", "tiers": ["A", "B"], "no_buy": True},
+    },
     "base_now_uni": {
         "label": "本番・いまの銘柄一覧",
         "entry": [0], "exit": [], "priority": "tier", "cross": True, "screen": True,
@@ -7145,6 +7172,12 @@ def main() -> int:
     #   初回は、その時点の銘柄一覧と、いまの一覧にない銘柄の株価・財務を取る（時間がかかる。途中なら次の実行で続き）。
     # 16回目（2026年10月17日に追加）：本番のツールと同じ範囲・同じ買い方で回し直し、最新の月の買う順番を
     #   ツールの results.json と突き合わせる。15回目のデータ（その時点の銘柄一覧）を使う。
+    # 17回目（2026年10月17日に追加）：14回目（上の線で売って月末の候補へ回す）を、いまの本番の買い方
+    #   （低PBR順・ツールと同じ範囲・その時点の銘柄一覧）を土台にして回し直す。基準は14回目と同じ。
+    args.rot_live = False
+    if (args.only or "").strip() == "rot_live":
+        args.rot_live, args.liq_metric, args.grid = True, True, True
+        args.only = "live_small1_pit,live_rot_small1,live_small1_nisa,live_rot_small1_nisa"
     args.live_check = False
     if (args.only or "").strip() == "live_check":
         args.live_check, args.liq_metric, args.grid = True, True, True
@@ -7223,15 +7256,15 @@ def main() -> int:
 
     # ── 15回目：その時点の銘柄一覧と、いまの一覧にない銘柄のデータ ──
     global DELIST_EXIT, UNI_HIST, UNI_NOW, UNI_SCALE
-    if getattr(args, "survivor_test", False) or getattr(args, "live_check", False):
-        if not store.get("pit_complete") or (getattr(args, "live_check", False)
-                                             and not store.get("pit_scale_complete")):
+    _need_scale = getattr(args, "live_check", False) or getattr(args, "rot_live", False)
+    if getattr(args, "survivor_test", False) or _need_scale:
+        if not store.get("pit_complete") or (_need_scale and not store.get("pit_scale_complete")):
             key = os.environ.get("J_QUANTS_API_KEY")
             if not key:
                 log.error("J_QUANTS_API_KEY が設定されていません")
                 return 2
             _ok_ = fetch_pit_universe(JQ(key), store) if not store.get("pit_complete") else True
-            if _ok_ and getattr(args, "live_check", False):
+            if _ok_ and _need_scale:
                 _ok_ = fetch_pit_scale(JQ(key), store)
             if not _ok_:
                 print("\n■ まだ終わっていません（その時点の銘柄一覧と、いまの一覧にない銘柄のデータを取っている途中です）")
@@ -7243,7 +7276,7 @@ def main() -> int:
                 return EXIT_UNFINISHED
         UNI_NOW = {u["code"] for u in store["universe"]}
         UNI_HIST = {k: set(v) for k, v in store.get("uni_hist", {}).items()}
-        if getattr(args, "live_check", False):
+        if _need_scale:
             UNI_SCALE = store.get("uni_hist_scale") or None
         _nx = len([c for c in store.get("x_quotes", {}) if c not in UNI_NOW])
         log.info("15回目：いまの一覧 %d銘柄 ＋ その時点の一覧にだけある銘柄 %d銘柄（株価が取れなかった %d銘柄）で回します",
@@ -9046,11 +9079,11 @@ def main() -> int:
         _lt = bool(getattr(args, "line_test", False) or getattr(args, "safe_test", False)
                    or getattr(args, "robust_test", False) or getattr(args, "eye_test", False)
                    or getattr(args, "rot_test", False) or getattr(args, "survivor_test", False)
-                   or getattr(args, "live_check", False))
+                   or getattr(args, "live_check", False) or getattr(args, "rot_live", False))
         _l10 = bool(getattr(args, "line_test", False))
         if _liq and (getattr(args, "robust_test", False) or getattr(args, "eye_test", False)
                      or getattr(args, "rot_test", False) or getattr(args, "survivor_test", False)
-                     or getattr(args, "live_check", False)):
+                     or getattr(args, "live_check", False) or getattr(args, "rot_live", False)):
             print("　 年率は「最後の月末に全部売って、約定のずれと税を払った後」（清算後）で出しています。\n")
         elif _liq:
             _rn = "11" if getattr(args, "safe_test", False) else "10"
@@ -9061,7 +9094,7 @@ def main() -> int:
         # 13回目も同じ（【13回目】の欄にまとめる）
         if not (getattr(args, "robust_test", False) or getattr(args, "eye_test", False)
                 or getattr(args, "rot_test", False) or getattr(args, "survivor_test", False)
-                or getattr(args, "live_check", False)):
+                or getattr(args, "live_check", False) or getattr(args, "rot_live", False)):
             # ── 1. 基準に勝った割合 ──
             print("【全部買って放置に勝った割合】\n")
             print(f"{'ルール':<34}{'勝ち':>8}{'割合':>8}{'平均年率':>10}{'平均の差':>10}")
@@ -10062,7 +10095,14 @@ def main() -> int:
         #     線で売った回数が1条件あたり平均10回未満なら判定しない。
         #   税なし（NISAの想定）は、税なしの本番と比べる（参考。同じ基準で分類だけ出す）。
         #   予想（結果を見る前に書いておく）：税ありでは「使えない」、税なしでは差が縮む。
-        if getattr(args, "rot_test", False) and nm and nm[0] == "tier_pit_mix_scr":
+        _r14 = None
+        if getattr(args, "rot_test", False):
+            _r14 = ("tier_pit_mix_scr", "line_rot_pit", "base_nisa_pit", "line_rot_nisa", "")
+        elif getattr(args, "rot_live", False):
+            # 17回目：いまの本番の買い方（低PBR順・ツールと同じ範囲）を土台にして、14回目と同じ比べ方をする
+            _r14 = ("live_small1_pit", "live_rot_small1", "live_small1_nisa", "live_rot_small1_nisa", "17回目・")
+        if _r14 and nm and nm[0] == _r14[0]:
+            B0, R0, B1, R1, _hd14 = _r14
             def _j14(n_a, n_b, col):
                 pv_ = gf.pivot_table(index=cond_cols, columns="ルール", values=col)
                 La, Lb = VARIANTS[n_a]["label"], VARIANTS[n_b]["label"]
@@ -10077,18 +10117,18 @@ def main() -> int:
                 cat_ = "本番に入れる候補" if (ok_ and w_ >= 0.85) else ("使える" if ok_ else "使えない")
                 return {"n": int(len(d_)), "w": w_, "da": da_, "dw": dw_, "cat": cat_}
 
-            print("\n【14回目：上の線で売って、売ったお金を月末の買い候補に回す】（基準は結果を見る前に決めたもの。年率は清算後）")
+            print(f"\n【{_hd14}14回目の形：上の線で売って、売ったお金を月末の買い候補に回す】（基準は結果を見る前に決めたもの。年率は清算後）")
             print("  予想 … 税ありでは「使えない」、税なしでは差が縮む")
-            for n_, sh_ in (("tier_pit_mix_scr", "本番（税あり）"), ("line_rot_pit", "乗り換え（税あり）"),
-                            ("base_nisa_pit", "本番（税なし）"), ("line_rot_nisa", "乗り換え（税なし）")):
+            for n_, sh_ in ((B0, "本番（税あり）"), (R0, "乗り換え（税あり）"),
+                            (B1, "本番（税なし）"), (R1, "乗り換え（税なし）")):
                 g_ = gf[gf["ルール"] == VARIANTS[n_]["label"]]
                 if g_.empty:
                     continue
                 print(f"    {sh_:<10} … 平均 {g_['清算後年率'].mean():.1f}％・最悪の年 {g_['清算後年率'].min():.1f}％・"
                       f"最悪の下落 {g_['最大下落'].max():.1f}％・売り 年{g_['売り/年'].mean():.1f}回（緊急売りも含む）")
             _cat14 = {}
-            for n_a, n_b, sh_ in (("line_rot_pit", "tier_pit_mix_scr", "税あり（判定）"),
-                                  ("line_rot_nisa", "base_nisa_pit", "税なし（参考）")):
+            for n_a, n_b, sh_ in ((R0, B0, "税あり（判定）"),
+                                  (R1, B1, "税なし（参考）")):
                 jl = _j14(n_a, n_b, "清算後年率")
                 jm = _j14(n_a, n_b, "評価額年率")
                 if jl is None:
@@ -10111,15 +10151,15 @@ def main() -> int:
             _g0 = gf[gf["資金投入"] == _r0]
             if not _g0.empty:
                 _pv = _g0.pivot_table(index="期間", columns="ルール", values="清算後年率")
-                _cols = [(VARIANTS[n_]["label"], s_) for n_, s_ in (("tier_pit_mix_scr", "本番"), ("line_rot_pit", "乗換"),
-                                                                    ("base_nisa_pit", "本番非課税"), ("line_rot_nisa", "乗換非課税"))
+                _cols = [(VARIANTS[n_]["label"], s_) for n_, s_ in ((B0, "本番"), (R0, "乗換"),
+                                                                    (B1, "本番非課税"), (R1, "乗換非課税"))
                          if VARIANTS[n_]["label"] in _pv.columns]
                 print(f"\n  期間ごと（資金投入{_r0}か月・清算後の年率）")
                 print("    " + f"{'期間':<24}" + "".join(f"{s_:>8}" for _, s_ in _cols))
                 for _p in _pv.index:
                     print("    " + f"{_p:<24}" + "".join(f"{_pv.at[_p, L_]:>7.1f}％" for L_, _ in _cols))
             print("\n  総合（結果を見る前に決めた基準）")
-            print(f"    税あり … {_cat14.get('line_rot_pit', '—')} ／ 税なし（参考） … {_cat14.get('line_rot_nisa', '—')}")
+            print(f"    税あり … {_cat14.get(R0, '—')} ／ 税なし（参考） … {_cat14.get(R1, '—')}")
             print("  （税なしは、全額がNISAに入ると仮定した参考。実際のNISAは枠に上限がある）")
 
         # ── 15回目：生き残った銘柄だけで検証している偏り・配当がどれだけ「固定収入」だったか ──
