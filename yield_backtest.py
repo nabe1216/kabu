@@ -84,6 +84,31 @@ UNI_NOW = None                   # いまのプライムの銘柄（set）
 # 16回目（2026年10月17日に追加）：本番のツール（generate.py）と同じ範囲・同じ買い方で確かめる
 LIVE_SCALES = {"TOPIX Core30", "TOPIX Large70", "TOPIX Mid400", "TOPIX Small 1"}   # UNIVERSE_SCOPE='small1'
 UNI_SCALE = None                 # 各月の規模区分 {"YYYY-MM": {code: ScaleCat}}
+# 19回目（2026年10月17日に追加）：上場投信（ETF）を買って持ち続けた場合と比べる
+#   株価は J-Quants から株と同じ取り方で取る（分割を調整した終値）。分配金は J-Quants にないので、運用会社の公表値を写した。
+#   出どころ … 野村アセットマネジメント NEXT FUNDS の各ETFのページ（nextfunds.jp/lineup/1306/ ・1321/ ・1489/、2026年10月17日に確認）。
+#   金額は「100口あたり・受益権の分割の影響を除いた額（いまの口数の基準）」。1306・1321 は kabuhai-db.jp の値とも一致した。
+#   分割（1306 は2026年4月1日・1321 は2026年10月7日・1489 は2024年1月19日）は、株価も分配金も同じ基準に揃っている。
+ETF_LIST = (("1306", "TOPIX（1306）"), ("1321", "日経225（1321）"), ("1489", "日経高配当株50（1489）"))
+ETF_DIST = {
+    "1306": (("2017-07-10", 260), ("2018-07-10", 305), ("2019-07-10", 333), ("2020-07-10", 329),
+             ("2021-07-10", 366), ("2022-07-10", 464), ("2023-07-10", 521), ("2024-07-10", 579),
+             ("2025-07-10", 695), ("2026-07-10", 790)),
+    "1321": (("2017-07-08", 286), ("2018-07-08", 350), ("2019-07-08", 409), ("2020-07-08", 389),
+             ("2021-07-08", 365), ("2022-07-08", 497), ("2023-07-08", 576), ("2024-07-08", 617),
+             ("2025-07-08", 723), ("2026-07-08", 812)),
+    "1489": (("2017-04-07", 1476.67), ("2017-07-07", 206.67), ("2017-10-07", 1590), ("2018-01-07", 246.67),
+             ("2018-04-07", 1860), ("2018-07-07", 246.67), ("2018-10-07", 1813.33), ("2019-01-07", 300),
+             ("2019-04-07", 2013.33), ("2019-07-07", 243.33), ("2019-10-07", 1906.67), ("2020-01-07", 343.33),
+             ("2020-04-07", 1896.67), ("2020-07-07", 70), ("2020-10-07", 1550), ("2021-01-07", 350),
+             ("2021-04-07", 1956.67), ("2021-07-07", 333.33), ("2021-10-07", 2053.33), ("2022-01-07", 356.67),
+             ("2022-04-07", 3060), ("2022-07-07", 590), ("2022-10-07", 3133.33), ("2023-01-07", 483.33),
+             ("2023-04-07", 3220), ("2023-07-07", 346.67), ("2023-10-07", 2976.67), ("2024-01-07", 500),
+             ("2024-04-07", 3000), ("2024-07-07", 500), ("2024-10-07", 3800), ("2025-01-07", 400),
+             ("2025-04-07", 4000), ("2025-07-07", 600), ("2025-10-07", 3900), ("2026-01-07", 800),
+             ("2026-04-07", 3800), ("2026-07-07", 900), ("2026-10-07", 4900)),
+}
+ETF_YIELD_OK = (0.5, 8.0)        # 1年の分配金利回り（％）の中央値がこの外なら、口数の基準が株価と合っていないとみて使わない
 
 
 def _elapsed_min() -> float:
@@ -7074,6 +7099,118 @@ def buy_and_hold(pn: pd.DataFrame, tax_rate: float, uni_col: str | None = None,
             "シャープ": float(r.mean() / r.std() * np.sqrt(12)) if r.std() > 0 else 0.0}
 
 
+def etf_series(rows: list[dict]) -> pd.Series:
+    """19回目：ETFの日々の終値（分割を調整した値）。日付が添字。"""
+    df = quotes_to_df(rows or [])
+    if df.empty:
+        return pd.Series(dtype=float)
+    s = df.set_index("date")["close"].astype(float)
+    return s[s > 0]
+
+
+def etf_yield_check(px: pd.Series, dist) -> tuple[bool, float, dict]:
+    """19回目：1年ごとの分配金利回り（％。決算日までの最後の終値に対して）を出し、中央値が ETF_YIELD_OK の中か確かめる。
+    分配金の口数の基準が株価と合っていなければ、ここで桁がずれて見つかる。"""
+    by: dict = {}
+    if px.empty:
+        return False, float("nan"), by
+    for d_s, amt in dist:
+        d_ = pd.Timestamp(d_s)
+        if d_ < px.index.min() or d_ > px.index.max():
+            continue
+        p_ = float(px[px.index <= d_].iloc[-1])
+        by[d_.year] = by.get(d_.year, 0.0) + float(amt) / 100.0 / p_ * 100.0
+    if not by:
+        return False, float("nan"), by
+    med = float(np.median(list(by.values())))
+    return bool(ETF_YIELD_OK[0] <= med <= ETF_YIELD_OK[1]), med, by
+
+
+def etf_hold(px: pd.Series, dts, capital: float, ramp: int, tax_rate: float,
+             slip_bps: float = 0.0, fee_bps: float = 0.0, dist=()) -> dict | None:
+    """19回目：ETFを、本番と同じ月末の日付・同じ資金投入の速さで買い、あとは持ち続ける。
+
+    買い … 月末の終値に約定のずれと手数料を足した値段で、使ってよいお金をすべて使う（本番の ramp と同じ解放の仕方）。
+    分配金 … 決算日がその月のうちにあれば、その月末に「持っていた口数 × 1口の分配金」を税を引いて受け取る。
+             受け取ったお金は次の月末に買い増す（本番が配当を次の月末の買いに回すのと同じ）。
+    最後の月末に全部売り、約定のずれと手数料を引き、値上がり益に税をかけた手取りも出す。
+    """
+    dts = [pd.Timestamp(d) for d in dts]
+    if len(dts) < 12 or px.empty:
+        return None
+    if px.index.min() > dts[0] + pd.Timedelta(days=10):
+        return None          # 期間の初めに値段がない（終わりは、呼ぶ側で株と同じ最後の日に揃えてある）
+    slip, fee = slip_bps / 10000.0, fee_bps / 10000.0
+    ramp = max(0, int(ramp))
+    dl = sorted((pd.Timestamp(a), float(b) / 100.0) for a, b in dist)
+    cash, units, basis = float(capital), 0.0, 0.0
+    rows, dist_m = [], {}
+    prev, units_prev = None, 0.0
+    for mi, dt in enumerate(dts):
+        p_ = px[px.index <= dt]
+        if p_.empty:
+            return None
+        p = float(p_.iloc[-1])
+        # 買い（まだ解放されていない資金は使えない）
+        released = min(1.0, (mi + 1) / ramp) if ramp > 0 else 1.0
+        usable = max(0.0, cash - capital * (1.0 - released))
+        if usable > 1.0:
+            units += usable / (p * (1 + slip) * (1 + fee))
+            basis += usable
+            cash -= usable
+        # 分配金（前の月末より後、この月末までに決算日があるもの。口数は前の月末に持っていた分）
+        if prev is not None and units_prev > 0:
+            got = sum(a for d_, a in dl if prev < d_ <= dt)
+            if got > 0:
+                net = units_prev * got * (1 - tax_rate)
+                cash += net
+                dist_m[dt] = net
+        rows.append({"date": dt, "value": cash + units * p, "cash": cash, "price": p})
+        prev, units_prev = dt, units
+    cv = pd.DataFrame(rows)
+    v = cv["value"].to_numpy()
+    p_end = float(cv["price"].iloc[-1])
+    proceeds = units * p_end * (1 - slip) * (1 - fee)
+    liq = cash + proceeds - tax_rate * max(0.0, proceeds - basis)
+    yrs = max((dts[-1] - dts[0]).days / 365.25, 0.5)
+    return {"curve": cv, "liq_value": liq, "capital": capital, "dist_by_month": dist_m,
+            "年率": ((v[-1] / capital) ** (1 / yrs) - 1) * 100,
+            "清算後年率": ((liq / capital) ** (1 / yrs) - 1) * 100 if liq > 0 else float("nan"),
+            "最大下落": float((1 - v / np.maximum.accumulate(v)).max()) * 100}
+
+
+def year_returns(curve: pd.DataFrame, capital: float) -> dict:
+    """19回目：暦年ごとの評価額の伸び（％）。最初の年は元本から、ほかは前年の最後の月末から測る。"""
+    c = curve.copy()
+    c["date"] = pd.to_datetime(c["date"])
+    out, base = {}, float(capital)
+    for y_, g_ in c.groupby(c["date"].dt.year):
+        end = float(g_["value"].iloc[-1])
+        out[int(y_)] = (end / base - 1) * 100 if base > 0 else float("nan")
+        base = end
+    return out
+
+
+def income_share(dist_by_month: dict, curve: pd.DataFrame, capital: float, m0, m1) -> list:
+    """19回目：暦年ごとの、受け取った配当・分配金（税引き後）÷ 前年の最後の月末の資産（％）。1年まるごとある年だけ。"""
+    s = pd.Series(dist_by_month, dtype=float)
+    if s.empty:
+        return []
+    c = curve.copy()
+    c["date"] = pd.to_datetime(c["date"])
+    c = c.set_index("date")["value"]
+    by = s.groupby(pd.to_datetime(s.index).year).sum()
+    m0, m1 = pd.Timestamp(m0), pd.Timestamp(m1)
+    out = []
+    for y_ in sorted(by.index):
+        if (y_ == m0.year and m0.month > 1) or (y_ == m1.year and m1.month < 12):
+            continue
+        v0 = c[c.index < pd.Timestamp(f"{y_}-01-01")]
+        base = float(v0.iloc[-1]) if len(v0) else float(capital)
+        out.append(float(by[y_]) / base * 100)
+    return out
+
+
 # ══════════════════════════════════════════
 def main() -> int:
     # 結果（print）と進み具合（log）の順番を、ファイルに書き出したときも崩さない。
@@ -7224,6 +7361,11 @@ def main() -> int:
     # 17回目（2026年10月17日に追加）：14回目（上の線で売って月末の候補へ回す）を、いまの本番の買い方
     #   （低PBR順・ツールと同じ範囲・その時点の銘柄一覧）を土台にして回し直す。基準は14回目と同じ。
     # 18回目（2026年10月17日に追加）：1銘柄の比率の上限（15％・20％）を、いまの本番に足して比べる
+    # 19回目（2026年10月17日に追加）：いまの本番と、ETF（TOPIX・日経225・日経高配当株50）を買って持ち続けた場合を比べる
+    args.etf_test = False
+    if (args.only or "").strip() == "etf_test":
+        args.etf_test, args.liq_metric, args.grid = True, True, True
+        args.only = "live_small1_pit"
     args.cap_test = False
     if (args.only or "").strip() == "cap_test":
         args.cap_test, args.liq_metric, args.grid = True, True, True
@@ -7308,10 +7450,38 @@ def main() -> int:
                  args.years)
         args.years = 9
 
+    # ── 19回目：ETFの株価（毎回取り直す。3銘柄なので数秒。取れなければ前回の分を使う）──
+    #   いまの一覧・その時点の一覧のデータ（quotes・x_quotes）には混ぜず、別の場所（etf_quotes）に入れる。
+    _etf_px = {}
+    if getattr(args, "etf_test", False):
+        _eq = store.setdefault("etf_quotes", {})
+        key = os.environ.get("J_QUANTS_API_KEY")
+        if key:
+            _jq = JQ(key)
+            for c_, n_ in ETF_LIST:
+                try:
+                    time.sleep(API_SLEEP)
+                    _rw = fetch_bars(_jq, c_, 9)
+                except Exception as e_:
+                    log.warning("19回目：%s の株価を取れませんでした（%s）。前回の分があれば使います", n_, e_)
+                    continue
+                if _rw:
+                    _eq[c_] = _rw
+                else:
+                    log.warning("19回目：%s の株価が空でした（J-Quants にない可能性）", n_)
+            save_store(store)
+        for c_, n_ in ETF_LIST:
+            _s = etf_series(_eq.get(c_, []))
+            if not _s.empty:
+                _etf_px[c_] = _s
+                log.info("19回目：%s の株価 … %d日分（%s〜%s）", n_, len(_s), _s.index.min().date(), _s.index.max().date())
+        if not _etf_px:
+            log.warning("19回目：ETFの株価がひとつも取れませんでした。ETFとの比べは出せません")
+
     # ── 15回目：その時点の銘柄一覧と、いまの一覧にない銘柄のデータ ──
     global DELIST_EXIT, UNI_HIST, UNI_NOW, UNI_SCALE
     _need_scale = (getattr(args, "live_check", False) or getattr(args, "rot_live", False)
-                   or getattr(args, "cap_test", False))
+                   or getattr(args, "cap_test", False) or getattr(args, "etf_test", False))
     if getattr(args, "survivor_test", False) or _need_scale:
         if not store.get("pit_complete") or (_need_scale and not store.get("pit_scale_complete")):
             key = os.environ.get("J_QUANTS_API_KEY")
@@ -9138,12 +9308,12 @@ def main() -> int:
                    or getattr(args, "robust_test", False) or getattr(args, "eye_test", False)
                    or getattr(args, "rot_test", False) or getattr(args, "survivor_test", False)
                    or getattr(args, "live_check", False) or getattr(args, "rot_live", False)
-                   or getattr(args, "cap_test", False))
+                   or getattr(args, "cap_test", False) or getattr(args, "etf_test", False))
         _l10 = bool(getattr(args, "line_test", False))
         if _liq and (getattr(args, "robust_test", False) or getattr(args, "eye_test", False)
                      or getattr(args, "rot_test", False) or getattr(args, "survivor_test", False)
                      or getattr(args, "live_check", False) or getattr(args, "rot_live", False)
-                     or getattr(args, "cap_test", False)):
+                     or getattr(args, "cap_test", False) or getattr(args, "etf_test", False)):
             print("　 年率は「最後の月末に全部売って、約定のずれと税を払った後」（清算後）で出しています。\n")
         elif _liq:
             _rn = "11" if getattr(args, "safe_test", False) else "10"
@@ -9155,7 +9325,7 @@ def main() -> int:
         if not (getattr(args, "robust_test", False) or getattr(args, "eye_test", False)
                 or getattr(args, "rot_test", False) or getattr(args, "survivor_test", False)
                 or getattr(args, "live_check", False) or getattr(args, "rot_live", False)
-                or getattr(args, "cap_test", False)):
+                or getattr(args, "cap_test", False) or getattr(args, "etf_test", False)):
             # ── 1. 基準に勝った割合 ──
             print("【全部買って放置に勝った割合】\n")
             print(f"{'ルール':<34}{'勝ち':>8}{'割合':>8}{'平均年率':>10}{'平均の差':>10}")
@@ -10501,6 +10671,181 @@ def main() -> int:
             print("\n  総合（結果を見る前に決めた基準）")
             print(f"    20％まで … {_c18.get('live_cap20', '—')} ／ 15％まで … {_c18.get('live_cap15', '—')}")
             print("  （1銘柄の比率は月末の評価額で測る。本番の買い始めは S 約8.9％・A 約6.7％・B 約4.4％）")
+
+        # ── 19回目：ETF（指数）を買って持ち続けた場合と比べる（2026年10月17日に追加。基準は結果を見る前に決めたもの。年率は清算後）──
+        #   相手 … TOPIX（1306）・日経225（1321）・日経高配当株50（1489）。本番と同じ月末・同じ資金投入の速さ・同じ約定のずれ・同じ税。
+        #   分配金は運用会社の公表値（ETF_DIST）。税を引いて受け取り、次の月末に買い増す。最後の月末に全部売って税を払う。
+        #   ETFごとに「本番 − ETF」を24条件で比べる：
+        #     指数より良い … 本番が85％以上の条件で上回り、かつ平均の差が +1.0pt 以上
+        #     指数に負ける … ETF が85％以上の条件で上回る
+        #     決められない … それ以外（条件次第）。清算後と評価額で分類が分かれたときも「決められない」
+        #   いちばん大事なのは 日経高配当株50（1489）との比べ。同じ高配当の型を、選ばずに丸ごと買う形なので、
+        #   差がそのまま「銘柄の選び方」の価値になる。
+        #   予想（結果を見る前に書いておく）：TOPIX・日経225には「指数より良い」。日経高配当株50との差は、TOPIXとの差より小さい。
+        if getattr(args, "etf_test", False) and nm and nm[0] == "live_small1_pit":
+            L0 = VARIANTS["live_small1_pit"]["label"]
+            _short = {"1306": "TOPIX", "1321": "日経225", "1489": "高配当50"}
+            _pl = gf.pivot_table(index=cond_cols, columns="ルール", values="清算後年率")
+            _pm = gf.pivot_table(index=cond_cols, columns="ルール", values="評価額年率")
+            print("\n【19回目：ETF（指数）を買って持ち続けた場合と比べる】（基準は結果を見る前に決めたもの。年率は清算後）")
+            print("  予想 … TOPIX・日経225には「指数より良い」。日経高配当株50との差は、TOPIXとの差より小さい")
+            _pn = panels[lbs_[0]]
+            _span = {f"{a_.date()}〜{b_.date()}": (a_, b_) for a_, b_ in wins}
+            _dts_of = {sp_: sorted(_pn[(_pn["date"] >= a_) & (_pn["date"] <= b_)]["date"].unique())
+                       for sp_, (a_, b_) in _span.items()}
+            # 株の株価の最後の日（キャッシュの最後の日）に、ETFの株価の終わりを揃える（月末の日付は暦の月末なので）
+            _qlast = max((pd.Timestamp(str(v[-1].get("Date", ""))[:10]) for v in list(store["quotes"].values())[:200]
+                          if v and v[-1].get("Date")), default=pd.Timestamp(d1_))
+            print("\n  0. ETFのデータ（株価は J-Quants の分割調整後の終値、分配金は運用会社の公表値）")
+            print(f"    株の株価の最後の日 … {_qlast.date()}（ETFもこの日までの株価で測る）")
+            _use = []
+            for c_, n_ in ETF_LIST:
+                px_ = _etf_px.get(c_)
+                if px_ is not None and not px_.empty:
+                    px_ = px_[px_.index <= _qlast]
+                    _etf_px[c_] = px_
+                if px_ is None or px_.empty:
+                    print(f"    {n_:<16} … 株価が取れず、比べない")
+                    continue
+                if px_.index.max() < _qlast - pd.Timedelta(days=7):
+                    print(f"    {n_:<16} … 株価が {px_.index.max().date()} までしかなく、株の最後の日に足りない。比べない")
+                    continue
+                ok_, med_, by_ = etf_yield_check(px_, ETF_DIST.get(c_, ()))
+                if not ok_:
+                    print(f"    {n_:<16} … 1年の分配金利回りの中央値 {med_:.2f}％ が {ETF_YIELD_OK[0]}〜{ETF_YIELD_OK[1]}％ の外。"
+                          "分配金と株価の口数の基準が合っていないとみて、比べない")
+                    continue
+                if px_.index.min() > pd.Timestamp(_pn["date"].min()) + pd.Timedelta(days=10):
+                    print(f"    {n_:<16} … 株価が {px_.index.min().date()} からしかなく、期間の初めに足りない。比べない")
+                    continue
+                _ys = "・".join(f"{y_} {v_:.1f}" for y_, v_ in sorted(by_.items()) if y_ >= 2018)
+                print(f"    {n_:<16} … 株価 {px_.index.min().date()}〜{px_.index.max().date()} ／ "
+                      f"1年の分配金利回り（％・決算日の終値に対して） {_ys}")
+                _use.append((c_, n_))
+            if L0 not in _pl.columns or not _use:
+                print("    ETFとの比べを出せませんでした")
+            else:
+                _kwe = dict(tax_rate=args.tax / 100.0, slip_bps=args.slip_bps, fee_bps=args.fee_bps)
+                _er, _etf_rows = {}, []
+                for c_, n_ in _use:
+                    for idx_ in _pl.index:
+                        sp_ = idx_[cond_cols.index("期間")]
+                        rp_ = int(idx_[cond_cols.index("資金投入")])
+                        k_ = (c_, sp_, rp_)
+                        if k_ not in _er and sp_ in _dts_of:
+                            _er[k_] = etf_hold(_etf_px[c_], _dts_of[sp_], args.capital, rp_, dist=ETF_DIST[c_], **_kwe)
+                        r_ = _er.get(k_)
+                        if r_:
+                            _etf_rows.append({**dict(zip(cond_cols, idx_)), "ルール": f"ETF：{n_}",
+                                              "年率": r_["清算後年率"], "清算後年率": r_["清算後年率"],
+                                              "評価額年率": r_["年率"], "最大下落": r_["最大下落"]})
+                _ef = pd.DataFrame(_etf_rows)
+                g0 = gf[gf["ルール"] == L0]
+                print(f"\n  1. 成績（{len(g0)}条件）")
+                print(f"    {'本番':<18} … 平均 {g0['清算後年率'].mean():.1f}％・いちばん低い条件 {g0['清算後年率'].min():.1f}％ ／ "
+                      f"最大下落 平均 {g0['最大下落'].mean():.1f}％・いちばん深い {g0['最大下落'].max():.1f}％")
+                for c_, n_ in _use:
+                    g_ = _ef[_ef["ルール"] == f"ETF：{n_}"] if not _ef.empty else _ef
+                    if g_.empty:
+                        continue
+                    print(f"    {n_:<18} … 平均 {g_['清算後年率'].mean():.1f}％・いちばん低い条件 {g_['清算後年率'].min():.1f}％ ／ "
+                          f"最大下落 平均 {g_['最大下落'].mean():.1f}％・いちばん深い {g_['最大下落'].max():.1f}％")
+                _bhv = []
+                for sp_, (a_, b_) in _span.items():
+                    bl_ = buy_and_hold(_pn[(_pn["date"] >= a_) & (_pn["date"] <= b_)], args.tax / 100.0, "in_uni_live", True)
+                    if bl_:
+                        _bhv.append(bl_["清算後年率"])
+                if _bhv:
+                    print(f"    参考：ツールと同じ範囲を初日に等金額で全部買って放置 … 平均 {np.mean(_bhv):.1f}％"
+                          f"（期間{len(_bhv)}通り・資金投入0か月だけ）")
+
+                def _cat19(d):
+                    if d.empty:
+                        return "—"
+                    if float((d > 0).mean()) >= 0.85 and float(d.mean()) >= 1.0:
+                        return "指数より良い"
+                    if float((d < 0).mean()) >= 0.85:
+                        return "指数に負ける"
+                    return "決められない（条件次第）"
+
+                print(f"\n  2. 本番 − ETF（同じ条件どうし・{len(g0)}条件）")
+                _c19 = {}
+                for c_, n_ in _use:
+                    L_ = f"ETF：{n_}"
+                    e_ = _ef[_ef["ルール"] == L_].set_index(cond_cols)
+                    if e_.empty:
+                        continue
+                    d_ = (_pl[L0] - e_["清算後年率"].reindex(_pl.index)).dropna()
+                    dm_ = (_pm[L0] - e_["評価額年率"].reindex(_pm.index)).dropna()
+                    cl_, cm_ = _cat19(d_), _cat19(dm_)
+                    fin_ = cl_ if cl_ == cm_ else f"決められない（清算後「{cl_}」・評価額「{cm_}」）"
+                    _c19[c_] = fin_
+                    ddm = float(g0["最大下落"].mean() - e_["最大下落"].mean())
+                    ddw = float(g0["最大下落"].max() - e_["最大下落"].max())
+                    print(f"    {n_:<18} … 清算後 平均 {d_.mean():+.1f}pt（{d_.min():+.1f}〜{d_.max():+.1f}pt） ／ 本番が上回った "
+                          f"{(d_ > 0).mean() * 100:.0f}％（{len(d_)}条件） ／ 評価額 平均 {dm_.mean():+.1f}pt・上回った "
+                          f"{(dm_ > 0).mean() * 100:.0f}％")
+                    print(f"    {'':<18}   最大下落の差 平均 {ddm:+.1f}pt・いちばん深いもの {ddw:+.1f}pt（プラスなら本番の方が深い）"
+                          f" → {fin_}")
+                # 期間ごと
+                _cols = [(f"ETF：{n_}", _short.get(c_, c_)) for c_, n_ in _use]
+                print(f"\n  3. 期間ごと（資金投入{len(ramps)}通りの平均・清算後の年率）")
+                print("    " + f"{'期間':<24}{'本番':>8}" + "".join(f"{s_:>9}" for _, s_ in _cols))
+                for sp_ in _span:
+                    b_ = g0[g0["期間"] == sp_]["清算後年率"]
+                    if b_.empty:
+                        continue
+                    line_ = "    " + f"{sp_:<24}{b_.mean():>7.1f}％"
+                    for L_, _ in _cols:
+                        x_ = _ef[(_ef["ルール"] == L_) & (_ef["期間"] == sp_)]["清算後年率"]
+                        line_ += f"{x_.mean():>8.1f}％" if not x_.empty else f"{'—':>9}"
+                    print(line_)
+                # 暦年ごと（全期間・資金投入がいちばん短い条件・評価額）
+                _r0 = min(ramps)
+                _fsp = f"{d0_.date()}〜{d1_.date()}"
+                _subf = _pn[(_pn["date"] >= d0_) & (_pn["date"] <= d1_)]
+                _rf = simulate(_subf, VARIANTS["live_small1_pit"], args.capital, mxs_[0],
+                               tier_budget=args.realistic, dividends=args.realistic,
+                               slip_bps=args.slip_bps, fee_bps=args.fee_bps,
+                               tax_rate=args.tax / 100.0, ramp=_r0, min_yield_override=mys[0])
+                _yb = year_returns(_rf["curve"], args.capital)
+                _ye = {c_: year_returns(_er[(c_, _fsp, _r0)]["curve"], args.capital)
+                       for c_, _ in _use if _er.get((c_, _fsp, _r0))}
+                if _yb and _ye:
+                    _m0, _m1 = pd.Timestamp(_subf["date"].min()), pd.Timestamp(_subf["date"].max())
+                    print(f"\n  4. 暦年ごとの値動き（全期間・資金投入{_r0}か月・評価額。配当・分配金を含む）")
+                    print("    " + f"{'年':<16}{'本番':>8}" + "".join(f"{_short.get(c_, c_):>9}" for c_ in _ye))
+                    _beat = {c_: [0, 0] for c_ in _ye}
+                    for y_ in sorted(_yb):
+                        lab_ = f"{y_}年"
+                        if y_ == _m0.year:
+                            lab_ += f"（{_m0.month}月末〜）"
+                        if y_ == _m1.year and _m1.month < 12:
+                            lab_ += f"（〜{_m1.month}月）"
+                        line_ = "    " + f"{lab_:<16}{_yb[y_]:>+7.1f}％"
+                        for c_ in _ye:
+                            v_ = _ye[c_].get(y_)
+                            line_ += f"{v_:>+8.1f}％" if v_ is not None else f"{'—':>9}"
+                            if v_ is not None:
+                                _beat[c_][1] += 1
+                                _beat[c_][0] += int(_yb[y_] > v_)
+                        print(line_)
+                    print("    本番が上回った年 … " + " ／ ".join(f"{_short.get(c_, c_)} {w_}/{n_}年" for c_, (w_, n_) in _beat.items()))
+                    # 配当・分配金（税引き後）を、前年の最後の月末の資産で割る（1年まるごとある年だけ）
+                    _ib = income_share(_rf["diag"].get("div_by_month", {}), _rf["curve"], args.capital, _m0, _m1)
+                    _ie = {c_: income_share(_er[(c_, _fsp, _r0)]["dist_by_month"], _er[(c_, _fsp, _r0)]["curve"],
+                                            args.capital, _m0, _m1) for c_ in _ye}
+
+                    def _fmt_i(v):
+                        return f"平均 {np.mean(v):.1f}％（{min(v):.1f}〜{max(v):.1f}％）" if v else "—"
+                    print("\n  5. 受け取った配当・分配金（税引き後・年初の資産に対して・1年まるごとある年）")
+                    print(f"    本番 … {_fmt_i(_ib)} ／ " + " ／ ".join(f"{_short.get(c_, c_)} … {_fmt_i(v_)}" for c_, v_ in _ie.items()))
+                print("\n  総合（結果を見る前に決めた基準）")
+                print("    " + " ／ ".join(f"{_short.get(c_, c_)} … {_c19.get(c_, '比べられず')}" for c_, _ in ETF_LIST))
+                print("  （ETFは本番と同じ月末に、同じ速さで資金を入れて買う。分配金は税を引いて次の月末に買い増す。信託報酬は株価に含まれている）")
+                print("  （どれも2018年8月〜の1回きりの相場での結果。高配当・割安株が強かった時期なので、指数との差はこの時期の分も含む）")
+                if not _ef.empty:
+                    gf = pd.concat([gf, _ef], ignore_index=True)
 
         OUTDIR.mkdir(parents=True, exist_ok=True)
         gf.to_csv(OUTDIR / "grid.csv", index=False, encoding="utf-8-sig")
