@@ -108,6 +108,9 @@ ETF_DIST = {
              ("2025-04-07", 4000), ("2025-07-07", 600), ("2025-10-07", 3900), ("2026-01-07", 800),
              ("2026-04-07", 3800), ("2026-07-07", 900), ("2026-10-07", 4900)),
 }
+BANK_SECTORS = {"銀行業"}                                                  # 22回目：銀行
+FIN_SECTORS = {"銀行業", "保険業", "証券、商品先物取引業", "その他金融業"}      # 22回目：金融（参考）
+BAND_MONTHS = (3, 6, 12, 24)     # 22回目：並走記録で使う幅を出す経過月数
 LUCK_N_ALL = 20                  # 20回目：でたらめ（候補の中）を、期間ごとに何回回すか
 LUCK_N_TIER = 10                 # 20回目：でたらめ（Tier内）を、期間ごとに何回回すか
 ETF_YIELD_OK = (0.5, 8.0)        # 1年の分配金利回り（％）の中央値がこの外なら、口数の基準が株価と合っていないとみて使わない
@@ -1359,6 +1362,24 @@ VARIANTS: dict[str, dict[str, Any]] = {
         "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
         "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
         "tier_col": "tier_live_pit", "uni_col": "in_uni_live", "weight_cap": 0.20,
+    },
+    # ── 22回目の候補（2026年10月17日に追加）：銀行（金融）を買わなかったら ──
+    #   本番と同じ。違うのは、新しく買ってよい範囲から銀行業（金融4業種）を外すことだけ。PBRの順位・Tier は銀行を含めたまま。
+    "live_nobank": {
+        "label": "本番から銀行を外す",
+        "entry": [80], "exit": [], "measure": "pbr_live", "priority": "tier", "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "tier_col": "tier_live_pit", "uni_col": "in_uni_live_nobank",
+    },
+    "live_nofin": {
+        "label": "本番から金融4業種を外す",
+        "entry": [80], "exit": [], "measure": "pbr_live", "priority": "tier", "screen": True,
+        "budget_weighted": True, "target_names": 15, "min_yield_fixed": 3.0,
+        "hold_tiers": ["S", "A", "B"], "exit_on_cut": True, "exit_on_op": True,
+        "emg_rule": "actual", "skip_emg_buy": True, "div_split": True,
+        "tier_col": "tier_live_pit", "uni_col": "in_uni_live_nofin",
     },
     # ── 21回目の候補（2026年10月17日に追加）：いまの本番から設定を1つずつずらす（近い設定でも同じくらい出るか）──
     #   どの結果でも乗り換えの候補にはしない（6つ試すと、どれかがたまたま良く出やすいため）。
@@ -2728,6 +2749,10 @@ def add_uni_columns(panel: pd.DataFrame) -> pd.DataFrame:
             lead = ((rk <= 3) & (sec != "")).fillna(False).astype(bool)
             qual = panel["code"].isin(PROGRESSIVE | DOE)
             panel["tier_live_pit"] = np.where(lead & qual, "S", np.where(lead | qual, "A", "B"))
+        # 22回目：銀行（金融）を買わなかったら。PBRの順位・Tier は銀行を含めたまま（買える範囲だけを狭める）
+        _sec = panel["sector"].fillna("").astype(str) if "sector" in panel.columns else pd.Series("", index=panel.index)
+        panel["in_uni_live_nobank"] = panel["in_uni_live"].to_numpy() & (~_sec.isin(BANK_SECTORS)).to_numpy()
+        panel["in_uni_live_nofin"] = panel["in_uni_live"].to_numpy() & (~_sec.isin(FIN_SECTORS)).to_numpy()
     return panel
 
 
@@ -7459,6 +7484,11 @@ def main() -> int:
     # 19回目（2026年10月17日に追加）：いまの本番と、ETF（TOPIX・日経225・日経高配当株50）を買って持ち続けた場合を比べる
     # 20回目（2026年10月17日に追加）：運（同じ候補からでたらめに選ぶ）・偏り（儲けの大きかった銘柄を抜く）・始めた月ごと
     # 21回目（2026年10月17日に追加）：近い設定（PBRの範囲・利回りの足切り・銘柄数を1つずつずらす）でも同じくらい出るか
+    # 22回目（2026年10月17日に追加）：業種ごとの儲けと、銀行（金融）を買わなかった場合の 1489 との差
+    args.sector_test = False
+    if (args.only or "").strip() == "sector_test":
+        args.sector_test, args.liq_metric, args.grid = True, True, True
+        args.only = "live_small1_pit,live_nobank,live_nofin"
     args.luck_test = False
     if (args.only or "").strip() == "luck_test":
         args.luck_test, args.liq_metric, args.grid = True, True, True
@@ -7558,7 +7588,8 @@ def main() -> int:
     # ── 19回目：ETFの株価（毎回取り直す。3銘柄なので数秒。取れなければ前回の分を使う）──
     #   いまの一覧・その時点の一覧のデータ（quotes・x_quotes）には混ぜず、別の場所（etf_quotes）に入れる。
     _etf_px = {}
-    if getattr(args, "etf_test", False) or getattr(args, "luck_test", False) or getattr(args, "near_test", False):
+    if getattr(args, "etf_test", False) or getattr(args, "luck_test", False) or getattr(args, "near_test", False) \
+            or getattr(args, "sector_test", False):
         _eq = store.setdefault("etf_quotes", {})
         key = os.environ.get("J_QUANTS_API_KEY")
         if key:
@@ -7587,7 +7618,8 @@ def main() -> int:
     global DELIST_EXIT, UNI_HIST, UNI_NOW, UNI_SCALE
     _need_scale = (getattr(args, "live_check", False) or getattr(args, "rot_live", False)
                    or getattr(args, "cap_test", False) or getattr(args, "etf_test", False)
-                   or getattr(args, "luck_test", False) or getattr(args, "near_test", False))
+                   or getattr(args, "luck_test", False) or getattr(args, "near_test", False)
+                   or getattr(args, "sector_test", False))
     if getattr(args, "survivor_test", False) or _need_scale:
         if not store.get("pit_complete") or (_need_scale and not store.get("pit_scale_complete")):
             key = os.environ.get("J_QUANTS_API_KEY")
@@ -9415,13 +9447,15 @@ def main() -> int:
                    or getattr(args, "rot_test", False) or getattr(args, "survivor_test", False)
                    or getattr(args, "live_check", False) or getattr(args, "rot_live", False)
                    or getattr(args, "cap_test", False) or getattr(args, "etf_test", False)
-                   or getattr(args, "luck_test", False) or getattr(args, "near_test", False))
+                   or getattr(args, "luck_test", False) or getattr(args, "near_test", False)
+                   or getattr(args, "sector_test", False))
         _l10 = bool(getattr(args, "line_test", False))
         if _liq and (getattr(args, "robust_test", False) or getattr(args, "eye_test", False)
                      or getattr(args, "rot_test", False) or getattr(args, "survivor_test", False)
                      or getattr(args, "live_check", False) or getattr(args, "rot_live", False)
                      or getattr(args, "cap_test", False) or getattr(args, "etf_test", False)
-                     or getattr(args, "luck_test", False) or getattr(args, "near_test", False)):
+                     or getattr(args, "luck_test", False) or getattr(args, "near_test", False)
+                     or getattr(args, "sector_test", False)):
             print("　 年率は「最後の月末に全部売って、約定のずれと税を払った後」（清算後）で出しています。\n")
         elif _liq:
             _rn = "11" if getattr(args, "safe_test", False) else "10"
@@ -9434,7 +9468,8 @@ def main() -> int:
                 or getattr(args, "rot_test", False) or getattr(args, "survivor_test", False)
                 or getattr(args, "live_check", False) or getattr(args, "rot_live", False)
                 or getattr(args, "cap_test", False) or getattr(args, "etf_test", False)
-                or getattr(args, "luck_test", False) or getattr(args, "near_test", False)):
+                or getattr(args, "luck_test", False) or getattr(args, "near_test", False)
+                or getattr(args, "sector_test", False)):
             # ── 1. 基準に勝った割合 ──
             print("【全部買って放置に勝った割合】\n")
             print(f"{'ルール':<34}{'勝ち':>8}{'割合':>8}{'平均年率':>10}{'平均の差':>10}")
@@ -11269,6 +11304,216 @@ def main() -> int:
                     print("  参考：85％以上の条件で本番を上回った近い設定 … " + "・".join(_beat85) + "（乗り換えの候補にはしない）")
                 print(f"  → {fin_}")
             print("  （どの結果でも、設定は乗り換えない。6つ試すと、どれかがたまたま良く出やすいため）")
+
+        # ── 22回目：銀行への偏り（2026年10月17日に追加。基準は結果を見る前に決めたもの。年率は清算後）──
+        #   20回目で、全期間の儲けの上位3銘柄がすべて銀行だった。1489との差が銀行で説明できるかを確かめる。
+        #   1. 業種ごとの儲け（全期間・資金投入0か月の値上がり益）と、期間ごとの銀行の割合
+        #   2. 本番から、新しく買ってよい範囲を「銀行業を外したもの」にして24条件で回す（PBRの順位・Tier は銀行を含めたまま）。
+        #      参考に、金融4業種（銀行・保険・証券・その他金融）を外したものも回す。
+        #      「本番 − 1489」の24条件の平均を、本番 D0・銀行を外したもの Db とする：
+        #        Db が D0 の半分以上残り、かつ +1.0pt より大きい → 銀行頼みではない
+        #        Db が +1.0pt 以下 → 銀行頼み（1489との差は、ほぼ銀行で説明できる）
+        #        それ以外 → 一部は銀行頼み
+        #      清算後と評価額で分類が分かれたら「決められない」。金融4業種も同じ基準（参考）。
+        #   どの結果でも、本番のルールは変えない（noteでの説明と、並走記録で見る点を決めるための検証）。
+        #   3. 並走記録で使う幅（判定ではない）：毎月末を始まりにして全額で買い始めた場合の、3・6・12・24か月後の
+        #      「本番 − ETF」の10％点・中央値・90％点。並走記録を始める前に、ここで「過去にあった範囲」を決めておく。
+        #   予想（結果を見る前に書いておく）：一部は銀行頼み。
+        if getattr(args, "sector_test", False) and nm and nm[0] == "live_small1_pit":
+            L0 = VARIANTS["live_small1_pit"]["label"]
+            Lb, Lf = VARIANTS["live_nobank"]["label"], VARIANTS["live_nofin"]["label"]
+            _pn = panels[lbs_[0]]
+            _r0 = min(ramps)
+            _skw = dict(tier_budget=args.realistic, dividends=args.realistic, slip_bps=args.slip_bps,
+                        fee_bps=args.fee_bps, tax_rate=args.tax / 100.0, min_yield_override=mys[0])
+            _kwe = dict(tax_rate=args.tax / 100.0, slip_bps=args.slip_bps, fee_bps=args.fee_bps)
+            _ex, _ql, _notes = etf_ready(_etf_px, store["quotes"], _pn["date"].min())
+            _pl = gf.pivot_table(index=cond_cols, columns="ルール", values="清算後年率")
+            _pm = gf.pivot_table(index=cond_cols, columns="ルール", values="評価額年率")
+            _span = {f"{a_.date()}〜{b_.date()}": (a_, b_) for a_, b_ in wins}
+            _fsp = f"{d0_.date()}〜{d1_.date()}"
+            print("\n【22回目：銀行への偏り】（基準は結果を見る前に決めたもの。年率は清算後）")
+            print("  予想 … 一部は銀行頼み")
+            if _notes:
+                print("  使えなかったETF … " + "・".join(_notes))
+            _inl = _pn["in_uni_live"].astype(bool) if "in_uni_live" in _pn.columns else pd.Series(False, index=_pn.index)
+            _secs = _pn["sector"].fillna("").astype(str) if "sector" in _pn.columns else pd.Series("", index=_pn.index)
+            _lastm = _pn["date"] == _pn["date"].max()
+            _nb_last = int((_inl & _lastm & _secs.isin(BANK_SECTORS)).sum())
+            _nf_last = int((_inl & _lastm & _secs.isin(FIN_SECTORS)).sum())
+            _nb_ever = int(_pn.loc[_inl & _secs.isin(BANK_SECTORS), "code"].nunique())
+            print(f"  ツールと同じ範囲にいる銀行 … 最後の月 {_nb_last}社（期間中に一度でもいた {_nb_ever}社） ／ "
+                  f"金融4業種 最後の月 {_nf_last}社")
+            _secmap = _pn.sort_values("date").drop_duplicates("code", keep="last").set_index("code")["sector"].fillna("").to_dict()
+            _nm22 = (_pn.drop_duplicates("code", keep="last").set_index("code")["name"].to_dict() if "name" in _pn.columns else {})
+            # 1. 業種ごとの儲け・期間ごとの銀行の割合
+            log.info("22回目 1：業種ごとの儲けを出します（期間%d）", len(_span))
+            _bw, _full_g = {}, None
+            for sp_, (a_, b_) in _span.items():
+                sub_ = _pn[(_pn["date"] >= a_) & (_pn["date"] <= b_)]
+                if sub_["date"].nunique() < 24:
+                    continue
+                g_ = code_gains(simulate(sub_, VARIANTS["live_small1_pit"], args.capital, mxs_[0], ramp=_r0, **_skw), sub_)
+                tot_ = float(g_[g_ > 0].sum())      # 儲けた銘柄の値上がり益の合計（20回目と同じ分母）
+                bk_ = float(g_[[c_ for c_ in g_.index if _secmap.get(c_) in BANK_SECTORS]].sum())
+                _bw[sp_] = (bk_ / tot_ if tot_ > 0 else float("nan"),
+                            int(sum(1 for c_ in g_.index if _secmap.get(c_) in BANK_SECTORS)))
+                if sp_ == _fsp:
+                    _full_g = g_
+            if _full_g is not None and not _full_g.empty:
+                _df = pd.DataFrame({"g": _full_g, "sec": [_secmap.get(c_, "") or "（不明）" for c_ in _full_g.index]})
+                _ag = _df.groupby("sec")["g"].agg(["sum", "count"]).sort_values("sum", ascending=False)
+                _tot = float(_full_g[_full_g > 0].sum())
+                print(f"\n  1. 業種ごとの儲け（全期間・資金投入{_r0}か月・値上がり益。配当は含まない。"
+                      "割合は、儲けた銘柄の値上がり益の合計に対して）")
+                print("    " + f"{'業種':<16}{'儲け':>10}{'割合':>9}{'買った銘柄':>8}")
+                for sec_, r_ in _ag.head(8).iterrows():
+                    print("    " + f"{str(sec_)[:12]:<16}{r_['sum'] / 1e4:>8,.0f}万円{r_['sum'] / _tot * 100 if _tot > 0 else float('nan'):>8.0f}％"
+                          f"{int(r_['count']):>7}社")
+                _bk = _df[_df["sec"].isin(BANK_SECTORS)].sort_values("g", ascending=False)
+                if not _bk.empty:
+                    print(f"    銀行 … 合わせて {_bk['g'].sum() / 1e4:,.0f}万円（"
+                          + (f"割合 {_bk['g'].sum() / _tot * 100:.0f}％・" if _tot > 0 else "") + f"{len(_bk)}社） ／ 上位 "
+                          + "・".join(f"{str(_nm22.get(c_, c_))[:8]} {v_ / 1e4:+,.0f}万円" for c_, v_ in _bk["g"].head(4).items()))
+            # 2. 銀行を外した場合（24条件）
+            _eps = {}
+            for c_ in ("1489", "1306"):
+                if c_ not in _ex:
+                    continue
+                _vals, _valm, _cache = {}, {}, {}
+                for idx_ in _pl.index:
+                    sp_ = idx_[cond_cols.index("期間")]
+                    rp_ = int(idx_[cond_cols.index("資金投入")])
+                    if sp_ not in _span:
+                        continue
+                    if (sp_, rp_) not in _cache:
+                        a_, b_ = _span[sp_]
+                        _cache[(sp_, rp_)] = etf_hold(_ex[c_], sorted(_pn[(_pn["date"] >= a_) & (_pn["date"] <= b_)]["date"].unique()),
+                                                      args.capital, rp_, dist=ETF_DIST[c_], **_kwe)
+                    r_ = _cache[(sp_, rp_)]
+                    if r_:
+                        _vals[idx_], _valm[idx_] = r_["清算後年率"], r_["年率"]
+                if _vals:
+                    s1_ = pd.Series(_vals, dtype=float)
+                    s1_.index = pd.MultiIndex.from_tuples(s1_.index, names=cond_cols)
+                    s2_ = pd.Series(_valm, dtype=float)
+                    s2_.index = pd.MultiIndex.from_tuples(s2_.index, names=cond_cols)
+                    _eps[c_] = (s1_, s2_, _cache)
+            print(f"\n  2. 新しく買う範囲から外した場合（{len(_pl)}条件）")
+            print("    " + f"{'':<16}{'平均':>7}{'低い条件':>9}{'最深の下落':>9}{'− 本番':>9}{'− 高配当50':>12}{'勝ち':>6}{'− TOPIX':>10}{'勝ち':>6}")
+            _dd22 = {}
+            for L_, sh_ in ((L0, "本番"), (Lb, "銀行を外す"), (Lf, "金融4業種を外す")):
+                if L_ not in _pl.columns:
+                    continue
+                g_ = gf[gf["ルール"] == L_]
+                line_ = "    " + f"{sh_:<16}{g_['清算後年率'].mean():>6.1f}％{g_['清算後年率'].min():>8.1f}％{g_['最大下落'].max():>8.1f}％"
+                line_ += f"{(_pl[L_] - _pl[L0]).mean():>+8.1f}pt" if L_ != L0 else f"{'—':>10}"
+                for c_ in ("1489", "1306"):
+                    if c_ in _eps:
+                        d_ = (_pl[L_] - _eps[c_][0].reindex(_pl.index)).dropna()
+                        dm_ = (_pm[L_] - _eps[c_][1].reindex(_pm.index)).dropna()
+                        line_ += f"{d_.mean():>+10.1f}pt{(d_ > 0).mean() * 100:>5.0f}％"
+                        if c_ == "1489":
+                            _dd22[L_] = (float(d_.mean()), float(dm_.mean()))
+                    else:
+                        line_ += f"{'—':>12}{'':>6}"
+                print(line_)
+            # 期間ごと（資金投入がいちばん短い条件）
+            _g0 = gf[gf["資金投入"] == _r0]
+            if not _g0.empty:
+                _pv = _g0.pivot_table(index="期間", columns="ルール", values="清算後年率")
+                print(f"\n    期間ごと（資金投入{_r0}か月） … 銀行の割合は、本番で儲けた銘柄の値上がり益の合計のうち、銀行の分")
+                print("    " + f"{'期間':<24}{'銀行の割合':>8}{'本番':>8}{'銀行抜き':>9}{'金融抜き':>9}{'高配当50':>9}")
+                for sp_ in _span:
+                    if sp_ not in _pv.index:
+                        continue
+                    bw_ = _bw.get(sp_, (float("nan"), 0))[0]
+                    e_ = _eps.get("1489", (None, None, {}))[2].get((sp_, _r0)) if "1489" in _eps else None
+                    line_ = "    " + f"{sp_:<24}" + (f"{bw_ * 100:>7.0f}％" if bw_ == bw_ else f"{'—':>8}")
+                    for L_ in (L0, Lb, Lf):
+                        line_ += f"{_pv.at[sp_, L_]:>7.1f}％" if L_ in _pv.columns else f"{'—':>8}"
+                    line_ += f"{e_['清算後年率']:>8.1f}％" if e_ else f"{'—':>9}"
+                    print(line_)
+
+            def _v22(d0, dx, word):
+                if d0 <= 0:
+                    return "もともと1489を上回っていないので判定しない"
+                if dx >= d0 / 2 and dx > 1.0:
+                    return f"{word}頼みではない"
+                if dx <= 1.0:
+                    return f"{word}頼み（1489との差は、ほぼ{word}で説明できる）"
+                return f"一部は{word}頼み"
+            _c22 = {}
+            if _nb_ever == 0:
+                _c22["b"] = _c22["f"] = "銀行業の銘柄が見つからず、判定しない（業種名が想定と違う可能性）"
+            elif L0 in _dd22:
+                for k_, L_, w_ in (("b", Lb, "銀行"), ("f", Lf, "金融")):
+                    if L_ not in _dd22:
+                        continue
+                    vl_ = _v22(_dd22[L0][0], _dd22[L_][0], w_)
+                    vm_ = _v22(_dd22[L0][1], _dd22[L_][1], w_)
+                    _c22[k_] = vl_ if vl_ == vm_ else f"決められない（清算後「{vl_}」・評価額「{vm_}」）"
+                print(f"\n    本番 − 1489（{len(_pl)}条件の平均） … 本番 {_dd22[L0][0]:+.1f}pt ／ 銀行を外す "
+                      f"{_dd22.get(Lb, (float('nan'),))[0]:+.1f}pt ／ 金融4業種を外す {_dd22.get(Lf, (float('nan'),))[0]:+.1f}pt")
+            else:
+                _c22["b"] = _c22["f"] = "1489がないので判定しない"
+            print("\n  総合（結果を見る前に決めた基準）")
+            print(f"    銀行 … {_c22.get('b', '—')} ／ 金融4業種（参考） … {_c22.get('f', '—')}")
+            print("  （外したのは「新しく買ってよい範囲」だけ。PBRの順位・業界首位級の判定は、銀行を含めたまま）")
+            print("  （どの結果でも、本番のルールは変えない）")
+            # 3. 並走記録で使う幅（記録を始める前に決めておく）
+            #   毎月末を始まりにして、その日に全額で買い始めた場合（資金投入0か月）の、3・6・12・24か月後の評価額の伸びを、
+            #   本番と ETF で比べる。差の10％点・中央値・90％点を、並走記録の「過去にあった範囲」とする。
+            #   並走記録で、始めてからの差が10％点を下回ったら「過去にはあまりなかった負け方」として知らせる（ルールは変えない）。
+            _hz = [h_ for h_ in BAND_MONTHS]
+            _dl = sorted(pd.Timestamp(d) for d in _pn["date"].unique())
+            _bst = [i_ for i_ in range(len(_dl)) if i_ + max(_hz) < len(_dl)]
+            _bce = [c_ for c_ in ("1489", "1306") if c_ in _ex]
+            if _bst and _bce:
+                log.info("22回目 3：並走記録で使う幅（%d通りの始まり × %dか月）", len(_bst), max(_hz))
+                _brows = []
+                for j_, i_ in enumerate(_bst):
+                    dts_ = _dl[i_:i_ + max(_hz) + 1]
+                    sub_ = _pn[(_pn["date"] >= dts_[0]) & (_pn["date"] <= dts_[-1])]
+                    cv_ = simulate(sub_, VARIANTS["live_small1_pit"], args.capital, mxs_[0], ramp=0, **_skw)["curve"]
+                    v_ = cv_["value"].to_numpy()
+                    row_ = {"始め": dts_[0]}
+                    for h_ in _hz:
+                        row_[("本番", h_)] = v_[h_] / args.capital - 1 if len(v_) > h_ else float("nan")
+                    for c_ in _bce:
+                        e_ = etf_hold(_ex[c_], dts_, args.capital, 0, dist=ETF_DIST[c_], **_kwe)
+                        if e_ is None:
+                            continue
+                        ev_ = e_["curve"]["value"].to_numpy()
+                        for h_ in _hz:
+                            row_[(c_, h_)] = ev_[h_] / args.capital - 1 if len(ev_) > h_ else float("nan")
+                    _brows.append(row_)
+                    if (j_ + 1) % 20 == 0 or j_ + 1 == len(_bst):
+                        log.info("  %d/%d 通りが完了", j_ + 1, len(_bst))
+                _bd = pd.DataFrame(_brows)
+                print(f"\n  3. 並走記録で使う幅（毎月末を始まりにして、その日に全額で買い始めた場合。評価額・配当込み。"
+                      f"{_dl[_bst[0]].date()}〜{_dl[_bst[-1]].date()}に始めた{len(_bst)}通り）")
+                print("    " + f"{'経過':<8}" + "".join(f"{'本番 − ' + _sh:>26}" for _sh in
+                                                    [{"1489": "高配当50", "1306": "TOPIX"}[c_] for c_ in _bce]))
+                print("    " + f"{'':<8}" + "".join(f"{'10％点':>9}{'中央':>8}{'90％点':>9}" for _ in _bce))
+                _band = {}
+                for h_ in _hz:
+                    line_ = "    " + f"{str(h_) + 'か月':<8}"
+                    for c_ in _bce:
+                        d_ = ((_bd[("本番", h_)] - _bd[(c_, h_)]) * 100).dropna()
+                        q_ = d_.quantile([0.1, 0.5, 0.9]).to_list() if len(d_) else [float("nan")] * 3
+                        _band.setdefault(c_, {})[str(h_)] = [round(float(x), 2) for x in q_]
+                        line_ += f"{q_[0]:>+8.1f}pt{q_[1]:>+6.1f}pt{q_[2]:>+7.1f}pt"
+                    print(line_)
+                print("    （差は、始めてからの評価額の伸びの差。並走記録で、差が10％点を下回ったら"
+                      "「過去にはあまりなかった負け方」として知らせる）")
+                try:
+                    with open(OUTDIR / "bench_band.json", "w", encoding="utf-8") as f_:
+                        json.dump({"made_at": str(date.today()), "from": str(_dl[_bst[0]].date()),
+                                   "to": str(_dl[_bst[-1]].date()), "n": len(_bst), "band": _band},
+                                  f_, ensure_ascii=False, indent=1)
+                except Exception as e_:
+                    log.warning("並走記録の幅を書き出せませんでした: %s", e_)
 
         OUTDIR.mkdir(parents=True, exist_ok=True)
         gf.to_csv(OUTDIR / "grid.csv", index=False, encoding="utf-8-sig")
