@@ -112,6 +112,7 @@ on:
 
 permissions:
   contents: write
+  actions: write        # 20年分のキャッシュの古い控えを消すため（2026年10月18日に追加）
 
 jobs:
   run:
@@ -136,6 +137,7 @@ jobs:
       # 復元と保存を分け、失敗しても保存されるようにする。
       - name: キャッシュを復元
         id: cache
+        if: ${{ !startsWith(github.event.inputs.only, 'long_') }}
         uses: actions/cache/restore@v4
         with:
           path: data/yield_backtest_cache.pkl
@@ -143,6 +145,17 @@ jobs:
           restore-keys: |
             yield-backtest-cache-v2-
             yield-backtest-cache-v1-
+
+      # 20年分（プレミアムプランで取ったもの）は、いまの9年分とは別のキャッシュに入れる（2026年10月18日に追加）。
+      # 「比較するルール」が long_ で始まるときだけ読む。プレミアムを解約する前に long-cleanup で消す。
+      - name: 20年分のキャッシュを復元
+        if: ${{ startsWith(github.event.inputs.only, 'long_') }}
+        uses: actions/cache/restore@v4
+        with:
+          path: data/yield_backtest_long.pkl
+          key: yield-backtest-long-v1-
+          restore-keys: |
+            yield-backtest-long-v1-
 
       - name: バックテストを実行
         env:
@@ -177,12 +190,15 @@ jobs:
             ${{ github.event.inputs.realistic == 'true' && '--realistic' || '' }} \
             ${{ github.event.inputs.refetch == 'true' && '--refetch' || '' }} > run.log 2>&1
           code=$?
+          # Summary に出す長さ（バイト）。20年分の検証は結果の欄が約16KBあるので、長めに出す（2026年10月18日に変更）
+          n=14000
+          case "${{ github.event.inputs.only }}" in long_*) n=40000 ;; esac
           {
             echo "## バックテスト結果"
             echo ""
             if [ $code -ne 0 ]; then echo "**失敗しました（終了コード $code）**"; fi
             echo '```'
-            tail -c 14000 run.log
+            tail -c $n run.log
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           cat run.log
@@ -191,17 +207,40 @@ jobs:
       # 取得したデータを保存する。ここが肝心で、
       # 失敗した実行でも保存しないと、いつまでも取り直しになる。
       - name: キャッシュを保存
-        if: always()
+        if: ${{ always() && !startsWith(github.event.inputs.only, 'long_') }}
         uses: actions/cache/save@v4
         with:
           path: data/yield_backtest_cache.pkl
           key: yield-backtest-cache-v2-${{ github.run_id }}
 
+      - name: 20年分のキャッシュを保存
+        if: ${{ always() && startsWith(github.event.inputs.only, 'long_') && hashFiles('data/yield_backtest_long.pkl') != '' }}
+        uses: actions/cache/save@v4
+        with:
+          path: data/yield_backtest_long.pkl
+          key: yield-backtest-long-v1-${{ github.run_id }}
+
+      # 20年分は1回の保存が大きいので、新しい2つだけ残す（GitHub のキャッシュは全部で10GBまで。
+      # 超えると、使われていない古いものから消され、いまの9年分が消えることがある）
+      - name: 20年分の古い控えを整理する（新しい2つは残す）
+        if: ${{ always() && startsWith(github.event.inputs.only, 'long_') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ids=$(gh api "repos/${GITHUB_REPOSITORY}/actions/caches?key=yield-backtest-long-v1-&sort=created_at&direction=desc&per_page=100" \
+                --jq '.actions_caches[2:][] | .id' || true)
+          n=0
+          for id in $ids; do
+            gh api -X DELETE "repos/${GITHUB_REPOSITORY}/actions/caches/${id}" && n=$((n+1))
+          done
+          echo "20年分の古い控えを ${n} 個消しました。"
+
       - name: 結果をダウンロードできるようにする
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: yield-backtest-result
+          # 20年分の実行の結果は別の名前にする（long-cleanup でまとめて消せるように）
+          name: ${{ startsWith(github.event.inputs.only, 'long_') && 'yield-backtest-long-result' || 'yield-backtest-result' }}
           path: |
             data/yield_backtest.csv
             data/yield_backtest.json

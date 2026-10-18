@@ -1,0 +1,69 @@
+name: cache-keepalive
+
+# yield-backtest のキャッシュ（9年分の株価・財務・その時点の銘柄一覧）を守るための、週1回の見回り。
+#
+# GitHub のキャッシュには決まりが2つある（2026年10月時点）。
+#   ・最後に使ってから7日たつと消される
+#   ・リポジトリ全体で10GBを超えると、使われていない古いものから消される
+# yield-backtest を1週間回さないと、取り直しに何回もかかるデータが消えてしまう。
+# そこで、週に1回キャッシュを読み込んで「使った」ことにし、あわせて古い控え（同じデータの過去の保存分）を整理する。
+# 株価のデータは読み込むだけで、何も書き換えない。
+# プレミアムの20年分（yield-backtest-long-…）があれば、それも読み込んで7日で消えないようにする（整理・消去はしない）。
+on:
+  schedule:
+    - cron: "17 3 * * 1"      # 毎週月曜 12:17（日本時間）
+  workflow_dispatch:
+
+permissions:
+  actions: write              # 古い控えを消すため
+  contents: read
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: キャッシュを読み込む（使ったことにして、7日で消えないようにする）
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: data/yield_backtest_cache.pkl
+          key: yield-backtest-cache-v2-
+          restore-keys: |
+            yield-backtest-cache-v2-
+
+      # プレミアムの20年分（あれば）も読み込んで、加入中に7日で消えないようにする。消すのは long-cleanup だけ
+      - name: 20年分のキャッシュも読み込む（あれば）
+        id: longcache
+        uses: actions/cache/restore@v4
+        with:
+          path: data/yield_backtest_long.pkl
+          key: yield-backtest-long-v1-
+          restore-keys: |
+            yield-backtest-long-v1-
+
+      - name: 読み込めたか確かめる
+        run: |
+          if [ -f data/yield_backtest_cache.pkl ]; then
+            echo "読み込めました: $(du -h data/yield_backtest_cache.pkl | cut -f1)（${{ steps.cache.outputs.cache-matched-key }}）"
+          else
+            echo "::warning::キャッシュが見つかりませんでした。次の yield-backtest で取り直しになります。"
+          fi
+          if [ -f data/yield_backtest_long.pkl ]; then
+            echo "20年分も読み込めました: $(du -h data/yield_backtest_long.pkl | cut -f1)（プレミアムを解約する前に long-cleanup で消してください）"
+          fi
+
+      # 新しい順に5つだけ残し、それより古い控えを消す（どれも同じデータの、過去の保存分）。
+      # 読み込めなかった週は、何も消さない。
+      - name: 古い控えを整理する（新しい5つは残す）
+        if: steps.cache.outputs.cache-matched-key != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ids=$(gh api "repos/${GITHUB_REPOSITORY}/actions/caches?key=yield-backtest-cache-v2-&sort=created_at&direction=desc&per_page=100" \
+                --jq '.actions_caches[5:][] | .id')
+          n=0
+          for id in $ids; do
+            gh api -X DELETE "repos/${GITHUB_REPOSITORY}/actions/caches/${id}" && n=$((n+1))
+          done
+          echo "古い控えを ${n} 個消しました。"

@@ -1,0 +1,81 @@
+name: long-cleanup
+
+# プレミアムプランで取った20年分を消す（2026年10月18日に追加）。
+#
+# J-Quants の FAQ では、解約・プラン変更のあとは、取ったデータと、そのコピー、元のデータに戻せる加工物を
+# 消すことになっている。プレミアムからスタンダードに戻す前に、これを1回動かす。
+#   消すもの … 20年分のキャッシュ（yield-backtest-long-v1-…）と、20年分の実行の結果ファイル（yield-backtest-long-result）
+#   消さないもの … いまの9年分のキャッシュ（スタンダードで取ったもの）と、ふだんの実行の結果
+# 動かし方 … Actions → long-cleanup → Run workflow → 確認の欄に「消す」と入れて実行
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "本当に消すなら「消す」と入力（20年分のキャッシュと、20年分の実行の結果ファイルを消します）"
+        required: true
+        default: ""
+
+permissions:
+  actions: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: 確認
+        run: |
+          if [ "${{ github.event.inputs.confirm }}" != "消す" ]; then
+            echo "::error::確認の欄に「消す」と入っていないので、何も消していません。"
+            exit 1
+          fi
+
+      - name: 20年分のキャッシュを消す
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          n=0
+          for round in 1 2 3; do
+            ids=$(gh api "repos/${GITHUB_REPOSITORY}/actions/caches?key=yield-backtest-long-&per_page=100" --jq '.actions_caches[].id')
+            [ -z "$ids" ] && break
+            for id in $ids; do
+              gh api -X DELETE "repos/${GITHUB_REPOSITORY}/actions/caches/${id}" && n=$((n+1))
+            done
+          done
+          echo "20年分のキャッシュを ${n} 個消しました。"
+
+      - name: 20年分の実行の結果ファイルを消す
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          n=0
+          for round in 1 2 3; do
+            ids=$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=yield-backtest-long-result&per_page=100" --jq '.artifacts[].id')
+            [ -z "$ids" ] && break
+            for id in $ids; do
+              gh api -X DELETE "repos/${GITHUB_REPOSITORY}/actions/artifacts/${id}" && n=$((n+1))
+            done
+          done
+          echo "20年分の実行の結果ファイルを ${n} 個消しました。"
+
+      - name: 残っていないか確かめる
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          c=$(gh api "repos/${GITHUB_REPOSITORY}/actions/caches?key=yield-backtest-long-&per_page=100" --jq '.total_count')
+          a=$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=yield-backtest-long-result&per_page=100" --jq '.total_count')
+          echo "残っている20年分のキャッシュ: ${c} 個 ／ 結果ファイル: ${a} 個"
+          {
+            echo "## 20年分の消去"
+            echo ""
+            echo "- 残っている20年分のキャッシュ: ${c} 個"
+            echo "- 残っている20年分の実行の結果ファイル: ${a} 個"
+            if [ "$c" = "0" ] && [ "$a" = "0" ]; then
+              echo ""
+              echo "すべて消えました。J-Quants をスタンダードに戻して構いません。"
+            else
+              echo ""
+              echo "**まだ残っています。もう一度実行してください。**"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$c" != "0" ] || [ "$a" != "0" ]; then exit 1; fi
