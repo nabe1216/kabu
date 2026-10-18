@@ -89,12 +89,19 @@ UNI_SCALE = None                 # 各月の規模区分 {"YYYY-MM": {code: Scal
 #   出どころ … 野村アセットマネジメント NEXT FUNDS の各ETFのページ（nextfunds.jp/lineup/1306/ ・1321/ ・1489/、2026年10月17日に確認）。
 #   金額は「100口あたり・受益権の分割の影響を除いた額（いまの口数の基準）」。1306・1321 は kabuhai-db.jp の値とも一致した。
 #   分割（1306 は2026年4月1日・1321 は2026年10月7日・1489 は2024年1月19日）は、株価も分配金も同じ基準に揃っている。
+#   2005〜2016年の分（長い期間の検証で使う）も、同じページの表から写した（2026年10月18日。2回取って同じ値を確認）。
 ETF_LIST = (("1306", "TOPIX（1306）"), ("1321", "日経225（1321）"), ("1489", "日経高配当株50（1489）"))
 ETF_DIST = {
-    "1306": (("2017-07-10", 260), ("2018-07-10", 305), ("2019-07-10", 333), ("2020-07-10", 329),
+    "1306": (("2005-07-10", 151.4), ("2006-07-10", 140.5), ("2007-07-10", 160), ("2008-07-10", 194.4),
+             ("2009-07-10", 188), ("2010-07-10", 161), ("2011-07-10", 207), ("2012-07-10", 151),
+             ("2013-07-10", 194), ("2014-07-10", 206), ("2015-07-10", 230), ("2016-07-10", 273),
+             ("2017-07-10", 260), ("2018-07-10", 305), ("2019-07-10", 333), ("2020-07-10", 329),
              ("2021-07-10", 366), ("2022-07-10", 464), ("2023-07-10", 521), ("2024-07-10", 579),
              ("2025-07-10", 695), ("2026-07-10", 790)),
-    "1321": (("2017-07-08", 286), ("2018-07-08", 350), ("2019-07-08", 409), ("2020-07-08", 389),
+    "1321": (("2005-07-08", 59.7), ("2006-07-08", 80.1), ("2007-07-08", 116), ("2008-07-08", 201.8),
+             ("2009-07-08", 206), ("2010-07-08", 153), ("2011-07-08", 138), ("2012-07-08", 146),
+             ("2013-07-08", 187), ("2014-07-08", 199), ("2015-07-08", 230), ("2016-07-08", 269),
+             ("2017-07-08", 286), ("2018-07-08", 350), ("2019-07-08", 409), ("2020-07-08", 389),
              ("2021-07-08", 365), ("2022-07-08", 497), ("2023-07-08", 576), ("2024-07-08", 617),
              ("2025-07-08", 723), ("2026-07-08", 812)),
     "1489": (("2017-04-07", 1476.67), ("2017-07-07", 206.67), ("2017-10-07", 1590), ("2018-01-07", 246.67),
@@ -111,6 +118,34 @@ ETF_DIST = {
 BANK_SECTORS = {"銀行業"}                                                  # 22回目：銀行
 FIN_SECTORS = {"銀行業", "保険業", "証券、商品先物取引業", "その他金融業"}      # 22回目：金融（参考）
 BAND_MONTHS = (3, 6, 12, 24)     # 22回目：並走記録で使う幅を出す経過月数
+# 長い期間の検証（プレミアムプランの20年分。2026年10月18日に追加）
+#   20年分は、いまの9年分とは別のキャッシュ（LONG_CACHE）に入れる。株価は使う項目だけを詰めた配列にし、
+#   財務は使う項目だけを残す（メモリを抑えるため）。プレミアムを解約する前に、20年分のキャッシュは消す
+#   （J-Quants の FAQ：解約・プラン変更のあとは、取ったデータと、元のデータに戻せる加工物を消す）。
+LONG_MODE = False
+LONG_CACHE = OUTDIR / "yield_backtest_long.pkl"
+LONG_YEARS = (20, 19)            # さかのぼる年数（プレミアムは「20年前まで」）。どちらも弾かれたら、プレミアムではない
+LONG_PIT_FROM = "2006-01"        # その時点の銘柄一覧を取り始める月
+LONG_OOS_END = "2018-07-31"      # 一度も見ていない期間の窓は、ここまでに終わるものだけ（16〜22回目は2018年8月末から）
+LONG_RECENT_FROM = "2018-08-31"  # 16〜22回目と同じ期間（再現の確かめに使う）
+LONG_COVER = 0.80                # 一度も見ていない期間の始まり：ツールと同じ範囲の8割に、利回りと1株純資産がそろった最初の月末
+LONG_BH_REF = 10.5               # 19回目：最近の6期間で、ツールと同じ範囲を初日に全部買って放置した年率の平均
+LONG_COMPUTE_START_MIN = 60.0    # 20年分の計算を始めてよいのは、開始から何分までか（計算に40分ほどかかるため）
+LONG_LIVE_REF = 21.9             # 16〜22回目：最近の24条件で、本番の清算後年率の平均
+# 20年分の計算は、開始からこの分を過ぎたら、計算が済んだ条件までを20年分のキャッシュに残して止める（次の実行で続きから）。
+#   本物より少し多めの合成データ（一度でも一部・プライムにいた3,340社・20年）で、計算は約36分（直す前は約60分）、
+#   メモリは最大2.5GB、20年分のキャッシュは700MB（2026年10月18日に測った）。
+#   GitHub の計算機がそれより遅くても、180分の上限で強制終了されて何も残らない、ということが起きないようにする。
+LONG_STOP_MIN = float(os.environ.get("LONG_STOP_MIN", "140"))
+QUOTE_KEEP = (("AdjO", "f4"), ("AdjH", "f4"), ("AdjL", "f4"), ("AdjC", "f8"), ("AdjFactor", "f8"), ("AdjVo", "f4"))
+# 財務で使う項目（コードの中で読んでいる項目名をすべて入れる。足りないと、その項目が黙って空になる）
+STMT_KEEP = frozenset({
+    "Code", "DiscDate", "DiscTime", "DocType", "CurPerType", "CurPerSt", "CurPerEn", "CurFYSt", "CurFYEn",
+    "EPS", "BPS", "NP", "NetProfit", "Profit", "Eq", "Equity", "NetAssets", "TotalEquity",
+    "Sales", "NetSales", "Revenue", "ShOutFY", "ShOut", "SharesOutstanding",
+    "OP", "OpPrf", "OpProfit", "OperatingProfit", "EqAR", "PayoutRatioAnn",
+    "DivAnn", "FDivAnn", "NxFDivAnn", "Div2Q", "ResultDividendPerShare2ndQuarter",
+})
 LUCK_N_ALL = 20                  # 20回目：でたらめ（候補の中）を、期間ごとに何回回すか
 LUCK_N_TIER = 10                 # 20回目：でたらめ（Tier内）を、期間ごとに何回回すか
 ETF_YIELD_OK = (0.5, 8.0)        # 1年の分配金利回り（％）の中央値がこの外なら、口数の基準が株価と合っていないとみて使わない
@@ -2406,6 +2441,51 @@ def pdate(s: Any) -> date | None:
         return None
 
 
+def compact_quotes(rows):
+    """長い期間の検証：株価を、使う項目だけの詰めた配列（numpy の構造化配列）にする。
+    pd.DataFrame(配列) で今までと同じ列名の表になるので、quotes_to_df・quotes_hl はそのまま使える。"""
+    if rows is None or isinstance(rows, np.ndarray) or len(rows) == 0:
+        return rows
+    dt = np.dtype([("Date", "datetime64[D]")] + list(QUOTE_KEEP))
+    a = np.zeros(len(rows), dtype=dt)
+    a["Date"] = np.array([str(r.get("Date"))[:10] for r in rows], dtype="datetime64[D]")
+    # 項目名のゆれ。quotes_to_df・quotes_hl・quotes_ohlcv と同じ順で探す
+    alias = {"AdjC": ("AdjC", "AdjustmentClose", "C", "Close"), "AdjFactor": ("AdjFactor", "AdjustmentFactor"),
+             "AdjO": ("AdjO", "AdjustmentOpen"), "AdjH": ("AdjH", "AdjustmentHigh"), "AdjL": ("AdjL", "AdjustmentLow"),
+             "AdjVo": ("AdjVo", "AdjustmentVolume", "Vo", "Volume")}
+    keys0 = set(rows[0].keys())
+    for k, _t in QUOTE_KEEP:
+        src = next((x for x in alias.get(k, (k,)) if x in keys0), k)
+        vals = [fnum(r.get(src)) for r in rows]
+        a[k] = np.array([np.nan if v is None else v for v in vals], dtype=float)
+    return a
+
+
+def prune_stmts(stmts):
+    """長い期間の検証：財務は、コードの中で使う項目（STMT_KEEP）だけを残す。"""
+    if not stmts:
+        return stmts
+    return [{k: v for k, v in st.items() if k in STMT_KEEP} for st in stmts]
+
+
+def q_dates(v) -> list[str]:
+    """株価の行（今までの形・詰めた形のどちらでも）の日付を 'YYYY-MM-DD' で返す。"""
+    if v is None or len(v) == 0:
+        return []
+    if isinstance(v, np.ndarray):
+        return [str(d)[:10] for d in v["Date"]]
+    return [str(r.get("Date"))[:10] for r in v if r.get("Date")]
+
+
+def q_last_date(v) -> str:
+    """株価の行の最後の日付（なければ空文字）。"""
+    if v is None or len(v) == 0:
+        return ""
+    if isinstance(v, np.ndarray):
+        return str(v["Date"][-1])[:10]
+    return str(v[-1].get("Date", ""))[:10]
+
+
 # 取得できた年数を覚えておく。1銘柄目で分かれば以降は無駄な試行をしない。
 _ok_years: int | None = None
 FETCH_CANDIDATES = (9, 8, 7, 5, 4, 3, 2)   # 上限は9年（調査済み）
@@ -2420,10 +2500,17 @@ def fetch_bars(jq: JQ, code: str, want_years: int) -> list[dict]:
     """
     global _ok_years
     today = date.today()
-    cands = [_ok_years] if _ok_years else \
-            [y for y in FETCH_CANDIDATES if y <= want_years] or [2]
+    if LONG_MODE:
+        cands = [_ok_years] if _ok_years else list(LONG_YEARS)
+    else:
+        cands = [_ok_years] if _ok_years else \
+                [y for y in FETCH_CANDIDATES if y <= want_years] or [2]
     for y in cands:
-        frm = (today - timedelta(days=365 * y + 30)).isoformat()
+        if LONG_MODE:
+            # 「20年前まで」の境目で弾かれないよう、少しだけ内側から取る
+            frm = (today - timedelta(days=int(365.25 * y) - 5)).isoformat()
+        else:
+            frm = (today - timedelta(days=365 * y + 30)).isoformat()
         try:
             rows = jq.get("/v2/equities/bars/daily",
                           {"code": code, "from": frm, "to": today.isoformat()})
@@ -2433,6 +2520,10 @@ def fetch_bars(jq: JQ, code: str, want_years: int) -> list[dict]:
             return rows
         except RangeTooLong:
             continue
+    if LONG_MODE and _ok_years is None:
+        sys.exit("■ 止めました：20年前までの株価が取れません（J-Quants から「期間が長すぎる」と返されました）。\n"
+                 "　 プレミアムプランに切り替わっていない可能性があります。J-Quants のサイトでプランを確かめ、"
+                 "APIキーが新しくなっていれば GitHub の Secrets（J_QUANTS_API_KEY）を置き換えてから、もう一度押してください。")
     return []
 
 
@@ -2452,7 +2543,7 @@ def save_store(store: dict, note: str = "") -> None:
 def _fetch_one(jq: JQ, code: str) -> tuple[list | None, list | None]:
     """1銘柄の株価と財務を取る。取れなければ例外。株価が空なら (None, None)。"""
     time.sleep(API_SLEEP)
-    q = fetch_bars(jq, code, 9)   # いつでも上限まで取っておく
+    q = fetch_bars(jq, code, LONG_YEARS[0] if LONG_MODE else 9)   # いつでも上限まで取っておく
     if not q:
         return None, None
     time.sleep(API_SLEEP)
@@ -2461,6 +2552,8 @@ def _fetch_one(jq: JQ, code: str) -> tuple[list | None, list | None]:
     except NotAllowed:
         st = []                   # 契約に含まれない。財務なしとして扱う
     # それ以外の失敗は例外のまま返す。財務だけ欠けた銘柄を混ぜず、次の実行で取り直す
+    if LONG_MODE:
+        q, st = compact_quotes(q), prune_stmts(st)
     return q, st
 
 
@@ -2575,10 +2668,7 @@ def _pit_months(store: dict) -> list[pd.Timestamp]:
     """株価のある営業日から、各月の最後の営業日を出す（PIT_FROM 以降）。"""
     ds = set()
     for code in list(store.get("quotes", {}))[:60]:
-        for r in store["quotes"][code]:
-            d = r.get("Date")
-            if d:
-                ds.add(str(d)[:10])
+        ds.update(q_dates(store["quotes"][code]))
     if not ds:
         return []
     s_ = pd.Series(pd.to_datetime(sorted(ds)))
@@ -2736,6 +2826,17 @@ def add_uni_columns(panel: pd.DataFrame) -> pd.DataFrame:
             slook[k] = UNI_SCALE[prev[-1]] if prev else {}
         panel["scale_pit"] = [slook[k].get(c, "") for c, k in zip(panel["code"], mk)]
         panel["in_uni_live"] = panel["in_uni_pit"].to_numpy() & panel["scale_pit"].isin(LIVE_SCALES).to_numpy()
+        # 長い期間の検証（2026年10月18日に追加）：古い月で規模区分が入っていない（空か「-」が半分を超える）ときは、
+        # その月は一部・プライム全部を範囲にする（範囲が空になって、一度も買えなくなるのを防ぐ）。今までの9年分では起きない
+        _has = ~panel["scale_pit"].fillna("").astype(str).str.strip().isin(["", "-"])
+        _pit = panel["in_uni_pit"].astype(bool)
+        _sh = _has[_pit].groupby(panel.loc[_pit, "date"]).mean()
+        _noscale = set(_sh[_sh < 0.5].index)
+        if _noscale:
+            _m = panel["date"].isin(_noscale).to_numpy()
+            panel.loc[_m, "in_uni_live"] = panel.loc[_m, "in_uni_pit"].astype(bool).to_numpy()
+            log.warning("  規模区分が入っていない月 … %dか月（%s〜%s）。その月は一部・プライム全部を範囲にしました",
+                        len(_noscale), min(_noscale).date(), max(_noscale).date())
         _pbr = pd.to_numeric(panel["price"], errors="coerce") / pd.to_numeric(panel["bps"], errors="coerce").where(
             pd.to_numeric(panel["bps"], errors="coerce") > 0)
         for col_, flag_ in (("pct_pbr_pit", "in_uni_pit"), ("pct_pbr_live", "in_uni_live")):
@@ -2749,6 +2850,8 @@ def add_uni_columns(panel: pd.DataFrame) -> pd.DataFrame:
             lead = ((rk <= 3) & (sec != "")).fillna(False).astype(bool)
             qual = panel["code"].isin(PROGRESSIVE | DOE)
             panel["tier_live_pit"] = np.where(lead & qual, "S", np.where(lead | qual, "A", "B"))
+            # 長い期間の検証：累進配当・DOEの一覧（いまの一覧＝後出し）を使わない Tier。業界首位級なら A、ほかは B
+            panel["tier_live_np"] = np.where(lead, "A", "B")
         # 22回目：銀行（金融）を買わなかったら。PBRの順位・Tier は銀行を含めたまま（買える範囲だけを狭める）
         _sec = panel["sector"].fillna("").astype(str) if "sector" in panel.columns else pd.Series("", index=panel.index)
         panel["in_uni_live_nobank"] = panel["in_uni_live"].to_numpy() & (~_sec.isin(BANK_SECTORS)).to_numpy()
@@ -2852,7 +2955,7 @@ def reconcile_live(panel: pd.DataFrame, cfg: dict, results_path, sim_kw: dict, t
     return out
 
 
-def print_dividend_table(res: dict, full: pd.DataFrame, capital: float, title: str) -> None:
+def print_dividend_table(res: dict, full: pd.DataFrame, capital: float, title: str):
     """15回目・16回目：1年ごとの配当（税引き後）と、前年末の持ち株のままでの1株配当の変化を出す。"""
     _dp = res["diag"]
     _dv = pd.Series(_dp.get("div_by_month", {}), dtype=float)
@@ -2899,6 +3002,7 @@ def print_dividend_table(res: dict, full: pd.DataFrame, capital: float, title: s
         _prev = (_dy[y_], full_y)
     print("    いちばん悪かった年 … 受け取った配当の前年比 " + (f"{_wt * 100:+.0f}％" if _wt is not None else "—")
           + " ／ 同じ株のままの1株配当 " + (f"{_wo * 100:+.1f}％" if _wo is not None else "—"))
+    return _wt, _wo
 
 
 def print_unfinished(store: dict, compute_only: bool) -> None:
@@ -2926,7 +3030,7 @@ def quotes_to_df(rows: list[dict]) -> pd.DataFrame:
     df = pd.DataFrame(rows)
     if df.empty or "Date" not in df.columns:
         return pd.DataFrame()
-    df["Date"] = pd.to_datetime(df["Date"])
+    df["Date"] = pd.to_datetime(df["Date"]).astype("datetime64[ns]")
     close = df.get("AdjC", df.get("AdjustmentClose", df.get("C", df.get("Close"))))
     adj = df.get("AdjFactor", df.get("AdjustmentFactor"))
     out = pd.DataFrame({"date": df["Date"],
@@ -3250,6 +3354,7 @@ def add_fund_columns(store: dict, panel: pd.DataFrame) -> pd.DataFrame:
     eqr = panel["eqar"].where(panel["eqar"].isna() | (panel["eqar"] <= 1.5),
                               panel["eqar"] / 100)
     res = []
+    res_np = []            # 長い期間の検証：累進配当・DOEの一覧（いまの一覧＝後出し）で「10期減配なし」を通さない判定
     n_fail = []            # 満たしていない条件の数（2026年10月11日に追加。条件をゆるめる検証で使う）
     # 条件ごとの通過（2026年10月11日に追加。条件を1つずつ外す検証で使う）。判定できないものは通過扱い
     per_check = {k: [] for k in SCREEN_KEYS}
@@ -3272,10 +3377,12 @@ def add_fund_columns(store: dict, panel: pd.DataFrame) -> pd.DataFrame:
         checks = [div_ok, _tri(panel.at[i, "ok_sales"]), _tri(panel.at[i, "ok_op"]),
                   _tri(panel.at[i, "ok_np"]), pay_ok, eq_ok, val_ok]
         res.append(all(c is None or c for c in checks))
+        res_np.append(all(c is None or c for c in [_tri(panel.at[i, "ok_div"])] + checks[1:]))
         n_fail.append(sum(1 for c in checks if c is not None and not c))
         for k, c in zip(SCREEN_KEYS, checks):
             per_check[k].append(c is None or bool(c))
     panel["screen_pass"] = res
+    panel["screen_pass_np"] = res_np
     panel["screen_fail"] = n_fail
     for k in SCREEN_KEYS:
         panel["scr_" + k] = per_check[k]
@@ -3845,7 +3952,7 @@ def quotes_hl(rows: list[dict]) -> pd.DataFrame:
     df = pd.DataFrame(rows)
     if df.empty or "Date" not in df.columns:
         return pd.DataFrame()
-    df["Date"] = pd.to_datetime(df["Date"])
+    df["Date"] = pd.to_datetime(df["Date"]).astype("datetime64[ns]")
     close = pd.to_numeric(df.get("AdjC", df.get("AdjustmentClose", df.get("C", df.get("Close")))),
                           errors="coerce")
     hi = lo = None
@@ -4033,7 +4140,7 @@ def quotes_ohlcv(rows: list[dict]) -> pd.DataFrame:
     if hl.empty:
         return hl
     df = pd.DataFrame(rows)
-    df["Date"] = pd.to_datetime(df["Date"])
+    df["Date"] = pd.to_datetime(df["Date"]).astype("datetime64[ns]")
     close = pd.to_numeric(df.get("AdjC", df.get("AdjustmentClose", df.get("C", df.get("Close")))), errors="coerce")
     op = None
     for k in ("AdjO", "AdjustmentOpen"):
@@ -7289,11 +7396,66 @@ def income_share(dist_by_month: dict, curve: pd.DataFrame, capital: float, m0, m
     return out
 
 
+def long_windows(panel: pd.DataFrame, wl: int = 4):
+    """長い期間の検証の窓。作り方は結果を見る前に決めたもの。
+    一度も見ていない期間 … 始まり M0 は、その月のツールと同じ範囲（その時点の一部・プライムのうち、規模区分が Small 1 まで）の
+        LONG_COVER 以上の銘柄に、利回りと1株純資産がそろった最初の月末。M0 から1年ずつずらした wl 年の窓のうち、
+        LONG_OOS_END までに終わるもの ＋ M0〜LONG_OOS_END の通し。
+    最近 … 16〜22回目と同じ作り方（最後の月末から wl 年の窓を1年ずつ戻し、LONG_RECENT_FROM より前は作らない）＋ その通し。
+    返す値 … (M0, 一度も見ていない期間の窓, 最近の窓, 月ごとのそろい具合の表)"""
+    d1_ = pd.Timestamp(panel["date"].max())
+    oos_end = pd.Timestamp(LONG_OOS_END)
+    dates = sorted(pd.Timestamp(d) for d in panel["date"].unique())
+    rows = []
+    for d in dates:
+        k = d.strftime("%Y-%m")
+        prev = [x for x in sorted(UNI_HIST or {}) if x <= k]
+        mem = (UNI_HIST or {}).get(prev[-1], set()) if prev else set()
+        sprev = [x for x in sorted(UNI_SCALE or {}) if x <= k]
+        sc = (UNI_SCALE or {}).get(sprev[-1], {}) if sprev else {}
+        n_live = sum(1 for c in mem if sc.get(c, "") in LIVE_SCALES)
+        rows.append({"date": d, "一覧": len(mem), "範囲": n_live})
+    cov = pd.DataFrame(rows).set_index("date")
+    if "in_uni_live" in panel.columns:
+        p_ = panel[panel["in_uni_live"].astype(bool)]
+        okm = p_["yield"].notna()
+        if "bps" in p_.columns:
+            okm &= pd.to_numeric(p_["bps"], errors="coerce") > 0
+        cov["そろった"] = okm.groupby(p_["date"]).sum().reindex(cov.index).fillna(0).astype(int)
+    else:
+        cov["そろった"] = 0
+    cov["割合"] = (cov["そろった"] / cov["範囲"].where(cov["範囲"] > 0)).fillna(0.0)
+    m0 = None
+    for d, r in cov.iterrows():
+        if r["割合"] >= LONG_COVER and d + pd.DateOffset(years=2) <= oos_end:
+            m0 = d
+            break
+    old = []
+    if m0 is not None:
+        st_ = m0
+        while st_ + pd.DateOffset(years=wl) <= oos_end:
+            old.append((st_, st_ + pd.DateOffset(years=wl)))
+            st_ = st_ + pd.DateOffset(years=1)
+        last_oos = max((d for d in dates if d <= oos_end), default=None)
+        if last_oos is not None and last_oos > m0:
+            old.append((m0, last_oos))
+    rec = []
+    d0r = pd.Timestamp(LONG_RECENT_FROM)
+    st_ = d1_ - pd.DateOffset(years=wl)
+    while st_ >= d0r:
+        rec.append((st_, st_ + pd.DateOffset(years=wl)))
+        st_ = st_ - pd.DateOffset(years=1)
+    rec.reverse()
+    if d1_ > d0r:
+        rec.append((d0r, d1_))
+    return m0, old, rec, cov
+
+
 def etf_ready(etf_px: dict, quotes: dict, d0) -> tuple[dict, pd.Timestamp, list]:
     """20回目・21回目：19回目と同じ確かめ（株の最後の日に揃える・期間の初めにある・分配金利回りの桁）をして、
     使えるETFの株価だけを返す。使えなかったものは理由を notes に入れる。"""
-    qlast = max((pd.Timestamp(str(v[-1].get("Date", ""))[:10]) for v in list(quotes.values())[:200]
-                 if v and v[-1].get("Date")), default=None)
+    qlast = max((pd.Timestamp(q_last_date(v)) for v in list(quotes.values())[:200]
+                 if q_last_date(v)), default=None)
     out, notes = {}, []
     for c_, n_ in ETF_LIST:
         px_ = etf_px.get(c_)
@@ -7333,6 +7495,7 @@ def code_gains(res: dict, sub: pd.DataFrame) -> pd.Series:
 
 # ══════════════════════════════════════════
 def main() -> int:
+    global LONG_MODE, CACHE, PIT_FROM, COMPUTE_START_LIMIT_MIN
     # 結果（print）と進み具合（log）の順番を、ファイルに書き出したときも崩さない。
     # 書き出し先がファイルだと print はためてから書かれるため、
     # 「続けて総当たりを回します」が表の途中に割り込むことがあった（2026年10月11日）。
@@ -7484,6 +7647,21 @@ def main() -> int:
     # 19回目（2026年10月17日に追加）：いまの本番と、ETF（TOPIX・日経225・日経高配当株50）を買って持ち続けた場合を比べる
     # 20回目（2026年10月17日に追加）：運（同じ候補からでたらめに選ぶ）・偏り（儲けの大きかった銘柄を抜く）・始めた月ごと
     # 21回目（2026年10月17日に追加）：近い設定（PBRの範囲・利回りの足切り・銘柄数を1つずつずらす）でも同じくらい出るか
+    # 長い期間の検証（2026年10月18日に追加）：プレミアムプランの20年分で、一度も見ていない期間（2008年ごろ〜2018年7月）を確かめる。
+    #   20年分は別のキャッシュ（data/yield_backtest_long.pkl）に入れ、いまの9年分には触らない。
+    #   取り終わっていなければ取得から始める（途中で止まったら、同じ設定でもう一度押す）。
+    args.long_test = False
+    if (args.only or "").strip() == "long_test":
+        args.long_test, args.liq_metric, args.grid = True, True, True
+        args.only = "live_small1_pit,live_nobank"
+        args.universe = "prime"
+        args.years = 20
+        LONG_MODE = True
+        CACHE = LONG_CACHE
+        PIT_FROM = LONG_PIT_FROM
+        # 20年分の計算は40分ほどかかる。取得のあとに始めるのは、開始から60分までに限る。
+        # 計算の途中でも、開始から LONG_STOP_MIN 分を過ぎたら、済んだ条件を残して止まる（180分の上限で全部消えないように）
+        COMPUTE_START_LIMIT_MIN = min(COMPUTE_START_LIMIT_MIN, LONG_COMPUTE_START_MIN)
     # 22回目（2026年10月17日に追加）：業種ごとの儲けと、銀行（金融）を買わなかった場合の 1489 との差
     args.sector_test = False
     if (args.only or "").strip() == "sector_test":
@@ -7589,7 +7767,7 @@ def main() -> int:
     #   いまの一覧・その時点の一覧のデータ（quotes・x_quotes）には混ぜず、別の場所（etf_quotes）に入れる。
     _etf_px = {}
     if getattr(args, "etf_test", False) or getattr(args, "luck_test", False) or getattr(args, "near_test", False) \
-            or getattr(args, "sector_test", False):
+            or getattr(args, "sector_test", False) or getattr(args, "long_test", False):
         _eq = store.setdefault("etf_quotes", {})
         key = os.environ.get("J_QUANTS_API_KEY")
         if key:
@@ -7616,10 +7794,12 @@ def main() -> int:
 
     # ── 15回目：その時点の銘柄一覧と、いまの一覧にない銘柄のデータ ──
     global DELIST_EXIT, UNI_HIST, UNI_NOW, UNI_SCALE
+    _long_raw = None
     _need_scale = (getattr(args, "live_check", False) or getattr(args, "rot_live", False)
                    or getattr(args, "cap_test", False) or getattr(args, "etf_test", False)
                    or getattr(args, "luck_test", False) or getattr(args, "near_test", False)
-                   or getattr(args, "sector_test", False))
+                   or getattr(args, "sector_test", False)
+                   or getattr(args, "long_test", False))
     if getattr(args, "survivor_test", False) or _need_scale:
         if not store.get("pit_complete") or (_need_scale and not store.get("pit_scale_complete")):
             key = os.environ.get("J_QUANTS_API_KEY")
@@ -7644,6 +7824,8 @@ def main() -> int:
         _nx = len([c for c in store.get("x_quotes", {}) if c not in UNI_NOW])
         log.info("15回目：いまの一覧 %d銘柄 ＋ その時点の一覧にだけある銘柄 %d銘柄（株価が取れなかった %d銘柄）で回します",
                  len(UNI_NOW), _nx, len(store.get("x_nodata", [])))
+        if getattr(args, "long_test", False):
+            _long_raw = store      # 計算の途中で止めるときに保存する、元の形のデータ（合わせたほうは保存しない）
         store = merge_pit_store(store)
         DELIST_EXIT = True
 
@@ -9283,6 +9465,15 @@ def main() -> int:
                 wins.append(_wr)
                 _eye_spans[1].append(f"{_wr[0].date()}〜{_wr[1].date()}")
 
+        # 長い期間の検証：窓は long_windows の作り方（結果を見る前に決めたもの）に差し替える
+        _long_spans, _long_m0, _long_cov = ([], []), None, None
+        if getattr(args, "long_test", False):
+            _long_m0, _ow, _rw, _long_cov = long_windows(panel, wl)
+            wins = _ow + _rw
+            _long_spans = ([f"{a.date()}〜{b.date()}" for a, b in _ow], [f"{a.date()}〜{b.date()}" for a, b in _rw])
+            log.info("長い期間の検証：一度も見ていない期間の窓 %d（始まり %s）・最近の窓 %d",
+                     len(_ow), _long_m0.date() if _long_m0 is not None else "作れず", len(_rw))
+
         total = len(ramps) * len(mys) * len(wins) * len(lbs_) * len(mxs_)
         log.info("総当たり：期間%d × 資金投入%d × 足切り%d × 分位%d × 保有上限%d"
                  " = %d条件 × ルール%d = %d回",
@@ -9309,6 +9500,36 @@ def main() -> int:
             panels[lb_] = _panel_for(lb_) if lb_ != args.lookback else panel
             log.info("  分位%dか月のパネル … %d件", lb_, len(panels[lb_]))
 
+        # 長い期間の検証（2026年10月18日に追加）：計算が済んだ条件を20年分のキャッシュに残し、
+        #   開始から LONG_STOP_MIN 分を過ぎたら止めて、次の実行で続きから計算する（180分の上限で全部消えないように）。
+        #   設定・データ・このプログラムが前回と1文字でも違えば、残した分は使わずに最初から計算する。
+        _ck, _ck_work = None, [0]
+        _bh_memo = {}
+        if getattr(args, "long_test", False) and _long_raw is not None:
+            _fp = repr((zlib.crc32(Path(__file__).read_bytes()), ramps, mys, lbs_, mxs_, nm, args.capital, args.tax,
+                        args.slip_bps, args.fee_bps, bool(args.realistic),
+                        [(str(a_.date()), str(b_.date())) for a_, b_ in wins], len(panel),
+                        str(pd.Timestamp(panel["date"].min()).date()), str(pd.Timestamp(panel["date"].max()).date())))
+            _ck = _long_raw.get("long_ckpt")
+            if not isinstance(_ck, dict) or _ck.get("fp") != _fp:
+                _ck = {"fp": _fp, "grid": {}, "np": {}}
+            elif _ck["grid"] or _ck["np"]:
+                log.info("長い期間の検証：前回の続きから計算します（計算済み … 総当たり %d / %d条件・後出しなし %d条件）",
+                         len(_ck["grid"]), total, len(_ck["np"]))
+            _long_raw["long_ckpt"] = _ck
+
+        def _long_stop(where: str) -> bool:
+            """開始から LONG_STOP_MIN 分を過ぎていたら、計算が済んだ条件を保存して止める（止めたら True）。
+            この実行でまだ1つも計算していなければ止めない（何度押しても進まない、を避ける）。"""
+            if _ck is None or _ck_work[0] == 0 or _elapsed_min() < LONG_STOP_MIN:
+                return False
+            save_store(_long_raw, "長い期間の検証：計算が済んだ条件を保存しました")
+            print("\n■ まだ終わっていません（計算の途中で、180分の上限が近づいたので止めました）")
+            print(f"　 計算が済んだ条件（総当たり {len(_ck['grid'])} / {total}条件・後出しなし {len(_ck['np'])}条件）は保存しました"
+                  f"（{where}・開始から{_elapsed_min():.0f}分）。")
+            print("　 同じ設定のまま、もう一度「Run workflow」を押してください。続きから計算します。")
+            return True
+
         for lb_ in lbs_:
           pnl = panels[lb_]
           for a, b in wins:
@@ -9319,7 +9540,21 @@ def main() -> int:
             for mx_ in mxs_:
               for rp in ramps:
                 for my in mys:
-                    bh_ = buy_and_hold(sub, args.tax / 100.0)
+                    _ckey = (lb_, span, mx_, rp, my)
+                    if _ck is not None and _ckey in _ck["grid"]:
+                        rows_.extend(_ck["grid"][_ckey])         # 前回の実行で計算が済んだ条件
+                        done += 1
+                        if done % 5 == 0 or done == total:
+                            log.info("  %d/%d 条件が完了（前回の実行の分を含む）", done, total)
+                        continue
+                    if _long_stop(f"総当たり {done}/{total}条件まで"):
+                        return EXIT_UNFINISHED
+                    _n0 = len(rows_)
+                    # 全部買って放置の基準は、期間（と分位）だけで決まり、資金投入・足切り・保有上限では変わらない。
+                    # 期間ごとに1回だけ計算する（2026年10月18日。20年分では計算時間の半分以上をここが占めていた。数字は同じ）
+                    if (lb_, span) not in _bh_memo:
+                        _bh_memo[(lb_, span)] = buy_and_hold(sub, args.tax / 100.0)
+                    bh_ = _bh_memo[(lb_, span)]
                     base_mtm = bh_["年率"] if bh_ else float("nan")
                     base_r = (bh_.get("清算後年率", base_mtm) if _liq else base_mtm) if bh_ else float("nan")
                     _real_d = None
@@ -9426,6 +9661,9 @@ def main() -> int:
                                                      "底で買い": _rp_["diag"].get("swing_buys", 0)})
                         log.info("  ランダムな日の売り買い（%s） … %d通り完了（売りの割合 %.4f・買いの割合 %.4f）",
                                  span, PLACEBO_N, _ps, _pb)
+                    if _ck is not None:
+                        _ck["grid"][_ckey] = rows_[_n0:]
+                        _ck_work[0] += 1
                     done += 1
                     if done % 5 == 0 or done == total:
                         log.info("  %d/%d 条件が完了", done, total)
@@ -9436,6 +9674,57 @@ def main() -> int:
         gf = pd.DataFrame(rows_)
         cond_cols = ["期間", "資金投入", "利回り足切り", "分位", "保有上限"]
         n_cond = gf.groupby(cond_cols).ngroups
+
+        # 長い期間の検証：重い計算（後出しなしの総当たり・暦年ごと・配当・銀行の割合）は、結果を出し始める前に済ませる
+        #   （2026年10月18日に変更。途中まで表を出してから止まらないように。計算の中身と数字は前と同じ）
+        _lpre = None
+        if getattr(args, "long_test", False) and nm and nm[0] == "live_small1_pit":
+            _lpre = {"np": {}}
+            _pn0 = panels[lbs_[0]]
+            _skw0 = dict(tier_budget=args.realistic, dividends=args.realistic, slip_bps=args.slip_bps,
+                         fee_bps=args.fee_bps, tax_rate=args.tax / 100.0, min_yield_override=mys[0])
+            _span0 = {f"{a_.date()}〜{b_.date()}": (a_, b_) for a_, b_ in wins}
+            _pnp0 = _pn0.assign(screen_pass=_pn0["screen_pass_np"], tier_live_pit=_pn0["tier_live_np"]) \
+                if {"screen_pass_np", "tier_live_np"} <= set(_pn0.columns) else None
+            _todo = [idx_ for idx_, _ in gf[gf["ルール"] == VARIANTS["live_small1_pit"]["label"]].groupby(cond_cols)]
+            log.info("長い期間の検証：後出しなしと ETF を回します（%d条件）", n_cond)
+            for idx_ in _todo:
+                sp_ = idx_[cond_cols.index("期間")]
+                if sp_ not in _span0 or _pnp0 is None:
+                    continue
+                _k = tuple(v_.item() if hasattr(v_, "item") else v_ for v_ in idx_)
+                if _ck is not None and _k in _ck["np"]:
+                    _lpre["np"][_k] = _ck["np"][_k]               # 前回の実行で計算が済んだ条件
+                    continue
+                if _long_stop(f"後出しなし {len(_ck['np']) if _ck is not None else 0}/{len(_todo)}条件まで"):
+                    return EXIT_UNFINISHED
+                a_, b_ = _span0[sp_]
+                sub_ = _pnp0[(_pnp0["date"] >= a_) & (_pnp0["date"] <= b_)]
+                _lpre["np"][_k] = metrics(simulate(sub_, VARIANTS["live_small1_pit"], args.capital, mxs_[0],
+                                                   ramp=int(idx_[cond_cols.index("資金投入")]), **_skw0))
+                if _ck is not None:
+                    _ck["np"][_k] = _lpre["np"][_k]
+                    _ck_work[0] += 1
+            if _long_stop("暦年ごと・配当の計算の前"):
+                return EXIT_UNFINISHED
+            # 暦年ごと（始まりから最後まで）・配当（一度も見ていない期間の通し）・銀行の割合（最近の通し）。どれも資金投入0か月
+            _os0, _rs0 = _long_spans
+            if _long_m0 is not None:
+                _lpre["rf"] = simulate(_pn0[_pn0["date"] >= _long_m0], VARIANTS["live_small1_pit"], args.capital,
+                                       mxs_[0], ramp=0, **_skw0)
+                if _pnp0 is not None:
+                    _lpre["rfn"] = simulate(_pnp0[_pnp0["date"] >= _long_m0], VARIANTS["live_small1_pit"], args.capital,
+                                            mxs_[0], ramp=0, **_skw0)
+            if _os0:
+                a_, b_ = _span0[_os0[-1]]
+                _lpre["ro"] = simulate(_pn0[(_pn0["date"] >= a_) & (_pn0["date"] <= b_)], VARIANTS["live_small1_pit"],
+                                       args.capital, mxs_[0], ramp=0, **_skw0)
+                if _rs0:
+                    a_, b_ = _span0[_rs0[-1]]
+                    _lpre["rr"] = simulate(_pn0[(_pn0["date"] >= a_) & (_pn0["date"] <= b_)], VARIANTS["live_small1_pit"],
+                                           args.capital, mxs_[0], ramp=0, **_skw0)
+            if _ck is not None and _ck_work[0] > 0:
+                save_store(_long_raw, "長い期間の検証：計算が済んだ条件を保存しました（もう一度押したときは、計算が済んだ分を使います）")
 
         print(f"\n■ 総当たり検証（{n_cond}条件 × {len(nm)}ルール）\n")
         print(f"　 期間 {len(wins)}通り ／ 資金投入 {ramps} か月 ／ "
@@ -9448,14 +9737,16 @@ def main() -> int:
                    or getattr(args, "live_check", False) or getattr(args, "rot_live", False)
                    or getattr(args, "cap_test", False) or getattr(args, "etf_test", False)
                    or getattr(args, "luck_test", False) or getattr(args, "near_test", False)
-                   or getattr(args, "sector_test", False))
+                   or getattr(args, "sector_test", False)
+                   or getattr(args, "long_test", False))
         _l10 = bool(getattr(args, "line_test", False))
         if _liq and (getattr(args, "robust_test", False) or getattr(args, "eye_test", False)
                      or getattr(args, "rot_test", False) or getattr(args, "survivor_test", False)
                      or getattr(args, "live_check", False) or getattr(args, "rot_live", False)
                      or getattr(args, "cap_test", False) or getattr(args, "etf_test", False)
                      or getattr(args, "luck_test", False) or getattr(args, "near_test", False)
-                     or getattr(args, "sector_test", False)):
+                     or getattr(args, "sector_test", False)
+                     or getattr(args, "long_test", False)):
             print("　 年率は「最後の月末に全部売って、約定のずれと税を払った後」（清算後）で出しています。\n")
         elif _liq:
             _rn = "11" if getattr(args, "safe_test", False) else "10"
@@ -9469,7 +9760,8 @@ def main() -> int:
                 or getattr(args, "live_check", False) or getattr(args, "rot_live", False)
                 or getattr(args, "cap_test", False) or getattr(args, "etf_test", False)
                 or getattr(args, "luck_test", False) or getattr(args, "near_test", False)
-                or getattr(args, "sector_test", False)):
+                or getattr(args, "sector_test", False)
+                or getattr(args, "long_test", False)):
             # ── 1. 基準に勝った割合 ──
             print("【全部買って放置に勝った割合】\n")
             print(f"{'ルール':<34}{'勝ち':>8}{'割合':>8}{'平均年率':>10}{'平均の差':>10}")
@@ -10737,7 +11029,7 @@ def main() -> int:
             if not _rc.get("ok"):
                 print(f"    {_rc.get('error', '突き合わせできませんでした')}")
             else:
-                _qd = max((str(v[-1].get("Date", ""))[:10] for v in list(store["quotes"].values())[:80] if v), default="")
+                _qd = max((q_last_date(v) for v in list(store["quotes"].values())[:80]), default="")
                 print(f"    日付 … 検証 {_qd}（キャッシュの最後の株価） ／ ツール {_rc['live_date']} ／ "
                       f"ツールの対象 {_rc['live_universe']}銘柄 ／ 買い方 {_rc['live_thresholds'].get('buy_mode', '')}")
                 print(f"    買える候補 … 検証 {_rc['bt_n']}銘柄 ／ ツール {_rc['lv_n']}銘柄 ／ 上位{_rc['top_n']}のうち同じ銘柄 "
@@ -10838,8 +11130,8 @@ def main() -> int:
             _dts_of = {sp_: sorted(_pn[(_pn["date"] >= a_) & (_pn["date"] <= b_)]["date"].unique())
                        for sp_, (a_, b_) in _span.items()}
             # 株の株価の最後の日（キャッシュの最後の日）に、ETFの株価の終わりを揃える（月末の日付は暦の月末なので）
-            _qlast = max((pd.Timestamp(str(v[-1].get("Date", ""))[:10]) for v in list(store["quotes"].values())[:200]
-                          if v and v[-1].get("Date")), default=pd.Timestamp(d1_))
+            _qlast = max((pd.Timestamp(q_last_date(v)) for v in list(store["quotes"].values())[:200]
+                          if q_last_date(v)), default=pd.Timestamp(d1_))
             print("\n  0. ETFのデータ（株価は J-Quants の分割調整後の終値、分配金は運用会社の公表値）")
             print(f"    株の株価の最後の日 … {_qlast.date()}（ETFもこの日までの株価で測る）")
             _use = []
@@ -11514,6 +11806,240 @@ def main() -> int:
                                   f_, ensure_ascii=False, indent=1)
                 except Exception as e_:
                     log.warning("並走記録の幅を書き出せませんでした: %s", e_)
+
+        # ── 長い期間の検証（2026年10月18日に追加。基準は結果を見る前に決めたもの。年率は清算後）──
+        #   データ … プレミアムプランの20年分（別のキャッシュ）。その時点の一部・プライムの一覧と規模区分も2006年から取る。
+        #   窓 … long_windows（一度も見ていない期間＝M0〜2018年7月の4年窓と通し ／ 最近＝16〜22回目と同じ6つ）× 資金投入4通り。
+        #   ルール … 本番（いまの買い方）／後出しなし（累進配当・DOEの一覧を使わない：10期減配なしは実際の配当で判定し、
+        #            Tier に S を作らない。一覧は2026年のもので、過去の時点では知り得ないため）／本番から銀行を外す
+        #   判定（一度も見ていない期間の条件で）：
+        #     J1 本番 − TOPIX（1306）… 本番が85％以上の条件で上回り、かつ平均 +1.0pt 以上 → 指数より良い ／
+        #        TOPIX が85％以上の条件で上回る → 指数に負ける ／ それ以外 → 決められない。
+        #        清算後と評価額で分類が分かれたら「決められない」。日経225（1321）も同じ基準で出す（参考）。
+        #     J2 後出しなし − TOPIX … J1 と同じ基準
+        #     J3 銀行を外す − TOPIX … J1 と同じ基準
+        #     J4 配当 … 資金投入0か月・一度も見ていない期間の通しで、「同じ株のままの1株配当」のいちばん悪かった年が
+        #        −10％より浅い → 固定収入に近い ／ −10〜−25％ → 減る年がある ／ −25％より深い → 固定収入とは言えない
+        #   データの確かめ：
+        #     J5 最近の6期間で、ツールと同じ範囲を初日に全部買って放置した年率の平均が、19回目の10.5％から ±0.5pt 以内 → 同じデータ。
+        #        外れたら「データがずれている」として、J1〜J4 は保留にする（原因を直してから回し直す）。
+        #   参考 … 最近の24条件の本番の平均（16〜22回目は21.9％。財務の履歴が長くなった分、8条件の判定は厳しくなりうる）、
+        #          後出しなしとの差（22回目までの数字がどれだけ底上げされていたか）、銀行の儲けの割合。
+        #   予想（結果を見る前に書いておく）：J1 決められない ／ J2 決められない ／ J3 決められない ／ J4 減る年がある ／ J5 同じデータ
+        if getattr(args, "long_test", False) and nm and nm[0] == "live_small1_pit":
+            L0, Lb = VARIANTS["live_small1_pit"]["label"], VARIANTS["live_nobank"]["label"]
+            Ln = "後出しなし（累進配当・DOEの一覧を使わない）"
+            Le = {"1306": "ETF：TOPIX（1306）", "1321": "ETF：日経225（1321）"}
+            _pn = panels[lbs_[0]]
+            _skw = dict(tier_budget=args.realistic, dividends=args.realistic, slip_bps=args.slip_bps,
+                        fee_bps=args.fee_bps, tax_rate=args.tax / 100.0, min_yield_override=mys[0])
+            _kwe = dict(tax_rate=args.tax / 100.0, slip_bps=args.slip_bps, fee_bps=args.fee_bps)
+            _ex, _ql, _notes = etf_ready(_etf_px, store["quotes"], _pn["date"].min())
+            _os, _rs = _long_spans
+            _span = {f"{a_.date()}〜{b_.date()}": (a_, b_) for a_, b_ in wins}
+            _oos_full = _os[-1] if _os else None
+            _rec_full = _rs[-1] if _rs else None
+            print("\n【長い期間の検証：プレミアムの20年分で、一度も見ていない期間を確かめる】（基準は結果を見る前に決めたもの。年率は清算後）")
+            print("  予想 … J1 決められない ／ J2 決められない ／ J3 決められない ／ J4 減る年がある ／ J5 同じデータ")
+
+            # 0. データの確かめ
+            print("\n  0. データの確かめ（各年12月。範囲＝その時点の一部・プライムのうち規模区分が Small 1 まで）")
+            print("    " + f"{'年':<6}{'一部・プライム':>9}{'範囲':>6}{'利回りと純資産がそろった':>14}")
+            if _long_cov is not None and not _long_cov.empty:
+                _cy = _long_cov.groupby(_long_cov.index.year).tail(1)
+                for d_, r_ in _cy.iterrows():
+                    print("    " + f"{d_.year:<6}{int(r_['一覧']):>12}{int(r_['範囲']):>7}{int(r_['そろった']):>10}社（{r_['割合'] * 100:>3.0f}％）")
+            if _long_m0 is not None:
+                print(f"    一度も見ていない期間の始まり … {_long_m0.date()}（範囲の{LONG_COVER * 100:.0f}％以上がそろった最初の月末） ／ "
+                      f"終わり … {LONG_OOS_END} ／ 窓 {len(_os)}つ")
+            else:
+                print(f"    一度も見ていない期間 … 範囲の{LONG_COVER * 100:.0f}％以上がそろう月が、{LONG_OOS_END}の2年前までにありませんでした（判定しない）")
+            for c_, n_ in (("1306", "TOPIX（1306）"), ("1321", "日経225（1321）")):
+                if c_ in _ex:
+                    _, _, by_ = etf_yield_check(_ex[c_], ETF_DIST.get(c_, ()))
+                    print(f"    {n_} の1年の分配金利回り（％） … " + "・".join(f"{y_} {v_:.1f}" for y_, v_ in sorted(by_.items())))
+                else:
+                    print(f"    {n_} … 使えない（{'・'.join(x for x in _notes if n_ in x) or '株価なし'}）")
+            # J5：再現の確かめ
+            _bh_r = []
+            for sp_ in _rs:
+                a_, b_ = _span[sp_]
+                bl_ = buy_and_hold(_pn[(_pn["date"] >= a_) & (_pn["date"] <= b_)], args.tax / 100.0, "in_uni_live", True)
+                if bl_:
+                    _bh_r.append(bl_["清算後年率"])
+            _bh_avg = float(np.mean(_bh_r)) if _bh_r else float("nan")
+            _j5 = (abs(_bh_avg - LONG_BH_REF) <= 0.5) if _bh_r else False
+            _g_rec = gf[(gf["ルール"] == L0) & gf["期間"].isin(_rs)]
+            print(f"    再現の確かめ（最近の{len(_bh_r)}期間） … ツールと同じ範囲を初日に全部買って放置 平均 {_bh_avg:.1f}％"
+                  f"（19回目は{LONG_BH_REF:.1f}％） → {'同じデータ（再現できた）' if _j5 else 'データがずれている（J1〜J4 は保留）'}")
+            if not _g_rec.empty:
+                print(f"    参考：最近の{len(_g_rec)}条件の本番 … 平均 {_g_rec['清算後年率'].mean():.1f}％（16〜22回目は{LONG_LIVE_REF:.1f}％。"
+                      "財務の履歴が長くなった分、8条件の判定は厳しくなりうる）")
+
+            # 後出しなし・ETF を、総当たりと同じ条件で回す（後出しなしは、結果を出し始める前に計算を済ませてある）
+            _pnp = _pnp0
+            _extra, _ecache = [], {}
+            for idx_, _g in gf[gf["ルール"] == L0].groupby(cond_cols):
+                sp_ = idx_[cond_cols.index("期間")]
+                rp_ = int(idx_[cond_cols.index("資金投入")])
+                if sp_ not in _span:
+                    continue
+                a_, b_ = _span[sp_]
+                base_ = dict(zip(cond_cols, idx_))
+                if _pnp is not None:
+                    m_ = _lpre["np"].get(tuple(v_.item() if hasattr(v_, "item") else v_ for v_ in idx_))
+                    if m_:
+                        _extra.append({**base_, "ルール": Ln, "年率": m_.get("清算後年率", m_["年率"]),
+                                       "清算後年率": m_.get("清算後年率", m_["年率"]), "評価額年率": m_["年率"],
+                                       "最大下落": m_["最大下落"]})
+                dts_ = sorted(_pn[(_pn["date"] >= a_) & (_pn["date"] <= b_)]["date"].unique())
+                for c_ in ("1306", "1321"):
+                    if c_ not in _ex:
+                        continue
+                    k_ = (c_, sp_, rp_)
+                    if k_ not in _ecache:
+                        _ecache[k_] = etf_hold(_ex[c_], dts_, args.capital, rp_, dist=ETF_DIST[c_], **_kwe)
+                    e_ = _ecache[k_]
+                    if e_:
+                        _extra.append({**base_, "ルール": Le[c_], "年率": e_["清算後年率"], "清算後年率": e_["清算後年率"],
+                                       "評価額年率": e_["年率"], "最大下落": e_["最大下落"]})
+            if _extra:
+                gf = pd.concat([gf, pd.DataFrame(_extra)], ignore_index=True)
+            _go = gf[gf["期間"].isin(_os)]
+            _pl = _go.pivot_table(index=cond_cols, columns="ルール", values="清算後年率")
+            _pm = _go.pivot_table(index=cond_cols, columns="ルール", values="評価額年率")
+
+            def _cat_l(d):
+                if d.empty:
+                    return "—"
+                if float((d > 0).mean()) >= 0.85 and float(d.mean()) >= 1.0:
+                    return "指数より良い"
+                if float((d < 0).mean()) >= 0.85:
+                    return "指数に負ける"
+                return "決められない（条件次第）"
+
+            # 1. 一度も見ていない期間
+            _jl = {}
+            if _os and not _go.empty:
+                n_c = _go[_go["ルール"] == L0].groupby(cond_cols).ngroups
+                print(f"\n  1. 一度も見ていない期間（{_os[0][:10]}〜{LONG_OOS_END}・窓{len(_os)}つ × 資金投入{len(ramps)}通り ＝ {n_c}条件）")
+                for L_, sh_ in ((L0, "本番"), (Ln, "後出しなし"), (Lb, "銀行を外す"), (Le["1306"], "TOPIX（1306）"),
+                                (Le["1321"], "日経225（1321）")):
+                    g_ = _go[_go["ルール"] == L_]
+                    if g_.empty:
+                        continue
+                    print(f"    {sh_:<14} … 平均 {g_['清算後年率'].mean():.1f}％・いちばん低い条件 {g_['清算後年率'].min():.1f}％ ／ "
+                          f"最大下落 平均 {g_['最大下落'].mean():.1f}％・いちばん深い {g_['最大下落'].max():.1f}％")
+                for key_, L_, sh_, e_ in (("J1", L0, "本番", "1306"), ("J1参考", L0, "本番", "1321"),
+                                          ("J2", Ln, "後出しなし", "1306"), ("J3", Lb, "銀行を外す", "1306")):
+                    if L_ not in _pl.columns or Le[e_] not in _pl.columns:
+                        continue
+                    d_ = (_pl[L_] - _pl[Le[e_]]).dropna()
+                    dm_ = (_pm[L_] - _pm[Le[e_]]).dropna()
+                    cl_, cm_ = _cat_l(d_), _cat_l(dm_)
+                    _jl[key_] = cl_ if cl_ == cm_ else f"決められない（清算後「{cl_}」・評価額「{cm_}」）"
+                    en_ = "TOPIX" if e_ == "1306" else "日経225"
+                    print(f"    {key_} {sh_} − {en_} … 平均 {d_.mean():+.1f}pt（{d_.min():+.1f}〜{d_.max():+.1f}pt） ／ 上回った "
+                          f"{(d_ > 0).mean() * 100:.0f}％ ／ 評価額 平均 {dm_.mean():+.1f}pt・上回った {(dm_ > 0).mean() * 100:.0f}％ → {_jl[key_]}")
+            else:
+                print("\n  1. 一度も見ていない期間 … 窓を作れなかったので判定しない")
+
+            # 2. 期間ごと（資金投入がいちばん短い条件）
+            _r0 = min(ramps)
+            _g0 = gf[gf["資金投入"] == _r0]
+            if not _g0.empty:
+                _pv = _g0.pivot_table(index="期間", columns="ルール", values="清算後年率")
+                _cols = [(L0, "本番"), (Ln, "後出しなし"), (Lb, "銀行抜き"), (Le["1306"], "TOPIX"), (Le["1321"], "日経225")]
+                _cols = [(L_, s_) for L_, s_ in _cols if L_ in _pv.columns]
+                print(f"\n  2. 期間ごと（資金投入{_r0}か月・清算後の年率。★は一度も見ていない期間）")
+                print("    " + f"{'期間':<25}" + "".join(f"{s_:>9}" for _, s_ in _cols))
+                for sp_ in _os + _rs:
+                    if sp_ not in _pv.index:
+                        continue
+                    print("    " + f"{('★' if sp_ in _os else ' ') + sp_:<25}"
+                          + "".join(f"{_pv.at[sp_, L_]:>8.1f}％" if pd.notna(_pv.at[sp_, L_]) else f"{'—':>9}" for L_, _ in _cols))
+
+            # 3. 暦年ごとの値動き（始まりから最後まで・資金投入0か月・評価額）
+            if _long_m0 is not None:
+                _subf = _pn[_pn["date"] >= _long_m0]
+                _dtf = sorted(_subf["date"].unique())
+                _rf = _lpre["rf"]
+                _yr = {"本番": year_returns(_rf["curve"], args.capital)}
+                if _pnp is not None:
+                    _rfn = _lpre["rfn"]
+                    _yr["後出しなし"] = year_returns(_rfn["curve"], args.capital)
+                for c_, s_ in (("1306", "TOPIX"), ("1321", "日経225")):
+                    if c_ in _ex:
+                        e_ = etf_hold(_ex[c_], _dtf, args.capital, 0, dist=ETF_DIST[c_], **_kwe)
+                        if e_:
+                            _yr[s_] = year_returns(e_["curve"], args.capital)
+                print(f"\n  3. 暦年ごとの値動き（{_long_m0.date()}から最後まで・資金投入0か月・評価額。配当・分配金を含む）")
+                print("    " + f"{'年':<8}" + "".join(f"{k_:>9}" for k_ in _yr))
+                _beat = {k_: [0, 0] for k_ in _yr if k_ in ("TOPIX", "日経225")}
+                for y_ in sorted(_yr["本番"]):
+                    line_ = "    " + f"{str(y_) + ('*' if y_ == _long_m0.year else ''):<8}"
+                    for k_, v_ in _yr.items():
+                        x_ = v_.get(y_)
+                        line_ += f"{x_:>+8.1f}％" if x_ is not None else f"{'—':>9}"
+                        if k_ in _beat and x_ is not None:
+                            _beat[k_][1] += 1
+                            _beat[k_][0] += int(_yr["本番"][y_] > x_)
+                    print(line_)
+                print("    本番が上回った年 … " + " ／ ".join(f"{k_} {w_}/{n_}年" for k_, (w_, n_) in _beat.items())
+                      + f"（*は{_long_m0.month}月末からの途中の年）")
+
+            # 4. 配当（一度も見ていない期間の通し・資金投入0か月）
+            _wo = None
+            if _oos_full:
+                a_, b_ = _span[_oos_full]
+                _sub_o = _pn[(_pn["date"] >= a_) & (_pn["date"] <= b_)]
+                _ro = _lpre["ro"]
+                _res_d = print_dividend_table(_ro, _sub_o, args.capital,
+                                              f"4. 配当（一度も見ていない期間の通し {_oos_full}・資金投入0か月・税引き後）")
+                _wo = (_res_d or (None, None))[1]
+                if _wo is None:
+                    _jl["J4"] = "判定できない（同じ株のままの1株配当を比べられる年がない）"
+                elif _wo >= -0.10:
+                    _jl["J4"] = "固定収入に近い"
+                elif _wo >= -0.25:
+                    _jl["J4"] = "減る年がある"
+                else:
+                    _jl["J4"] = "固定収入とは言えない"
+                print(f"    → {_jl['J4']}（基準：同じ株のままの1株配当のいちばん悪かった年が −10％より浅い／−10〜−25％／−25％より深い）")
+                # 5. 銀行の儲けの割合
+                _sec = _pn.sort_values("date").drop_duplicates("code", keep="last").set_index("code")["sector"].fillna("").to_dict()
+
+                def _bank_share(res_, sub_):
+                    g_ = code_gains(res_, sub_)
+                    tot_ = float(g_[g_ > 0].sum())
+                    bk_ = float(g_[[c for c in g_.index if _sec.get(c) in BANK_SECTORS]].sum())
+                    return (bk_ / tot_ if tot_ > 0 else float("nan")), int(sum(1 for c in g_.index if _sec.get(c) in BANK_SECTORS))
+                _bs_o = _bank_share(_ro, _sub_o)
+                _txt = f"一度も見ていない期間 {_bs_o[0] * 100:.0f}％（{_bs_o[1]}社）"
+                if _rec_full:
+                    a2_, b2_ = _span[_rec_full]
+                    _sub_r = _pn[(_pn["date"] >= a2_) & (_pn["date"] <= b2_)]
+                    _bs_r = _bank_share(_lpre["rr"], _sub_r)
+                    _txt += f" ／ 最近 {_bs_r[0] * 100:.0f}％（{_bs_r[1]}社。22回目は72％）"
+                print(f"\n  5. 儲け（値上がり益）のうち銀行の割合（通し・資金投入0か月） … {_txt}")
+            # 6. 後出しの底上げ
+            _pla = gf.pivot_table(index=cond_cols, columns="ルール", values="清算後年率")
+            if Ln in _pla.columns and L0 in _pla.columns:
+                _dd = (_pla[L0] - _pla[Ln]).dropna()
+                _do = _dd[[i_ for i_ in _dd.index if i_[cond_cols.index("期間")] in _os]]
+                _dr = _dd[[i_ for i_ in _dd.index if i_[cond_cols.index("期間")] in _rs]]
+                print(f"\n  6. 後出しの底上げ（本番 − 後出しなし） … 最近の{len(_dr)}条件 平均 {_dr.mean():+.1f}pt ／ "
+                      f"一度も見ていない期間の{len(_do)}条件 平均 {_do.mean():+.1f}pt")
+            # 総合
+            print("\n  総合（結果を見る前に決めた基準）")
+            _hold = "" if _j5 else "（保留：データがずれている）"
+            print(f"    J5 データ … {'同じデータ（再現できた）' if _j5 else 'データがずれている'}")
+            for key_, sh_ in (("J1", "本番 − TOPIX"), ("J2", "後出しなし − TOPIX"), ("J3", "銀行を外す − TOPIX"),
+                              ("J4", "配当")):
+                print(f"    {key_} {sh_} … {_jl.get(key_, '—')}{_hold if key_ in _jl else ''}")
+            if "J1参考" in _jl:
+                print(f"    参考 本番 − 日経225 … {_jl['J1参考']}{_hold}")
+            print("  （ここに出ている数字は、どれも株価に戻せない集計。20年分のキャッシュは、プレミアムを解約する前に long-cleanup で消す）")
 
         OUTDIR.mkdir(parents=True, exist_ok=True)
         gf.to_csv(OUTDIR / "grid.csv", index=False, encoding="utf-8-sig")
