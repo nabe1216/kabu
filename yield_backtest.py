@@ -132,6 +132,8 @@ LONG_COVER = 0.80                # 一度も見ていない期間の始まり：
 LONG_BH_REF = 10.5               # 19回目：最近の6期間で、ツールと同じ範囲を初日に全部買って放置した年率の平均
 LONG_COMPUTE_START_MIN = 60.0    # 20年分の計算を始めてよいのは、開始から何分までか（計算に40分ほどかかるため）
 LONG_LIVE_REF = 21.9             # 16〜22回目：最近の24条件で、本番の清算後年率の平均
+LONG_TOP_N = 1000                # 規模区分に Small 1 がない古い月：時価総額の上から何位までをツールの範囲に入れるか（2026年10月19日）
+LONG_S1_FILL = None              # その置き換えをした月の (月数, 最初, 最後, 1か月あたりの社数)。結果の「0. データの確かめ」に出す
 # 20年分の計算は、開始からこの分を過ぎたら、計算が済んだ条件までを20年分のキャッシュに残して止める（次の実行で続きから）。
 #   本物より少し多めの合成データ（一度でも一部・プライムにいた3,340社・20年）で、計算は約36分（直す前は約60分）、
 #   メモリは最大2.5GB、20年分のキャッシュは700MB（2026年10月18日に測った）。
@@ -2805,6 +2807,7 @@ def merge_pit_store(store: dict) -> dict:
 
 def add_uni_columns(panel: pd.DataFrame) -> pd.DataFrame:
     """15回目：in_uni_now（いまプライムにいる銘柄）と in_uni_pit（その月に一部・プライムにいた銘柄）を足す。"""
+    global LONG_S1_FILL
     if UNI_HIST is None or UNI_NOW is None or panel.empty:
         return panel
     panel = panel.copy()
@@ -2837,6 +2840,30 @@ def add_uni_columns(panel: pd.DataFrame) -> pd.DataFrame:
             panel.loc[_m, "in_uni_live"] = panel.loc[_m, "in_uni_pit"].astype(bool).to_numpy()
             log.warning("  規模区分が入っていない月 … %dか月（%s〜%s）。その月は一部・プライム全部を範囲にしました",
                         len(_noscale), min(_noscale).date(), max(_noscale).date())
+        # 長い期間の検証（2026年10月19日に追加。結果を見る前に決めた）：J-Quants の古い月の規模区分には「TOPIX Small 1」がなく、
+        #   2008年5月はツールの範囲が497社（Core30〜Mid400 だけ）だった。いまのツールの範囲（Small 1 まで＝規模の大きいほうから
+        #   約1,000社。2026年10月は966社）と大きさを揃えるため、2018年8月より前で Small 1 が1社もない月は、
+        #   「Core30〜Mid400 の会社 ＋ その月末の時価総額が一部・プライムの上から1,000位以内の会社」を範囲にする。
+        #   2018年8月からは16〜22回目と同じまま（再現の確かめ J5 を、同じ範囲で比べるため）。上の「全部を範囲にする」より優先する
+        LONG_S1_FILL = None
+        if LONG_MODE and "sh" in panel.columns:
+            _s1 = (panel["scale_pit"] == "TOPIX Small 1") & _pit
+            _n_s1 = _s1.groupby(panel["date"]).sum()
+            _nos1 = sorted(d_ for d_, n_ in _n_s1.items() if n_ == 0 and pd.Timestamp(d_) < pd.Timestamp(LONG_RECENT_FROM))
+            if _nos1:
+                _mc1 = pd.to_numeric(panel["price"], errors="coerce") * pd.to_numeric(panel["sh"], errors="coerce")
+                _mc1 = _mc1.where((_mc1 > 0) & _pit)
+                _rk1 = _mc1.groupby(panel["date"]).rank(ascending=False, method="first")
+                _big = panel["scale_pit"].isin(LIVE_SCALES - {"TOPIX Small 1"})
+                _new = _pit & (_big | (_rk1 <= LONG_TOP_N).fillna(False))
+                _m1 = panel["date"].isin(_nos1).to_numpy()
+                panel.loc[_m1, "in_uni_live"] = _new[_m1].astype(bool).to_numpy()
+                _avg = float(panel.loc[_m1].groupby("date")["in_uni_live"].sum().mean())
+                LONG_S1_FILL = (len(_nos1), pd.Timestamp(_nos1[0]), pd.Timestamp(_nos1[-1]), _avg,
+                                {pd.Timestamp(d_) for d_ in _nos1})
+                log.warning("  規模区分に Small 1 がない月（2018年8月より前） … %dか月（%s〜%s）。その月は Core30〜Mid400 ＋ "
+                            "時価総額の上から%d位までを範囲にしました（1か月あたり平均 %.0f社）",
+                            len(_nos1), pd.Timestamp(_nos1[0]).date(), pd.Timestamp(_nos1[-1]).date(), LONG_TOP_N, _avg)
         _pbr = pd.to_numeric(panel["price"], errors="coerce") / pd.to_numeric(panel["bps"], errors="coerce").where(
             pd.to_numeric(panel["bps"], errors="coerce") > 0)
         for col_, flag_ in (("pct_pbr_pit", "in_uni_pit"), ("pct_pbr_live", "in_uni_live")):
@@ -7416,6 +7443,13 @@ def long_windows(panel: pd.DataFrame, wl: int = 4):
         n_live = sum(1 for c in mem if sc.get(c, "") in LIVE_SCALES)
         rows.append({"date": d, "一覧": len(mem), "範囲": n_live})
     cov = pd.DataFrame(rows).set_index("date")
+    # 規模区分に Small 1 がなく、範囲を時価総額の順位で作り直した月は、作り直した範囲の社数にする（2026年10月19日）
+    if LONG_S1_FILL and "in_uni_live" in panel.columns:
+        _pl = panel[panel["in_uni_live"].astype(bool)]
+        _cnt = _pl.groupby(pd.to_datetime(_pl["date"])).size()
+        for d_ in LONG_S1_FILL[4]:
+            if d_ in cov.index:
+                cov.at[d_, "範囲"] = int(_cnt.get(d_, 0))
     if "in_uni_live" in panel.columns:
         p_ = panel[panel["in_uni_live"].astype(bool)]
         okm = p_["yield"].notna()
@@ -11854,6 +11888,10 @@ def main() -> int:
                       f"終わり … {LONG_OOS_END} ／ 窓 {len(_os)}つ")
             else:
                 print(f"    一度も見ていない期間 … 範囲の{LONG_COVER * 100:.0f}％以上がそろう月が、{LONG_OOS_END}の2年前までにありませんでした（判定しない）")
+            if LONG_S1_FILL:
+                _sn, _sa, _sb, _savg = LONG_S1_FILL[:4]
+                print(f"    規模区分に Small 1 がない月 … {_sn}か月（{_sa.date()}〜{_sb.date()}）。その月の範囲は Core30〜Mid400 ＋ "
+                      f"時価総額の上から{LONG_TOP_N:,}位まで（平均 {_savg:.0f}社。結果を見る前に決めた置き換え）")
             for c_, n_ in (("1306", "TOPIX（1306）"), ("1321", "日経225（1321）")):
                 if c_ in _ex:
                     _, _, by_ = etf_yield_check(_ex[c_], ETF_DIST.get(c_, ()))
