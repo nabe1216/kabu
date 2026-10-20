@@ -2232,6 +2232,28 @@ LAB6_R = (("R1", "lab6_rq_pbr", "PBRが安い側半分から外れたら売る",
           ("R6", "lab6_combo", "12月の損出し＋配当で買い増し", "lab_offset"))
 LAB6_RULES = (["live_small1_pit", "lab_offset"] + [r for _, r, _, _ in LAB6_R])
 
+# ══════════════════════════════════════════
+# 20年分の追加検証7：取引が効く局面（2026年10月21日に追加。long_lab〜long_lab6 の結果を見たあと、回す前に決めたもの。
+#   計画はプロジェクトの long_lab_plan_2026-10-19 の10）
+#   取引する形を2009年6月末から通しで回し、月ごとの「本番を上回った分」を、その月の初めに分かる相場の状態ごとに集める
+# ══════════════════════════════════════════
+LAB7_V = (("S1", "live_rot_small1", "上の線で売って回す（2年線）", "live_small1_pit"),
+          ("S3", "lab_swing2y", "2年線で売り買い", "live_small1_pit"),
+          ("S4", "lab_swing1y", "1年線で売り買い", "live_small1_pit"),
+          ("N3", "lab3_n_m", "60日線で売り買い（A・B）", "live_small1_pit"),
+          ("T1", "lab3_t_h2", "2年線で売り買い（S も）", "live_small1_pit"),
+          ("X5", "lab_tp50", "+50％で利確", "live_small1_pit"),
+          ("X6", "lab_stop20", "損切り20％", "lab_offset"),
+          ("R2", "lab6_rq_scr", "条件から外れたら入れ替える", "live_small1_pit"),
+          ("R4", "lab6_rotate", "もっと良い候補と入れ替える", "live_small1_pit"),
+          ("R5", "lab6_rebal", "年1回の揃え直し", "live_small1_pit"),
+          ("R6", "lab6_combo", "12月の損出し＋配当で買い増し", "lab_offset"))
+# 局面の分け方（その月の初め＝前の月末までの TOPIX（1306）の値動きだけで決める。結果を見る前に決めた）
+LAB7_SPLITS = (("動き", "上げ相場", "下げ相場"), ("幅", "横ばい", "はっきり動いた"), ("荒れ", "荒れている", "落ち着いている"))
+LAB7_FLAT = 0.10      # 1年の値動きがこの幅より小さければ横ばい
+LAB7_VOL = 0.20       # 過去63営業日の日々の値動きの大きさ（年率）がこれより大きければ荒れている
+LAB7_RULES = (["live_small1_pit", "lab_offset"] + [r for _, r, _, _ in LAB7_V])
+
 # 可変ルールの加減点。必要パーセンタイルを下げる＝買いやすくする。
 # 条件を増やすほど過去に合わせただけの数字になりやすいので、3つに絞っています。
 DYNAMIC_RULES = {
@@ -8623,6 +8645,118 @@ def lab6_report(gf: pd.DataFrame, cond_cols: list, oos: list, rec: list, pn: pd.
     return out
 
 
+def lab7_regimes(px: pd.Series, dates: list) -> pd.DataFrame:
+    """20年分の追加検証7：月末ごとの相場の状態（その月末までの TOPIX（1306）の値だけで決める）。
+    1年の値動き（12か月前の月末からの伸び）と、過去63営業日の日々の値動きの大きさ（年率）。"""
+    px = px.dropna().sort_index()
+    rows = []
+    for d in dates:
+        d = pd.Timestamp(d)
+        p_ = px[px.index <= d]
+        if p_.empty:
+            rows.append({"date": d, "r12": float("nan"), "vol": float("nan")})
+            continue
+        p0_ = px[px.index <= d - pd.DateOffset(months=12)]
+        r12 = float(p_.iloc[-1] / p0_.iloc[-1] - 1) if not p0_.empty and p0_.iloc[-1] > 0 else float("nan")
+        lr_ = np.log(p_.iloc[-64:]).diff().dropna()
+        vol = float(lr_.std() * np.sqrt(250)) if len(lr_) >= 40 else float("nan")
+        rows.append({"date": d, "r12": r12, "vol": vol})
+    df = pd.DataFrame(rows).set_index("date")
+    df["動き"] = np.where(df["r12"].isna(), None, np.where(df["r12"] > 0, "上げ相場", "下げ相場"))
+    df["幅"] = np.where(df["r12"].isna(), None, np.where(df["r12"].abs() < LAB7_FLAT, "横ばい", "はっきり動いた"))
+    df["荒れ"] = np.where(df["vol"].isna(), None, np.where(df["vol"] > LAB7_VOL, "荒れている", "落ち着いている"))
+    return df
+
+
+def lab7_report(cont: dict, px, etf: dict | None, m0) -> dict:
+    """20年分の追加検証7（long_lab7）：取引が効く局面の結果を出す。2026年10月21日に追加。
+    基準は結果を見る前に決めたもの（プロジェクトの long_lab_plan_2026-10-19 の10）。
+      月ごとの差 … 取引する形の評価額の伸び − 相手（本番。X6・R6 は「本番・損は配当と相殺」）の伸び。前の月末の局面で分ける
+      取引が効く局面 … ある局面で、1年あたりの差（月の差の平均×12）が両方の期間で +1.0pt 以上、かつ反対の局面より大きい（両方の期間）。
+                       どちらかの期間でその局面の月が12か月未満なら判定しない
+      11の形 × 3つの分け方 × 2つの側 ＝ 66通りを調べるので、偶然見つかるものもありうる
+    """
+    out = {"found": [], "tab": {}}
+    if not cont or m0 is None or "live_small1_pit" not in cont or px is None:
+        print("\n【20年分の追加検証7：取引が効く局面】 … TOPIX（1306）か通しの計算がないので出せません")
+        return out
+    dates = [pd.Timestamp(d) for d in cont["live_small1_pit"]["curve"]["date"]]
+    reg = lab7_regimes(px, dates)
+    oos_end = pd.Timestamp(LONG_OOS_END)
+
+    def _mret(curve):
+        v_ = curve.set_index(pd.to_datetime(curve["date"]))["value"].astype(float)
+        return v_.pct_change()            # 月 t の値 ＝ 月末 t−1 から月末 t までの伸び
+
+    rets = {n_: _mret(cont[n_]["curve"]) for n_ in cont}
+    if etf:
+        rets["_topix"] = _mret(etf["curve"])
+    # 月 t の伸びは、月末 t−1 の局面で分ける
+    lab_prev = reg.shift(1)
+    per = pd.Series(["見ていない期間" if d <= oos_end else "最近" for d in reg.index], index=reg.index)
+
+    def _cell(diff, split, side, period):
+        m_ = (lab_prev[split] == side) & (per == period) & diff.notna()
+        n_ = int(m_.sum())
+        return (float(diff[m_].mean()) * 12 * 100 if n_ else float("nan")), n_
+
+    print("\n【20年分の追加検証7：取引が効く局面】（基準は結果を見る前に決めたもの。計画はプロジェクトの long_lab_plan_2026-10-19 の10）")
+    print("  比べ方 … 2009年6月末から通しで持ち（資金投入0か月）、月ごとに「取引する形の評価額の伸び − 本番の伸び」を出し、"
+          "その月の初めに分かる相場の状態で分けて、1年あたりに直した（月の差の平均×12）")
+    print(f"  局面 … 上げ相場／下げ相場＝TOPIX（1306）の1年の値動きがプラスか ／ 横ばい＝1年の値動きが±{LAB7_FLAT * 100:.0f}％より小さい ／ "
+          f"荒れている＝過去63営業日の日々の値動きの大きさが年率{LAB7_VOL * 100:.0f}％より大きい")
+    print("  判定 … ある局面で、本番を上回った分が両方の期間で +1.0pt 以上、かつ反対の局面より大きい（両方の期間）→「取引が効く局面」")
+    print("  注意 … 11の形 × 3つの分け方 × 2つの側 ＝ 66通りを調べるので、偶然見つかるものもありうる。評価額で比べるので、"
+          "売るたびに税を払う形は少し不利に出る（本番は税を後回しにしている）")
+    print("  予想 … どの形・どの局面も見つからない")
+
+    print("\n  1. 局面ごとの月の数（見ていない期間／最近）")
+    for split, a_, b_ in LAB7_SPLITS:
+        cnt = []
+        for side in (a_, b_):
+            no_ = int(((lab_prev[split] == side) & (per == "見ていない期間")).sum())
+            nr_ = int(((lab_prev[split] == side) & (per == "最近")).sum())
+            cnt.append(f"{side} {no_}／{nr_}か月")
+        print("    " + " ・ ".join(cnt))
+
+    print("\n  2. 本番を上回った分（1年あたり・評価額。数字は「見ていない期間／最近」）")
+    rows_ = [(c_, n_, sh_, b_) for c_, n_, sh_, b_ in LAB7_V if n_ in rets and b_ in rets]
+    n_cells = 2 * len(LAB7_SPLITS) * len(rows_)
+    if "_topix" in rets:
+        rows_.append(("参考", "live_small1_pit", "本番 − TOPIX（判定しない）", "_topix"))
+    for code_, n_, sh_, base_ in rows_:
+        diff = rets[n_] - rets[base_]
+        allo_ = diff[(per == "見ていない期間") & diff.notna()].mean() * 1200
+        allr_ = diff[(per == "最近") & diff.notna()].mean() * 1200
+        parts_ = []
+        for split, a_, b_ in LAB7_SPLITS:
+            cs_ = {}
+            for side in (a_, b_):
+                vo_, no_ = _cell(diff, split, side, "見ていない期間")
+                vr_, nr_ = _cell(diff, split, side, "最近")
+                cs_[side] = (vo_, vr_, no_, nr_)
+            out["tab"][(code_, split)] = cs_
+            parts_.append(" ・ ".join(f"{sd_} {cs_[sd_][0]:+.1f}／{cs_[sd_][1]:+.1f}" for sd_ in (a_, b_)))
+            if code_ != "参考":
+                for side, other in ((a_, b_), (b_, a_)):
+                    vo_, vr_, no_, nr_ = cs_[side]
+                    oo_, orr_, _, _ = cs_[other]
+                    if no_ >= 12 and nr_ >= 12 and vo_ >= 1.0 and vr_ >= 1.0 and vo_ > oo_ and vr_ > orr_:
+                        out["found"].append((code_, sh_, side, vo_, vr_))
+        print(f"    {code_} {sh_} … 全体 {allo_:+.1f}／{allr_:+.1f}")
+        print("       " + " ｜ ".join(parts_))
+
+    print("\n  総合（結果を見る前に決めた基準）")
+    if out["found"]:
+        for code_, sh_, side, vo_, vr_ in out["found"]:
+            print(f"    取引が効く局面 … {code_} {sh_} × {side}（見ていない期間 {vo_:+.1f}pt ／ 最近 {vr_:+.1f}pt）")
+    else:
+        print("    取引が効く局面 … 見つからない")
+    print(f"    見つかった数 … {len(out['found'])}／{n_cells}通り"
+          "（偶然でも数個は見つかりうる。理由が説明できるかと合わせて読む）")
+    return out
+
+
 # ══════════════════════════════════════════
 def main() -> int:
     global LONG_MODE, CACHE, PIT_FROM, COMPUTE_START_LIMIT_MIN
@@ -8781,7 +8915,7 @@ def main() -> int:
     #   20年分は別のキャッシュ（data/yield_backtest_long.pkl）に入れ、いまの9年分には触らない。
     #   取り終わっていなければ取得から始める（途中で止まったら、同じ設定でもう一度押す）。
     args.long_test = args.long_lab = args.long_lab2 = args.long_lab3 = args.long_lab4 = args.long_lab5 = False
-    args.long_lab6 = False
+    args.long_lab6 = args.long_lab7 = False
     # 20年分の追加検証（2026年10月19日に追加。計画はプロジェクトの long_lab_plan_2026-10-19）
     #   long_lab  … ルールの候補20個・近い設定6つ・参考2つを、本番と同じ52条件で回す
     #   long_lab2 … 運・偏り・始めた月・業種（20回目と同じ作り方。比べる指数は TOPIX）
@@ -8791,14 +8925,15 @@ def main() -> int:
     #   long_lab4 … 成績を上げる候補（2026年10月20日に追加。計画は同じ long_lab_plan_2026-10-19 の7）
     #   long_lab5 … 8条件の役割（2026年10月20日夜に追加。計画は同じ long_lab_plan_2026-10-19 の8）
     #   long_lab6 … 売買を増やす形（2026年10月20日夜に追加。計画は同じ long_lab_plan_2026-10-19 の9）
-    if _mode0 in ("long_lab", "long_lab2", "long_lab3", "long_lab4", "long_lab5", "long_lab6"):
-        args.long_lab, args.long_lab2, args.long_lab3, args.long_lab4, args.long_lab5, args.long_lab6 = (
-            _mode0 == "long_lab", _mode0 == "long_lab2", _mode0 == "long_lab3", _mode0 == "long_lab4",
-            _mode0 == "long_lab5", _mode0 == "long_lab6")
+    #   long_lab7 … 取引が効く局面（2026年10月21日に追加。計画は同じ long_lab_plan_2026-10-19 の10）
+    if _mode0 in ("long_lab", "long_lab2", "long_lab3", "long_lab4", "long_lab5", "long_lab6", "long_lab7"):
+        (args.long_lab, args.long_lab2, args.long_lab3, args.long_lab4, args.long_lab5, args.long_lab6,
+         args.long_lab7) = (_mode0 == "long_lab", _mode0 == "long_lab2", _mode0 == "long_lab3",
+                            _mode0 == "long_lab4", _mode0 == "long_lab5", _mode0 == "long_lab6", _mode0 == "long_lab7")
         args.liq_metric, args.grid = True, True
         args.only = ",".join(LAB_RULES if args.long_lab else LAB2_RULES if args.long_lab2
                              else LAB3_RULES if args.long_lab3 else LAB4_RULES if args.long_lab4
-                             else LAB5_RULES if args.long_lab5 else LAB6_RULES)
+                             else LAB5_RULES if args.long_lab5 else LAB6_RULES if args.long_lab6 else LAB7_RULES)
         args.universe = "prime"
         args.years = 20
         LONG_MODE = True
@@ -8860,11 +8995,11 @@ def main() -> int:
 
     # 20年分のキャッシュを使うモードのどれか（long_test・long_lab・long_lab2）
     args.long_any = bool(args.long_test or args.long_lab or args.long_lab2 or args.long_lab3 or args.long_lab4
-                         or args.long_lab5 or args.long_lab6)
+                         or args.long_lab5 or args.long_lab6 or args.long_lab7)
     args.long_name = ("long_test" if args.long_test else "long_lab" if args.long_lab
                       else "long_lab2" if args.long_lab2 else "long_lab3" if args.long_lab3
                       else "long_lab4" if args.long_lab4 else "long_lab5" if args.long_lab5
-                      else "long_lab6" if args.long_lab6 else "")
+                      else "long_lab6" if args.long_lab6 else "long_lab7" if args.long_lab7 else "")
 
     OUTDIR.mkdir(parents=True, exist_ok=True)
 
@@ -13572,6 +13707,38 @@ def main() -> int:
                 if _ck is not None and _ck_work[0] > 0:
                     save_store(_long_raw, "売買を増やす形：計算が済んだ分を保存しました")
             lab6_report(gf, cond_cols, _os, _rs, _pn, _tpx6, _K6, _long_m0, nm)
+
+        # ── 20年分の追加検証7：取引が効く局面（2026年10月21日に追加。基準は結果を見る前に決めたもの。long_lab_plan_2026-10-19 の10）──
+        #   総当たり（52条件）の表のほかに、全部のルールを2009年6月末から通しで回し（資金投入0か月）、月ごとの評価額の伸びを残す
+        if getattr(args, "long_lab7", False) and nm and nm[0] == "live_small1_pit":
+            _pn = panels[lbs_[0]]
+            _skw = dict(tier_budget=args.realistic, dividends=args.realistic, slip_bps=args.slip_bps,
+                        fee_bps=args.fee_bps, tax_rate=args.tax / 100.0, min_yield_override=mys[0])
+            _kwe = dict(tax_rate=args.tax / 100.0, slip_bps=args.slip_bps, fee_bps=args.fee_bps)
+            _ex, _ql, _notes = etf_ready(_etf_px, store["quotes"], _pn["date"].min())
+            _tp = _ex.get("1306")
+            _K7 = {}
+            if _long_m0 is not None:
+                _subf7 = _pn[_pn["date"] >= _long_m0]
+                for n_ in LAB7_RULES:
+                    k_ = ("K7", n_)
+                    if _ck is not None and k_ in _ck["misc"]:
+                        _K7[n_] = _ck["misc"][k_]
+                        continue
+                    if _long_stop("取引が効く局面の通しの計算の途中"):
+                        return EXIT_UNFINISHED
+                    r_ = simulate(_subf7, VARIANTS[n_], args.capital, mxs_[0], ramp=0, **_skw)
+                    m_ = metrics(r_)
+                    _K7[n_] = {"curve": r_["curve"][["date", "value"]].copy(), "liq": r_.get("liq_value"),
+                               "capital": r_["capital"], "清算後年率": m_.get("清算後年率"), "最大下落": m_.get("最大下落")}
+                    if _ck is not None:
+                        _ck["misc"][k_] = _K7[n_]
+                        _ck_work[0] += 1
+                if _ck is not None and _ck_work[0] > 0:
+                    save_store(_long_raw, "取引が効く局面：計算が済んだ分を保存しました")
+                _e7 = (etf_hold(_tp, sorted(_subf7["date"].unique()), args.capital, 0, dist=ETF_DIST["1306"], **_kwe)
+                       if _tp is not None else None)
+                lab7_report(_K7, _tp, _e7, _long_m0)
 
         if getattr(args, "long_test", False) and nm and nm[0] == "live_small1_pit":
             L0, Lb = VARIANTS["live_small1_pit"]["label"], VARIANTS["live_nobank"]["label"]
