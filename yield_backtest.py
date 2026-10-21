@@ -2283,6 +2283,39 @@ LAB8_D_MIN = 30           # 1つの組・1つの期間に、売りと買いが�
 LAB8_C_YEARS = 4          # 始めた月から何年持つか
 LAB8_RULES = (["live_small1_pit"] + [r for _, r, _ in LAB8_A])
 
+# ── 20年分の追加検証9（2026年10月21日に追加。計画は long_lab_plan_2026-10-19 の12）──
+#   小さなうねり（20日・幅2〜5％）に、損切りと、高配当株以外の銘柄を足して、本番・TOPIX・でたらめな日と比べる。
+#   どれも「うねりだけ」（月末には買わない）。売り値・買い値と、売り買いする日の決まりは long_lab3 の W1 と同じ
+#   （上の線で売るのは取得単価より上のときだけ。損切りは、それとは別に毎日見る）。
+#   主な銘柄すべて … ツールと同じ範囲（Core30〜Small 1。1か月あたり約980社）のうち、配当の記録がある会社。
+#                    8条件・利回りの条件・緊急売りは使わない。1銘柄の予算は前の月末の総資産の20分の1、買う順番は時価総額の大きい順
+LAB9_STOP = 0.5           # 損切りの値段：買った日の下の線から、うねりの幅の半分だけ下
+LAB9_PLACEBO_N = int(os.environ.get("LAB9_PLACEBO_N", "20"))   # でたらめな日の売り買いを、窓ごとに何通り回すか（テストのときだけ減らす）
+_L9_SW = {"tag": "xs_hlo", "tiers": ["S", "A", "B"], "only": True, "log_exits": True, "div_fix": True, "open_fill": True}
+_L9_WIDE = dict(screen=False, min_yield_fixed=0.0, skip_emg_buy=False, exit_on_cut=False, exit_on_op=False,
+                budget_weighted=False, measure="mcap_big")
+VARIANTS.update({
+    "lab9_w1": _lab_rule("W1 うねりだけ・20日・幅2〜5％（本番の候補・損切りなし）", swing_daily=dict(_L9_SW)),
+    "lab9_v1": _lab_rule("V1 うねりだけ・20日・幅2〜5％＋損切り（本番の候補）", swing_daily=dict(_L9_SW, stop=LAB9_STOP)),
+    "lab9_v2": _lab_rule("V2 うねりだけ・20日・幅2〜5％＋損切り（主な銘柄すべて）",
+                         swing_daily=dict(_L9_SW, stop=LAB9_STOP, flat_order=True), **_L9_WIDE),
+    "lab9_v3": _lab_rule("V3 うねりだけ・20日・幅2〜5％＋損切り（主な銘柄のうち値動きの大きい半分）",
+                         swing_daily=dict(_L9_SW, stop=LAB9_STOP, flat_order=True), require_col="vol_top_pit", **_L9_WIDE),
+    "lab9_v4": _lab_rule("V4 うねりだけ・20日・幅2〜5％・損切りなし（主な銘柄すべて）",
+                         swing_daily=dict(_L9_SW, flat_order=True), **_L9_WIDE),
+    # 損切りの幅の確かめ：損切りの値段を、下の線からうねりの幅の1倍だけ下にする（V2 の2倍の幅）
+    "lab9_v5": _lab_rule("V5 うねりだけ・20日・幅2〜5％＋広い損切り（主な銘柄すべて）",
+                         swing_daily=dict(_L9_SW, stop=2 * LAB9_STOP, flat_order=True), **_L9_WIDE),
+})
+LAB9_V = (("W1", "lab9_w1", "本番の候補・損切りなし（long_lab3 の W1 と同じ形）"), ("V1", "lab9_v1", "本番の候補＋損切り"),
+          ("V2", "lab9_v2", "主な銘柄すべて＋損切り"), ("V3", "lab9_v3", "値動きの大きい半分＋損切り"),
+          ("V4", "lab9_v4", "主な銘柄すべて・損切りなし"), ("V5", "lab9_v5", "主な銘柄すべて＋広い損切り（幅の1倍）"))
+LAB9_PLACEBO = (("V1", "lab9_v1"), ("V2", "lab9_v2"), ("V3", "lab9_v3"))
+LAB9_PAIRS = (("損切りの効き目（本番の候補）", "V1", "W1"), ("損切りの効き目（主な銘柄すべて）", "V2", "V4"),
+              ("銘柄を広げた効き目（損切りなし）", "V4", "W1"), ("値動きの大きい株に絞った効き目", "V3", "V2"),
+              ("損切りを広げた効き目", "V5", "V2"))
+LAB9_RULES = ["live_small1_pit"] + [r for _, r, _ in LAB9_V]
+
 # 可変ルールの加減点。必要パーセンタイルを下げる＝買いやすくする。
 # 条件を増やすほど過去に合わせただけの数字になりやすいので、3つに絞っています。
 DYNAMIC_RULES = {
@@ -4140,6 +4173,10 @@ DAILY_BOX_SETS = {
     "xs_hl": {"win": 20, "w_min": 0.02, "w_max": 0.05, "hl": True, "label": "細かい（20日・幅2〜5％・高値と安値で判定）"},
     "s_hl": {"win": 20, "w_min": 0.03, "w_max": 0.08, "hl": True, "label": "短め（20日・幅3〜8％・高値と安値で判定）"},
     "m_hl": {"win": 60, "w_min": 0.04, "w_max": 0.12, "hl": True, "label": "中くらい（60日・幅4〜12％・高値と安値で判定）"},
+    # 20年分の追加検証9（2026年10月21日に追加。計画は long_lab_plan_2026-10-19 の12）：xs_hl と同じ線に、始値も持たせる。
+    #   損切りで、窓を開けて損切りの値段より下で始まった日は、始値で売るため（線そのものは xs_hl と1円も違わない）
+    "xs_hlo": {"win": 20, "w_min": 0.02, "w_max": 0.05, "hl": True, "open": True,
+               "label": "細かい（20日・幅2〜5％・高値と安値で判定・始値つき）"},
 }
 SWING_TOUCH_FRAC = 0.15
 SWING_DAILY = None
@@ -4762,6 +4799,8 @@ def build_swing_daily(store: dict, tags) -> dict:
     for t in tags:
         out[t] = {}
     _hl_tags = [t for t in tags if DAILY_BOX_SETS[t].get("method") == "hline" or DAILY_BOX_SETS[t].get("hl")]
+    # 20年分の追加検証9：始値も要る線（open）があれば、高値・安値と一緒に始値も読む（終値・高値・安値は quotes_hl と同じ）
+    _op_tags = [t for t in tags if DAILY_BOX_SETS[t].get("open")]
     for code, rows in store["quotes"].items():
         px = quotes_to_df(rows)
         if px.empty:
@@ -4769,9 +4808,10 @@ def build_swing_daily(store: dict, tags) -> dict:
         close = px.set_index("date")["close"]
         ds = px["date"].to_numpy(dtype="datetime64[ns]").astype(np.int64)
         cal.update(ds.tolist())
-        hl = quotes_hl(rows) if _hl_tags else None
+        hl = (quotes_ohlcv(rows) if _op_tags else quotes_hl(rows)) if _hl_tags else None
         if hl is not None and len(hl) != len(px):
             hl = None
+        _o_arr = None
         if hl is not None:
             _s = hl.attrs.get("src", "終値")
             out["_hlsrc"][_s] = out["_hlsrc"].get(_s, 0) + 1
@@ -4779,6 +4819,9 @@ def build_swing_daily(store: dict, tags) -> dict:
             _c_arr = hl["close"].to_numpy(dtype=float)
             _h_arr = hl["high"].to_numpy(dtype=float)
             _l_arr = hl["low"].to_numpy(dtype=float)
+            if _op_tags and "open" in hl.columns:
+                _o_arr = hl["open"].to_numpy(dtype=float)
+        _bgeo = {}      # 20年分の追加検証9：箱の線（日数・幅の範囲）が同じなら、引いた線を使い回す（値は同じ）
         _geo = {}       # 線の形（日数・山谷の幅・触れた判定の幅・幅の範囲）が同じなら、引いた線を使い回す
         for t in tags:
             prm = DAILY_BOX_SETS[t]
@@ -4795,14 +4838,66 @@ def build_swing_daily(store: dict, tags) -> dict:
                 if code in LINE_EXAMPLES:
                     out["_snap"].setdefault(t, {})[code] = hline_snapshot(hl, prm)
                 continue
+            if prm.get("open"):
+                # 20年分の追加検証9：同じ形の線がもう引いてあれば使い回す（値は同じ。メモリを節約する）
+                _bk = (prm["win"], prm["w_min"], prm["w_max"])
+                if _bk not in _bgeo:
+                    bl = box_lines(close, prm["win"], prm["w_min"], prm["w_max"])
+                    _bgeo[_bk] = (ds, bl["close"].to_numpy(dtype=float), bl["sell_px"].to_numpy(dtype=float),
+                                  bl["buy_px"].to_numpy(dtype=float), bl["ok"].to_numpy(dtype=bool))
+                out[t][code] = _bgeo[_bk]
+                if hl is not None:
+                    out[t][code] = out[t][code] + (_h_arr, _l_arr)
+                    if _o_arr is not None:
+                        out[t][code] = out[t][code] + (_o_arr,)      # 8つめ：始値（損切りで、下で始まった日に使う）
+                continue
             bl = box_lines(close, prm["win"], prm["w_min"], prm["w_max"])
             out[t][code] = (ds, bl["close"].to_numpy(dtype=float),
                             bl["sell_px"].to_numpy(dtype=float), bl["buy_px"].to_numpy(dtype=float),
                             bl["ok"].to_numpy(dtype=bool))
+            _bgeo.setdefault((prm["win"], prm["w_min"], prm["w_max"]), out[t][code][:5])
             if prm.get("hl") and hl is not None:
                 out[t][code] = out[t][code] + (_h_arr, _l_arr)     # 届いたかは高値・安値で見る（水平線と同じ）
     out["_cal"] = np.array(sorted(cal), dtype=np.int64)
     return out
+
+
+def add_lab9_columns(store: dict, panel: pd.DataFrame) -> pd.DataFrame:
+    """20年分の追加検証9（2026年10月21日に追加。計画は long_lab_plan_2026-10-19 の12）で使う列を足す。どれもその月末までの値だけで決める。
+      vol250       … その月末までの250営業日の、日々の値動き（終値の対数の変化）の大きさ（年率）。120営業日より少なければ空
+      vol_top_pit  … その月末にツールと同じ範囲にいる銘柄のうち、vol250 が真ん中（中央値）以上＝値動きの大きい半分
+      pct_mcap_big … その月末のツールと同じ範囲の中での時価総額の順位（％・大きいほど高い）。日々の買いの順番に使う"""
+    if panel.empty:
+        return panel
+    parts = []
+    for code, rows in store["quotes"].items():
+        px = quotes_to_df(rows)
+        if len(px) < 130:
+            continue
+        s_ = px.set_index("date")["close"].astype(float)
+        lr_ = np.log(s_.where(s_ > 0)).diff()
+        v_ = (lr_.rolling(250, min_periods=120).std() * np.sqrt(250)).resample("ME").last()
+        parts.append(pd.DataFrame({"code": code, "date": v_.index, "vol250": v_.to_numpy(dtype=float)}))
+    panel = panel.copy()
+    if parts:
+        vt = pd.concat(parts, ignore_index=True)
+        vt["date"] = pd.to_datetime(vt["date"])
+        vs_ = vt.drop_duplicates(["code", "date"], keep="last").set_index(["code", "date"])["vol250"]
+        key_ = pd.MultiIndex.from_arrays([panel["code"].astype(str), pd.to_datetime(panel["date"])])
+        panel["vol250"] = vs_.reindex(key_).to_numpy(dtype=float)     # 並び順と行の番号はそのまま
+    else:
+        panel["vol250"] = np.nan
+    uni = panel["in_uni_live"].astype(bool) if "in_uni_live" in panel.columns else pd.Series(True, index=panel.index)
+    vv = panel["vol250"].where(uni)
+    med = vv.groupby(panel["date"]).transform("median")
+    panel["vol_top_pit"] = ((vv >= med) & vv.notna()).fillna(False).astype(bool)
+    if "sh" in panel.columns:
+        mc = pd.to_numeric(panel["price"], errors="coerce") * pd.to_numeric(panel["sh"], errors="coerce")
+        mc = mc.where((mc > 0) & uni)
+        panel["pct_mcap_big"] = mc.groupby(panel["date"]).rank(pct=True, ascending=True) * 100
+    else:
+        panel["pct_mcap_big"] = np.nan
+    return panel
 
 
 # ══════════════════════════════════════════
@@ -4885,6 +4980,34 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
         #             売る銘柄・買う候補・月末に待つ決まり・回数の目安は線の形と同じにして、日を選ぶところだけ変える。
         _plc = swing_daily.get("placebo")
         _rng = np.random.default_rng(int(_plc["seed"])) if _plc else None
+        # 20年分の追加検証9（2026年10月21日に追加。計画は long_lab_plan_2026-10-19 の12）
+        #   stop       … 損切り。買った日の線で「下の線から、幅の stop 倍だけ下」を損切りの値段にし、その日の安値が届いたら
+        #                全部売る（始値がすでに損切りの値段より下なら始値で売る）。買った日に届いたら、その日のうちに売ったことにする
+        #                （どちらが先か分からないので、不利な方にする）。でたらめな日の比べでも、損切りの値段は同じ線で決める
+        #   flat_order … 日々の買いの順番で Tier を見ない（level の順だけ）
+        #   log_exits  … うねりで売った1回ごとに（銘柄・買った日・売った日・損益・売り方）を残す
+        #   div_fix    … 権利落ち日以降に買って同じ月のうちに売った分には、その月の配当をつけない
+        #                （以前のうねりの計算では、月末の2営業日のうちに買って売った分にも配当がついていた。うねりに少し有利な向き）
+        _sw_stop = float(swing_daily.get("stop") or 0.0)
+        _sw_flat = bool(swing_daily.get("flat_order", False))
+        _sw_log = bool(swing_daily.get("log_exits", False))
+        _sw_divfix = bool(swing_daily.get("div_fix", False))
+        #   open_fill  … 指値と同じ値段の決まり：始値がすでに買い値より下なら始値で買い、売り値より上なら始値で売る
+        #                （線で売り買いする回だけ。でたらめな日は、その日の安値〜高値のでたらめな値段のまま）
+        _sw_ofill = bool(swing_daily.get("open_fill", False))
+        _sw_prm = DAILY_BOX_SETS.get(swing_daily.get("tag", "m"), {})
+        _sw_k = float(_sw_prm.get("inset", LINE_TOUCH_FRAC if _sw_prm.get("method") == "hline" else SWING_TOUCH_FRAC))
+
+        def _open_at(code_, t_ns):
+            """その日の始値（線に始値がなければ None）。"""
+            arr_ = _swd.get(code_)
+            if arr_ is None or len(arr_) < 8:
+                return None
+            j_ = int(np.searchsorted(arr_[0], t_ns))
+            if j_ < len(arr_[0]) and int(arr_[0][j_]) == int(t_ns):
+                v_ = float(arr_[7][j_])
+                return v_ if v_ == v_ and v_ > 0 else None
+            return None
 
         def _box_ok_at(code_, t_ns):
             arr_ = _swd.get(code_)
@@ -4926,7 +5049,7 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
             v = row.get("zscore")
             return float(v) if v is not None and not pd.isna(v) else -99.0
         if measure in ("pbr", "per", "size", "pbr_sec", "value",
-                       "pbrroe70", "pbrroe50", "pbrroe30", "switch36", "pbr_pit", "pbr_live"):
+                       "pbrroe70", "pbrroe50", "pbrroe30", "switch36", "pbr_pit", "pbr_live", "mcap_big"):
             # 全銘柄の中での順位（％）。pbr/per は低いほど、size は小さいほど高い値になる
             if "pct_" + measure not in row.index:
                 raise RuntimeError(f"pct_{measure} の列がありません。財務の項目が足されていません。")
@@ -5307,7 +5430,16 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
             _ordt = {"S": 0, "A": 1, "B": 2}
             _avg_w0 = sum(tw.values()) / len(tw)
             _elig = []
-            for c_, r_ in prev_day.iterrows():
+            # 2026年10月21日（20年分の追加検証9）：下の1行ずつの判定の前に、Tier・線があるか・銘柄一覧・利回りで先に絞る（速くするため）。
+            #   どれも下のループで同じ判定をしている条件だけなので、選ばれる銘柄と順番（並べ替えのあと）は変わらない
+            _pmask = prev_day["tier"].isin(list(_sw_tiers)).to_numpy() & prev_day.index.isin(list(_swd.keys()))
+            if uni_col and uni_col in prev_day.columns:
+                _pmask &= prev_day[uni_col].astype(bool).to_numpy()
+            if min_yield > 0 and "yield" in prev_day.columns:
+                _pmask &= ~(pd.to_numeric(prev_day["yield"], errors="coerce") < min_yield).to_numpy()
+            if require_col and require_col in prev_day.columns and prev_day[require_col].dtype == bool:
+                _pmask &= prev_day[require_col].to_numpy()
+            for c_, r_ in prev_day[_pmask].iterrows():
                 tg_ = r_.get("tier", "B")
                 if tg_ not in _sw_tiers or c_ not in _swd:
                     continue
@@ -5329,7 +5461,7 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                         _cu, _op = bool(r_.get("dps_cut")), bool(r_.get("op_drop"))
                     if _cu or _op:
                         continue
-                _elig.append((_ordt.get(tg_, 9), -float(level(r_)), c_, tg_))
+                _elig.append((0 if _sw_flat else _ordt.get(tg_, 9), -float(level(r_)), c_, tg_))
             _elig.sort()
             _slc = {}
 
@@ -5356,6 +5488,26 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
             #   最後の2営業日（権利落ち日と月末）に買った分は、その月の配当を受け取らない
             #   最後の2営業日に売った分は、その月の配当を受け取る（権利付き最終日まで持っていたため）
             _ex_ns = int(_days[-2]) if len(_days) >= 2 else None
+
+            def _sw_stop_out(c_, st_, px_, d_ns_):
+                """20年分の追加検証9：損切りで全部売る（配当の権利・取引の日・記録は、うねりの売りと同じように扱う）。"""
+                shs_ = sum(sh for sh, _ in st_["lots"])
+                avg_ = sum(sh * pr for sh, pr in st_["lots"]) / shs_ if shs_ else 0.0
+                _n0 = len(trades)
+                if _ex_ns is not None and d_ns_ >= _ex_ns and not (_sw_divfix and st_.get("no_div_mi") == mi):
+                    _div_pending.append((c_, shs_))     # 権利付き最終日まで持っていたので、配当は受け取る
+                _sell_shares(c_, st_, shs_, px_, dt)
+                for tr_ in trades[_n0:]:
+                    tr_["day"] = pd.Timestamp(d_ns_)
+                diag["sw_stop_sells"] = diag.get("sw_stop_sells", 0) + 1
+                if _sw_log:
+                    diag.setdefault("sw_exits", []).append(
+                        (c_, st_.get("sw_day0"), int(d_ns_), (px_ * (1 - slip) * (1 - fee) / avg_ - 1) if avg_ > 0 else float("nan"),
+                         "損切り"))
+                swing_sold[c_] = mi
+                _sold_on[c_] = d_ns_
+                _close(c_, st_, mi, "うねりで損切り")
+
             # 13回目：no_sell … 線では売らない（下の線で買うだけ）。売りの判定そのものを飛ばす
             _no_sell = bool(swing_daily.get("no_sell", False))
             for d_ns in _days:
@@ -5369,6 +5521,12 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                     if v_ is None:
                         continue
                     cl_, sp_, bp_, ok_, hi_, lo_ = v_
+                    # 20年分の追加検証9：損切り（線の中にいるかどうかに関係なく、毎日見る。上の線より先に見る＝不利な方）
+                    if _sw_stop > 0 and st_.get("sw_stop") is not None and lo_ <= float(st_["sw_stop"]):
+                        _sl_ = float(st_["sw_stop"])
+                        _op_ = _open_at(c_, d_ns)
+                        _sw_stop_out(c_, st_, _op_ if (_op_ is not None and _op_ < _sl_) else _sl_, d_ns)
+                        continue
                     if not ok_:
                         continue
                     shs_ = sum(sh for sh, _ in st_["lots"])
@@ -5384,8 +5542,12 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                         continue
                     if not (avg_ > 0 and sp_ > avg_ * (1 + _mg)):
                         continue
+                    if _sw_ofill and not _plc:
+                        _op1_ = _open_at(c_, d_ns)
+                        if _op1_ is not None and _op1_ > sp_:
+                            sp_ = _op1_      # 20年分の追加検証9：始値がすでに売り値より上なら、始値で売れた（指値）
                     _n0 = len(trades)
-                    if _ex_ns is not None and d_ns >= _ex_ns:
+                    if _ex_ns is not None and d_ns >= _ex_ns and not (_sw_divfix and st_.get("no_div_mi") == mi):
                         _div_pending.append((c_, shs_))     # 権利付き最終日まで持っていたので、配当は受け取る
                     _sell_shares(c_, st_, shs_, sp_, dt)
                     for tr_ in trades[_n0:]:
@@ -5393,6 +5555,9 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                     diag["range_sells"] = diag.get("range_sells", 0) + 1
                     diag["swing_gain_sum"] = diag.get("swing_gain_sum", 0.0) + (sp_ * (1 - slip) * (1 - fee) / avg_ - 1)
                     diag.setdefault("swing_sales", []).append((c_, d_ns, sp_ * (1 - slip) * (1 - fee) / avg_ - 1, sp_))
+                    if _sw_log:
+                        diag.setdefault("sw_exits", []).append((c_, st_.get("sw_day0"), d_ns,
+                                                                sp_ * (1 - slip) * (1 - fee) / avg_ - 1, "上の線"))
                     swing_sold[c_] = mi
                     _sold_on[c_] = d_ns
                     _close(c_, st_, mi, "うねりで売却")
@@ -5407,6 +5572,7 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                     cl_, sp_, bp_, ok_, hi_, lo_ = v_
                     if not ok_:
                         continue
+                    _sp0_, _bp0_ = sp_, bp_      # 線の売り値・買い値（でたらめな日でも、損切りの値段はこの線で決める）
                     diag["sw_elig_buy"] = diag.get("sw_elig_buy", 0) + 1     # 買ってよい日（線の中・まだ持っていない）
                     if _plc:
                         if _rng.random() >= float(_plc["p_buy"]):
@@ -5414,6 +5580,20 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                         bp_ = lo_ + _rng.random() * (hi_ - lo_)     # その日の安値〜高値のランダムな値段
                     elif not (lo_ <= bp_):
                         continue
+                    if _sw_ofill and not _plc:
+                        _op0_ = _open_at(c_, d_ns)
+                        if _op0_ is not None and _op0_ < bp_:
+                            bp_ = _op0_      # 20年分の追加検証9：始値がすでに買い値より下なら、始値で買えた（指値）
+                    _stp_ = None
+                    if _sw_stop > 0:
+                        # 20年分の追加検証9：損切りの値段（下の線から、幅の _sw_stop 倍だけ下）を、買う日の線で決める
+                        _w_ = (_sp0_ - _bp0_) / (1.0 - 2.0 * _sw_k)
+                        _stp_ = (_bp0_ - _sw_k * _w_) - _sw_stop * _w_
+                        _opg_ = _open_at(c_, d_ns)
+                        if _opg_ is not None and _opg_ <= _stp_:
+                            # 損切りの値段より下で始まった日は買わない（買ってもすぐ損切りになり、残るのは手数料だけのため）
+                            diag["sw_gap_skip"] = diag.get("sw_gap_skip", 0) + 1
+                            continue
                     if weighted:
                         unit_ = _total0 / target_n * (tw.get(tg_, 1.0) / _avg_w0) / n_tr
                     else:
@@ -5437,6 +5617,15 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                     diag["swing_buys"] = diag.get("swing_buys", 0) + 1
                     trades.append({"code": c_, "date": dt, "side": "buy", "price": bp_,
                                    "shares": sh_, "day": pd.Timestamp(d_ns)})
+                    # 20年分の追加検証9：買った日と損切りの値段を覚えておく
+                    if _sw_stop > 0 or _sw_log:
+                        pos[c_]["sw_day0"] = d_ns
+                    if _stp_ is not None:
+                        pos[c_]["sw_stop"] = _stp_
+                        if lo_ <= _stp_:
+                            # 買った日のうちに損切りの値段まで下がっていた。どちらが先か分からないので、買ってから下がったことにする
+                            # （でたらめな値段が損切りの値段より下なら、その値段で売る）
+                            _sw_stop_out(c_, pos[c_], min(_stp_, bp_), d_ns)
 
         # ── 売り ──
         for code in list(pos.keys()):
@@ -9057,6 +9246,265 @@ def lab8_report(gf: pd.DataFrame, cond_cols: list, oos: list, rec: list, pn: pd.
     return out
 
 
+def lab9_report(gf: pd.DataFrame, cond_cols: list, oos: list, rec: list, span: dict, pn: pd.DataFrame,
+                tpx, plc: dict, cont: dict, etf0, m0, names: list) -> dict:
+    """20年分の追加検証9（long_lab9）：小さなうねり＋損切り・高配当株以外の銘柄の結果を出す。2026年10月21日に追加。
+    基準は結果を見る前に決めたもの（プロジェクトの long_lab_plan_2026-10-19 の12）。
+      1 本番との比べ … long_lab3 と同じ（良い・悪い・同じくらい・決められない）。両方の期間で「良い」なら並走記録の候補
+      2 TOPIX との比べ … J1 と同じ（指数より良い・指数に負ける・決められない）
+      3 でたらめな日 … 窓ごとに、線がでたらめな日（20通り）を上回った割合を出し、その平均が 80％以上 → 線のタイミングに意味がある ／
+                       20％以下 → 裏目 ／ それ以外 → 意味は見えない（清算後と評価額で分かれたら決められない）。見ていない期間と最近で別に出す
+      4 効き目 … 2つのルールの差（52条件）を、1 と同じ分け方で見る（損切りの効き目・銘柄を広げた効き目など）
+      5 通しの17年 … 年率・最大下落と、売り買い1回ごとの勝ち負け（参考）
+      総合 … でたらめな日と比べる V1・V2・V3 について、「可能性あり」＝ 3 が両方の期間で「意味がある」、かつ 2 が両方の期間で
+             「指数に負ける」ではない。それ以外は「可能性は見えない」
+    """
+    out = {"verd": {}, "tpx": {}, "plc": {}, "pair": {}, "maybe": [], "adopt": []}
+    L0 = VARIANTS["live_small1_pit"]["label"]
+    ip, ir = cond_cols.index("期間"), cond_cols.index("資金投入")
+    pl = gf.pivot_table(index=cond_cols, columns="ルール", values="清算後年率")
+    pm = gf.pivot_table(index=cond_cols, columns="ルール", values="評価額年率")
+    io = [i_ for i_ in pl.index if i_[ip] in oos]
+    irc = [i_ for i_ in pl.index if i_[ip] in rec]
+    code_of = {c_: n_ for c_, n_, _ in LAB9_V}
+
+    def _lb(n_):
+        return VARIANTS[n_]["label"]
+
+    def _cat_b(d):
+        if d.empty:
+            return "—"
+        if float((d > 0).mean()) >= 0.85 and float(d.mean()) >= 1.0:
+            return "良い"
+        if float((d < 0).mean()) >= 0.85:
+            return "悪い"
+        if float(d.mean()) >= -0.5 and float(d.min()) >= -1.0:
+            return "同じくらい"
+        return "決められない"
+
+    def _cat_t(d):
+        if d.empty:
+            return "—"
+        if float((d > 0).mean()) >= 0.85 and float(d.mean()) >= 1.0:
+            return "指数より良い"
+        if float((d < 0).mean()) >= 0.85:
+            return "指数に負ける"
+        return "決められない"
+
+    def _vs(a_lb, b_lb, idx_):
+        if a_lb not in pl.columns or b_lb not in pl.columns or not idx_:
+            return None
+        d_ = (pl.loc[idx_, a_lb] - pl.loc[idx_, b_lb]).dropna()
+        dm_ = (pm.loc[idx_, a_lb] - pm.loc[idx_, b_lb]).dropna()
+        if d_.empty:
+            return None
+        cl_, cm_ = _cat_b(d_), _cat_b(dm_)
+        return d_, (cl_ if cl_ == cm_ else "決められない"), cl_, cm_
+
+    ec = {}
+
+    def _etf(idx):
+        k = (idx[ip], int(idx[ir]))
+        if k not in ec:
+            a_, b_ = span[k[0]]
+            ec[k] = tpx(sorted(pn[(pn["date"] >= a_) & (pn["date"] <= b_)]["date"].unique()), k[1])
+        return ec[k]
+
+    def _vs_tpx(n_, idx_):
+        if _lb(n_) not in pl.columns or not idx_:
+            return None
+        dl, dm = [], []
+        for idx in idx_:
+            if idx[ip] not in span:
+                continue
+            e_ = _etf(idx)
+            if not e_:
+                continue
+            x_, y_ = pl.at[idx, _lb(n_)], pm.at[idx, _lb(n_)]
+            if pd.notna(x_):
+                dl.append(float(x_) - float(e_["清算後年率"]))
+            if pd.notna(y_):
+                dm.append(float(y_) - float(e_["年率"]))
+        dl, dm = pd.Series(dl, dtype=float), pd.Series(dm, dtype=float)
+        if dl.empty:
+            return None
+        cl_, cm_ = _cat_t(dl), _cat_t(dm)
+        return dl, (cl_ if cl_ == cm_ else "決められない"), cl_, cm_
+
+    def _fmt(r_, kind="b"):
+        if r_ is None:
+            return "—"
+        d_, c_, cl_, cm_ = r_
+        return (f"{d_.mean():+.1f}pt・{'勝ち' if kind == 'b' else '上回った'}{(d_ > 0).mean() * 100:.0f}％・{c_}"
+                + ("" if cl_ == cm_ else f"（清算後{cl_}・評価額{cm_}）"))
+
+    def _col(n_, col_, sps_):
+        g_ = gf[(gf["ルール"] == _lb(n_)) & gf["期間"].isin(sps_)]
+        return float(g_[col_].mean()) if col_ in g_.columns and not g_.empty and g_[col_].notna().any() else float("nan")
+
+    print("\n【20年分の追加検証9：小さなうねり＋損切り・高配当株以外の銘柄】（基準は結果を見る前に決めたもの。"
+          "計画はプロジェクトの long_lab_plan_2026-10-19 の12。年率は清算後）")
+    print("  形 … どれもうねりだけ（月末には買わない）。線は20日・幅2〜5％（long_lab3 の W1 と同じ）。上の線で売るのは取得単価より上のときだけ")
+    print(f"  損切り … 買った日の下の線から、うねりの幅の{LAB9_STOP:.1f}倍（V5 は{2 * LAB9_STOP:.1f}倍）だけ下に届いたら全部売る"
+          "（始値がすでに下なら始値。買った日に届いたら、その日のうちに売ったことにする。その値段より下で始まった日は買わない）")
+    print("  約定 … 線で売り買いする回は指値と同じ（始値がすでに買い値より下なら始値で買い、売り値より上なら始値で売る）")
+    print("  主な銘柄すべて … ツールと同じ範囲のうち配当の記録がある会社（8条件・利回りの条件・緊急売りなし。1銘柄は総資産の20分の1・時価総額の大きい順に買う）")
+    print("  値動きの大きい半分 … その月末までの1年の日々の値動きの大きさが、その月末の範囲の真ん中以上")
+    print("  予想 … V1〜V5 は本番との比べでどれも「悪い」、TOPIX との比べで「指数に負ける」か「決められない」。"
+          "でたらめな日との比べは「意味は見えない」か「裏目」。損切りは下がり方を浅くするが年率は上げない。総合は「可能性は見えない」")
+    if L0 in pl.columns:
+        print(f"  本番 … 見ていない期間 {len(io)}条件 平均 {pl.loc[io, L0].mean():.1f}％ ／ 最近 {len(irc)}条件 平均 {pl.loc[irc, L0].mean():.1f}％")
+
+    # 1・2 本番・TOPIX との比べ
+    print("\n  1. 本番との差 ／ 2. TOPIX との差（52条件・清算後。数字は平均の差・勝ちの割合・判定）")
+    for code_, n_, sh_ in LAB9_V:
+        if _lb(n_) not in pl.columns:
+            continue
+        b_o, b_r = _vs(_lb(n_), L0, io), _vs(_lb(n_), L0, irc)
+        t_o, t_r = _vs_tpx(n_, io), _vs_tpx(n_, irc)
+        out["verd"][code_] = (b_o[1] if b_o else "—", b_r[1] if b_r else "—")
+        out["tpx"][code_] = (t_o[1] if t_o else "—", t_r[1] if t_r else "—")
+        print(f"    {code_} {sh_}")
+        print(f"      本番との差 … 見ていない期間 {_fmt(b_o)} ／ 最近 {_fmt(b_r)}")
+        print(f"      TOPIX との差 … 見ていない期間 {_fmt(t_o, 't')} ／ 最近 {_fmt(t_r, 't')}")
+        print(f"      売り 年{_col(n_, '売り/年', oos):.1f}回・現金の割合 平均{_col(n_, '現金比率', oos):.0f}％（見ていない期間） ／ "
+              f"売り 年{_col(n_, '売り/年', rec):.1f}回・現金 {_col(n_, '現金比率', rec):.0f}％（最近）")
+    if out["verd"]:
+        out["adopt"] = [c_ for c_, v_ in out["verd"].items() if v_ == ("良い", "良い")]
+
+    # 3 でたらめな日
+    print(f"\n  3. 線のタイミングとでたらめな日（線の中にいる日から、同じくらいの回数をでたらめに選んで売り買いする。"
+          f"損切りの決まりは同じ。資金投入0か月・{LAB9_PLACEBO_N}通り）")
+
+    def _vp(p_):
+        return ("線のタイミングに意味がある" if p_ >= 0.80 else ("裏目（でたらめの方が良い）" if p_ <= 0.20 else "意味は見えない"))
+
+    for code_, n_ in LAB9_PLACEBO:
+        ws_ = {k_[1] for k_ in plc if k_[0] == code_}
+        if not ws_:
+            continue
+        print(f"    {code_}（{dict((c, s_) for c, _, s_ in LAB9_V).get(code_, '')}）")
+        print("      " + f"{'期間':<24}{'線':>7}{'でたらめ':>9}{'線が上':>7}")
+        res_ = []
+        for nm_, sps_ in (("見ていない期間", oos), ("最近", rec)):
+            shl_, shm_ = [], []
+            for sp_ in [w_ for w_ in sps_ if w_ in ws_]:
+                r0_ = plc.get((code_, sp_, "real"))
+                rr_ = [plc[(code_, sp_, k_)] for k_ in range(LAB9_PLACEBO_N) if plc.get((code_, sp_, k_))]
+                if not r0_ or not rr_ or r0_.get("清算後年率") is None:
+                    continue
+                al_ = np.array([x_["清算後年率"] for x_ in rr_], dtype=float)
+                am_ = np.array([x_["年率"] for x_ in rr_], dtype=float)
+                shl_.append(float((al_ < r0_["清算後年率"]).mean()))
+                shm_.append(float((am_ < r0_["年率"]).mean()))
+                print("      " + f"{sp_:<24}{r0_['清算後年率']:>6.1f}％{np.median(al_):>8.1f}％{shl_[-1] * 100:>6.0f}％")
+            if shl_:
+                a_, b_ = float(np.mean(shl_)), float(np.mean(shm_))
+                v_ = _vp(a_) if _vp(a_) == _vp(b_) else f"決められない（清算後「{_vp(a_)}」・評価額「{_vp(b_)}」）"
+                res_.append(v_)
+                print(f"      {nm_} … 線がでたらめを上回った割合 平均 {a_ * 100:.0f}％（評価額 {b_ * 100:.0f}％） → {v_}")
+                n0_ = [plc[(code_, sp_, "real")] for sp_ in sps_ if plc.get((code_, sp_, "real"))]
+                nr_ = [plc[(code_, sp_, k_)] for sp_ in sps_ for k_ in range(LAB9_PLACEBO_N) if plc.get((code_, sp_, k_))]
+                if n0_ and nr_:
+                    print(f"        売りの回数（1つの窓あたり。上の線＋損切り） … 線 平均{np.mean([x_['うねり売り'] + x_['損切り'] for x_ in n0_]):,.0f}回"
+                          f"（うち損切り {np.mean([x_['損切り'] for x_ in n0_]):,.0f}回） ／ でたらめ 平均"
+                          f"{np.mean([x_['うねり売り'] + x_['損切り'] for x_ in nr_]):,.0f}回（うち損切り {np.mean([x_['損切り'] for x_ in nr_]):,.0f}回）")
+            else:
+                res_.append("—")
+        out["plc"][code_] = tuple(res_)
+
+    # 4 効き目
+    print("\n  4. 効き目（2つのルールの差。52条件・清算後。良くなった＝85％以上の条件で上回り平均+1.0pt以上 ／ "
+          "悪くなった＝85％以上で下回る ／ 同じくらい＝平均−0.5pt以内・いちばん悪い差−1.0pt以内）")
+    _wd = {"良い": "良くなった", "悪い": "悪くなった", "同じくらい": "同じくらい", "決められない": "決められない", "—": "—"}
+    for nm_, a_c, b_c in LAB9_PAIRS:
+        a_n, b_n = code_of.get(a_c), code_of.get(b_c)
+        if not a_n or not b_n:
+            continue
+        r_o, r_r = _vs(_lb(a_n), _lb(b_n), io), _vs(_lb(a_n), _lb(b_n), irc)
+
+        def _fp(r_):
+            if r_ is None:
+                return "—"
+            d_, c_, cl_, cm_ = r_
+            return (f"{d_.mean():+.1f}pt・上回った{(d_ > 0).mean() * 100:.0f}％・{_wd.get(c_, c_)}"
+                    + ("" if cl_ == cm_ else f"（清算後{_wd.get(cl_, cl_)}・評価額{_wd.get(cm_, cm_)}）"))
+        out["pair"][nm_] = (_wd.get(r_o[1], "—") if r_o else "—", _wd.get(r_r[1], "—") if r_r else "—")
+        print(f"    {nm_}（{a_c} − {b_c}） … 見ていない期間 {_fp(r_o)} ／ 最近 {_fp(r_r)}")
+
+    # 5 通しの17年
+    if cont and m0 is not None and "live_small1_pit" in cont:
+        c0 = cont["live_small1_pit"]["curve"]
+        d0, d1 = pd.Timestamp(c0["date"].iloc[0]), pd.Timestamp(c0["date"].iloc[-1])
+        yrs = max((d1 - d0).days / 365.25, 0.5)
+        cap = float(cont["live_small1_pit"]["capital"])
+        cal_ = SWING_DAILY.get("_cal") if isinstance(SWING_DAILY, dict) else None
+        print(f"\n  5. 通しで持った場合（{d0.date()}〜{d1.date()}・{yrs:.1f}年・資金投入0か月・元本{cap / 1e4:,.0f}万円）")
+        print("    " + f"{'':<14}{'清算後年率':>8}{'最大下落':>8}{'最後（清算後）':>10}{'売り/年':>9}{'勝ち':>6}{'平均の益':>8}"
+              f"{'平均の損':>8}{'損切り':>7}{'持った日':>8}{'現金':>6}")
+        rows_ = [("live_small1_pit", "本番")] + [(n_, c_) for c_, n_, s_ in LAB9_V]
+        for n_, lab_ in rows_:
+            r_ = cont.get(n_)
+            if not r_:
+                continue
+            lq_ = r_["liq"] if r_.get("liq") else float(r_["curve"]["value"].iloc[-1])
+            ex_ = r_.get("exits") or []
+            if ex_:
+                g_ = np.array([x_[3] for x_ in ex_], dtype=float)
+                g_ = g_[np.isfinite(g_)]
+                win_ = g_[g_ > 0]
+                los_ = g_[g_ <= 0]
+                stp_ = float(np.mean([x_[4] == "損切り" for x_ in ex_]))
+                hd_ = []
+                if cal_ is not None:
+                    for x_ in ex_:
+                        if x_[1] is not None:
+                            hd_.append(int(np.searchsorted(cal_, x_[2])) - int(np.searchsorted(cal_, x_[1])))
+                hd_s = f"{np.median(hd_):>7.0f}日" if hd_ else f"{'—':>8}"
+                st_ = (f"{len(ex_) / yrs:>9,.1f}回{(len(win_) / len(g_) * 100 if len(g_) else float('nan')):>5.0f}％"
+                       f"{(win_.mean() * 100 if len(win_) else float('nan')):>+7.1f}％{(los_.mean() * 100 if len(los_) else float('nan')):>+7.1f}％"
+                       f"{stp_ * 100:>6.0f}％{hd_s}")
+            else:
+                st_ = f"{'—':>10}{'—':>6}{'—':>8}{'—':>8}{'—':>7}{'—':>8}"
+            cs_ = r_.get("現金比率")
+            print("    " + f"{lab_:<14}{r_['清算後年率']:>9.1f}％{r_['最大下落']:>8.1f}％{lq_ / 1e4:>11,.0f}万円" + st_
+                  + (f"{cs_:>5.0f}％" if cs_ is not None and cs_ == cs_ else f"{'—':>6}"))
+        if etf0:
+            print("    " + f"{'TOPIX（1306）':<14}{etf0['清算後年率']:>9.1f}％{etf0['最大下落']:>8.1f}％{etf0['liq_value'] / 1e4:>11,.0f}万円")
+        print("    （売り/年＝売った回数（上の線＋損切り）の1年あたり。勝ち＝費用を引いて益が出た売りの割合。平均の益・損は1回あたり。"
+              "損切り＝売りのうち損切りの割合。持った日＝買ってから売るまでの営業日の真ん中。現金＝月末の現金の割合の平均）")
+        parts_ = []
+        for c_, n_, _ in LAB9_V:
+            r_ = cont.get(n_)
+            if not r_ or not r_.get("exits"):
+                continue
+            g_ = np.array([x_[3] for x_ in r_["exits"]], dtype=float)
+            g_ = g_[np.isfinite(g_)]
+            parts_.append(f"{c_} {g_.mean() * 100:+.2f}％・費用 年{r_.get('費用', 0.0) / cap / yrs * 100:.1f}％"
+                          f"・税 年{r_.get('税', 0.0) / cap / yrs * 100:.1f}％")
+        if parts_:
+            print("    売り1回の平均の損益（費用込み）・約定のずれの費用と税（1年あたり・元本比） … " + " ／ ".join(parts_))
+
+    # 総合
+    print("\n  総合（結果を見る前に決めた基準）")
+    for code_, n_, sh_ in LAB9_V:
+        if code_ not in out["verd"]:
+            continue
+        v_, t_ = out["verd"][code_], out["tpx"].get(code_, ("—", "—"))
+        p_ = out["plc"].get(code_)
+        ok_ = (p_ is not None and all(x_ == "線のタイミングに意味がある" for x_ in p_)
+               and all(x_ not in ("指数に負ける", "—") for x_ in t_))
+        if ok_:
+            out["maybe"].append(code_)
+        print(f"    {code_} {sh_} … 本番と {v_[0]}・{v_[1]} ／ TOPIX と {t_[0]}・{t_[1]}"
+              + (f" ／ でたらめな日と {p_[0]}・{p_[1]}" if p_ else "（でたらめな日とは比べていない）") + (" → 可能性あり" if ok_ else ""))
+    print("    可能性あり（V1・V2・V3 のうち、でたらめな日に両方の期間で勝ち、TOPIX にも負けない） … "
+          + ("・".join(out["maybe"]) if out["maybe"] else "なし（可能性は見えない）"))
+    print("    並走記録の候補（本番との比べで両方の期間「良い」） … " + ("・".join(out["adopt"]) if out["adopt"] else "なし（いまの本番のまま）"))
+    print("  （日足で確かめられるのはここまで。日中の値動き（数分〜数時間の売り買い）は確かめていない）")
+    return out
+
+
 # ══════════════════════════════════════════
 def main() -> int:
     global LONG_MODE, CACHE, PIT_FROM, COMPUTE_START_LIMIT_MIN
@@ -9215,7 +9663,7 @@ def main() -> int:
     #   20年分は別のキャッシュ（data/yield_backtest_long.pkl）に入れ、いまの9年分には触らない。
     #   取り終わっていなければ取得から始める（途中で止まったら、同じ設定でもう一度押す）。
     args.long_test = args.long_lab = args.long_lab2 = args.long_lab3 = args.long_lab4 = args.long_lab5 = False
-    args.long_lab6 = args.long_lab7 = args.long_lab8 = False
+    args.long_lab6 = args.long_lab7 = args.long_lab8 = args.long_lab9 = False
     # 20年分の追加検証（2026年10月19日に追加。計画はプロジェクトの long_lab_plan_2026-10-19）
     #   long_lab  … ルールの候補20個・近い設定6つ・参考2つを、本番と同じ52条件で回す
     #   long_lab2 … 運・偏り・始めた月・業種（20回目と同じ作り方。比べる指数は TOPIX）
@@ -9227,16 +9675,18 @@ def main() -> int:
     #   long_lab6 … 売買を増やす形（2026年10月20日夜に追加。計画は同じ long_lab_plan_2026-10-19 の9）
     #   long_lab7 … 取引が効く局面（2026年10月21日に追加。計画は同じ long_lab_plan_2026-10-19 の10）
     #   long_lab8 … 切り替え・買い方の局面・始める局面・うねりが効く銘柄（2026年10月21日に追加。計画は同じ文書の11）
-    if _mode0 in ("long_lab", "long_lab2", "long_lab3", "long_lab4", "long_lab5", "long_lab6", "long_lab7", "long_lab8"):
+    #   long_lab9 … 小さなうねり＋損切り・高配当株以外の銘柄（2026年10月21日に追加。計画は同じ文書の12）
+    if _mode0 in ("long_lab", "long_lab2", "long_lab3", "long_lab4", "long_lab5", "long_lab6", "long_lab7", "long_lab8",
+                  "long_lab9"):
         (args.long_lab, args.long_lab2, args.long_lab3, args.long_lab4, args.long_lab5, args.long_lab6,
-         args.long_lab7, args.long_lab8) = (_mode0 == "long_lab", _mode0 == "long_lab2", _mode0 == "long_lab3",
-                                            _mode0 == "long_lab4", _mode0 == "long_lab5", _mode0 == "long_lab6",
-                                            _mode0 == "long_lab7", _mode0 == "long_lab8")
+         args.long_lab7, args.long_lab8, args.long_lab9) = (_mode0 == "long_lab", _mode0 == "long_lab2", _mode0 == "long_lab3",
+                                                            _mode0 == "long_lab4", _mode0 == "long_lab5", _mode0 == "long_lab6",
+                                                            _mode0 == "long_lab7", _mode0 == "long_lab8", _mode0 == "long_lab9")
         args.liq_metric, args.grid = True, True
         args.only = ",".join(LAB_RULES if args.long_lab else LAB2_RULES if args.long_lab2
                              else LAB3_RULES if args.long_lab3 else LAB4_RULES if args.long_lab4
                              else LAB5_RULES if args.long_lab5 else LAB6_RULES if args.long_lab6
-                             else LAB7_RULES if args.long_lab7 else LAB8_RULES)
+                             else LAB7_RULES if args.long_lab7 else LAB8_RULES if args.long_lab8 else LAB9_RULES)
         args.universe = "prime"
         args.years = 20
         LONG_MODE = True
@@ -9298,12 +9748,12 @@ def main() -> int:
 
     # 20年分のキャッシュを使うモードのどれか（long_test・long_lab・long_lab2）
     args.long_any = bool(args.long_test or args.long_lab or args.long_lab2 or args.long_lab3 or args.long_lab4
-                         or args.long_lab5 or args.long_lab6 or args.long_lab7 or args.long_lab8)
+                         or args.long_lab5 or args.long_lab6 or args.long_lab7 or args.long_lab8 or args.long_lab9)
     args.long_name = ("long_test" if args.long_test else "long_lab" if args.long_lab
                       else "long_lab2" if args.long_lab2 else "long_lab3" if args.long_lab3
                       else "long_lab4" if args.long_lab4 else "long_lab5" if args.long_lab5
                       else "long_lab6" if args.long_lab6 else "long_lab7" if args.long_lab7
-                      else "long_lab8" if args.long_lab8 else "")
+                      else "long_lab8" if args.long_lab8 else "long_lab9" if args.long_lab9 else "")
 
     OUTDIR.mkdir(parents=True, exist_ok=True)
 
@@ -9579,6 +10029,8 @@ def main() -> int:
             pn_ = add_range_columns(store, pn_, int(_d[0]), _d[1], _d[2], _d[4])
         if UNI_HIST is not None and not pn_.empty:
             pn_ = add_uni_columns(pn_)
+        if getattr(args, "long_lab9", False) and not pn_.empty:
+            pn_ = add_lab9_columns(store, pn_)
         return pn_
 
     # 価格で損切りするルールがあれば、日々の終値を用意する。
@@ -9641,6 +10093,13 @@ def main() -> int:
         log.info("  1か月あたりの銘柄数 … いまの一覧 平均%.0f ／ その時点の一覧 平均%.0f（最初の月 %d・最後の月 %d）",
                  float(_pm["in_uni_now"].mean()), float(_pm["in_uni_pit"].mean()),
                  int(_pm["in_uni_pit"].iloc[0]), int(_pm["in_uni_pit"].iloc[-1]))
+    # 20年分の追加検証9：値動きの大きさ（値動きの大きい半分）と、時価総額の順位（日々の買いの順番）を足す
+    if getattr(args, "long_lab9", False):
+        panel = add_lab9_columns(store, panel)
+        _v9 = panel[panel["in_uni_live"].astype(bool)] if "in_uni_live" in panel.columns else panel
+        log.info("20年分の追加検証9：値動きの大きさ（年率）の中央値 平均 %.0f％ ／ 値動きの大きい半分 1か月あたり平均 %.0f社",
+                 float(_v9.groupby("date")["vol250"].median().mean() * 100) if _v9["vol250"].notna().any() else float("nan"),
+                 float(_v9.groupby("date")["vol_top_pit"].sum().mean()))
 
     # 外部要因を使う検証では、追い風か逆風かをパネルに足す
     if args.factor_test:
@@ -14135,6 +14594,93 @@ def main() -> int:
             _e8 = (etf_hold(_tp, sorted(_pn[_pn["date"] >= _long_m0]["date"].unique()), args.capital, 0,
                             dist=ETF_DIST["1306"], **_kwe) if (_tp is not None and _long_m0 is not None) else None)
             lab8_report(gf, cond_cols, _os, _rs, _pn, _tp, _e8, _K8, _S8, _T8, _long_m0, nm)
+
+        # ── 20年分の追加検証9（2026年10月21日に追加。基準は結果を見る前に決めたもの。long_lab_plan_2026-10-19 の12）──
+        #   総当たり（52条件）の表のほかに、通しの17年（本番・W1・V1〜V4。資金投入0か月。売り買い1回ごとの記録つき）と、
+        #   でたらめな日（V1・V2・V3。見ていない期間と最近の窓 × 資金投入0か月 × LAB9_PLACEBO_N 通り）を計算する
+        if getattr(args, "long_lab9", False) and nm and nm[0] == "live_small1_pit":
+            _os, _rs = _long_spans
+            _pn = panels[lbs_[0]]
+            _skw = dict(tier_budget=args.realistic, dividends=args.realistic, slip_bps=args.slip_bps,
+                        fee_bps=args.fee_bps, tax_rate=args.tax / 100.0, min_yield_override=mys[0])
+            _kwe = dict(tax_rate=args.tax / 100.0, slip_bps=args.slip_bps, fee_bps=args.fee_bps)
+            _ex, _ql, _notes = etf_ready(_etf_px, store["quotes"], _pn["date"].min())
+            _tp = _ex.get("1306")
+            _span9 = {f"{a_.date()}〜{b_.date()}": (a_, b_) for a_, b_ in wins}
+
+            class _Lab9Stop(Exception):
+                pass
+
+            def _ck9(key_, fn_):
+                if _ck is not None and key_ in _ck["misc"]:
+                    return _ck["misc"][key_]
+                if _long_stop("20年分の追加検証9の途中"):
+                    raise _Lab9Stop
+                v_ = fn_()
+                if _ck is not None:
+                    _ck["misc"][key_] = v_
+                    _ck_work[0] += 1
+                return v_
+
+            def _tpx9(dts_, rp_):
+                if _tp is None:
+                    return None
+                return etf_hold(_tp, dts_, args.capital, rp_, dist=ETF_DIST["1306"], **_kwe)
+
+            def _brief9(res_, exits_=False):
+                """残すのは表に要る数字だけ（通しは曲線と、売り買い1回ごとの記録も）。"""
+                m_ = metrics(res_)
+                d_ = res_.get("diag", {})
+                o_ = {"清算後年率": m_.get("清算後年率"), "年率": m_.get("年率"), "最大下落": m_.get("最大下落"),
+                      "売却益": m_.get("売却益", 0.0), "配当": m_.get("配当", 0.0), "現金比率": m_.get("現金比率"),
+                      "liq": res_.get("liq_value"), "capital": res_["capital"],
+                      "うねり売り": d_.get("range_sells", 0), "底で買い": d_.get("swing_buys", 0),
+                      "損切り": d_.get("sw_stop_sells", 0),
+                      "elig_sell": d_.get("sw_elig_sell", 0), "elig_buy": d_.get("sw_elig_buy", 0)}
+                if exits_:
+                    o_["費用"] = float(d_.get("fee", 0.0))
+                    o_["税"] = float(d_.get("tax", 0.0))
+                    o_["curve"] = res_["curve"][["date", "value"]].copy()
+                    o_["exits"] = [(str(c_), (int(a_) if a_ is not None else None), int(b_), float(g_), str(k_))
+                                   for c_, a_, b_, g_, k_ in d_.get("sw_exits", [])]
+                return o_
+
+            def _sim9(sub_, n_, rp_, plc_=None, exits_=False):
+                cfg_ = VARIANTS[n_]
+                if plc_ is not None:
+                    cfg_ = dict(cfg_, swing_daily=dict(cfg_["swing_daily"], placebo=plc_))
+                return _brief9(simulate(sub_, cfg_, args.capital, mxs_[0], ramp=rp_, **_skw), exits_)
+
+            _wl9 = [(sp_, _pn[(_pn["date"] >= _span9[sp_][0]) & (_pn["date"] <= _span9[sp_][1])])
+                    for sp_ in list(_os) + list(_rs) if sp_ in _span9]
+            _cont9 = ["live_small1_pit"] + [r_ for _, r_, _ in LAB9_V]
+            log.info("20年分の追加検証9：通しの17年（%dルール）・でたらめな日（%d期間 × %d通り × %d）を回します",
+                     len(_cont9), len(_wl9), LAB9_PLACEBO_N, len(LAB9_PLACEBO))
+            _P9, _C9 = {}, {}
+            try:
+                if _long_m0 is not None:
+                    _subf9 = _pn[_pn["date"] >= _long_m0]
+                    for n_ in _cont9:
+                        _C9[n_] = _ck9(("C9", n_), lambda n=n_: _sim9(_subf9, n, 0, exits_=True))
+                    log.info("  通しの17年 %d ルールが完了", len(_C9))
+                for code_, n_ in LAB9_PLACEBO:
+                    for wi_, (sp_, sub_) in enumerate(_wl9):
+                        r0_ = _ck9(("P9", code_, sp_, "real"), lambda s=sub_, n=n_: _sim9(s, n, 0))
+                        _P9[(code_, sp_, "real")] = r0_
+                        ps_ = r0_["うねり売り"] / max(1, r0_["elig_sell"])
+                        pb_ = r0_["底で買い"] / max(1, r0_["elig_buy"])
+                        for k_ in range(LAB9_PLACEBO_N):
+                            _P9[(code_, sp_, k_)] = _ck9(
+                                ("P9", code_, sp_, k_),
+                                lambda s=sub_, n=n_, w=wi_, kk=k_, a=ps_, b=pb_: _sim9(
+                                    s, n, 0, {"seed": 9000 + 100 * w + kk, "p_sell": a, "p_buy": b}))
+                        log.info("  でたらめな日 %s %d/%d 期間が完了", code_, wi_ + 1, len(_wl9))
+            except _Lab9Stop:
+                return EXIT_UNFINISHED
+            if _ck is not None and _ck_work[0] > 0:
+                save_store(_long_raw, "20年分の追加検証9：計算が済んだ分を保存しました")
+            _e9 = (_tpx9(sorted(_pn[_pn["date"] >= _long_m0]["date"].unique()), 0) if _long_m0 is not None else None)
+            lab9_report(gf, cond_cols, _os, _rs, _span9, _pn, _tpx9, _P9, _C9, _e9, _long_m0, nm)
 
         if getattr(args, "long_test", False) and nm and nm[0] == "live_small1_pit":
             L0, Lb = VARIANTS["live_small1_pit"]["label"], VARIANTS["live_nobank"]["label"]
