@@ -2329,6 +2329,10 @@ LAB10_EPISODES = (        # 名前、TOPIX の天井と底を探す範囲（始�
 )
 LAB10_CUT = 0.10          # 減配＝実績の年間配当が前の通期より10％以上減った決算が、翌1年に出た（div_cut10 と同じ10％）
 LAB10_END_GAP = 45        # 株価の記録がデータの終わりよりこの日数以上前に終わった銘柄は「途中で終わった」（最後の終値で売ったことにする）
+# ── 20年分の追加検証11（2026年10月22日夜に追加。計画は long_lab_plan_2026-10-19 の14）：配当収入の年ごとの推移 ──
+#   一括（2009年6月末に1,000万円）と積立（毎月同じ額で合計1,000万円）の本番について、年ごとの受取配当・評価額・減配した持ち株・緊急売りを出す。
+#   手法の判定はしない
+LAB11_RULES = ["live_small1_pit"]
 
 # 可変ルールの加減点。必要パーセンタイルを下げる＝買いやすくする。
 # 条件を増やすほど過去に合わせただけの数字になりやすいので、3つに絞っています。
@@ -5741,6 +5745,7 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                     trades.append({"code": code, "date": dt, "side": "sell",
                                    "price": eff, "shares": sh})
                 diag["cut_exits"] = diag.get("cut_exits", 0) + 1
+                diag.setdefault("cut_exit_dates", []).append((code, pd.Timestamp(dt)))     # 20年分の追加検証11：記録だけ
                 # 11回目：どう買った銘柄で緊急売りになったか（線の下で買った／月末に買った／最初の月に買った）と、
                 # 売ったときの損益（約定のずれ込み後・税引前、取得単価に対して）
                 _org = st.get("origin", "month")
@@ -6355,6 +6360,9 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                         _dk = pd.Timestamp(dt)
                         diag.setdefault("div_by_month", {})
                         diag["div_by_month"][_dk] = diag["div_by_month"].get(_dk, 0.0) + net
+                        # 20年分の追加検証11（2026年10月22日に追加）：税引き前の配当も月ごとに残す（記録だけ。数字は変えない）
+                        diag.setdefault("div_gross_by_month", {})
+                        diag["div_gross_by_month"][_dk] = diag["div_gross_by_month"].get(_dk, 0.0) + gross
                         diag["tax"] = diag.get("tax", 0.0) + (gross - net)
 
         # ── 18回目（2026年10月17日に追加）：1銘柄の比率の上限 ──
@@ -9805,6 +9813,119 @@ def lab10_report(fw: pd.DataFrame, daily: dict) -> dict:
     return out
 
 
+def lab11_cut_events(panel: pd.DataFrame) -> set:
+    """20年分の追加検証11：「実績の年間配当が前の通期より10％以上減った」決算が新しく出た（銘柄, 月末）の集まり（long_lab10 と同じ判定）。"""
+    if panel.empty or "div_cut10" not in panel.columns:
+        return set()
+    pn = panel.sort_values(["code", "date"]).reset_index(drop=True)
+    c10 = pd.to_numeric(pn["div_cut10"], errors="coerce").fillna(0.0) > 0.5
+    chg = pd.to_numeric(pn.get("div_chg", np.nan), errors="coerce")
+    same_code = pn["code"].eq(pn["code"].shift(1))
+    prev_c10 = c10.shift(1).fillna(False).astype(bool) & same_code
+    prev_chg = chg.shift(1).where(same_code)
+    ev = c10 & (~prev_c10 | (chg.fillna(-9) != prev_chg.fillna(-9)))
+    return {(str(c_), pd.Timestamp(d_)) for c_, d_ in zip(pn.loc[ev, "code"], pn.loc[ev, "date"])}
+
+
+def lab11_table(res: dict, events: set, capital: float, ramp_months: int) -> pd.DataFrame:
+    """20年分の追加検証11：年ごとの受取配当・評価額・持ち株・減配した持ち株・緊急売りの表を作る。
+    res は curve（date・value）・trades・div_by_month・div_gross_by_month・cut_exit_dates を持つ。
+    ramp_months が0なら一括（元本＝capital）、0より大きければ積立（その年末までに入れた額＝capital × 経過月数 ÷ ramp_months）。"""
+    cv = res["curve"].copy()
+    cv["date"] = pd.to_datetime(cv["date"])
+    cv = cv.sort_values("date")
+    tr = res.get("trades")
+    tr = tr.copy() if tr is not None and not tr.empty else pd.DataFrame(columns=["code", "date", "side", "shares"])
+    if not tr.empty:
+        tr["date"] = pd.to_datetime(tr["date"])
+        tr["sgn"] = np.where(tr["side"] == "buy", 1.0, -1.0) * tr["shares"].astype(float)
+    dn = {pd.Timestamp(k): float(v) for k, v in (res.get("div_by_month") or {}).items()}
+    dg = {pd.Timestamp(k): float(v) for k, v in (res.get("div_gross_by_month") or {}).items()}
+    cuts = [pd.Timestamp(d) for _, d in (res.get("cut_exit_dates") or [])]
+    mends = list(cv["date"])
+    held_at = {}
+    for i_, m_ in enumerate(mends):
+        if tr.empty:
+            held_at[m_] = set()
+        else:
+            h_ = tr[tr["date"] <= m_].groupby("code")["sgn"].sum()
+            held_at[m_] = set(h_[h_ > 0.5].index.astype(str))
+    rows = []
+    years = sorted(set(d.year for d in mends))
+    prev_val = None
+    for y_ in years:
+        ms = [m_ for m_ in mends if m_.year == y_]
+        net = sum(dn.get(m_, 0.0) for m_ in ms)
+        gross = sum(dg.get(m_, 0.0) for m_ in ms)
+        last = ms[-1]
+        val = float(cv.loc[cv["date"] == last, "value"].iloc[0])
+        if ramp_months > 0:
+            # 積立：まだ入れていない分（現金で待っている分）を除いた、入れた分の評価額
+            val -= capital * (1.0 - min(1.0, (mends.index(last) + 1) / ramp_months))
+        n_held = len(held_at.get(last, set()))
+        # 減配した持ち株：その年に減配の決算が新しく出た銘柄のうち、その月の前の月末に持っていたもの（銘柄は1年に1回だけ数える）
+        cut_codes = set()
+        for m_ in ms:
+            k_ = mends.index(m_)
+            prev_held = held_at[mends[k_ - 1]] if k_ > 0 else set()
+            for c_ in prev_held:
+                if (c_, m_) in events:
+                    cut_codes.add(c_)
+        n_cut = len(cut_codes)
+        n_emg = sum(1 for d_ in cuts if d_.year == y_)
+        if ramp_months > 0:
+            k_last = mends.index(last)
+            paid = capital * min(1.0, (k_last + 1) / ramp_months)
+        else:
+            paid = capital
+        rows.append({"年": y_, "月数": len(ms), "税引き前": gross, "税引き後": net, "元本": paid,
+                     "元本比": net / paid if paid > 0 else float("nan"),
+                     "前年末比": (net / prev_val) if (prev_val is not None and prev_val > 0) else float("nan"),
+                     "年末の評価額": val, "持ち株": n_held, "減配した持ち株": n_cut, "緊急売り": n_emg})
+        prev_val = val
+    return pd.DataFrame(rows)
+
+
+def lab11_report(tabs: dict, capital: float) -> dict:
+    """20年分の追加検証11（long_lab11）：配当収入の年ごとの推移を出す。2026年10月22日夜に追加。手法の判定はしない。"""
+    out = {}
+    print("\n【20年分の追加検証11：配当収入の年ごとの推移】（手法の判定はしない。計画はプロジェクトの long_lab_plan_2026-10-19 の14）")
+    print(f"  本番のルールで、一括（2009年6月末に{capital / 1e4:,.0f}万円）と積立（毎月同じ額で合計{capital / 1e4:,.0f}万円）。"
+          "配当は権利確定した月末に受け取ったことにしている（実際の入金は2〜3か月あと）。税は20.315％")
+    print("  減配した持ち株 … その年に「実績の年間配当が前の通期より10％以上減った」決算が新しく出た銘柄のうち、その月の前の月末に持っていたもの。"
+          "緊急売り … 減配・業績急変で売った回数")
+    print("  予想 … 一括は税引き後の配当が元本の年5〜8％で、2010年から2026年にかけて増える（2020年前後に横ばいか少し減る年がある）。"
+          "前の年より減った年は2〜4回・いちばん減った幅は15％以内。減配した持ち株は年に0〜3銘柄で、2009年と2020年が多い")
+    for name_, (tab, ramp_) in tabs.items():
+        if tab is None or tab.empty:
+            print(f"\n  {name_} … 計算がない")
+            continue
+        print(f"\n  ■ {name_}")
+        print("    " + f"{'年':<7}{'税引き前':>9}{'税引き後':>9}{'元本比':>7}{'前年末の評価額比':>12}{'年末の評価額':>11}{'持ち株':>6}{'減配した持ち株':>9}{'緊急売り':>7}")
+        for _, r_ in tab.iterrows():
+            y_ = f"{int(r_['年'])}" + ("＊" if int(r_["月数"]) < 12 else "")
+            pr_ = f"{r_['前年末比'] * 100:>10.1f}％" if r_["前年末比"] == r_["前年末比"] else f"{'—':>12}"
+            print("    " + f"{y_:<7}{r_['税引き前'] / 1e4:>8,.0f}万{r_['税引き後'] / 1e4:>8,.0f}万{r_['元本比'] * 100:>6.1f}％{pr_}"
+                  f"{r_['年末の評価額'] / 1e4:>10,.0f}万{int(r_['持ち株']):>5}{int(r_['減配した持ち株']):>9}{int(r_['緊急売り']):>7}")
+        full = tab[tab["月数"] == 12].reset_index(drop=True)
+        if len(full) >= 2:
+            ch = full["税引き後"].pct_change().dropna()
+            n_down = int((ch < 0).sum())
+            worst = float(ch.min()) if len(ch) else float("nan")
+            yr_worst = int(full.loc[ch.idxmin(), "年"]) if len(ch) else None
+            yv = full[full["前年末比"].notna()]
+            lo_ = yv.loc[yv["前年末比"].idxmin()] if len(yv) else None
+            hi_ = yv.loc[yv["前年末比"].idxmax()] if len(yv) else None
+            out[name_] = {"n_down": n_down, "worst": worst, "total_net": float(tab["税引き後"].sum())}
+            print(f"    まとめ（{int(full['年'].min())}〜{int(full['年'].max())}年） … 税引き後の配当が前の年より減った年 {n_down}回"
+                  + (f"（いちばん減ったのは{yr_worst}年の{worst * 100:+.1f}％）" if len(ch) else "")
+                  + (f" ／ 配当÷前年末の評価額 いちばん低い年 {int(lo_['年'])}年 {lo_['前年末比'] * 100:.1f}％・高い年 {int(hi_['年'])}年 {hi_['前年末比'] * 100:.1f}％"
+                     if lo_ is not None else "")
+                  + f" ／ 17年の税引き後の配当の合計 {tab['税引き後'].sum() / 1e4:,.0f}万円・減配した持ち株 のべ{int(tab['減配した持ち株'].sum())}銘柄・緊急売り {int(tab['緊急売り'].sum())}回")
+    print("  （＊＝1年に満たない年。2009年は6月末から、2026年は10月末まで。積立の元本比と年末の評価額は、その年末までに入れた分に対するもの）")
+    return out
+
+
 # ══════════════════════════════════════════
 def main() -> int:
     global LONG_MODE, CACHE, PIT_FROM, COMPUTE_START_LIMIT_MIN
@@ -9963,7 +10084,7 @@ def main() -> int:
     #   20年分は別のキャッシュ（data/yield_backtest_long.pkl）に入れ、いまの9年分には触らない。
     #   取り終わっていなければ取得から始める（途中で止まったら、同じ設定でもう一度押す）。
     args.long_test = args.long_lab = args.long_lab2 = args.long_lab3 = args.long_lab4 = args.long_lab5 = False
-    args.long_lab6 = args.long_lab7 = args.long_lab8 = args.long_lab9 = args.long_lab10 = False
+    args.long_lab6 = args.long_lab7 = args.long_lab8 = args.long_lab9 = args.long_lab10 = args.long_lab11 = False
     # 20年分の追加検証（2026年10月19日に追加。計画はプロジェクトの long_lab_plan_2026-10-19）
     #   long_lab  … ルールの候補20個・近い設定6つ・参考2つを、本番と同じ52条件で回す
     #   long_lab2 … 運・偏り・始めた月・業種（20回目と同じ作り方。比べる指数は TOPIX）
@@ -9977,18 +10098,20 @@ def main() -> int:
     #   long_lab8 … 切り替え・買い方の局面・始める局面・うねりが効く銘柄（2026年10月21日に追加。計画は同じ文書の11）
     #   long_lab9 … 小さなうねり＋損切り・高配当株以外の銘柄（2026年10月21日に追加。計画は同じ文書の12）
     #   long_lab10 … 市場の地形（2026年10月22日に追加。計画は同じ文書の13。手法の判定はしない）
+    #   long_lab11 … 配当収入の年ごとの推移（2026年10月22日夜に追加。計画は同じ文書の14。手法の判定はしない）
     if _mode0 in ("long_lab", "long_lab2", "long_lab3", "long_lab4", "long_lab5", "long_lab6", "long_lab7", "long_lab8",
-                  "long_lab9", "long_lab10"):
+                  "long_lab9", "long_lab10", "long_lab11"):
         (args.long_lab, args.long_lab2, args.long_lab3, args.long_lab4, args.long_lab5, args.long_lab6,
-         args.long_lab7, args.long_lab8, args.long_lab9, args.long_lab10) = (
+         args.long_lab7, args.long_lab8, args.long_lab9, args.long_lab10, args.long_lab11) = (
             _mode0 == "long_lab", _mode0 == "long_lab2", _mode0 == "long_lab3", _mode0 == "long_lab4", _mode0 == "long_lab5",
-            _mode0 == "long_lab6", _mode0 == "long_lab7", _mode0 == "long_lab8", _mode0 == "long_lab9", _mode0 == "long_lab10")
+            _mode0 == "long_lab6", _mode0 == "long_lab7", _mode0 == "long_lab8", _mode0 == "long_lab9", _mode0 == "long_lab10",
+            _mode0 == "long_lab11")
         args.liq_metric, args.grid = True, True
         args.only = ",".join(LAB_RULES if args.long_lab else LAB2_RULES if args.long_lab2
                              else LAB3_RULES if args.long_lab3 else LAB4_RULES if args.long_lab4
                              else LAB5_RULES if args.long_lab5 else LAB6_RULES if args.long_lab6
                              else LAB7_RULES if args.long_lab7 else LAB8_RULES if args.long_lab8
-                             else LAB9_RULES if args.long_lab9 else LAB10_RULES)
+                             else LAB9_RULES if args.long_lab9 else LAB10_RULES if args.long_lab10 else LAB11_RULES)
         args.universe = "prime"
         args.years = 20
         LONG_MODE = True
@@ -10051,13 +10174,13 @@ def main() -> int:
     # 20年分のキャッシュを使うモードのどれか（long_test・long_lab・long_lab2）
     args.long_any = bool(args.long_test or args.long_lab or args.long_lab2 or args.long_lab3 or args.long_lab4
                          or args.long_lab5 or args.long_lab6 or args.long_lab7 or args.long_lab8 or args.long_lab9
-                         or args.long_lab10)
+                         or args.long_lab10 or args.long_lab11)
     args.long_name = ("long_test" if args.long_test else "long_lab" if args.long_lab
                       else "long_lab2" if args.long_lab2 else "long_lab3" if args.long_lab3
                       else "long_lab4" if args.long_lab4 else "long_lab5" if args.long_lab5
                       else "long_lab6" if args.long_lab6 else "long_lab7" if args.long_lab7
                       else "long_lab8" if args.long_lab8 else "long_lab9" if args.long_lab9
-                      else "long_lab10" if args.long_lab10 else "")
+                      else "long_lab10" if args.long_lab10 else "long_lab11" if args.long_lab11 else "")
 
     OUTDIR.mkdir(parents=True, exist_ok=True)
 
@@ -15016,6 +15139,43 @@ def main() -> int:
             _d10 = lab10_daily(store, _pn, _R10, _long_m0, _tp)
             log.info("  日ごとの値 … %s", "・".join(f"{k_} {len(v_):,}日" for k_, v_ in _d10.items()))
             lab10_report(_fw10, _d10)
+
+        # ── 20年分の追加検証11（2026年10月22日夜に追加。計画は long_lab_plan_2026-10-19 の14。手法の判定はしない）──
+        #   本番の通し（一括・積立）を回し、年ごとの受取配当・評価額・減配した持ち株・緊急売りを出す
+        if getattr(args, "long_lab11", False) and nm and nm[0] == "live_small1_pit":
+            _pn = panels[lbs_[0]]
+            _skw = dict(tier_budget=args.realistic, dividends=args.realistic, slip_bps=args.slip_bps,
+                        fee_bps=args.fee_bps, tax_rate=args.tax / 100.0, min_yield_override=mys[0])
+            _tabs11 = {}
+            if _long_m0 is not None:
+                _subf11 = _pn[_pn["date"] >= _long_m0]
+                _nm11 = int(_subf11["date"].nunique())
+                _R11 = {}
+                for key_, ramp_ in (("一括", 0), ("積立", _nm11)):
+                    _k11 = ("K11", key_)
+                    if _ck is not None and _k11 in _ck["misc"]:
+                        _R11[key_] = _ck["misc"][_k11]
+                        continue
+                    if _long_stop("20年分の追加検証11の途中"):
+                        return EXIT_UNFINISHED
+                    _r_ = simulate(_subf11, VARIANTS["live_small1_pit"], args.capital, mxs_[0], ramp=ramp_, **_skw)
+                    _d_ = _r_.get("diag", {})
+                    _R11[key_] = {"curve": _r_["curve"][["date", "value", "cash"]].copy(), "trades": _r_["trades"].copy(),
+                                  "capital": _r_["capital"], "ramp": ramp_,
+                                  "div_by_month": dict(_d_.get("div_by_month", {})),
+                                  "div_gross_by_month": dict(_d_.get("div_gross_by_month", {})),
+                                  "cut_exit_dates": list(_d_.get("cut_exit_dates", [])),
+                                  "dividend": float(_d_.get("dividend", 0.0)), "cut_exits": int(_d_.get("cut_exits", 0))}
+                    if _ck is not None:
+                        _ck["misc"][_k11] = _R11[key_]
+                        _ck_work[0] += 1
+                if _ck is not None and _ck_work[0] > 0:
+                    save_store(_long_raw, "20年分の追加検証11：計算が済んだ分を保存しました")
+                _ev11 = lab11_cut_events(_subf11)
+                log.info("20年分の追加検証11：減配の決算が新しく出た（銘柄, 月末） … %s件", f"{len(_ev11):,}")
+                for key_, r_ in _R11.items():
+                    _tabs11[key_] = (lab11_table(r_, _ev11, args.capital, int(r_["ramp"])), int(r_["ramp"]))
+            lab11_report(_tabs11, args.capital)
 
         if getattr(args, "long_test", False) and nm and nm[0] == "live_small1_pit":
             L0, Lb = VARIANTS["live_small1_pit"]["label"], VARIANTS["live_nobank"]["label"]
