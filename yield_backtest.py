@@ -2435,6 +2435,39 @@ LAB15_M = (("a", {"本番": "lab15_a"}, "100株単位・ツールの予算どお
 LAB15_RUNS = (("a", "本番", "特定"),
               ("b", "本番", "特定"), ("b", "X8", "特定"), ("b", "R6", "特定"), ("b", "本番", "NISA"), ("b", "X8", "NISA"),
               ("c", "本番", "特定"), ("c", "X8", "特定"), ("c", "R6", "特定"), ("c", "本番", "NISA"), ("c", "X8", "NISA"))
+# ── 20年分の追加検証16（2026年10月24日に追加。計画は long_lab_plan_2026-10-19 の19）──
+#   A 配当の計算の直し方（V0〜V3 を配当金情報と突き合わせる） ／ B 分割・併合の読み違いの大きさと成績への影響 ／
+#   C 積立の買い方（その時点の資産で1銘柄の予算を決める形） ／ D 直した計算での配当の推移。手法の採用の判定はしない
+LAB16_RULES = ["live_small1_pit"]
+LAB16_TOL = 0.05                 # A：12年すべてでこの範囲に入れば「届いた」
+LAB16_MISREAD = 0.20             # B：予想配当が2割以上違えば「読み違い」
+LAB16_CUT = -0.10                # B：決算短信の年間配当がこれ以下に変わったら「減配」と判定される（div_cut10 と同じ）
+LAB16_FY_FROM = "2014-01-01"     # B：配当金情報で比べられる期（期末がこの日以降）
+LAB16_IMPACT = (0.3, 0.5)        # B：通し・2つの期間の年率の差がこの範囲なら「結論は変わらない」
+LAB16_ACC = 30_000               # C：毎月の積立
+LAB16_EARLY = 36                 # C：始めの何か月の平均の銘柄数を見るか
+LAB16_FETCH_MAX = 1500           # 配当金情報を取る銘柄の上限
+VARIANTS.update({
+    "lab16_v1": dict(VARIANTS["lab14_log"], int_col="div_int_share_fix",
+                     label="本番（中間と期末の割合を直した・受け取った配当の記録つき）"),
+    "lab16_v3": dict(VARIANTS["lab14_log"], int_col="div_int_share_fix", div_actual=True,
+                     label="本番（受け取る額を実績に・受け取った配当の記録つき）"),
+    "lab16_odd_rel": dict(VARIANTS["lab14_odd_x8"], unit_released=True,
+                          label="X8・1株単位・積立はその時点の資産で予算を決め、目標に届かない持ち株を毎月買い増す"),
+    "lab16_b_rel": dict(VARIANTS["lab15_b_x8"], unit_released=True,
+                        label="X8・実際の100株・予算に入らなくても100株（2割まで）・積立はその時点の資産で予算を決め、毎月買い増す"),
+})
+# （記号, ルール, パネル［V0 の計算か、分割・併合を直した計算か］, 説明）
+LAB16_V = (("V0", "lab14_log", "base", "いまの計算"),
+           ("V1", "lab16_v1", "base", "中間と期末の割合を直す"),
+           ("V2", "lab16_v1", "fix", "V1 ＋ 分割・併合の基準のずれを直す（利回り・8条件・減配の判定にも入る）"),
+           ("V3", "lab16_v3", "fix", "V2 ＋ 受け取る額を実績にする"))
+# （記号, 本番（参考）, いまの形＋配当で買い増し, その時点の資産で決めて毎月買い増す形, 説明）
+#   作る途中で直した：はじめは「本番（買い増しなし）で、予算をその時点の資産で決める形」と比べていたが、作り物のデータで試すと、
+#   始めに小さく買った20銘柄で枠が埋まり、あとから入れたお金が現金のまま残った（本番は持ち株を買い増さないため）。
+#   比べる相手を、どちらも「目標に届かない持ち株を配当で買い増す」（X8）形にそろえ、予算の決め方だけを変える
+LAB16_C = (("1株単位・2009年〜", "lab14_odd", "lab14_odd_x8", "lab16_odd_rel", "1株単位・毎月3万円・2009年6月末〜"),
+           ("100株単位・2018年〜", "lab15_b", "lab15_b_x8", "lab16_b_rel", "実際の100株・予算に入らなくても100株（2割まで）・毎月3万円・2018年10月末〜"))
 
 # 可変ルールの加減点。必要パーセンタイルを下げる＝買いやすくする。
 # 条件を増やすほど過去に合わせただけの数字になりやすいので、3つに絞っています。
@@ -3430,6 +3463,40 @@ def quotes_to_df(rows: list[dict]) -> pd.DataFrame:
     return out.dropna(subset=["close"]).sort_values("date").reset_index(drop=True)
 
 
+# 20年分の追加検証16（2026年10月24日に追加。計画は long_lab_plan_2026-10-19 の19）
+#   DIV_BASIS_FIX … True のとき、分割・併合の基準のずれを直す（lab16 の V2・V3 のパネルを作るときだけ True にする）
+#     予想配当：開示から LAB16_EV_DAYS 日以内に LAB16_EV_MIN 倍以上（または 1/LAB16_EV_MIN 以下）の分割・併合があれば、
+#               「分割・併合の前の基準」と「あとの基準」の2通りに読み、直前の開示の予想配当に近い方を採る
+#     実績の配当（年間・中間）：開示日ではなく、基準日（期末・中間の末日の7日前以降）より後の分割・併合で直す。
+#               中間の基準日から期末までのあいだに分割・併合した期は、年間配当の基準が混ざるので空にする
+DIV_BASIS_FIX = False
+LAB16_EV_DAYS = 270
+LAB16_EV_MIN = 1.25
+LAB16_REC_DAYS = 7
+
+
+def _div_events(px: pd.DataFrame):
+    """株価の記録から、分割・併合の日（ns）と係数（1でない日だけ）、全体の日付（ns）と「その日以降の係数の積」（最後に1を足した長さ）。"""
+    ds = px["date"].to_numpy(dtype="datetime64[ns]").astype(np.int64)
+    adj = px["adj"].replace(0, 1.0).fillna(1.0).to_numpy(dtype=float)
+    m = np.abs(adj - 1.0) > 1e-12
+    return ds[m], adj[m], ds, np.r_[np.cumprod(adj[::-1])[::-1], 1.0]
+
+
+def _fac_from(ev, t) -> float:
+    """t 以降（t を含む）に起きた分割・併合の係数の積。ev は _div_events の返り値。"""
+    _, _, ds, suf = ev
+    return float(suf[int(np.searchsorted(ds, int(pd.Timestamp(t).value), side="left"))])
+
+
+def _mid_event(ev, int_rec, fy_end) -> bool:
+    """中間の基準日の7日前から、期末の7日前までのあいだに、分割・併合があったか（その期の年間配当は基準が混ざる）。"""
+    ev_d = ev[0]
+    a_ = int((pd.Timestamp(int_rec) - pd.Timedelta(days=LAB16_REC_DAYS)).value)
+    b_ = int((pd.Timestamp(fy_end) - pd.Timedelta(days=LAB16_REC_DAYS)).value)
+    return bool(((ev_d >= a_) & (ev_d < b_)).any())
+
+
 def dps_timeline(stmts: list[dict], px: pd.DataFrame) -> pd.DataFrame:
     """開示日つきの予想DPS系列を作る。
 
@@ -3438,6 +3505,8 @@ def dps_timeline(stmts: list[dict], px: pd.DataFrame) -> pd.DataFrame:
     """
     if px.empty:
         return pd.DataFrame()
+    if DIV_BASIS_FIX:
+        return _dps_timeline_fixed(stmts, px)
     # 分割係数は日付順に累積させておき、任意の日以降の累積を引けるようにする
     adj = px.set_index("date")["adj"].replace(0, 1.0)
     cum = adj[::-1].cumprod()[::-1]        # その日以降の累積係数
@@ -3462,6 +3531,56 @@ def dps_timeline(stmts: list[dict], px: pd.DataFrame) -> pd.DataFrame:
     if not recs:
         return pd.DataFrame()
     df = pd.DataFrame(recs).sort_values("date")
+    return df.groupby("date", as_index=False)["dps"].last()
+
+
+def _dps_timeline_fixed(stmts: list[dict], px: pd.DataFrame) -> pd.DataFrame:
+    """20年分の追加検証16：dps_timeline の、分割・併合の基準のずれを直した形（DIV_BASIS_FIX のときだけ使う）。"""
+    adj = px.set_index("date")["adj"].replace(0, 1.0)
+    cum = adj[::-1].cumprod()[::-1]
+    cum_after = cum.shift(-1).fillna(1.0)
+    ev = _div_events(px)
+    ev_d, ev_f = ev[0], ev[1]
+    order = sorted(range(len(stmts)), key=lambda i_: (str((pdate(stmts[i_].get("DiscDate")) or pdate(stmts[i_].get("CurPerEn")) or "")), i_))
+    recs, prev = [], None
+    for i_ in order:
+        s = stmts[i_]
+        d = pdate(s.get("DiscDate")) or pdate(s.get("CurPerEn"))
+        if d is None:
+            continue
+        per = s.get("CurPerType", "")
+        v = fnum(s.get("NxFDivAnn")) if per in ("FY", "4Q") else fnum(s.get("FDivAnn"))
+        is_res = False
+        if v is None or v <= 0:
+            v = fnum(s.get("DivAnn"))
+            is_res = True
+        if v is None or v <= 0:
+            continue
+        ts = pd.Timestamp(d)
+        if is_res:
+            # 実績の年間配当：期末の7日前以降の分割・併合で直す（期の途中で分割・併合した期は使わない）
+            fe_ = pdate(s.get("CurFYEn")) or pdate(s.get("CurPerEn"))
+            if fe_ is None:
+                continue
+            fe_ = pd.Timestamp(fe_)
+            if _mid_event(ev, fe_ - pd.DateOffset(months=6), fe_):
+                continue
+            val = v * _fac_from(ev, fe_ - pd.Timedelta(days=LAB16_REC_DAYS))
+        else:
+            idx = cum_after.index.searchsorted(ts)
+            factor = float(cum_after.iloc[idx]) if idx < len(cum_after) else 1.0
+            val = v * factor
+            j_ = int(np.searchsorted(ev_d, int(ts.value), side="right"))
+            if (prev is not None and prev > 0 and j_ < len(ev_d) and ev_d[j_] - int(ts.value) <= LAB16_EV_DAYS * 86_400_000_000_000
+                    and (ev_f[j_] >= LAB16_EV_MIN or ev_f[j_] <= 1.0 / LAB16_EV_MIN)):
+                alt = val / float(ev_f[j_])          # すでに分割・併合のあとの基準で出ていた、と読んだ値
+                if abs(np.log(alt / prev)) < abs(np.log(val / prev)):
+                    val = alt
+        recs.append({"date": ts, "dps": val})
+        prev = val
+    if not recs:
+        return pd.DataFrame()
+    df = pd.DataFrame(recs).sort_values("date", kind="stable")
     return df.groupby("date", as_index=False)["dps"].last()
 
 
@@ -3579,9 +3698,31 @@ def fund_timeline(stmts: list[dict], px: pd.DataFrame | None = None) -> pd.DataF
         cum = adj[::-1].cumprod()[::-1]                    # その日を含め、それ以降の累積係数
         pos = cum.index.searchsorted(df["date"].values, side="right")   # 開示日より後の最初の日
         fac = np.array([float(cum.iloc[p]) if p < len(cum) else 1.0 for p in pos])
+        _raw_div = {c: pd.to_numeric(df[c], errors="coerce").to_numpy(dtype=float).copy()
+                    for c in ("divann", "div2q") if c in df.columns} if DIV_BASIS_FIX else {}
         for c in ("eps", "bps", "divann", "div2q"):        # 1株あたりの数字
             if c in df.columns:
                 df[c] = pd.to_numeric(df[c], errors="coerce") * fac
+        if DIV_BASIS_FIX and _raw_div:
+            # 20年分の追加検証16：実績の配当は、払ったときの株数の基準で載っている（EPS・BPS は開示の時点の株数に直してある）ので、
+            #   開示日ではなく基準日（期末・中間の末日の7日前以降）より後の分割・併合で直す。期の途中で分割・併合した期の年間配当は空にする
+            ev_ = _div_events(px)
+            fys_ = df["fy"].tolist() if "fy" in df.columns else [""] * len(df)
+            for i_ in range(len(df)):
+                fe_ = pdate(fys_[i_])
+                if fe_ is None:
+                    continue
+                fe_ = pd.Timestamp(fe_)
+                ir_ = fe_ - pd.DateOffset(months=6)
+                mid_ = _mid_event(ev_, ir_, fe_)
+                if "divann" in _raw_div:
+                    v_ = _raw_div["divann"][i_]
+                    df.iloc[i_, df.columns.get_loc("divann")] = (np.nan if (mid_ or v_ != v_)
+                                                                 else v_ * _fac_from(ev_, fe_ - pd.Timedelta(days=LAB16_REC_DAYS)))
+                if "div2q" in _raw_div:
+                    v_ = _raw_div["div2q"][i_]
+                    df.iloc[i_, df.columns.get_loc("div2q")] = (np.nan if v_ != v_
+                                                                else v_ * _fac_from(ev_, ir_ - pd.Timedelta(days=LAB16_REC_DAYS)))
         if "sh" in df.columns:                             # 株数
             df["sh"] = pd.to_numeric(df["sh"], errors="coerce") / fac
     df["np_prev"] = df["np"].shift(1)
@@ -5364,6 +5505,14 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
     # 2026年10月24日（20年分の追加検証14）
     #   log_divs … True なら、受け取った配当を1件ずつ（月末, 銘柄, 株数, 税引き前, 中間か期末か）diag["div_log"] に残す（記録だけ）
     log_divs = bool(cfg.get("log_divs", False))
+    # 2026年10月24日（20年分の追加検証16）
+    #   int_col       … 中間と期末の割合を読む列（既定は div_int_share。lab16 の V1〜V3 は div_int_share_fix）
+    #   div_actual    … True なら、受け取る配当の額を、パネルの列 act_int（中間）・act_fy（期末）の実績にする（空なら予想のまま）
+    #   unit_released … True なら、資金投入の月数（ramp）があるとき、1銘柄の予算（と、予算に入らなくても100株の上限・
+    #                   配当で買い増す目標）を、まだ入れていない分を除いた資産で決める（毎月入れる積立で、その時点の資産に合わせて買う形）
+    int_col = str(cfg.get("int_col") or "div_int_share")
+    div_actual = bool(cfg.get("div_actual", False))
+    unit_released = bool(cfg.get("unit_released", False))
     # 配当を受け取る月を正しくする（2026年10月11日に追加）
     #   div_split … True なら、直近の通期の「中間配当÷年間配当」の割合で、中間と期末に分けて受け取る。
     #               期末だけの会社は期末に全額。割合が取れない会社は以前どおり半分ずつ。
@@ -5381,7 +5530,7 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
 
     def _int_share(row):
         """年間配当のうち中間で受け取る割合。取れなければ0.5。"""
-        v = row.get("div_int_share")
+        v = row.get(int_col)
         return float(v) if (v is not None and not pd.isna(v)) else 0.5
 
     # 配当の権利が確定する月の前に、買いの条件をゆるめる（2026年10月11日に追加）
@@ -6474,7 +6623,13 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                 mth = pd.Timestamp(dt).month
                 for key in ("fiscal_month", "interim_month"):
                     if int(row.get(key, 0) or 0) == mth and row["dps"] > 0:
-                        if div_split:
+                        _act = row.get("act_int" if key == "interim_month" else "act_fy") if div_actual else None
+                        if _act is not None and not pd.isna(_act):
+                            # 20年分の追加検証16：その期の実績の額（いまの株数の基準）で受け取る
+                            if float(_act) <= 0:
+                                continue
+                            gross = float(_act) * held
+                        elif div_split:
                             # 中間と期末の実際の割合で受け取る（期末だけの会社は中間に0）
                             _fr = _int_share(row)
                             _fr = _fr if key == "interim_month" else 1.0 - _fr
@@ -6579,6 +6734,7 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
             # 以前は資金投入を分けた条件で現金の下限が上書きされ、一度も効いていなかった。
             # 現金の下限がないルールでは、以前と同じ値になる。
             usable = max(0.0, min(usable, cash - reserved))
+        total_b = (total - reserved) if (unit_released and ramp > 0) else total
         if regime_nobuy and _down_now:
             usable = 0.0          # 20年分の追加検証8：下げ相場の月末は新しく買わない（現金で待つ）
             diag["regime_wait"] = diag.get("regime_wait", 0) + 1
@@ -6647,17 +6803,17 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                 # 総資産に対する比率で決める。重みの平均で割って、
                 # 目標銘柄数ぶんに収まるようにする。
                 avg_w = sum(tw.values()) / len(tw)
-                unit_size = total / target_n * (tw.get(tier, 1.0) / avg_w) / nt
+                unit_size = total_b / target_n * (tw.get(tier, 1.0) / avg_w) / nt
             elif tier_budget:
                 unit_size = TIER_BUDGET.get(tier, TIER_BUDGET["B"]) / nt
             else:
-                unit_size = total / max_names / nt
+                unit_size = total_b / max_names / nt
             unit_size *= rs * f_scale
             _L = _lot_of(code) if real_lot else 100
             for _ in range(add):
                 if lot_min_frac > 0 and tier_budget and unit_size < _L * price:
                     # 20年分の追加検証13：予算に100株が入らなくても、100株の金額が総資産の lot_min_frac 以下なら100株だけ買う
-                    if _L * price > lot_min_frac * total or usable < _L * price * (1 + slip) * (1 + fee):
+                    if _L * price > lot_min_frac * total_b or usable < _L * price * (1 + slip) * (1 + fee):
                         break
                     sh = _L
                     diag["lot_min_buys"] = diag.get("lot_min_buys", 0) + 1
@@ -6735,11 +6891,11 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                         continue
                     _tier = row.get("tier", "B")
                     if weighted:
-                        _tgt = total / target_n * (tw.get(_tier, 1.0) / _avg_w)
+                        _tgt = total_b / target_n * (tw.get(_tier, 1.0) / _avg_w)
                     elif tier_budget:
                         _tgt = TIER_BUDGET.get(_tier, TIER_BUDGET["B"])
                     else:
-                        _tgt = total / max_names
+                        _tgt = total_b / max_names
                     _val = sum(sh for sh, _ in st["lots"]) * _px
                     if _tgt - _val < _lc * _px:
                         continue
@@ -11066,6 +11222,360 @@ def lab15_report(R: dict, m0, m1, lot_info: dict) -> dict:
     return out
 
 
+def lab16_with_fix(fn):
+    """20年分の追加検証16：分割・併合の基準のずれを直した計算（DIV_BASIS_FIX）で fn() を呼ぶ（終わったら元に戻す）。"""
+    global DIV_BASIS_FIX
+    old = DIV_BASIS_FIX
+    DIV_BASIS_FIX = True
+    try:
+        return fn()
+    finally:
+        DIV_BASIS_FIX = old
+
+
+def lab16_int_share_fix(store: dict, panel: pd.DataFrame) -> pd.DataFrame:
+    """20年分の追加検証16（V1）：中間と期末の割合を直した列 div_int_share_fix を足す。
+    各期の割合＝同じ決算短信の中間配当の実績 ÷ 年間配当の実績（どちらも払ったときの株数の基準なので、そのまま割れる）。
+    期の途中（中間の基準日の7日前〜期末の7日前）に分割・併合した期と、割合が0〜1に入らない期は使わず、その前の正しい期の割合を引き継ぐ。
+    月末ごとに、その月末までに開示されていた最新の割合を入れる（取れなければ空。空なら simulate は半分ずつ）。"""
+    out = panel.copy()
+    out["div_int_share_fix"] = np.nan
+    col = out.columns.get_loc("div_int_share_fix")
+    for code, g in out.groupby("code"):
+        stl = store["stmts"].get(code, []) or []
+        px_ = quotes_to_df(store["quotes"].get(code, []))
+        ev_ = _div_events(px_) if not px_.empty else None
+        recs = []
+        for st in stl:
+            if st.get("CurPerType") not in ("FY", "4Q"):
+                continue
+            d_ = pdate(st.get("DiscDate")) or pdate(st.get("CurPerEn"))
+            fe_ = pdate(st.get("CurPerEn"))
+            if d_ is None or fe_ is None:
+                continue
+            q2_ = fnum(st.get("Div2Q"))
+            if q2_ is None:
+                q2_ = fnum(st.get("ResultDividendPerShare2ndQuarter"))
+            recs.append((pd.Timestamp(d_), pd.Timestamp(fe_), q2_, fnum(st.get("DivAnn"))))
+        if not recs:
+            continue
+        recs.sort(key=lambda x_: x_[0])
+        last_ok, ser = None, {}
+        for d_, fe_, q2_, an_ in recs:
+            ok_ = (q2_ is not None and an_ is not None and an_ > 0 and 0.0 <= q2_ / an_ <= 1.0
+                   and not (ev_ is not None and _mid_event(ev_, fe_ - pd.DateOffset(months=6), fe_)))
+            if ok_:
+                last_ok = q2_ / an_
+            if last_ok is not None:
+                ser[d_] = last_ok
+        if not ser:
+            continue
+        s_ = pd.Series(ser).sort_index()
+        idx = pd.DatetimeIndex(g["date"])
+        vals = s_.reindex(s_.index.union(idx)).ffill().reindex(idx)
+        out.iloc[out.index.get_indexer(g.index), col] = vals.to_numpy(dtype=float)
+    return out
+
+
+def lab16_add_actual(store: dict, panel: pd.DataFrame) -> pd.DataFrame:
+    """20年分の追加検証16（V3）：受け取る額の実績の列 act_int（中間）・act_fy（期末）を、いまの株数の基準で足す。
+    その期の権利確定の月末の行だけに入れ、ほかは空。中間＝その期の中間配当の実績（通期の決算短信、なければ第2四半期の決算短信）を、
+    中間の末日の7日前以降の分割・併合で直す。期末＝年間配当の実績 − 中間配当の実績（通期の決算短信）を、期末の7日前以降の分割・併合で直す。
+    期の途中で分割・併合した期の期末と、年間が中間より小さい期は空（simulate は予想のまま）。"""
+    out = panel.copy()
+    out["act_int"] = np.nan
+    out["act_fy"] = np.nan
+    pos = {(str(c_), pd.Timestamp(d_)): i_ for i_, (c_, d_) in enumerate(zip(out["code"], out["date"]))}
+    ci, cf = out.columns.get_loc("act_int"), out.columns.get_loc("act_fy")
+    for code in out["code"].unique():
+        code = str(code)
+        stl = store["stmts"].get(code, []) or []
+        px_ = quotes_to_df(store["quotes"].get(code, []))
+        if px_.empty or not stl:
+            continue
+        ev_ = _div_events(px_)
+        fy_, q2b = {}, {}
+        for st in sorted(stl, key=lambda x_: str(x_.get("DiscDate") or "")):
+            per = st.get("CurPerType", "")
+            q2_ = fnum(st.get("Div2Q"))
+            if q2_ is None:
+                q2_ = fnum(st.get("ResultDividendPerShare2ndQuarter"))
+            if per in ("FY", "4Q"):
+                fe_ = pdate(st.get("CurPerEn"))
+                if fe_ is None:
+                    continue
+                fy_[pd.Timestamp(fe_)] = (q2_, fnum(st.get("DivAnn")))
+            elif per == "2Q":
+                fe_ = pdate(st.get("CurFYEn"))
+                if fe_ is not None and q2_ is not None:
+                    q2b[pd.Timestamp(fe_)] = q2_
+        for fe_ in sorted(set(fy_) | set(q2b)):
+            ir_ = fe_ - pd.DateOffset(months=6)
+            q2_, an_ = fy_.get(fe_, (None, None))
+            if q2_ is None:
+                q2_ = q2b.get(fe_)
+            if q2_ is not None and q2_ >= 0:
+                i_ = pos.get((code, ir_ + pd.offsets.MonthEnd(0)))
+                if i_ is not None:
+                    out.iat[i_, ci] = q2_ * _fac_from(ev_, ir_ - pd.Timedelta(days=LAB16_REC_DAYS))
+            if (an_ is not None and q2_ is not None and an_ >= q2_ >= 0 and fe_ in fy_
+                    and not _mid_event(ev_, ir_, fe_)):
+                i_ = pos.get((code, fe_ + pd.offsets.MonthEnd(0)))
+                if i_ is not None:
+                    out.iat[i_, cf] = (an_ - q2_) * _fac_from(ev_, fe_ - pd.Timedelta(days=LAB16_REC_DAYS))
+    return out
+
+
+def lab16_fetch_divs(codes: list, dc: dict, key: str | None) -> tuple:
+    """20年分の追加検証16：配当金情報を、まだキャッシュ（dc）にない銘柄だけ取る（lab14 と同じ取り方・同じ項目）。
+    返す値 … (注意書き, 取った銘柄の数)。取れなかった銘柄はキャッシュに残さない（次に回すと取り直す）。"""
+    miss = [c_ for c_ in codes if c_ not in dc]
+    if not miss:
+        return None, 0
+    if not key:
+        return "APIキーがないので配当金情報を取れませんでした", 0
+    jq_ = JQ(key)
+    note, n_ = None, 0
+    log.info("20年分の追加検証16：配当金情報を取ります（%d銘柄）", len(miss))
+    for i_, c_ in enumerate(miss):
+        try:
+            time.sleep(API_SLEEP)
+            rows_ = jq_.get("/v2/fins/dividend", {"code": c_})
+            kept_ = [{f_: r_.get(f_, r_.get(LAB14_DIV_V1.get(f_, f_))) for f_ in LAB14_DIV_FIELDS} for r_ in (rows_ or [])]
+            if kept_ and not any(k_.get("RecDate") is not None and k_.get("DivRate") is not None for k_ in kept_):
+                note = ("配当金情報の項目名が想定と違ったので、読めませんでした（届いた項目："
+                        + "・".join(sorted(str(k_) for k_ in rows_[0].keys())[:24]) + "）")
+                break
+            dc[c_] = kept_
+            n_ += 1
+        except NotAllowed as e_:
+            note = f"配当金情報が取れませんでした（{e_}。プランに含まれない可能性）"
+            break
+        except Exception as e_:
+            log.warning("  %s の配当金情報を取れませんでした（%s）", c_, e_)
+        if (i_ + 1) % 100 == 0:
+            log.info("  配当金情報 %d/%d 銘柄", i_ + 1, len(miss))
+    return note, n_
+
+
+def lab16_fy_official(divs: list, adj, fy_ends: list) -> dict:
+    """20年分の追加検証16：配当金情報の決まった配当を、期ごと（期末の日）に合計した年間配当（いまの株数の基準）。
+    配当の期＝基準日以降で最初に来る期末（400日以内）。1株配当は権利落日以降の分割・併合で直す（lab14 と同じ）。"""
+    fes = sorted(pd.Timestamp(x_) for x_ in fy_ends)
+    out = {}
+    for r in divs or []:
+        fe_ = next((f_ for f_ in fes if f_ >= r["rec"] - pd.Timedelta(days=3) and (f_ - r["rec"]).days <= 400), None)
+        if fe_ is None:
+            continue
+        k_ = (_lab14_factor(adj, r["ex"], True) if r["ex"] is not None
+              else _lab14_factor(adj, r["rec"] - pd.Timedelta(days=7), True))
+        out[fe_] = out.get(fe_, 0.0) + r["rate"] * k_
+    return out
+
+
+def lab16_cut_flags(stmts: list, px: pd.DataFrame, off_fy: dict, fixed: bool) -> list:
+    """20年分の追加検証16：決算短信の年間配当で「10％以上の減配」と判定された期（期末がLAB16_FY_FROM以降）ごとに、
+    配当金情報の年間配当でも10％以上減っていたかを返す。fixed なら分割・併合の基準のずれを直した計算（V2）。
+    返す値 … [(期末, 開示日, ツールの変化, 公式の変化 or None), …]（公式の前の期か今の期がなければ None＝分からない）"""
+    global DIV_BASIS_FIX
+    old = DIV_BASIS_FIX
+    DIV_BASIS_FIX = bool(fixed)
+    try:
+        ft = fund_timeline(stmts or [], px)
+    finally:
+        DIV_BASIS_FIX = old
+    if ft.empty or "div_cut10" not in ft.columns:
+        return []
+    fes = sorted(off_fy)
+    out, seen = [], set()
+    for _, r in ft.iterrows():
+        if not (r.get("div_cut10", 0) > 0.5):
+            continue
+        fe_ = pdate(r.get("fy"))
+        if fe_ is None or pd.Timestamp(fe_) < pd.Timestamp(LAB16_FY_FROM):
+            continue
+        fe_ = pd.Timestamp(fe_)
+        if fe_ in seen:
+            continue
+        seen.add(fe_)
+        cur_ = next((off_fy[f_] for f_ in fes if abs((f_ - fe_).days) <= 20), None)
+        prv_ = [f_ for f_ in fes if (fe_ - f_).days > 200]
+        prv_v = off_fy[prv_[-1]] if prv_ and (fe_ - prv_[-1]).days <= 550 else None
+        oc_ = (cur_ / prv_v - 1.0) if (cur_ is not None and prv_v is not None and prv_v > 0) else None
+        out.append((fe_, pd.Timestamp(r["date"]), float(r.get("div_chg")) if r.get("div_chg") == r.get("div_chg") else None, oc_))
+    return out
+
+
+def lab16_year_table(r: dict, capital: float, ramp: int) -> list:
+    """20年分の追加検証16（D）：年ごとの受け取った配当（税引き前・税引き後）と、その年末までに入れた額。返す値 … [(年, 税引き前, 税引き後, 入れた額, 月数), …]"""
+    d_ = r.get("diag") or {}
+    gm = {pd.Timestamp(k_): float(v_) for k_, v_ in (d_.get("div_gross_by_month") or {}).items()}
+    nm = {pd.Timestamp(k_): float(v_) for k_, v_ in (d_.get("div_by_month") or {}).items()}
+    ms = [pd.Timestamp(x_) for x_ in pd.to_datetime(r["curve"]["date"])]
+    out = []
+    for y_ in sorted({m_.year for m_ in ms}):
+        my_ = [m_ for m_ in ms if m_.year == y_]
+        k_last = ms.index(my_[-1])
+        paid = capital * min(1.0, (k_last + 1) / ramp) if ramp > 0 else capital
+        out.append((y_, sum(gm.get(m_, 0.0) for m_ in my_), sum(nm.get(m_, 0.0) for m_ in my_), paid, len(my_)))
+    return out
+
+
+def lab16_report(A: dict, B: dict, C: dict, D: dict) -> dict:
+    """20年分の追加検証16（long_lab16）：配当の計算の直し方・分割と併合の読み違い・積立の買い方。2026年10月24日に追加。
+    基準は結果を見る前に決めたもの（プロジェクトの long_lab_plan_2026-10-19 の19）。手法の採用の判定はしない。
+      A V1 → V2 → V3 の順に、12年（2014〜2025年）すべてで差が±5％以内に入った最初の形を採る。どれも届かなければ、
+        いちばん大きい差がいちばん小さい形を採り「直し切れていない」とする
+      B 本番の V0 と採った形の年率の差が、通しで±0.3pt以内、見ていない期間と最近で±0.5pt以内 →「これまでの成績の結論は変わらない」
+      C その時点の資産で決める形が、8銘柄に早く届き、年率がいまの形より1pt以上は下がらない →「その時点の資産で買う形がよい」 ／
+        年率が1pt以上下がる →「いまの形がよい」 ／ それ以外 →「どちらでもよい」"""
+    out = {"A": {}, "pick": None, "pick_ok": False, "B": "—", "C": {}}
+    print("\n【20年分の追加検証16：配当の計算の直し方・分割と併合の読み違い・積立の買い方】（基準は結果を見る前に決めたもの。"
+          "計画はプロジェクトの long_lab_plan_2026-10-19 の19。手法の採用の判定はしない）")
+    print("  予想 … A は V1 では届かず、V2 か V3 で届く ／ B の予想配当の読み違いは17年で数十〜百数十の銘柄・月（2023年以降は十数）。"
+          "減配の判定の読み違いは V0 で十数回、V2 でほぼなくなる。本番の緊急売りのうち読み違いで売ったのは0〜3回。成績の結論は変わらない ／ "
+          "C は1株単位で「その時点の資産で買う形がよい」、100株単位で「どちらでもよい」（作り物で試したあと、比べる相手を買い増す形にそろえた）")
+
+    # A
+    y0, y1 = LAB14_YEARS
+    print("\n  A. 配当の計算の直し方（本番の通し・元本1,000万円・100株単位。それぞれの計算で回し、同じ持ち株で配当金情報から計算し直した公式の配当と比べる。"
+          "差＝いまの計算÷公式−1。税引き前）")
+    if A.get("note"):
+        print(f"    注意 … {A['note']}")
+    if not A.get("ok"):
+        print("    配当金情報が取れなかったので出せません")
+    else:
+        vs = [v_ for v_, _, _, _ in LAB16_V]
+        print("    " + f"{'年':<6}" + "".join(f"{v_:>9}" for v_ in vs))
+        mx = {v_: 0.0 for v_ in vs}
+        allin = {v_: True for v_ in vs}
+        for y_ in range(y0, y1 + 1):
+            cells = []
+            for v_ in vs:
+                o_, s_ = A["off"][v_].get(y_, 0.0), A["sim"][v_].get(y_, 0.0)
+                d_ = s_ / o_ - 1.0 if o_ > 0 else float("nan")
+                if d_ == d_:
+                    mx[v_] = max(mx[v_], abs(d_))
+                    allin[v_] &= abs(d_) <= LAB16_TOL
+                else:
+                    allin[v_] = False
+                cells.append(f"{d_ * 100:>+8.1f}％")
+            print("    " + f"{y_:<6}" + "".join(cells))
+        for v_, _, _, sh_ in LAB16_V:
+            ts_ = sum(A["sim"][v_].get(y_, 0.0) for y_ in range(y0, y1 + 1))
+            to_ = sum(A["off"][v_].get(y_, 0.0) for y_ in range(y0, y1 + 1))
+            dn_ = sum(1 for y_ in range(y0 + 1, y1 + 1) if A["sim"][v_].get(y_ - 1, 0) > 0 and A["sim"][v_].get(y_, 0) < A["sim"][v_][y_ - 1])
+            out["A"][v_] = {"max": mx[v_], "all": allin[v_]}
+            print(f"    {v_} {sh_} … いちばん大きい差 {mx[v_] * 100:.1f}％ ／ 12年の合計の差 {(ts_ / to_ - 1) * 100 if to_ > 0 else float('nan'):+.1f}％ ／ "
+                  f"前の年より減った年 {dn_}回 → " + ("12年すべて±5％以内" if allin[v_] else "届かない"))
+        pick = next((v_ for v_ in ("V1", "V2", "V3") if allin[v_]), None)
+        if pick:
+            out["pick"], out["pick_ok"] = pick, True
+        else:
+            out["pick"] = min(("V1", "V2", "V3"), key=lambda v_: (mx[v_], ("V1", "V2", "V3").index(v_)))
+        print(f"    → 採る形：{out['pick']}（" + ("12年すべて±5％以内に入った最初の形" if out["pick_ok"]
+                                                 else "どれも届かなかったので、いちばん大きい差がいちばん小さい形。直し切れていない") + "）")
+        print(f"    （公式の配当の側：持った銘柄のうち、配当金情報で比べられた銘柄 {A.get('n_ok', 0)}・取れなかった銘柄 {A.get('n_ng', 0)}）")
+
+    # B
+    print("\n  B. 分割・併合の読み違いの大きさと、成績への影響")
+    b1 = B.get("fc") or {}
+    if b1:
+        print(f"    予想配当の読み違い（V0 と V2 の予想配当が{LAB16_MISREAD * 100:.0f}％以上違う） … {b1['rows']:,}銘柄・月（{b1['codes']}銘柄） ／ "
+              f"そのうちツールの範囲で利回り3％以上 {b1['cand']:,}銘柄・月（{b1['cand_codes']}銘柄） ／ 2023年以降 {b1['recent']:,}銘柄・月"
+              f"（候補 {b1['recent_cand']:,}）")
+        if b1.get("bought"):
+            print(f"    本番（V0）が読み違いの月に買った回 … {b1['bought']}回（{'・'.join(b1.get('bought_codes', [])[:8])}）")
+    b2 = B.get("cut") or {}
+    if b2:
+        for v_ in ("V0", "V2"):
+            x_ = b2.get(v_)
+            if not x_:
+                continue
+            print(f"    減配の判定（{v_}。決算短信の年間配当が前の期から10％以上減ったと判定した期。期末が2014年以降・配当金情報を取った{b2.get('n_codes', 0)}銘柄） … "
+                  f"{x_['flags']}回 ／ 配当金情報では10％以上減っていなかった {x_['false']}回 ／ 分からない {x_['unknown']}回")
+        ex_ = b2.get("exits")
+        if ex_:
+            print(f"    本番（V0）の緊急売り … 全部で{ex_['all']}回 ／ うち減配の判定で売った {ex_['cut']}回 ／ そのうち配当金情報では10％以上減っていなかった "
+                  f"{ex_['false']}回（{'・'.join(ex_.get('false_codes', [])[:8])}）／ 分からない {ex_['unknown']}回")
+    imp = B.get("impact") or {}
+    if imp and out.get("pick"):
+        p_ = out["pick"]
+        print(f"    成績への影響（一括1,000万円・資金投入0か月・清算後の年率） … V0 と {p_}")
+        oks = []
+        for g_, lim_ in (("通し", LAB16_IMPACT[0]), ("見ていない期間", LAB16_IMPACT[1]), ("最近", LAB16_IMPACT[1])):
+            a_, b_ = (imp.get(("V0", g_)) or {}).get("清算後年率"), (imp.get((p_, g_)) or {}).get("清算後年率")
+            if a_ is None or b_ is None:
+                continue
+            oks.append(abs(b_ - a_) <= lim_)
+            print(f"      {g_} … V0 {a_:.2f}％ ／ {p_} {b_:.2f}％（差 {b_ - a_:+.2f}pt。基準 ±{lim_}pt）")
+        if oks:
+            out["B"] = "これまでの成績の結論は変わらない" if all(oks) else "主な数字を出し直す必要がある"
+            print(f"      → 判定：{out['B']}")
+
+    # C
+    print(f"\n  C. 積立の買い方（毎月{LAB16_ACC / 1e4:.0f}万円。いまの形＝1銘柄の予算を入れ終わったときの総額で決め、貯まるたびに1銘柄ずつ買う ／ "
+          "新しい形＝その時点の資産（それまでに入れた分）で予算を決め、目標に届かない持ち株を毎月買い増す。"
+          "判定は「いまの形＋配当で買い増し」と「新しい形」を比べる。本番は参考）")
+    for k_, _, _, _, sh_ in LAB16_C:
+        ref_, cur_, new_ = C.get((k_, "ref")), C.get((k_, "cur")), C.get((k_, "new"))
+        if not cur_ or not new_:
+            continue
+        print(f"    {sh_}")
+        for nm_, r_ in (("本番（参考）", ref_), ("いまの形＋配当で買い増し", cur_), ("新しい形", new_)):
+            if not r_:
+                continue
+            print(f"      {nm_} … 8銘柄に届いた月 {r_['first8'] or '届かない'} ／ 始めの{LAB16_EARLY}か月の平均 {r_['early']:.1f}銘柄 ／ "
+                  f"最大下落 {r_['dd']:.1f}％ ／ 年率 {r_['irr']:.1f}％ ／ 清算後 {r_['liq'] / 1e4:,.0f}万円 ／ 2025年の配当 {r_['div2025'] / 1e4:,.1f}万円")
+        e_cur = pd.Timestamp(cur_["first8"] + "-01") if cur_["first8"] else None
+        e_new = pd.Timestamp(new_["first8"] + "-01") if new_["first8"] else None
+        earlier = e_new is not None and (e_cur is None or e_new < e_cur)
+        if new_["irr"] < cur_["irr"] - 1.0:
+            v_ = "いまの形がよい"
+        elif earlier:
+            v_ = "その時点の資産で買う形がよい"
+        else:
+            v_ = "どちらでもよい"
+        out["C"][k_] = v_
+        print(f"      → 判定：{v_}")
+
+    # D
+    p_ = out.get("pick")
+    if p_ and D.get(p_):
+        print(f"\n  D. 直した計算（{p_}）での配当の推移（判定しない。税引き前 ／ 税引き後 ／ 入れた額に対する税引き後の割合 ／ 前の年からの変化。"
+              "2009年と2026年は1年に満たない）")
+        for nm_, key_ in (("一括1,000万円", "lump"), ("毎月同じ額の積立（合計1,000万円）", "acc")):
+            rows_ = D[p_].get(key_) or []
+            if not rows_:
+                continue
+            print(f"    {nm_}")
+            prev = None
+            downs = []
+            for y_, g_, n_, paid_, mo_ in rows_:
+                ch_ = (n_ / prev - 1.0) if (prev and mo_ == 12) else None
+                if ch_ is not None and ch_ < 0:
+                    downs.append((y_, ch_))
+                print(f"      {y_} … {g_ / 1e4:,.1f}万 ／ {n_ / 1e4:,.1f}万 ／ {n_ / paid_ * 100 if paid_ > 0 else float('nan'):.1f}％"
+                      + (f" ／ {ch_ * 100:+.1f}％" if ch_ is not None else ""))
+                prev = n_ if mo_ == 12 else None
+            r0_ = (D.get("V0") or {}).get(key_) or []
+            d0_ = []
+            pv0 = None
+            for y_, g_, n_, paid_, mo_ in r0_:
+                if pv0 and mo_ == 12 and n_ < pv0:
+                    d0_.append((y_, n_ / pv0 - 1.0))
+                pv0 = n_ if mo_ == 12 else None
+            print(f"      前の年より減った年（まるごと1年ある年どうし） … {p_} {len(downs)}回"
+                  + ("（" + "・".join(f"{y_}年 {c_ * 100:+.1f}％" for y_, c_ in downs) + "）" if downs else "")
+                  + f" ／ いまの計算（V0） {len(d0_)}回" + ("（" + "・".join(f"{y_}年 {c_ * 100:+.1f}％" for y_, c_ in d0_) + "）" if d0_ else ""))
+
+    print("\n  まとめ（結果を見る前に決めた基準）")
+    print(f"    A 採る形 … {out['pick'] or '—'}" + ("" if out["pick_ok"] or not out["pick"] else "（直し切れていない）"))
+    print(f"    B 成績への影響 … {out['B']}")
+    print("    C " + " ／ ".join(f"{k_} {v_}" for k_, v_ in out["C"].items()))
+    return out
+
+
 # ══════════════════════════════════════════
 def main() -> int:
     global LONG_MODE, CACHE, PIT_FROM, COMPUTE_START_LIMIT_MIN
@@ -11225,7 +11735,7 @@ def main() -> int:
     #   取り終わっていなければ取得から始める（途中で止まったら、同じ設定でもう一度押す）。
     args.long_test = args.long_lab = args.long_lab2 = args.long_lab3 = args.long_lab4 = args.long_lab5 = False
     args.long_lab6 = args.long_lab7 = args.long_lab8 = args.long_lab9 = args.long_lab10 = args.long_lab11 = False
-    args.long_lab12 = args.long_lab13 = args.long_lab14 = args.long_lab15 = False
+    args.long_lab12 = args.long_lab13 = args.long_lab14 = args.long_lab15 = args.long_lab16 = False
     # 20年分の追加検証（2026年10月19日に追加。計画はプロジェクトの long_lab_plan_2026-10-19）
     #   long_lab  … ルールの候補20個・近い設定6つ・参考2つを、本番と同じ52条件で回す
     #   long_lab2 … 運・偏り・始めた月・業種（20回目と同じ作り方。比べる指数は TOPIX）
@@ -11244,15 +11754,16 @@ def main() -> int:
     #   long_lab13 … 元本が小さい人でも同じになるか（2026年10月24日に追加。計画は同じ文書の16。手法の判定はしない）
     #   long_lab14 … 配当の検算・R6 をいつ始めても効くか・単元未満株での少額（2026年10月24日に追加。計画は同じ文書の17）
     #   long_lab15 … 100株単位で少額ならどう回るか（2026年10月24日に追加。計画は同じ文書の18）
+    #   long_lab16 … 配当の計算の直し方・分割と併合の読み違い・積立の買い方（2026年10月24日に追加。計画は同じ文書の19）
     if _mode0 in ("long_lab", "long_lab2", "long_lab3", "long_lab4", "long_lab5", "long_lab6", "long_lab7", "long_lab8",
-                  "long_lab9", "long_lab10", "long_lab11", "long_lab12", "long_lab13", "long_lab14", "long_lab15"):
+                  "long_lab9", "long_lab10", "long_lab11", "long_lab12", "long_lab13", "long_lab14", "long_lab15", "long_lab16"):
         (args.long_lab, args.long_lab2, args.long_lab3, args.long_lab4, args.long_lab5, args.long_lab6,
          args.long_lab7, args.long_lab8, args.long_lab9, args.long_lab10, args.long_lab11, args.long_lab12,
-         args.long_lab13, args.long_lab14, args.long_lab15) = (
+         args.long_lab13, args.long_lab14, args.long_lab15, args.long_lab16) = (
             _mode0 == "long_lab", _mode0 == "long_lab2", _mode0 == "long_lab3", _mode0 == "long_lab4", _mode0 == "long_lab5",
             _mode0 == "long_lab6", _mode0 == "long_lab7", _mode0 == "long_lab8", _mode0 == "long_lab9", _mode0 == "long_lab10",
             _mode0 == "long_lab11", _mode0 == "long_lab12", _mode0 == "long_lab13", _mode0 == "long_lab14",
-            _mode0 == "long_lab15")
+            _mode0 == "long_lab15", _mode0 == "long_lab16")
         args.liq_metric, args.grid = True, True
         args.only = ",".join(LAB_RULES if args.long_lab else LAB2_RULES if args.long_lab2
                              else LAB3_RULES if args.long_lab3 else LAB4_RULES if args.long_lab4
@@ -11260,7 +11771,8 @@ def main() -> int:
                              else LAB7_RULES if args.long_lab7 else LAB8_RULES if args.long_lab8
                              else LAB9_RULES if args.long_lab9 else LAB10_RULES if args.long_lab10
                              else LAB11_RULES if args.long_lab11 else LAB12_RULES if args.long_lab12
-                             else LAB13_RULES if args.long_lab13 else LAB14_RULES if args.long_lab14 else LAB15_RULES)
+                             else LAB13_RULES if args.long_lab13 else LAB14_RULES if args.long_lab14
+                             else LAB15_RULES if args.long_lab15 else LAB16_RULES)
         args.universe = "prime"
         args.years = 20
         LONG_MODE = True
@@ -11324,7 +11836,7 @@ def main() -> int:
     args.long_any = bool(args.long_test or args.long_lab or args.long_lab2 or args.long_lab3 or args.long_lab4
                          or args.long_lab5 or args.long_lab6 or args.long_lab7 or args.long_lab8 or args.long_lab9
                          or args.long_lab10 or args.long_lab11 or args.long_lab12 or args.long_lab13 or args.long_lab14
-                         or args.long_lab15)
+                         or args.long_lab15 or args.long_lab16)
     args.long_name = ("long_test" if args.long_test else "long_lab" if args.long_lab
                       else "long_lab2" if args.long_lab2 else "long_lab3" if args.long_lab3
                       else "long_lab4" if args.long_lab4 else "long_lab5" if args.long_lab5
@@ -11332,7 +11844,8 @@ def main() -> int:
                       else "long_lab8" if args.long_lab8 else "long_lab9" if args.long_lab9
                       else "long_lab10" if args.long_lab10 else "long_lab11" if args.long_lab11
                       else "long_lab12" if args.long_lab12 else "long_lab13" if args.long_lab13
-                      else "long_lab14" if args.long_lab14 else "long_lab15" if args.long_lab15 else "")
+                      else "long_lab14" if args.long_lab14 else "long_lab15" if args.long_lab15
+                      else "long_lab16" if args.long_lab16 else "")
 
     OUTDIR.mkdir(parents=True, exist_ok=True)
 
@@ -16763,6 +17276,219 @@ def main() -> int:
             if _ck is not None and _ck_work[0] > 0:
                 save_store(_long_raw, "20年分の追加検証15：計算が済んだ分を保存しました")
             lab15_report(_R15, _sub15["date"].min(), _sub15["date"].max(), _li15)
+
+        # ── 20年分の追加検証16（2026年10月24日に追加。計画は long_lab_plan_2026-10-19 の19。手法の採用の判定はしない）──
+        #   A 配当の計算の直し方（V0〜V3） ／ B 分割・併合の読み違いの大きさと成績への影響 ／ C 積立の買い方 ／ D 直した計算での配当の推移
+        if getattr(args, "long_lab16", False) and nm and nm[0] == "live_small1_pit":
+            _pn = panels[lbs_[0]]
+            _skw = dict(tier_budget=args.realistic, dividends=args.realistic, slip_bps=args.slip_bps,
+                        fee_bps=args.fee_bps, tax_rate=args.tax / 100.0, min_yield_override=mys[0])
+
+            class _Lab16Stop(Exception):
+                pass
+
+            def _ck16(key_, fn_):
+                if _ck is not None and key_ in _ck["misc"]:
+                    return _ck["misc"][key_]
+                if _long_stop("20年分の追加検証16の途中"):
+                    raise _Lab16Stop
+                v_ = fn_()
+                if _ck is not None:
+                    _ck["misc"][key_] = v_
+                    _ck_work[0] += 1
+                return v_
+
+            log.info("20年分の追加検証16：中間と期末の割合を直した列・分割と併合の基準のずれを直したパネル・実績の配当の列を作ります…")
+            _pnB = lab16_int_share_fix(store, _pn)
+            _pnF = lab16_add_actual(store, lab16_int_share_fix(store, lab16_with_fix(lambda: _panel_for(lbs_[0]))))
+            _pans16 = {"base": _pnB, "fix": _pnF}
+            log.info("  パネル … いまの計算 %d件 ／ 直した計算 %d件", len(_pnB), len(_pnF))
+            _spans16 = {"通し": (_long_m0, None), "見ていない期間": (_long_m0, pd.Timestamp(LONG_OOS_END)),
+                        "最近": (pd.Timestamp(LONG_RECENT_FROM), None)}
+
+            def _sub16(kind_, a_, b_):
+                p_ = _pans16[kind_]
+                m_ = p_["date"] >= a_
+                if b_ is not None:
+                    m_ &= p_["date"] <= b_
+                return p_[m_]
+
+            def _a16(n_, kind_):
+                """A：本番の通し（受け取った配当の記録つき）。D の一括の表も、ここから作る。"""
+                r_ = simulate(_sub16(kind_, _long_m0, None), VARIANTS[n_], args.capital, mxs_[0], ramp=0, **_skw)
+                m_ = metrics(r_)
+                return {"trades": r_["trades"][["date", "code", "side", "shares"]].copy(),
+                        "months": sorted(pd.Timestamp(d) for d in pd.to_datetime(r_["curve"]["date"]).unique()),
+                        "div_log": list(r_["diag"].get("div_log", [])),
+                        "cut_exits": list(r_["diag"].get("cut_exit_dates", [])),
+                        "m": {"清算後年率": m_.get("清算後年率"), "年率": m_.get("年率"), "最大下落": m_.get("最大下落")},
+                        "lump": lab16_year_table(r_, args.capital, 0)}
+
+            def _s16(n_, kind_, g_):
+                """B：見ていない期間・最近の年率。"""
+                a_, b_ = _spans16[g_]
+                m_ = metrics(simulate(_sub16(kind_, a_, b_), VARIANTS[n_], args.capital, mxs_[0], ramp=0, **_skw))
+                return {"清算後年率": m_.get("清算後年率"), "年率": m_.get("年率"), "最大下落": m_.get("最大下落")}
+
+            def _d16(n_, kind_):
+                """D：毎月同じ額の積立（合計1,000万円）の、年ごとの受け取った配当。"""
+                sub_ = _sub16(kind_, _long_m0, None)
+                nmo_ = int(sub_["date"].nunique())
+                r_ = simulate(sub_, VARIANTS[n_], args.capital, mxs_[0], ramp=nmo_, **_skw)
+                return lab16_year_table(r_, args.capital, nmo_)
+
+            def _c16(n_, sub_):
+                """C：毎月3万円の積立。"""
+                nmo_ = int(sub_["date"].nunique())
+                cap_ = float(LAB16_ACC) * nmo_
+                r_ = simulate(sub_, VARIANTS[n_], cap_, mxs_[0], ramp=nmo_, **_skw)
+                cv_ = r_["curve"]
+                nms_ = cv_["names"].to_numpy(dtype=float)
+                liq_ = float(r_["liq_value"])
+                d_ = r_.get("diag") or {}
+                f8_ = next((str(pd.Timestamp(cv_["date"].iloc[i_]).date())[:7] for i_ in range(nmo_) if nms_[i_] >= LAB15_NAMES_OK), None)
+                return {"first8": f8_, "early": float(nms_[:LAB16_EARLY].mean()),
+                        "dd": lab14_twr_dd(cv_["value"].to_numpy(dtype=float), cap_, nmo_),
+                        "irr": lab14_irr([float(LAB16_ACC)] * nmo_, liq_), "liq": liq_,
+                        "div2025": float(sum(v_ for k_, v_ in (d_.get("div_by_month") or {}).items() if pd.Timestamp(k_).year == 2025))}
+
+            _s15c = _pnB[_pnB["date"] >= pd.Timestamp(LAB15_FROM)]
+            _csub16 = {"1株単位・2009年〜": _pnB[_pnB["date"] >= _long_m0],
+                       "100株単位・2018年〜": lab15_add_lot(_s15c, lab15_lot_table(store["quotes"], sorted({str(c_) for c_ in _s15c["code"].unique()})))}
+            log.info("20年分の追加検証16：4つの計算（通し・2つの期間・積立）と、積立の買い方を回します")
+            _K16, _S16, _C16, _D16 = {}, {}, {}, {}
+            try:
+                for v_, n_, kind_, _ in LAB16_V:
+                    _K16[v_] = _ck16(("K16", v_), lambda n=n_, k=kind_: _a16(n, k))
+                    for g_ in ("見ていない期間", "最近"):
+                        _S16[(v_, g_)] = _ck16(("S16", v_, g_), lambda n=n_, k=kind_, g=g_: _s16(n, k, g))
+                    _D16[v_] = _ck16(("D16", v_), lambda n=n_, k=kind_: _d16(n, k))
+                    log.info("  %s が完了", v_)
+                for k_, ref_, cur_, new_, _ in LAB16_C:
+                    for f_, n_ in (("ref", ref_), ("cur", cur_), ("new", new_)):
+                        _C16[(k_, f_)] = _ck16(("C16", k_, f_), lambda n=n_, sb=_csub16[k_]: _c16(n, sb))
+                log.info("  積立の買い方が完了")
+            except _Lab16Stop:
+                return EXIT_UNFINISHED
+            if _ck is not None and _ck_work[0] > 0:
+                save_store(_long_raw, "20年分の追加検証16：計算が済んだ分を保存しました")
+
+            # 配当金情報：A の4つの形で持った銘柄と、減配と判定された候補（ツールの範囲・利回り3％以上の月に減配の印が立った銘柄）
+            _hold16 = {v_: lab14_holdings(_K16[v_]["trades"], _K16[v_]["months"]) for v_ in _K16}
+            _codesA = sorted({c_ for h_ in _hold16.values() for hh_ in h_.values() for c_ in hh_})
+            _flag16 = set()
+            for p_ in (_pnB, _pnF):
+                if "div_cut10" not in p_.columns:
+                    continue
+                m_ = (pd.to_numeric(p_["div_cut10"], errors="coerce") > 0.5) & (p_["yield"] >= 3.0) & (p_["date"] >= pd.Timestamp(LAB16_FY_FROM))
+                if "in_uni_live" in p_.columns:
+                    m_ &= p_["in_uni_live"].astype(bool)
+                _flag16 |= {str(c_) for c_ in p_.loc[m_, "code"].unique()}
+            _codesB = sorted(_flag16 - set(_codesA))
+            _want16 = (_codesA + _codesB)[:LAB16_FETCH_MAX]
+            _dc16 = _long_raw.setdefault("lab14_divs", {}) if _long_raw is not None else {}
+            _note16, _nf16 = lab16_fetch_divs(_want16, _dc16, os.environ.get("J_QUANTS_API_KEY"))
+            if _nf16 and _long_raw is not None:
+                save_store(_long_raw, "20年分の追加検証16：配当金情報を保存しました")
+            if len(_codesA) + len(_codesB) > LAB16_FETCH_MAX:
+                _note16 = ((_note16 + "。") if _note16 else "") + f"減配と判定された候補は、上限の{LAB16_FETCH_MAX}銘柄までで切った"
+            _divs16 = {c_: lab14_parse_divs(_dc16.get(c_)) for c_ in _want16 if c_ in _dc16}
+            _adj16 = {c_: lab14_adj_after(store["quotes"].get(c_)) for c_ in _divs16}
+
+            # A
+            _A16 = {"ok": False, "note": _note16}
+            _failA = [c_ for c_ in _codesA if c_ not in _dc16]
+            if any(_divs16.get(c_) for c_ in _codesA):
+                _fsA = set(_failA)
+                if _failA:
+                    _note16 = ((_note16 + "。") if _note16 else "") + (
+                        f"配当金情報を取れなかった{len(_failA)}銘柄（{'・'.join(_failA[:8])}{'など' if len(_failA) > 8 else ''}）は、"
+                        "いまの計算からも除いて比べた")
+                _dA = {c_: _divs16[c_] for c_ in _codesA if c_ in _divs16}
+                _A16 = {"ok": True, "off": {}, "sim": {}, "note": _note16,
+                        "n_ok": sum(1 for c_ in _dA if _dA[c_]), "n_ng": len(_codesA) - sum(1 for c_ in _dA if _dA[c_])}
+                for v_ in _K16:
+                    off_ = lab14_official(_hold16[v_], _dA, _adj16)
+                    oy_ = {}
+                    for m_, x_ in off_["month"].items():
+                        oy_[m_.year] = oy_.get(m_.year, 0.0) + x_
+                    _A16["off"][v_] = oy_
+                    _A16["sim"][v_] = lab14_sim([x_ for x_ in _K16[v_]["div_log"] if str(x_[1]) not in _fsA])["year"]
+
+            # B：予想配当の読み違い
+            _B16 = {}
+            _cols16 = ["code", "date", "dps", "yield", "price"] + (["in_uni_live"] if "in_uni_live" in _pnB.columns else [])
+            _mm16 = _pnB[_cols16].merge(_pnF[["code", "date", "dps"]].rename(columns={"dps": "dps_f"}), on=["code", "date"], how="inner")
+            _ok16 = (_mm16["dps"] > 0) & (_mm16["dps_f"] > 0)
+            _lr16 = np.log((_mm16["dps_f"] / _mm16["dps"]).where(_ok16))
+            _mis16 = _ok16 & (_lr16.abs() > np.log(1.0 + LAB16_MISREAD))
+            _uni16 = _mm16["in_uni_live"].astype(bool) if "in_uni_live" in _mm16.columns else pd.Series(True, index=_mm16.index)
+            _cand16 = _mis16 & _uni16 & ((_mm16["yield"] >= 3.0) | (_mm16["dps_f"] / _mm16["price"] * 100.0 >= 3.0))
+            _rec16 = _mm16["date"] >= pd.Timestamp("2023-01-01")
+            _mk16 = set(zip(_mm16.loc[_mis16, "code"].astype(str), pd.to_datetime(_mm16.loc[_mis16, "date"])))
+            _tb16 = _K16["V0"]["trades"]
+            _tb16 = _tb16[_tb16["side"] == "buy"]
+            _bought16 = [str(r_.code) for r_ in _tb16.itertuples(index=False) if (str(r_.code), pd.Timestamp(r_.date)) in _mk16]
+            _B16["fc"] = {"rows": int(_mis16.sum()), "codes": int(_mm16.loc[_mis16, "code"].nunique()),
+                          "cand": int(_cand16.sum()), "cand_codes": int(_mm16.loc[_cand16, "code"].nunique()),
+                          "recent": int((_mis16 & _rec16).sum()), "recent_cand": int((_cand16 & _rec16).sum()),
+                          "bought": len(_bought16), "bought_codes": sorted(set(_bought16))}
+
+            # B：減配の判定の読み違い（配当金情報を取った銘柄）
+            _cut16 = {"n_codes": sum(1 for c_ in _divs16 if _divs16[c_])}
+            _flags_by16 = {}
+            for v_, fx_ in (("V0", False), ("V2", True)):
+                agg_ = {"flags": 0, "false": 0, "unknown": 0}
+                for c_, dv_ in _divs16.items():
+                    if not dv_:
+                        continue
+                    stl_ = store["stmts"].get(c_, []) or []
+                    px_ = quotes_to_df(store["quotes"].get(c_, []))
+                    if px_.empty:
+                        continue
+                    fes_ = [pdate(st_.get("CurPerEn")) for st_ in stl_ if st_.get("CurPerType") in ("FY", "4Q") and pdate(st_.get("CurPerEn"))]
+                    off_fy_ = lab16_fy_official(dv_, _adj16.get(c_), fes_)
+                    fl_ = lab16_cut_flags(stl_, px_, off_fy_, fx_)
+                    _flags_by16[(v_, c_)] = fl_
+                    for _, _, _, oc_ in fl_:
+                        agg_["flags"] += 1
+                        if oc_ is None:
+                            agg_["unknown"] += 1
+                        elif oc_ > LAB16_CUT:
+                            agg_["false"] += 1
+                _cut16[v_] = agg_
+            # 本番（V0）の緊急売りのうち、減配の判定で売った回
+            _ex16 = {"all": len(_K16["V0"]["cut_exits"]), "cut": 0, "false": 0, "unknown": 0, "false_codes": []}
+            _pix16 = _pnB.set_index(["code", "date"])
+            for c_, d_ in _K16["V0"]["cut_exits"]:
+                c_ = str(c_)
+                try:
+                    dcut_ = float(_pix16.at[(c_, pd.Timestamp(d_)), "div_cut10"])
+                except Exception:
+                    dcut_ = float("nan")
+                if not (dcut_ > 0.5):
+                    continue
+                _ex16["cut"] += 1
+                fl_ = [x_ for x_ in (_flags_by16.get(("V0", c_)) or []) if x_[1] <= pd.Timestamp(d_) + pd.Timedelta(days=31)]
+                if not fl_:
+                    _ex16["unknown"] += 1
+                    continue
+                oc_ = max(fl_, key=lambda x_: x_[1])[3]
+                if oc_ is None:
+                    _ex16["unknown"] += 1
+                elif oc_ > LAB16_CUT:
+                    _ex16["false"] += 1
+                    _ex16["false_codes"].append(c_)
+            _cut16["exits"] = _ex16
+            _B16["cut"] = _cut16
+            _imp16 = {}
+            for v_ in _K16:
+                _imp16[(v_, "通し")] = _K16[v_]["m"]
+                for g_ in ("見ていない期間", "最近"):
+                    _imp16[(v_, g_)] = _S16.get((v_, g_))
+            _B16["impact"] = _imp16
+            _D16x = {v_: {"lump": _K16[v_]["lump"], "acc": _D16.get(v_)} for v_ in _K16}
+            lab16_report(_A16, _B16, _C16, _D16x)
 
         if getattr(args, "long_test", False) and nm and nm[0] == "live_small1_pit":
             L0, Lb = VARIANTS["live_small1_pit"]["label"], VARIANTS["live_nobank"]["label"]
