@@ -2407,6 +2407,34 @@ LAB14_B = (("R6", "lab6_combo", "lab_offset", "12月の損出し＋配当で買�
            ("X8", "lab_topup", "live_small1_pit", "配当で買い増しだけ（相手は本番）"))
 # （記号, ルール, NISA でも回すか）
 LAB14_C = (("本番", "lab14_odd", True), ("X8", "lab14_odd_x8", True), ("R6", "lab14_odd_r6", False))
+# ── 20年分の追加検証15（2026年10月24日に追加。計画は long_lab_plan_2026-10-19 の18）──
+#   100株単位で少額ならどう回るか。2018年10月1日からすべての上場株が100株単位なので、2018年10月末から、
+#   その月末の実際の100株（分割を調整する前の株価 × 100株）で買う。一括4通り・積立3通り × 買い方3通り × 売買の要素3通り × 特定口座と NISA。
+#   手法の採用の判定はしない
+LAB15_RULES = ["live_small1_pit"]
+LAB15_FROM = "2018-10-31"
+LAB15_LUMPS = (1_000_000, 2_000_000, 3_000_000, 5_000_000)
+LAB15_MONTHLY = (30_000, 50_000, 100_000)
+LAB15_NAMES_OK = 8          # 判定：最後の1年の平均の銘柄数がこの数以上（lab13 で配当の安定が保たれた最小の数）
+LAB15_REF = 10_000_000      # 判定の基準にする、いまの本番そのもの（一括1,000万円・(a)・特定口座）
+LAB15_CASH_PLUS = 0.10      # 判定：最後の1年の現金の割合の平均が、基準（LAB15_REF）の現金の割合＋この値以下
+LAB15_LAST = 12             # 最後の1年＝最後の12か月末
+VARIANTS.update({
+    "lab15_a": _lab_rule("本番・実際の100株単位", real_lot=True),
+    "lab15_b": _lab_rule("本番・実際の100株単位・予算に入らなくても100株（2割まで）", real_lot=True, lot_min_frac=LAB13_LOT_FRAC),
+})
+VARIANTS["lab15_b_x8"] = dict(VARIANTS["lab_topup"], real_lot=True, lot_min_frac=LAB13_LOT_FRAC,
+                              label="X8 本番＋配当で買い増し・実際の100株単位・予算に入らなくても100株（2割まで）")
+VARIANTS["lab15_b_r6"] = dict(VARIANTS["lab6_combo"], real_lot=True, lot_min_frac=LAB13_LOT_FRAC,
+                              label="R6 本番＋12月の損出し＋配当で買い増し・実際の100株単位・予算に入らなくても100株（2割まで）")
+# （記号, {売買の要素: ルール}, 説明）
+LAB15_M = (("a", {"本番": "lab15_a"}, "100株単位・ツールの予算どおり"),
+           ("b", {"本番": "lab15_b", "X8": "lab15_b_x8", "R6": "lab15_b_r6"}, "100株単位・予算に入らなくても100株（2割まで）"),
+           ("c", {"本番": "lab14_odd", "X8": "lab14_odd_x8", "R6": "lab14_odd_r6"}, "1株単位"))
+# 回す組み合わせ（買い方, 売買の要素, 口座）。(a) は判定の基準だけ（本番・特定口座）。NISA は損出しが意味を持たないので R6 は回さない
+LAB15_RUNS = (("a", "本番", "特定"),
+              ("b", "本番", "特定"), ("b", "X8", "特定"), ("b", "R6", "特定"), ("b", "本番", "NISA"), ("b", "X8", "NISA"),
+              ("c", "本番", "特定"), ("c", "X8", "特定"), ("c", "R6", "特定"), ("c", "本番", "NISA"), ("c", "X8", "NISA"))
 
 # 可変ルールの加減点。必要パーセンタイルを下げる＝買いやすくする。
 # 条件を増やすほど過去に合わせただけの数字になりやすいので、3つに絞っています。
@@ -5039,6 +5067,22 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
     if cfg.get("odd_lot"):
         tier_budget = False
     lot_min_frac = float(cfg.get("lot_min_frac") or 0.0)
+    # 20年分の追加検証15（2026年10月24日に追加。計画は long_lab_plan_2026-10-19 の18）
+    #   real_lot … True なら、100株単位の「100株」を、その月末の実際の100株（分割を調整する前の100株）にする。
+    #              ツールの中の株数（いまの株数の基準）では、パネルの列 lot100（＝100 ÷ その月末より後の分割の係数の積）株。
+    #              列がない・値がおかしいときは100株のまま。100株単位で買うとき（tier_budget）だけ効く
+    real_lot = bool(cfg.get("real_lot", False)) and tier_budget
+
+    def _lot_of(code_):
+        """その月末に、その銘柄の「100株」がツールの中で何株か（real_lot でなければ100）。"""
+        if not real_lot or "lot100" not in day.columns:
+            return 100
+        v_ = day.at[code_, "lot100"]
+        try:
+            v_ = float(v_)
+        except (TypeError, ValueError):
+            return 100
+        return max(1, int(round(v_))) if v_ == v_ and v_ > 0 else 100
     tiers_allowed = set(cfg["tiers_allowed"]) if cfg.get("tiers_allowed") else None
     # 5回目の候補（2026年10月12日に追加）
     #   tier_col … Tier をこの列で置き換える（add_pit_tiers が作る、後出しなしで判定した Tier）
@@ -6609,18 +6653,19 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
             else:
                 unit_size = total / max_names / nt
             unit_size *= rs * f_scale
+            _L = _lot_of(code) if real_lot else 100
             for _ in range(add):
-                if lot_min_frac > 0 and tier_budget and unit_size < 100 * price:
+                if lot_min_frac > 0 and tier_budget and unit_size < _L * price:
                     # 20年分の追加検証13：予算に100株が入らなくても、100株の金額が総資産の lot_min_frac 以下なら100株だけ買う
-                    if 100 * price > lot_min_frac * total or usable < 100 * price * (1 + slip) * (1 + fee):
+                    if _L * price > lot_min_frac * total or usable < _L * price * (1 + slip) * (1 + fee):
                         break
-                    sh = 100
+                    sh = _L
                     diag["lot_min_buys"] = diag.get("lot_min_buys", 0) + 1
                 else:
                     if usable < unit_size or unit_size < price:
                         break
-                    # 100株単位（実運用に合わせる）
-                    sh = int(unit_size // price // 100) * 100 if tier_budget \
+                    # 100株単位（実運用に合わせる。real_lot なら実際の100株の単位）
+                    sh = int(unit_size // price // _L) * _L if tier_budget \
                          else int(unit_size // price)
                     if sh <= 0:
                         break
@@ -6685,7 +6730,8 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                         continue
                     _px = float(row["price"])
                     _buy = _px * (1 + slip) * (1 + fee)
-                    if usable < _lot * _buy:
+                    _lc = _lot_of(code) if real_lot else _lot
+                    if usable < _lc * _buy:
                         continue
                     _tier = row.get("tier", "B")
                     if weighted:
@@ -6695,18 +6741,18 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                     else:
                         _tgt = total / max_names
                     _val = sum(sh for sh, _ in st["lots"]) * _px
-                    if _tgt - _val < _lot * _px:
+                    if _tgt - _val < _lc * _px:
                         continue
                     _ratio = _val / _tgt if _tgt > 0 else 9.9
                     if _best is None or _ratio < _best[0]:
-                        _best = (_ratio, code, _px, _buy, _tgt - _val)
+                        _best = (_ratio, code, _px, _buy, _tgt - _val, _lc)
                 if _best is None:
                     break
-                _, code, _px, _buy, _room = _best
-                _n = int(min(_room // (_lot * _px), usable // (_lot * _buy)))
+                _, code, _px, _buy, _room, _lc = _best
+                _n = int(min(_room // (_lc * _px), usable // (_lc * _buy)))
                 if _n <= 0:
                     break
-                sh = _n * _lot
+                sh = _n * _lc
                 cash -= sh * _buy
                 usable -= sh * _buy
                 diag["fee"] = diag.get("fee", 0.0) + sh * _px * (slip + fee)
@@ -10903,6 +10949,123 @@ def lab14_report(A: dict | None, B: dict, starts: list, C: dict, m_last) -> dict
     return out
 
 
+def lab15_lot_table(quotes: dict, codes) -> dict:
+    """20年分の追加検証15：銘柄ごとに、ある日より後に起きた分割の係数の積を引けるようにする {銘柄: (日付[ns], 積)}。
+    積の配列は記録より1つ長く、最後は1（記録のあとに分割はない）。"""
+    out = {}
+    for c_ in codes:
+        q_ = quotes.get(c_)
+        if q_ is None or len(q_) == 0:
+            continue
+        px_ = quotes_to_df(q_)
+        if px_.empty:
+            continue
+        ds_ = px_["date"].to_numpy(dtype="datetime64[ns]").astype(np.int64)
+        adj_ = px_["adj"].replace(0, 1.0).fillna(1.0).to_numpy(dtype=float)
+        out[str(c_)] = (ds_, np.r_[np.cumprod(adj_[::-1])[::-1], 1.0])
+    return out
+
+
+def lab15_add_lot(sub: pd.DataFrame, table: dict) -> pd.DataFrame:
+    """20年分の追加検証15：パネルに列 lot100 を足す。その月末の実際の100株が、ツールの中の株数（いまの株数の基準）で何株か。
+    ＝ 100 ÷ その月末より後に起きた分割の係数の積（1:2 の分割の前なら200。株式の併合の前なら100より少ない）。株価の記録がなければ100。"""
+    out = sub.copy()
+    lots = np.full(len(out), 100.0)
+    dts = out["date"].to_numpy(dtype="datetime64[ns]").astype(np.int64)
+    for c_, idx_ in out.groupby("code").indices.items():
+        t_ = table.get(str(c_))
+        if t_ is None:
+            continue
+        ds_, suf_ = t_
+        i_ = np.searchsorted(ds_, dts[idx_], side="right")
+        lots[idx_] = 100.0 / suf_[i_]
+    out["lot100"] = lots
+    return out
+
+
+def lab15_report(R: dict, m0, m1, lot_info: dict) -> dict:
+    """20年分の追加検証15（long_lab15）：100株単位で少額ならどう回るか。2026年10月24日に追加。
+    基準は結果を見る前に決めたもの（プロジェクトの long_lab_plan_2026-10-19 の18）。手法の採用の判定はしない。
+      始め方 × 買い方 (a)(b) ごとに、本番・特定口座で、最後の1年（最後の12か月末）の平均の銘柄数が8以上、かつ現金の割合の平均が
+      いまの本番そのもの（一括1,000万円・(a)）の現金の割合＋10pt 以下 →「100株単位で回る」。それ以外 →「回らない」。(a)・(b) それぞれで「回る」最小の一括の元本と最小の毎月の積立額
+      （それより大きい額もすべて回る）"""
+    out = {"verd": {}, "min": {}}
+    print("\n【20年分の追加検証15：100株単位で少額ならどう回るか】（基準は結果を見る前に決めたもの。"
+          "計画はプロジェクトの long_lab_plan_2026-10-19 の18。手法の採用の判定はしない）")
+    print("  予想 … (a) は一括500万円から回る・積立はどの額でも回らない ／ (b) は一括100万円から回る（8〜10銘柄）・積立は5万円から回る ／ "
+          "(b) の年率は (c) より1pt以内で低い ／ R6 と X8 は、100株単位で元本が小さいと配当で買い増せる場面が少なく、本番とほぼ同じ")
+    print(f"  期間 … {pd.Timestamp(m0).date()}〜{pd.Timestamp(m1).date()}。実際の100株（分割を調整する前の株価 × 100株）で買う"
+          f"（実際の100株がツールの中の100株と違った銘柄・月末 {lot_info.get('share', 0) * 100:.1f}％・"
+          f"この期間のあとに分割した銘柄 {lot_info.get('codes', 0)}）。積立は毎月同じ額を、はじめの月末から入れる")
+    print("  買い方 … " + " ／ ".join(f"({m_}) {d_}" for m_, _, d_ in LAB15_M))
+
+    def _lab(st_, a_):
+        return f"一括{a_ / 1e4:,.0f}万円" if st_ == "一括" else f"積立 毎月{a_ / 1e4:,.0f}万円"
+    styles = [("一括", a_) for a_ in LAB15_LUMPS] + [("積立", a_) for a_ in LAB15_MONTHLY]
+
+    ref_ = R.get(("基準", LAB15_REF, "a", "本番", "特定"))
+    lim_ = (ref_["cash_last"] + LAB15_CASH_PLUS) if ref_ and ref_.get("cash_last") == ref_.get("cash_last") else LAB15_CASH_PLUS
+    out["cash_lim"] = lim_
+    print(f"\n  1. 判定（本番・特定口座。最後の1年＝最後の{LAB15_LAST}か月末の平均）")
+    if ref_:
+        print(f"    基準：いまの本番そのもの（一括{LAB15_REF / 1e4:,.0f}万円・(a)） … {ref_['names_last']:.1f}銘柄（{ref_['names_end']}） ／ "
+              f"現金 {ref_['cash_last'] * 100:.0f}％ ／ {ref_['maxw_end'] * 100:.0f}％ ／ 年率 {ref_['irr']:.1f}％ → "
+              f"現金の上限は {lim_ * 100:.0f}％（基準の現金＋{LAB15_CASH_PLUS * 100:.0f}pt）")
+    print("    始め方 (買い方) … 銘柄数（最後の月末） ／ 現金 ／ 最後の月末のいちばん大きい1銘柄 ／ "
+          f"{LAB15_NAMES_OK}銘柄に届いた月 ／ 年率 → 判定")
+    for st_, a_ in styles:
+        for m_, _, _ in LAB15_M:
+            r_ = R.get((st_, a_, m_, "本番", "特定"))
+            if not r_:
+                continue
+            ok_ = r_["names_last"] >= LAB15_NAMES_OK and r_["cash_last"] <= lim_
+            if m_ in ("a", "b"):
+                out["verd"][(st_, a_, m_)] = ok_
+            v_ = ("100株単位で回る" if ok_ else "回らない") if m_ in ("a", "b") else "（参考）"
+            print(f"    {_lab(st_, a_) if m_ == 'a' else '':<14}({m_}) … {r_['names_last']:.1f}銘柄（{r_['names_end']}） ／ "
+                  f"現金 {r_['cash_last'] * 100:.0f}％ ／ {r_['maxw_end'] * 100:.0f}％ ／ {r_['first8'] or '届かない'} ／ "
+                  f"{r_['irr']:.1f}％ → {v_}")
+    for m_ in ("a", "b"):
+        for st_, amts_ in (("一括", LAB15_LUMPS), ("積立", LAB15_MONTHLY)):
+            mn_ = None
+            for a_ in sorted(amts_, reverse=True):
+                if out["verd"].get((st_, a_, m_)):
+                    mn_ = a_
+                else:
+                    break
+            out["min"][(m_, st_)] = mn_
+    print(f"    （基準：最後の1年の平均の銘柄数が{LAB15_NAMES_OK}以上、かつ現金の割合の平均が、いまの本番そのもの（一括{LAB15_REF / 1e4:,.0f}万円・(a)）の"
+          f"現金の割合＋{LAB15_CASH_PLUS * 100:.0f}pt 以下＝100株単位で回る。積立の現金と評価額は、まだ入れていない分を除いて計算）")
+
+    print("\n  2. 売買の要素と口座（年率は清算後。積立はお金の重みつき。配当は2025年の受け取り（税引き後）。減った年は、受け取った配当が"
+          "前の年より減った年の数（いちばん減った幅）。下落は入れたお金の影響を除いた最大下落。銘柄数・現金は最後の1年の平均）")
+    for st_, a_ in styles:
+        r0_ = R.get((st_, a_, "a", "本番", "特定")) or {}
+        print(f"    {_lab(st_, a_)}（入れた額 {r0_.get('paid', 0) / 1e4:,.0f}万円）")
+        for m_, el_, ac_ in LAB15_RUNS:
+            r_ = R.get((st_, a_, m_, el_, ac_))
+            if not r_:
+                continue
+            w_ = r_.get("worst")
+            ns_ = r_.get("nisa") or {}
+            nis_ = ""
+            if ac_ == "NISA" and (ns_.get("buy_over") or ns_.get("book_over")):
+                nis_ = "（NISA の枠：" + "・".join(x_ for x_ in (
+                    f"{ns_['buy_over']}年から1年の枠を超える" if ns_.get("buy_over") else "",
+                    f"{ns_['book_over']}年から生涯の枠を超える" if ns_.get("book_over") else "") if x_) + "）"
+            print(f"      ({m_}) {el_} {ac_} … {r_['liq'] / 1e4:,.0f}万（{r_['irr']:.1f}％）・配当 {r_['div2025'] / 1e4:,.1f}万・"
+                  f"減った年 {r_['n_down']}回（{(w_ * 100 if w_ is not None else float('nan')):+.0f}％）・下落 {r_['dd']:.0f}％・"
+                  f"{r_['names_last']:.1f}銘柄・現金 {r_['cash_last'] * 100:.0f}％・売買 {r_['trades_y']:.1f}回/年{nis_}")
+
+    print("\n  まとめ（結果を見る前に決めた基準）")
+    for m_ in ("a", "b"):
+        l_ = out["min"][(m_, "一括")]
+        k_ = out["min"][(m_, "積立")]
+        print(f"    ({m_}) 100株単位で回る最小の額 … 一括 " + (f"{l_ / 1e4:,.0f}万円" if l_ else "どの額でも回らない")
+              + " ／ 積立 " + (f"毎月{k_ / 1e4:,.0f}万円" if k_ else "どの額でも回らない"))
+    return out
+
+
 # ══════════════════════════════════════════
 def main() -> int:
     global LONG_MODE, CACHE, PIT_FROM, COMPUTE_START_LIMIT_MIN
@@ -11062,7 +11225,7 @@ def main() -> int:
     #   取り終わっていなければ取得から始める（途中で止まったら、同じ設定でもう一度押す）。
     args.long_test = args.long_lab = args.long_lab2 = args.long_lab3 = args.long_lab4 = args.long_lab5 = False
     args.long_lab6 = args.long_lab7 = args.long_lab8 = args.long_lab9 = args.long_lab10 = args.long_lab11 = False
-    args.long_lab12 = args.long_lab13 = args.long_lab14 = False
+    args.long_lab12 = args.long_lab13 = args.long_lab14 = args.long_lab15 = False
     # 20年分の追加検証（2026年10月19日に追加。計画はプロジェクトの long_lab_plan_2026-10-19）
     #   long_lab  … ルールの候補20個・近い設定6つ・参考2つを、本番と同じ52条件で回す
     #   long_lab2 … 運・偏り・始めた月・業種（20回目と同じ作り方。比べる指数は TOPIX）
@@ -11080,14 +11243,16 @@ def main() -> int:
     #   long_lab12 … 偶然かどうか・配当を使う・損切りなしのうねりの比べ直し（2026年10月23日に追加。計画は同じ文書の15。手法の判定はしない）
     #   long_lab13 … 元本が小さい人でも同じになるか（2026年10月24日に追加。計画は同じ文書の16。手法の判定はしない）
     #   long_lab14 … 配当の検算・R6 をいつ始めても効くか・単元未満株での少額（2026年10月24日に追加。計画は同じ文書の17）
+    #   long_lab15 … 100株単位で少額ならどう回るか（2026年10月24日に追加。計画は同じ文書の18）
     if _mode0 in ("long_lab", "long_lab2", "long_lab3", "long_lab4", "long_lab5", "long_lab6", "long_lab7", "long_lab8",
-                  "long_lab9", "long_lab10", "long_lab11", "long_lab12", "long_lab13", "long_lab14"):
+                  "long_lab9", "long_lab10", "long_lab11", "long_lab12", "long_lab13", "long_lab14", "long_lab15"):
         (args.long_lab, args.long_lab2, args.long_lab3, args.long_lab4, args.long_lab5, args.long_lab6,
          args.long_lab7, args.long_lab8, args.long_lab9, args.long_lab10, args.long_lab11, args.long_lab12,
-         args.long_lab13, args.long_lab14) = (
+         args.long_lab13, args.long_lab14, args.long_lab15) = (
             _mode0 == "long_lab", _mode0 == "long_lab2", _mode0 == "long_lab3", _mode0 == "long_lab4", _mode0 == "long_lab5",
             _mode0 == "long_lab6", _mode0 == "long_lab7", _mode0 == "long_lab8", _mode0 == "long_lab9", _mode0 == "long_lab10",
-            _mode0 == "long_lab11", _mode0 == "long_lab12", _mode0 == "long_lab13", _mode0 == "long_lab14")
+            _mode0 == "long_lab11", _mode0 == "long_lab12", _mode0 == "long_lab13", _mode0 == "long_lab14",
+            _mode0 == "long_lab15")
         args.liq_metric, args.grid = True, True
         args.only = ",".join(LAB_RULES if args.long_lab else LAB2_RULES if args.long_lab2
                              else LAB3_RULES if args.long_lab3 else LAB4_RULES if args.long_lab4
@@ -11095,7 +11260,7 @@ def main() -> int:
                              else LAB7_RULES if args.long_lab7 else LAB8_RULES if args.long_lab8
                              else LAB9_RULES if args.long_lab9 else LAB10_RULES if args.long_lab10
                              else LAB11_RULES if args.long_lab11 else LAB12_RULES if args.long_lab12
-                             else LAB13_RULES if args.long_lab13 else LAB14_RULES)
+                             else LAB13_RULES if args.long_lab13 else LAB14_RULES if args.long_lab14 else LAB15_RULES)
         args.universe = "prime"
         args.years = 20
         LONG_MODE = True
@@ -11158,7 +11323,8 @@ def main() -> int:
     # 20年分のキャッシュを使うモードのどれか（long_test・long_lab・long_lab2）
     args.long_any = bool(args.long_test or args.long_lab or args.long_lab2 or args.long_lab3 or args.long_lab4
                          or args.long_lab5 or args.long_lab6 or args.long_lab7 or args.long_lab8 or args.long_lab9
-                         or args.long_lab10 or args.long_lab11 or args.long_lab12 or args.long_lab13 or args.long_lab14)
+                         or args.long_lab10 or args.long_lab11 or args.long_lab12 or args.long_lab13 or args.long_lab14
+                         or args.long_lab15)
     args.long_name = ("long_test" if args.long_test else "long_lab" if args.long_lab
                       else "long_lab2" if args.long_lab2 else "long_lab3" if args.long_lab3
                       else "long_lab4" if args.long_lab4 else "long_lab5" if args.long_lab5
@@ -11166,7 +11332,7 @@ def main() -> int:
                       else "long_lab8" if args.long_lab8 else "long_lab9" if args.long_lab9
                       else "long_lab10" if args.long_lab10 else "long_lab11" if args.long_lab11
                       else "long_lab12" if args.long_lab12 else "long_lab13" if args.long_lab13
-                      else "long_lab14" if args.long_lab14 else "")
+                      else "long_lab14" if args.long_lab14 else "long_lab15" if args.long_lab15 else "")
 
     OUTDIR.mkdir(parents=True, exist_ok=True)
 
@@ -16516,6 +16682,87 @@ def main() -> int:
                 else:
                     _A14 = {"official": False, "note": _note14}
             lab14_report(_A14, _B14, _starts14, _C14, _ds14[-1] if _ds14 else None)
+
+        # ── 20年分の追加検証15（2026年10月24日に追加。計画は long_lab_plan_2026-10-19 の18。手法の採用の判定はしない）──
+        #   2018年10月末から、実際の100株（分割を調整する前の株価 × 100株）で、一括4通り・積立3通り × 買い方・売買の要素・口座
+        if getattr(args, "long_lab15", False) and nm and nm[0] == "live_small1_pit":
+            _pn = panels[lbs_[0]]
+            _skw = dict(tier_budget=args.realistic, dividends=args.realistic, slip_bps=args.slip_bps,
+                        fee_bps=args.fee_bps, tax_rate=args.tax / 100.0, min_yield_override=mys[0])
+
+            class _Lab15Stop(Exception):
+                pass
+
+            def _ck15(key_, fn_):
+                if _ck is not None and key_ in _ck["misc"]:
+                    return _ck["misc"][key_]
+                if _long_stop("20年分の追加検証15の途中"):
+                    raise _Lab15Stop
+                v_ = fn_()
+                if _ck is not None:
+                    _ck["misc"][key_] = v_
+                    _ck_work[0] += 1
+                return v_
+
+            _s15 = _pn[_pn["date"] >= pd.Timestamp(LAB15_FROM)]
+            _lt15 = lab15_lot_table(store["quotes"], sorted({str(c_) for c_ in _s15["code"].unique()}))
+            _sub15 = lab15_add_lot(_s15, _lt15)
+            _nm15 = int(_sub15["date"].nunique())
+            _li15 = {"share": float((np.abs(_sub15["lot100"].to_numpy(dtype=float) - 100.0) > 0.5).mean()) if len(_sub15) else 0.0,
+                     "codes": int(_sub15.loc[np.abs(_sub15["lot100"] - 100.0) > 0.5, "code"].nunique())}
+            _rules15 = {m_: d_ for m_, d_, _ in LAB15_M}
+
+            def _r15(n_, cap_, rp_, tx_):
+                """1回分（元本 cap_ を rp_ か月かけて毎月同じ額ずつ入れる。0なら一括）。残すのは表に要る数字だけ。"""
+                r_ = simulate(_sub15, VARIANTS[n_], cap_, mxs_[0], ramp=rp_, **dict(_skw, tax_rate=tx_))
+                cv_ = r_["curve"]
+                nmo_ = len(cv_)
+                res_ = np.array([cap_ * (1.0 - min(1.0, (i_ + 1) / rp_)) if rp_ > 0 else 0.0 for i_ in range(nmo_)])
+                val_ = cv_["value"].to_numpy(dtype=float) - res_
+                cash_ = cv_["cash"].to_numpy(dtype=float) - res_
+                nms_ = cv_["names"].to_numpy(dtype=float)
+                L_ = min(LAB15_LAST, nmo_)
+                cr_ = cash_[-L_:] / np.where(val_[-L_:] > 0, val_[-L_:], np.nan)
+                con_ = ([cap_ * (min(1.0, (i_ + 1) / rp_) - min(1.0, i_ / rp_)) for i_ in range(nmo_)] if rp_ > 0
+                        else [cap_] + [0.0] * (nmo_ - 1))
+                liq_ = float(r_["liq_value"])
+                d_ = r_.get("diag") or {}
+                mw_ = d_.get("max_w") or []
+                yo_ = lab13_divyoy(r_, _sub15["date"].min(), _sub15["date"].max())
+                yrs_ = max((pd.Timestamp(cv_["date"].iloc[-1]) - pd.Timestamp(cv_["date"].iloc[0])).days / 365.25, 0.5)
+                f8_ = next((str(pd.Timestamp(cv_["date"].iloc[i_]).date())[:7] for i_ in range(nmo_) if nms_[i_] >= LAB15_NAMES_OK), None)
+                return {"paid": float(cap_), "value": float(val_[-1]), "liq": liq_, "irr": lab14_irr(con_, liq_),
+                        "div2025": float(sum(v_ for k_, v_ in (d_.get("div_by_month") or {}).items() if pd.Timestamp(k_).year == 2025)),
+                        "worst": (min(c_ for _, c_ in yo_) if yo_ else None), "n_down": sum(1 for _, c_ in yo_ if c_ < 0),
+                        "dd": lab14_twr_dd(cv_["value"].to_numpy(dtype=float), cap_, rp_),
+                        "names_last": float(nms_[-L_:].mean()), "names_end": int(nms_[-1]),
+                        "cash_last": float(np.nanmean(cr_)) if np.isfinite(cr_).any() else float("nan"),
+                        "maxw_end": float(mw_[-1]) if (mw_ and nms_[-1] > 0) else 0.0, "first8": f8_,
+                        "trades_y": len(r_["trades"]) / yrs_, "nisa": lab14_nisa_use(r_["trades"]),
+                        "lot_min_buys": int(d_.get("lot_min_buys", 0))}
+
+            log.info("20年分の追加検証15：%sから、実際の100株で（始め方%d通り × %d通り）を回します",
+                     LAB15_FROM, len(LAB15_LUMPS) + len(LAB15_MONTHLY), len(LAB15_RUNS))
+            _R15 = {}
+            try:
+                # 判定の基準：いまの本番そのもの（一括1,000万円・(a)・特定口座）。100株の端数や候補の数で、元本が大きくても残る現金の割合
+                _R15[("基準", LAB15_REF, "a", "本番", "特定")] = _ck15(
+                    ("C15", "基準", LAB15_REF, "a", "本番", "特定"),
+                    lambda: _r15(_rules15["a"]["本番"], float(LAB15_REF), 0, args.tax / 100.0))
+                for st_, amts_ in (("一括", LAB15_LUMPS), ("積立", LAB15_MONTHLY)):
+                    for a_ in amts_:
+                        cap_, rp_ = (float(a_), 0) if st_ == "一括" else (float(a_) * _nm15, _nm15)
+                        for m_, el_, ac_ in LAB15_RUNS:
+                            tx_ = args.tax / 100.0 if ac_ == "特定" else 0.0
+                            _R15[(st_, a_, m_, el_, ac_)] = _ck15(
+                                ("C15", st_, a_, m_, el_, ac_),
+                                lambda n=_rules15[m_][el_], c=cap_, r=rp_, t=tx_: _r15(n, c, r, t))
+                    log.info("  %s が完了（%d通り）", st_, len(_R15))
+            except _Lab15Stop:
+                return EXIT_UNFINISHED
+            if _ck is not None and _ck_work[0] > 0:
+                save_store(_long_raw, "20年分の追加検証15：計算が済んだ分を保存しました")
+            lab15_report(_R15, _sub15["date"].min(), _sub15["date"].max(), _li15)
 
         if getattr(args, "long_test", False) and nm and nm[0] == "live_small1_pit":
             L0, Lb = VARIANTS["live_small1_pit"]["label"], VARIANTS["live_nobank"]["label"]
