@@ -2355,6 +2355,27 @@ VARIANTS.update({
 # （記号, long_lab3 の決め方のルール, 公平な決め方のルール, 短い名前）
 LAB12_SW = (("W2", "lab3_w_s", "lab12_w2", "うねりだけ・20日・幅3〜8％"),
             ("N2", "lab3_n_s", "lab12_n2", "本番＋20日・幅3〜8％（A・B）"))
+# ── 20年分の追加検証13（2026年10月24日に追加。計画は long_lab_plan_2026-10-19 の16）：元本が小さい人でも同じになるか ──
+#   1 銘柄数を変える … 本番のルールのまま最大の銘柄数を 20・15・10・8・5 にし（1株単位で買う）、同じ Tier の中の順番をでたらめにした
+#                      LAB13_SEEDS 通りで、受け取った配当がどの年も前の年より20％以上は減らなかった割合を見る（通しと最近）
+#   2 いまの株価で何銘柄持てるか … 最後の13か月末（2025年10月末〜2026年10月末）を、元本5通り × 買い方3通りで回す
+#   手法の採用の判定はしない
+LAB13_RULES = ["live_small1_pit"]
+LAB13_NS = (20, 15, 10, 8, 5)        # 最大の銘柄数（目標の銘柄数は、本番と同じく×0.75）
+LAB13_SEEDS = int(os.environ.get("LAB13_SEEDS", "20"))   # でたらめな選び方の数（テストのときだけ減らす）
+LAB13_CUT = -0.20                     # 受け取った配当が前の年よりこれ以上減った年があれば「安定でない」
+LAB13_CAPS = (1_000_000, 2_000_000, 3_000_000, 5_000_000, 10_000_000)
+LAB13_LOT_FRAC = 0.20                 # (b)：100株の金額が総資産の20％以下なら、予算に入らなくても100株だけ買う
+LAB13_P2_MONTHS = 13                  # 2：最後の何か月末を回すか（2025年10月末〜2026年10月末）
+LAB13_P2_LATE = 6                     # 2：比べるのは最後の6か月末の平均（始めてしばらくは、元本に関係なく買い集める途中のため）
+VARIANTS.update({f"lab13_n{_n}": _lab_rule(f"本番・最大{_n}銘柄・1株単位", max_names=_n, target_names=0.75 * _n, odd_lot=True)
+                 for _n in LAB13_NS})
+VARIANTS["lab13_lotmin"] = _lab_rule("本番・100株単位・予算に入らなくても100株だけ買う（1銘柄は資産の2割まで）",
+                                     lot_min_frac=LAB13_LOT_FRAC)
+# （記号, ルール, 説明）
+LAB13_P2 = (("a", "live_small1_pit", "100株単位・ツールの予算どおり"),
+            ("b", "lab13_lotmin", "100株単位・予算に入らなくても100株（2割まで）"),
+            ("c", "lab13_n20", "1株単位・ツールの予算どおり"))
 
 # 可変ルールの加減点。必要パーセンタイルを下げる＝買いやすくする。
 # 条件を増やすほど過去に合わせただけの数字になりやすいので、3つに絞っています。
@@ -4981,6 +5002,12 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
     #   tiers_allowed … 新しく買う Tier を限る（例 ["S", "A"] なら B は買わない）
     if cfg.get("max_names"):
         max_names = int(cfg["max_names"])
+    # 20年分の追加検証13（2026年10月24日に追加。計画は long_lab_plan_2026-10-19 の16）
+    #   odd_lot      … True なら1株単位で買う（単元未満株。100株単位の影響を除いて、銘柄数や元本の大きさだけを見るため）
+    #   lot_min_frac … 100株単位で、1銘柄の予算に100株が入らなくても、100株の金額が総資産のこの割合以下なら100株だけ買う
+    if cfg.get("odd_lot"):
+        tier_budget = False
+    lot_min_frac = float(cfg.get("lot_min_frac") or 0.0)
     tiers_allowed = set(cfg["tiers_allowed"]) if cfg.get("tiers_allowed") else None
     # 5回目の候補（2026年10月12日に追加）
     #   tier_col … Tier をこの列で置き換える（add_pit_tiers が作る、後出しなしで判定した Tier）
@@ -6546,13 +6573,20 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                 unit_size = total / max_names / nt
             unit_size *= rs * f_scale
             for _ in range(add):
-                if usable < unit_size or unit_size < price:
-                    break
-                # 100株単位（実運用に合わせる）
-                sh = int(unit_size // price // 100) * 100 if tier_budget \
-                     else int(unit_size // price)
-                if sh <= 0:
-                    break
+                if lot_min_frac > 0 and tier_budget and unit_size < 100 * price:
+                    # 20年分の追加検証13：予算に100株が入らなくても、100株の金額が総資産の lot_min_frac 以下なら100株だけ買う
+                    if 100 * price > lot_min_frac * total or usable < 100 * price * (1 + slip) * (1 + fee):
+                        break
+                    sh = 100
+                    diag["lot_min_buys"] = diag.get("lot_min_buys", 0) + 1
+                else:
+                    if usable < unit_size or unit_size < price:
+                        break
+                    # 100株単位（実運用に合わせる）
+                    sh = int(unit_size // price // 100) * 100 if tier_budget \
+                         else int(unit_size // price)
+                    if sh <= 0:
+                        break
                 buy_eff = price * (1 + slip) * (1 + fee)
                 cash -= sh * buy_eff
                 usable -= sh * buy_eff
@@ -10346,6 +10380,143 @@ def lab12_report(ex: dict | None, info: dict, spend: dict, plc: dict, cont: dict
     return out
 
 
+def lab13_divyoy(res: dict, m0, m1) -> list:
+    """20年分の追加検証13：受け取った配当（税引き後）の前年比。まるごと1年ある年どうしだけ（print_dividend_table と同じ数え方）。
+    返す値 … [(年, 前年比), …]"""
+    dv = pd.Series((res.get("diag") or {}).get("div_by_month", {}), dtype=float)
+    if dv.empty:
+        return []
+    dy = dv.groupby(pd.to_datetime(dv.index).year).sum()
+    m0, m1 = pd.Timestamp(m0), pd.Timestamp(m1)
+    out, prev = [], None
+    for y_ in sorted(dy.index):
+        full_y = not (y_ == m0.year and m0.month > 1) and not (y_ == m1.year and m1.month < 12)
+        if prev is not None and full_y and prev[1] and prev[0] > 0:
+            out.append((int(y_), float(dy[y_] / prev[0] - 1.0)))
+        prev = (float(dy[y_]), full_y)
+    return out
+
+
+def lab13_report(A: dict, B: dict, spans: dict, p2: tuple | None) -> dict:
+    """20年分の追加検証13（long_lab13）：元本が小さい人でも同じになるか。2026年10月24日に追加。
+    基準は結果を見る前に決めたもの（プロジェクトの long_lab_plan_2026-10-19 の16）。手法の採用の判定はしない。
+      1 銘柄数ごとに、でたらめな選び方（LAB13_SEEDS 通り）のうち「受け取った配当が、どの年も前の年より20％以上は減らなかった」割合が
+        両方の期間で80％以上 →「配当の安定は保たれる」 ／ どちらかで50％以下 →「配当が不安定になる」 ／ それ以外 →「選び方しだい」。
+        保たれる最小の銘柄数（それより多い銘柄数もすべて保たれる）を N とする
+      2 元本ごとの平均の銘柄数。(a)・(b) で平均の銘柄数が N 以上になる最小の元本（それより大きい元本もすべて N 以上）"""
+    out = {"verd": {}, "share": {}, "N": None, "cap": {}}
+    print("\n【20年分の追加検証13：元本が小さい人でも同じになるか】（基準は結果を見る前に決めたもの。"
+          "計画はプロジェクトの long_lab_plan_2026-10-19 の16。手法の採用の判定はしない）")
+    print("  分け方 … 昔の株価は分割を調整した値で低く見え、2018年10月までは1,000株単位の銘柄も多かったので、元本の大きさをそのまま昔に当てはめず、"
+          "(1) 銘柄数そのものを変えて過去で確かめ、(2) いまの株価で元本ごとに何銘柄持てるかを数える")
+    print("  予想 … 1 は 20・15 が「保たれる」、10 が「保たれる」か「選び方しだい」、8 が「選び方しだい」、5 が「不安定になる」。N は10。"
+          "年率の真ん中は銘柄数で大きくは変わらないが、5銘柄はばらつきが大きい（幅5pt以上） ／ "
+          "2 は (c) がどの元本でも1,000万円と同じくらいの銘柄数。(a) は100万円で2〜5銘柄・現金5割以上、500万円で12〜16銘柄。"
+          "(b) は100万円で4〜6銘柄、300万円で10〜14銘柄。(b) で N に届くのは200〜300万円、(a) では300〜500万円")
+
+    def _worst(r_):
+        yo_ = r_.get("yoy") or []
+        return min(c_ for _, c_ in yo_) if yo_ else None
+
+    def _ndown(r_):
+        return sum(1 for _, c_ in (r_.get("yoy") or []) if c_ < 0)
+
+    def _pc(x_, d_=0):
+        return f"{x_ * 100:+.{d_}f}％" if x_ is not None and x_ == x_ else "—"
+
+    # 1 銘柄数を変える
+    print(f"\n  1. 銘柄数を減らすと、配当の安定はどう変わるか（本番のルールのまま最大の銘柄数だけを変え、1株単位で買う。"
+          f"でたらめな選び方＝同じ Tier の中で買う順番をでたらめにした{LAB13_SEEDS}通り。元本1,000万円・資金投入0か月）")
+    med20 = {}
+    for per_ in spans:
+        rr_ = [A.get((per_, 20, k_)) for k_ in range(LAB13_SEEDS)]
+        rr_ = [x_["清算後年率"] for x_ in rr_ if x_ and x_.get("清算後年率") is not None]
+        med20[per_] = float(np.median(rr_)) if rr_ else float("nan")
+    for per_, (d0_, d1_) in spans.items():
+        print(f"\n    ■ {per_}（{pd.Timestamp(d0_).date()}〜{pd.Timestamp(d1_).date()}）")
+        b0_ = A.get((per_, "本番"))
+        if b0_:
+            print(f"      参考：本番（100株単位・最大20銘柄） … 年{b0_['清算後年率']:.1f}％・最大下落 {b0_['最大下落']:.1f}％・"
+                  f"平均の銘柄数 {b0_['names']:.1f}・受け取った配当のいちばん減った年 {_pc(_worst(b0_), 1)}（減った年 {_ndown(b0_)}回）・"
+                  f"同じ株のままの1株配当のいちばん悪い年 {_pc(b0_.get('wo'), 1)}")
+        print("      （本番の順番＝低PBR順で1回。最悪＝受け取った配当（税引き後）が前の年よりいちばん減った幅（減った年の数）。"
+              "−20％より減らなかった＝でたらめな選び方のうち、どの年も前の年より20％以上は減らなかった割合）")
+        print("      " + f"{'最大':<6}{'本番の順番':<34}｜ でたらめ{LAB13_SEEDS}通り")
+        for N_ in LAB13_NS:
+            dt_ = A.get((per_, N_, "order"))
+            ss_ = [A.get((per_, N_, k_)) for k_ in range(LAB13_SEEDS)]
+            ss_ = [x_ for x_ in ss_ if x_]
+            if not ss_:
+                continue
+            ws_ = [_worst(x_) for x_ in ss_]
+            jud_ = [w_ for w_ in ws_ if w_ is not None]
+            share_ = float(np.mean([w_ > LAB13_CUT for w_ in jud_])) if jud_ else float("nan")
+            out["share"][(per_, N_)] = share_
+            ys_ = np.array([x_["清算後年率"] for x_ in ss_], dtype=float)
+            wos_ = [x_.get("wo") for x_ in ss_ if x_.get("wo") is not None]
+            fix_ = float(np.mean([w_ >= -0.10 for w_ in wos_])) if wos_ else float("nan")
+            near_ = float(np.mean(np.abs(ys_ - med20[per_]) <= 2.0)) if med20[per_] == med20[per_] else float("nan")
+            nm_ = float(np.mean([x_["names"] for x_ in ss_]))
+            dts_ = (f"年{dt_['清算後年率']:.1f}％・最悪 {_pc(_worst(dt_), 1)}（{_ndown(dt_)}回）" if dt_ else "—")
+            print("      " + f"{str(N_) + '銘柄':<6}{dts_:<30}｜ −20％より減らなかった {share_ * 100:.0f}％・"
+                  f"最悪の真ん中 {_pc(float(np.median(jud_)) if jud_ else None, 1)}（いちばん悪い {_pc(min(jud_) if jud_ else None, 1)}）・"
+                  f"年率 真ん中 {np.median(ys_):.1f}％（{ys_.min():.1f}〜{ys_.max():.1f}％）・20銘柄の真ん中±2pt {near_ * 100:.0f}％・"
+                  f"平均の銘柄数 {nm_:.1f}・1株配当が固定収入に近い {fix_ * 100:.0f}％")
+    # 判定
+    print("\n    判定（銘柄数ごと。−20％より減らなかった割合が両方の期間で80％以上＝保たれる ／ どちらかで50％以下＝不安定になる ／ それ以外＝選び方しだい）")
+    for N_ in LAB13_NS:
+        sh_ = [out["share"].get((per_, N_)) for per_ in spans]
+        sh_ = [x_ for x_ in sh_ if x_ is not None and x_ == x_]
+        if not sh_:
+            continue
+        v_ = ("配当の安定は保たれる" if all(x_ >= 0.80 for x_ in sh_) else
+              ("配当が不安定になる" if any(x_ <= 0.50 for x_ in sh_) else "選び方しだい"))
+        out["verd"][N_] = v_
+        print(f"      {N_}銘柄 … " + " ／ ".join(f"{per_} {out['share'].get((per_, N_), float('nan')) * 100:.0f}％" for per_ in spans) + f" → {v_}")
+    for N_ in LAB13_NS:            # 大きい方から、保たれる銘柄数が続くところまで
+        if out["verd"].get(N_) != "配当の安定は保たれる":
+            break
+        out["N"] = N_
+    print("    配当の安定が保たれる最小の銘柄数 N … " + (f"{out['N']}銘柄" if out["N"] else "なし（20銘柄でも保たれない）"))
+
+    # 2 いまの株価で何銘柄持てるか
+    if p2:
+        print(f"\n  2. いまの株価で、元本ごとに何銘柄持てるか（{pd.Timestamp(p2[0]).date()}に始めて{pd.Timestamp(p2[1]).date()}まで本番のルールで買った場合。"
+              f"数字は最後の{LAB13_P2_LATE}か月末の平均の銘柄数（最後の月末の銘柄数）・現金の割合・いちばん大きい1銘柄の比率。"
+              "始めてしばらくは、元本に関係なく候補を買い集める途中なので、比べるのは後半だけ）")
+        for m_, _, sh_ in LAB13_P2:
+            print(f"      ({m_}) {sh_}")
+        print("      " + f"{'元本':<9}" + "".join(f"{'(' + m_ + ')':<30}" for m_, _, _ in LAB13_P2))
+        for cap_ in LAB13_CAPS:
+            cells_ = []
+            for m_, _, _ in LAB13_P2:
+                r_ = B.get((cap_, m_))
+                cells_.append(f"{r_['names_late']:.1f}銘柄（{r_['names_last']}）・現金{r_['cash_late'] * 100:.0f}％・最大{r_['maxw'] * 100:.0f}％"
+                              if r_ else "—")
+            print("      " + f"{f'{cap_ / 1e4:,.0f}万円':<9}" + "".join(f"{c_:<30}" for c_ in cells_))
+        if out["N"]:
+            for m_, _, sh_ in LAB13_P2[:2]:
+                ok_ = None
+                for cap_ in sorted(LAB13_CAPS, reverse=True):
+                    r_ = B.get((cap_, m_))
+                    if not r_ or r_["names_late"] < out["N"]:
+                        break
+                    ok_ = cap_
+                out["cap"][m_] = ok_
+                print(f"    ({m_}) {sh_} で、後半{LAB13_P2_LATE}か月の平均の銘柄数が {out['N']} 以上になる最小の元本 … "
+                      + (f"{ok_ / 1e4:,.0f}万円" if ok_ else "どの元本でも届かない"))
+    print("  （1株単位の売買の費用は100株単位と同じ片道0.1％にしている。単元未満株は証券会社によって約定の時刻や費用が違う。"
+          "2 は1年だけの数字で、候補と株価が変われば持てる銘柄数も変わる）")
+
+    # まとめ
+    print("\n  まとめ（結果を見る前に決めた基準）")
+    print("    1 " + " ／ ".join(f"{N_}銘柄 {v_}" for N_, v_ in out["verd"].items()))
+    print("    N（配当の安定が保たれる最小の銘柄数） … " + (f"{out['N']}銘柄" if out["N"] else "なし"))
+    if out["cap"]:
+        print("    2 " + " ／ ".join(f"({m_}) {(f'{c_ / 1e4:,.0f}万円以上' if c_ else 'どの元本でも届かない')}" for m_, c_ in out["cap"].items()))
+    return out
+
+
 # ══════════════════════════════════════════
 def main() -> int:
     global LONG_MODE, CACHE, PIT_FROM, COMPUTE_START_LIMIT_MIN
@@ -10505,7 +10676,7 @@ def main() -> int:
     #   取り終わっていなければ取得から始める（途中で止まったら、同じ設定でもう一度押す）。
     args.long_test = args.long_lab = args.long_lab2 = args.long_lab3 = args.long_lab4 = args.long_lab5 = False
     args.long_lab6 = args.long_lab7 = args.long_lab8 = args.long_lab9 = args.long_lab10 = args.long_lab11 = False
-    args.long_lab12 = False
+    args.long_lab12 = args.long_lab13 = False
     # 20年分の追加検証（2026年10月19日に追加。計画はプロジェクトの long_lab_plan_2026-10-19）
     #   long_lab  … ルールの候補20個・近い設定6つ・参考2つを、本番と同じ52条件で回す
     #   long_lab2 … 運・偏り・始めた月・業種（20回目と同じ作り方。比べる指数は TOPIX）
@@ -10521,20 +10692,22 @@ def main() -> int:
     #   long_lab10 … 市場の地形（2026年10月22日に追加。計画は同じ文書の13。手法の判定はしない）
     #   long_lab11 … 配当収入の年ごとの推移（2026年10月22日夜に追加。計画は同じ文書の14。手法の判定はしない）
     #   long_lab12 … 偶然かどうか・配当を使う・損切りなしのうねりの比べ直し（2026年10月23日に追加。計画は同じ文書の15。手法の判定はしない）
+    #   long_lab13 … 元本が小さい人でも同じになるか（2026年10月24日に追加。計画は同じ文書の16。手法の判定はしない）
     if _mode0 in ("long_lab", "long_lab2", "long_lab3", "long_lab4", "long_lab5", "long_lab6", "long_lab7", "long_lab8",
-                  "long_lab9", "long_lab10", "long_lab11", "long_lab12"):
+                  "long_lab9", "long_lab10", "long_lab11", "long_lab12", "long_lab13"):
         (args.long_lab, args.long_lab2, args.long_lab3, args.long_lab4, args.long_lab5, args.long_lab6,
-         args.long_lab7, args.long_lab8, args.long_lab9, args.long_lab10, args.long_lab11, args.long_lab12) = (
+         args.long_lab7, args.long_lab8, args.long_lab9, args.long_lab10, args.long_lab11, args.long_lab12,
+         args.long_lab13) = (
             _mode0 == "long_lab", _mode0 == "long_lab2", _mode0 == "long_lab3", _mode0 == "long_lab4", _mode0 == "long_lab5",
             _mode0 == "long_lab6", _mode0 == "long_lab7", _mode0 == "long_lab8", _mode0 == "long_lab9", _mode0 == "long_lab10",
-            _mode0 == "long_lab11", _mode0 == "long_lab12")
+            _mode0 == "long_lab11", _mode0 == "long_lab12", _mode0 == "long_lab13")
         args.liq_metric, args.grid = True, True
         args.only = ",".join(LAB_RULES if args.long_lab else LAB2_RULES if args.long_lab2
                              else LAB3_RULES if args.long_lab3 else LAB4_RULES if args.long_lab4
                              else LAB5_RULES if args.long_lab5 else LAB6_RULES if args.long_lab6
                              else LAB7_RULES if args.long_lab7 else LAB8_RULES if args.long_lab8
                              else LAB9_RULES if args.long_lab9 else LAB10_RULES if args.long_lab10
-                             else LAB11_RULES if args.long_lab11 else LAB12_RULES)
+                             else LAB11_RULES if args.long_lab11 else LAB12_RULES if args.long_lab12 else LAB13_RULES)
         args.universe = "prime"
         args.years = 20
         LONG_MODE = True
@@ -10597,14 +10770,14 @@ def main() -> int:
     # 20年分のキャッシュを使うモードのどれか（long_test・long_lab・long_lab2）
     args.long_any = bool(args.long_test or args.long_lab or args.long_lab2 or args.long_lab3 or args.long_lab4
                          or args.long_lab5 or args.long_lab6 or args.long_lab7 or args.long_lab8 or args.long_lab9
-                         or args.long_lab10 or args.long_lab11 or args.long_lab12)
+                         or args.long_lab10 or args.long_lab11 or args.long_lab12 or args.long_lab13)
     args.long_name = ("long_test" if args.long_test else "long_lab" if args.long_lab
                       else "long_lab2" if args.long_lab2 else "long_lab3" if args.long_lab3
                       else "long_lab4" if args.long_lab4 else "long_lab5" if args.long_lab5
                       else "long_lab6" if args.long_lab6 else "long_lab7" if args.long_lab7
                       else "long_lab8" if args.long_lab8 else "long_lab9" if args.long_lab9
                       else "long_lab10" if args.long_lab10 else "long_lab11" if args.long_lab11
-                      else "long_lab12" if args.long_lab12 else "")
+                      else "long_lab12" if args.long_lab12 else "long_lab13" if args.long_lab13 else "")
 
     OUTDIR.mkdir(parents=True, exist_ok=True)
 
@@ -15714,6 +15887,91 @@ def main() -> int:
                 if _e12:
                     _ct12["_tpx"] = _e12
             lab12_report(_ex12, _info12, _sp12, _P12, _ct12, _os, _rs)
+
+        # ── 20年分の追加検証13（2026年10月24日に追加。計画は long_lab_plan_2026-10-19 の16。手法の採用の判定はしない）──
+        #   1 銘柄数を変える（1株単位・でたらめな選び方 LAB13_SEEDS 通り。通しと最近） ／ 2 最後の13か月末を、元本5通り × 買い方3通りで回す
+        if getattr(args, "long_lab13", False) and nm and nm[0] == "live_small1_pit":
+            import contextlib
+            import io as _io
+            _pn = panels[lbs_[0]]
+            _skw = dict(tier_budget=args.realistic, dividends=args.realistic, slip_bps=args.slip_bps,
+                        fee_bps=args.fee_bps, tax_rate=args.tax / 100.0, min_yield_override=mys[0])
+
+            class _Lab13Stop(Exception):
+                pass
+
+            def _ck13(key_, fn_):
+                if _ck is not None and key_ in _ck["misc"]:
+                    return _ck["misc"][key_]
+                if _long_stop("20年分の追加検証13の途中"):
+                    raise _Lab13Stop
+                v_ = fn_()
+                if _ck is not None:
+                    _ck["misc"][key_] = v_
+                    _ck_work[0] += 1
+                return v_
+
+            def _sim13(sub_, n_, seed_):
+                """1 の1回分。残すのは表に要る数字だけ。"""
+                cfg_ = VARIANTS[n_] if seed_ is None else dict(VARIANTS[n_], shuffle="tier", seed=int(seed_))
+                r_ = simulate(sub_, cfg_, args.capital, mxs_[0], ramp=0, **_skw)
+                m_ = metrics(r_)
+                d_ = r_.get("diag", {})
+                with contextlib.redirect_stdout(_io.StringIO()):
+                    w_ = print_dividend_table(r_, sub_, args.capital, "")
+                _, wo_ = (w_ or (None, None))
+                mw_ = d_.get("max_w") or []
+                return {"清算後年率": m_.get("清算後年率"), "年率": m_.get("年率"), "最大下落": m_.get("最大下落"),
+                        "現金比率": m_.get("現金比率"), "names": float(r_["curve"]["names"].mean()),
+                        "yoy": lab13_divyoy(r_, sub_["date"].min(), sub_["date"].max()), "wo": wo_,
+                        "maxw": float(np.mean(mw_)) if mw_ else float("nan"), "dividend": float(d_.get("dividend", 0.0))}
+
+            def _sim13b(sub_, n_, cap_):
+                """2 の1回分（元本 cap_ で、最後の13か月末を回す）。"""
+                r_ = simulate(sub_, VARIANTS[n_], cap_, mxs_[0], ramp=0, **_skw)
+                cv_ = r_["curve"]
+                mw_ = (r_.get("diag") or {}).get("max_w") or []
+                cs_ = (cv_["cash"] / cv_["value"].where(cv_["value"] > 0))
+                lt_ = cv_.tail(LAB13_P2_LATE)         # 始めてから半年たったあとの6か月（買い集める途中の月を除く）
+                cl_ = cs_.tail(LAB13_P2_LATE).dropna()
+                return {"names_mean": float(cv_["names"].mean()), "names_last": int(cv_["names"].iloc[-1]),
+                        "names_first": int(cv_["names"].iloc[0]), "names_late": float(lt_["names"].mean()),
+                        "cash_mean": float(cs_.dropna().mean()) if cs_.notna().any() else float("nan"),
+                        "cash_late": float(cl_.mean()) if len(cl_) else float("nan"),
+                        "maxw": float(np.mean(mw_[-LAB13_P2_LATE:])) if mw_ else 0.0}
+
+            _subs13 = {}
+            if _long_m0 is not None:
+                _subs13["通し"] = _pn[_pn["date"] >= _long_m0]
+            _subs13["最近"] = _pn[_pn["date"] >= pd.Timestamp(LONG_RECENT_FROM)]
+            _spans13 = {k_: (v_["date"].min(), v_["date"].max()) for k_, v_ in _subs13.items() if not v_.empty}
+            _ds13 = sorted(pd.Timestamp(d) for d in _pn["date"].unique())
+            _p2_13 = (_ds13[-LAB13_P2_MONTHS], _ds13[-1]) if len(_ds13) >= LAB13_P2_MONTHS else None
+            _s2_13 = _pn[_pn["date"] >= _p2_13[0]] if _p2_13 else None
+            log.info("20年分の追加検証13：銘柄数（%d通り × でたらめ%d通り × %d期間）・いまの株価（元本%d × 買い方%d）を回します",
+                     len(LAB13_NS), LAB13_SEEDS, len(_spans13), len(LAB13_CAPS), len(LAB13_P2))
+            _A13, _B13 = {}, {}
+            try:
+                for per_ in _spans13:
+                    sub_ = _subs13[per_]
+                    _A13[(per_, "本番")] = _ck13(("A13", per_, "本番"), lambda s=sub_: _sim13(s, "live_small1_pit", None))
+                    for N_ in LAB13_NS:
+                        n_ = f"lab13_n{N_}"
+                        _A13[(per_, N_, "order")] = _ck13(("A13", per_, N_, "order"), lambda s=sub_, n=n_: _sim13(s, n, None))
+                        for k_ in range(LAB13_SEEDS):
+                            _A13[(per_, N_, k_)] = _ck13(("A13", per_, N_, k_),
+                                                         lambda s=sub_, n=n_, sd=13000 + 100 * N_ + k_: _sim13(s, n, sd))
+                        log.info("  銘柄数 %s・最大%d銘柄が完了", per_, N_)
+                if _s2_13 is not None:
+                    for cap_ in LAB13_CAPS:
+                        for m_, n_, _ in LAB13_P2:
+                            _B13[(cap_, m_)] = _ck13(("B13", cap_, m_), lambda c=cap_, n=n_: _sim13b(_s2_13, n, c))
+                    log.info("  いまの株価 %d 通りが完了", len(_B13))
+            except _Lab13Stop:
+                return EXIT_UNFINISHED
+            if _ck is not None and _ck_work[0] > 0:
+                save_store(_long_raw, "20年分の追加検証13：計算が済んだ分を保存しました")
+            lab13_report(_A13, _B13, _spans13, _p2_13)
 
         if getattr(args, "long_test", False) and nm and nm[0] == "live_small1_pit":
             L0, Lb = VARIANTS["live_small1_pit"]["label"], VARIANTS["live_nobank"]["label"]
