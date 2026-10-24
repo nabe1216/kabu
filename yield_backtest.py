@@ -2468,6 +2468,19 @@ LAB16_V = (("V0", "lab14_log", "base", "いまの計算"),
 #   比べる相手を、どちらも「目標に届かない持ち株を配当で買い増す」（X8）形にそろえ、予算の決め方だけを変える
 LAB16_C = (("1株単位・2009年〜", "lab14_odd", "lab14_odd_x8", "lab16_odd_rel", "1株単位・毎月3万円・2009年6月末〜"),
            ("100株単位・2018年〜", "lab15_b", "lab15_b_x8", "lab16_b_rel", "実際の100株・予算に入らなくても100株（2割まで）・毎月3万円・2018年10月末〜"))
+# ── 20年分の追加検証17（2026年10月25日に追加。計画は long_lab_plan_2026-10-19 の20）──
+#   主な数字を、直した計算（V3：lab16 で採った形）で出し直す。いまの計算（V0）も同じ回で回して並べる。手法の採用の判定はしない
+LAB17_RULES = ["live_small1_pit"]
+LAB17_V3 = {"int_col": "div_int_share_fix", "div_actual": True}     # ルールに足すと V3 の受け取り方になる（パネルは直したもの）
+# 8条件の役割と売買の要素（記号, ルール, 比べる相手の記号, 説明）
+LAB17_CMP = (("本番", "live_small1_pit", None, "本番"),
+             ("C0", "lab4_c_all", "本番", "8条件を外す（利回りとPBRだけ）"),
+             ("C1", "lab4_c_div", "本番", "「10期減配なし」を外す"),
+             ("X8", "lab_topup", "本番", "配当で比率の下がった持ち株を買い増す"),
+             ("相殺", "lab_offset", None, "本番・損は配当と相殺（R6 の比べる相手）"),
+             ("R6", "lab6_combo", "相殺", "12月の損出し＋配当で買い増し"))
+LAB17_ROLL_RAMPS = (0, 12)       # 3 始めた月：資金投入（long_lab2 と同じ2通り）
+LAB17_ROLL_YEARS = 4             # 3 始めた月：持つ年数
 
 # 可変ルールの加減点。必要パーセンタイルを下げる＝買いやすくする。
 # 条件を増やすほど過去に合わせただけの数字になりやすいので、3つに絞っています。
@@ -11577,6 +11590,204 @@ def lab16_report(A: dict, B: dict, C: dict, D: dict) -> dict:
 
 
 # ══════════════════════════════════════════
+def lab17_cat(d: pd.Series) -> str:
+    """20年分の追加検証17の2：long_test の J1 と同じ判定（本番 − TOPIX の条件ごとの差 d から）。"""
+    d = pd.Series(d, dtype=float).dropna()
+    if d.empty:
+        return "—"
+    if float((d > 0).mean()) >= 0.85 and float(d.mean()) >= 1.0:
+        return "指数より良い"
+    if float((d < 0).mean()) >= 0.85:
+        return "指数に負ける"
+    return "決められない（条件次第）"
+
+
+def lab17_roll_cat(shares: list) -> str:
+    """20年分の追加検証17の3：long_lab2 の3と同じ判定（資金投入ごとの「TOPIX を上回った割合」から）。"""
+    if not shares:
+        return "—"
+    if all(x_ >= 0.85 for x_ in shares):
+        return "いつ始めても勝ちやすい"
+    if all(x_ <= 0.15 for x_ in shares):
+        return "負けやすい"
+    return "始める時期しだい"
+
+
+def lab17_use_summary(tab: pd.DataFrame, capital: float, liq) -> dict:
+    """20年分の追加検証17の6：配当を全部使った場合の表（lab11_table）から、まとめの数字を出す（long_lab12 の2と同じ数え方）。"""
+    if tab is None or tab.empty:
+        return {}
+    full_ = tab[tab["月数"] == 12].reset_index(drop=True)
+    ch_ = full_["税引き後"].pct_change().dropna() if len(full_) >= 2 else pd.Series(dtype=float)
+    by_ = {int(r_["年"]): float(r_["税引き後"]) for _, r_ in tab.iterrows()}
+    return {"total": float(tab["税引き後"].sum()), "y2010": by_.get(2010), "y2025": by_.get(2025),
+            "n_down": int((ch_ < 0).sum()),
+            "worst": ((int(full_.loc[ch_.idxmin(), "年"]), float(ch_.min())) if len(ch_) and float(ch_.min()) < 0 else None),
+            "last": float(tab["年末の評価額"].iloc[-1]), "liq": liq,
+            "below": [int(r_["年"]) for _, r_ in tab.iterrows() if r_["年末の評価額"] < capital]}
+
+
+def lab17_report(R: dict) -> dict:
+    """20年分の追加検証17（long_lab17）：主な数字を、直した計算（V3）で出し直す。2026年10月25日に追加。
+    基準は結果を見る前に決めたもの（プロジェクトの long_lab_plan_2026-10-19 の20）。手法の採用の判定はしない。
+      2 見ていない期間の窓 … long_test の J1 と同じ ／ 3 始めた月 … long_lab2 の3と同じ ／ 4 偶然かどうか … long_lab12 の1と同じ"""
+    out = {"J1": {}, "roll": {}, "chance": {}}
+    vs = ("V0", "V3")
+    print("\n【20年分の追加検証17：主な数字を直した計算（V3）で出し直す】（基準は結果を見る前に決めたもの。"
+          "計画はプロジェクトの long_lab_plan_2026-10-19 の20。手法の採用の判定はしない）")
+    print("  V0 ＝ いまの計算 ／ V3 ＝ 分割・併合の基準のずれを直し（利回り・8条件・減配の判定に入る）、中間と期末の割合を直し、受け取る額を実績にした計算"
+          "（lab16 で採った形）。ルールは本番のまま。元本1,000万円・税20.315％・約定のずれ片道0.1％。年率は清算後。TOPIX は 1306（分配金込み・同じ税）")
+    print("  予想 … 1 V3 の通し13.9％・最大下落26〜29％ ／ 2「決められない」のまま ／ 3「始める時期しだい」のまま ／ 4「偶然と区別できない」のまま ／ "
+          "5 積立5,000〜5,400万円 ／ 6 使った合計980〜1,060万円・減った年0〜1回 ／ 7 C0 − 本番 +1.5〜2.3pt・C1 − 本番 +0.3〜0.9pt ／ "
+          "8 X8・R6 の差は V0 と同じくらい")
+    if R.get("note"):
+        print(f"  注意 … {R['note']}")
+    F, S = R.get("full") or {}, R.get("span") or {}
+    tf = R.get("tpx_full")
+
+    # 1 通し
+    print(f"\n  1. 通し（{R['m0'].date()}〜{R['m1'].date()}・資金投入0か月・一括1,000万円）")
+    for v_ in vs:
+        f_ = F.get((v_, "本番"))
+        if not f_:
+            continue
+        d_ = (f" ／ TOPIX との差 {f_['清算後年率'] - tf['清算後年率']:+.2f}pt" if tf else "")
+        print(f"    {v_} … 年率 {f_['清算後年率']:.2f}％ ／ 最後（清算後） {f_['liq'] / 1e4:,.0f}万円 ／ 最大下落 {f_['最大下落']:.1f}％" + d_)
+    if tf:
+        print(f"    TOPIX … 年率 {tf['清算後年率']:.2f}％ ／ 最後（清算後） {tf['liq_value'] / 1e4:,.0f}万円 ／ 最大下落 {tf['最大下落']:.1f}％")
+    for g_ in ("見ていない期間", "最近"):
+        a_, b_ = S.get(("V0", "本番", g_)), S.get(("V3", "本番", g_))
+        if a_ and b_:
+            print(f"    {g_} … V0 {a_['清算後年率']:.2f}％ ／ V3 {b_['清算後年率']:.2f}％（差 {b_['清算後年率'] - a_['清算後年率']:+.2f}pt）")
+
+    # 2 見ていない期間の窓
+    W = R.get("win") or {}
+    print("\n  2. 窓ごとに TOPIX と比べる（本番 − TOPIX。各窓 × 資金投入4通り）")
+    for kind_, nm_ in (("os", "見ていない期間の窓（判定）"), ("rs", "最近の窓（参考）")):
+        for v_ in vs:
+            w_ = W.get(v_)
+            if w_ is None or w_.empty:
+                continue
+            g_ = w_[w_["kind"] == kind_]
+            d_ = (g_["本番"] - g_["TOPIX"]).dropna()
+            dm_ = (g_["本番_評価額"] - g_["TOPIX_評価額"]).dropna()
+            if d_.empty:
+                continue
+            cl_, cm_ = lab17_cat(d_), lab17_cat(dm_)
+            ju_ = cl_ if cl_ == cm_ else f"決められない（清算後「{cl_}」・評価額「{cm_}」）"
+            if kind_ == "os":
+                out["J1"][v_] = ju_
+            print(f"    {nm_} {v_}（{len(d_)}条件） … 本番 平均 {g_['本番'].mean():.1f}％ ／ 差 平均 {d_.mean():+.1f}pt（{d_.min():+.1f}〜{d_.max():+.1f}pt） ／ "
+                  f"上回った {(d_ > 0).mean() * 100:.0f}％ ／ 評価額 平均 {dm_.mean():+.1f}pt・上回った {(dm_ > 0).mean() * 100:.0f}％"
+                  + (f" → {ju_}" if kind_ == "os" else ""))
+
+    # 3 始めた月
+    RL = R.get("roll") or {}
+    print(f"\n  3. 始めた月（毎月末を始まりにして{LAB17_ROLL_YEARS}年持つ。本番 − TOPIX）")
+    yrs_tab = {}
+    for v_ in vs:
+        r_ = RL.get(v_)
+        if r_ is None or r_.empty:
+            continue
+        shl_, shm_ = [], []
+        for rp_ in LAB17_ROLL_RAMPS:
+            g_ = r_[r_["資金投入"] == rp_]
+            d_ = (g_["本番"] - g_["TOPIX"]).dropna()
+            dm_ = (g_["本番_評価額"] - g_["TOPIX_評価額"]).dropna()
+            if d_.empty:
+                continue
+            shl_.append(float((d_ > 0).mean()))
+            shm_.append(float((dm_ > 0).mean()))
+            w_, b_ = g_.loc[d_.idxmin(), "始め"], g_.loc[d_.idxmax(), "始め"]
+            print(f"    {v_} 資金投入{rp_}か月（{len(d_)}通り） … TOPIX を上回った {shl_[-1] * 100:.0f}％・平均 {d_.mean():+.1f}pt ／ "
+                  f"いちばん悪い {w_.year}年{w_.month}月末 {d_.min():+.1f}pt ／ いちばん良い {b_.year}年{b_.month}月末 {d_.max():+.1f}pt")
+        if shl_:
+            c1_, c2_ = lab17_roll_cat(shl_), lab17_roll_cat(shm_)
+            out["roll"][v_] = c1_ if c1_ == c2_ else f"決められない（清算後「{c1_}」・評価額「{c2_}」）"
+            print(f"    {v_} → {out['roll'][v_]}")
+        g0_ = r_[r_["資金投入"] == min(LAB17_ROLL_RAMPS)]
+        for y_, gy_ in g0_.groupby(g0_["始め"].dt.year):
+            d_ = (gy_["本番"] - gy_["TOPIX"]).dropna()
+            yrs_tab.setdefault(int(y_), {})[v_] = (int((d_ > 0).sum()), len(d_), float(d_.mean()) if len(d_) else float("nan"))
+    if yrs_tab:
+        print(f"    始めた年ごと（資金投入{min(LAB17_ROLL_RAMPS)}か月。TOPIX に勝った回／通り・平均の差）")
+        for y_ in sorted(yrs_tab):
+            print(f"      {y_}年 … " + " ／ ".join(f"{v_} {w_}/{n_}・{m_:+.1f}pt" for v_, (w_, n_, m_) in yrs_tab[y_].items()))
+
+    # 4 偶然かどうか
+    EX = R.get("ex") or {}
+    print("\n  4. 通しで TOPIX を上回った差は偶然か（月末ごとの評価額の伸びの差＝本番 − TOPIX）")
+    for v_ in vs:
+        ex_ = EX.get(v_)
+        if not ex_ or ex_.get("all", {}).get("n", 0) < 3:
+            print(f"    {v_} … TOPIX か通しの計算がないので出せません")
+            continue
+        a_ = ex_["all"]
+        ok_ = (a_["t_nw"] == a_["t_nw"] and a_["t_nw"] >= 2.0 and ex_["boot"] == ex_["boot"] and ex_["boot"] <= 0.025)
+        out["chance"][v_] = "偶然とは言いにくい" if ok_ else "偶然と区別できない"
+        yn_ = a_.get("years_need", float("nan"))
+        rl_ = ex_.get("rel")
+        yr_ = ex_.get("years") or {}
+        wins_ = sum(1 for p_, t_ in yr_.values() if p_ > t_)
+        print(f"    {v_} … 月ごとの差 平均 年{a_['mean_y'] * 100:+.1f}pt ／ t値 {a_['t']:.2f}（つながり込み {a_['t_nw']:.2f}） ／ "
+              f"並べ替えで0以下 {ex_['boot'] * 100:.1f}％ ／ 要る年数 " + (f"約{yn_:,.0f}年" if yn_ == yn_ else "—")
+              + (f" ／ 上回った年 {wins_}/{len(yr_)}年" if yr_ else "")
+              + (f" ／ 負けていた最長 {rl_['from'].year}年{rl_['from'].month}月末〜{rl_['to'].year}年{rl_['to'].month}月末"
+                 f"（{rl_['months']}か月" + ("" if rl_["recovered"] else "・取り戻していない") + f"・最大 −{rl_['depth'] * 100:.0f}％）" if rl_ else "")
+              + f" → {out['chance'][v_]}")
+
+    # 5 積立
+    AC = R.get("acc") or {}
+    if AC:
+        print("\n  5. 積立（毎月同じ額で合計1,000万円・最初の月末から） … "
+              + " ／ ".join(f"{k_} {v_ / 1e4:,.0f}万円" for k_, v_ in (("V0", AC.get("V0")), ("V3", AC.get("V3")), ("TOPIX", AC.get("T")))
+                            if v_ is not None) + "（最後・清算後）")
+
+    # 6 配当を全部使う
+    U = R.get("use") or {}
+    if U:
+        print("\n  6. 配当を全部使う（一括1,000万円。受け取った配当（税引き後）を毎回すべて引き出す）")
+        for v_ in vs:
+            u_ = U.get(v_)
+            if not u_:
+                continue
+            wst_ = u_.get("worst")
+            print(f"    {v_} … 使った合計 {u_['total'] / 1e4:,.0f}万円 ／ 2010年 {(u_['y2010'] or 0) / 1e4:,.1f}万円・2025年 {(u_['y2025'] or 0) / 1e4:,.1f}万円 ／ "
+                  f"使えた額が前の年より減った年 {u_['n_down']}回" + (f"（いちばん減ったのは{wst_[0]}年の{wst_[1] * 100:+.1f}％）" if wst_ else "")
+                  + f" ／ 最後 {u_['last'] / 1e4:,.0f}万円" + (f"（清算後 {u_['liq'] / 1e4:,.0f}万円）" if u_.get("liq") else "")
+                  + " ／ 年末に元本を割った年 " + ("・".join(str(y_) for y_ in u_["below"]) if u_["below"] else "なし"))
+
+    # 7・8 8条件の役割と売買の要素
+    print("\n  7・8. 8条件の役割と売買の要素（通し・見ていない期間・最近の年率。かっこは比べる相手との差。"
+          "配当が減った年＝通しで受け取った配当（税引き後）が前の年より減った年の数といちばん減った幅）")
+    for sym_, _, base_, sh_ in LAB17_CMP:
+        for v_ in vs:
+            f_ = F.get((v_, sym_))
+            if not f_:
+                continue
+            cells = []
+            for g_ in ("通し", "見ていない期間", "最近"):
+                x_ = f_ if g_ == "通し" else S.get((v_, sym_, g_))
+                y_ = None
+                if base_:
+                    y_ = F.get((v_, base_)) if g_ == "通し" else S.get((v_, base_, g_))
+                if not x_:
+                    cells.append(f"{g_} —")
+                    continue
+                cells.append(f"{g_} {x_['清算後年率']:.1f}％" + (f"（{x_['清算後年率'] - y_['清算後年率']:+.1f}pt）" if y_ else ""))
+            dy_ = [c_ for _, c_ in (f_.get("divyoy") or []) if c_ < 0]
+            print(f"    {sym_}（{sh_}）{v_} … " + " ／ ".join(cells) + f" ／ 最大下落 {f_['最大下落']:.1f}％ ／ "
+                  f"配当が減った年 {len(dy_)}回" + (f"（いちばん {min(dy_) * 100:+.1f}％）" if dy_ else "")
+                  + f" ／ 緊急売り {f_.get('cut', 0) / max(f_.get('yrs', 1.0), 0.5):.1f}回/年")
+
+    print("\n  まとめ（結果を見る前に決めた基準。V0 → V3）")
+    for k_, nm_ in (("J1", "2 見ていない期間で TOPIX と比べる"), ("roll", "3 始めた月"), ("chance", "4 偶然かどうか")):
+        a_, b_ = out[k_].get("V0", "—"), out[k_].get("V3", "—")
+        print(f"    {nm_} … {a_} → {b_}（" + ("変わらない" if a_ == b_ else "変わった") + "）")
+    print("  （窓どうし・始めた月どうしは重なっているので、割合は目安。V3 の2009〜2013年は配当金情報で確かめていない）")
+    return out
+
+
 def main() -> int:
     global LONG_MODE, CACHE, PIT_FROM, COMPUTE_START_LIMIT_MIN
     # 結果（print）と進み具合（log）の順番を、ファイルに書き出したときも崩さない。
@@ -11735,7 +11946,7 @@ def main() -> int:
     #   取り終わっていなければ取得から始める（途中で止まったら、同じ設定でもう一度押す）。
     args.long_test = args.long_lab = args.long_lab2 = args.long_lab3 = args.long_lab4 = args.long_lab5 = False
     args.long_lab6 = args.long_lab7 = args.long_lab8 = args.long_lab9 = args.long_lab10 = args.long_lab11 = False
-    args.long_lab12 = args.long_lab13 = args.long_lab14 = args.long_lab15 = args.long_lab16 = False
+    args.long_lab12 = args.long_lab13 = args.long_lab14 = args.long_lab15 = args.long_lab16 = args.long_lab17 = False
     # 20年分の追加検証（2026年10月19日に追加。計画はプロジェクトの long_lab_plan_2026-10-19）
     #   long_lab  … ルールの候補20個・近い設定6つ・参考2つを、本番と同じ52条件で回す
     #   long_lab2 … 運・偏り・始めた月・業種（20回目と同じ作り方。比べる指数は TOPIX）
@@ -11755,15 +11966,16 @@ def main() -> int:
     #   long_lab14 … 配当の検算・R6 をいつ始めても効くか・単元未満株での少額（2026年10月24日に追加。計画は同じ文書の17）
     #   long_lab15 … 100株単位で少額ならどう回るか（2026年10月24日に追加。計画は同じ文書の18）
     #   long_lab16 … 配当の計算の直し方・分割と併合の読み違い・積立の買い方（2026年10月24日に追加。計画は同じ文書の19）
+    #   long_lab17 … 主な数字を直した計算（V3）で出し直す（2026年10月25日に追加。計画は同じ文書の20）
     if _mode0 in ("long_lab", "long_lab2", "long_lab3", "long_lab4", "long_lab5", "long_lab6", "long_lab7", "long_lab8",
-                  "long_lab9", "long_lab10", "long_lab11", "long_lab12", "long_lab13", "long_lab14", "long_lab15", "long_lab16"):
+                  "long_lab9", "long_lab10", "long_lab11", "long_lab12", "long_lab13", "long_lab14", "long_lab15", "long_lab16", "long_lab17"):
         (args.long_lab, args.long_lab2, args.long_lab3, args.long_lab4, args.long_lab5, args.long_lab6,
          args.long_lab7, args.long_lab8, args.long_lab9, args.long_lab10, args.long_lab11, args.long_lab12,
-         args.long_lab13, args.long_lab14, args.long_lab15, args.long_lab16) = (
+         args.long_lab13, args.long_lab14, args.long_lab15, args.long_lab16, args.long_lab17) = (
             _mode0 == "long_lab", _mode0 == "long_lab2", _mode0 == "long_lab3", _mode0 == "long_lab4", _mode0 == "long_lab5",
             _mode0 == "long_lab6", _mode0 == "long_lab7", _mode0 == "long_lab8", _mode0 == "long_lab9", _mode0 == "long_lab10",
             _mode0 == "long_lab11", _mode0 == "long_lab12", _mode0 == "long_lab13", _mode0 == "long_lab14",
-            _mode0 == "long_lab15", _mode0 == "long_lab16")
+            _mode0 == "long_lab15", _mode0 == "long_lab16", _mode0 == "long_lab17")
         args.liq_metric, args.grid = True, True
         args.only = ",".join(LAB_RULES if args.long_lab else LAB2_RULES if args.long_lab2
                              else LAB3_RULES if args.long_lab3 else LAB4_RULES if args.long_lab4
@@ -11772,7 +11984,7 @@ def main() -> int:
                              else LAB9_RULES if args.long_lab9 else LAB10_RULES if args.long_lab10
                              else LAB11_RULES if args.long_lab11 else LAB12_RULES if args.long_lab12
                              else LAB13_RULES if args.long_lab13 else LAB14_RULES if args.long_lab14
-                             else LAB15_RULES if args.long_lab15 else LAB16_RULES)
+                             else LAB15_RULES if args.long_lab15 else LAB16_RULES if args.long_lab16 else LAB17_RULES)
         args.universe = "prime"
         args.years = 20
         LONG_MODE = True
@@ -11836,7 +12048,7 @@ def main() -> int:
     args.long_any = bool(args.long_test or args.long_lab or args.long_lab2 or args.long_lab3 or args.long_lab4
                          or args.long_lab5 or args.long_lab6 or args.long_lab7 or args.long_lab8 or args.long_lab9
                          or args.long_lab10 or args.long_lab11 or args.long_lab12 or args.long_lab13 or args.long_lab14
-                         or args.long_lab15 or args.long_lab16)
+                         or args.long_lab15 or args.long_lab16 or args.long_lab17)
     args.long_name = ("long_test" if args.long_test else "long_lab" if args.long_lab
                       else "long_lab2" if args.long_lab2 else "long_lab3" if args.long_lab3
                       else "long_lab4" if args.long_lab4 else "long_lab5" if args.long_lab5
@@ -11845,7 +12057,7 @@ def main() -> int:
                       else "long_lab10" if args.long_lab10 else "long_lab11" if args.long_lab11
                       else "long_lab12" if args.long_lab12 else "long_lab13" if args.long_lab13
                       else "long_lab14" if args.long_lab14 else "long_lab15" if args.long_lab15
-                      else "long_lab16" if args.long_lab16 else "")
+                      else "long_lab16" if args.long_lab16 else "long_lab17" if args.long_lab17 else "")
 
     OUTDIR.mkdir(parents=True, exist_ok=True)
 
@@ -17489,6 +17701,192 @@ def main() -> int:
             _B16["impact"] = _imp16
             _D16x = {v_: {"lump": _K16[v_]["lump"], "acc": _D16.get(v_)} for v_ in _K16}
             lab16_report(_A16, _B16, _C16, _D16x)
+
+        # ── 20年分の追加検証17（2026年10月25日に追加。計画は long_lab_plan_2026-10-19 の20。手法の採用の判定はしない）──
+        #   主な数字を、直した計算（V3）で出し直す。いまの計算（V0）も同じ回で回して並べる（見ていない期間・最近の窓の V0 は総当たりの結果を使う）
+        if getattr(args, "long_lab17", False) and nm and nm[0] == "live_small1_pit":
+            _pn = panels[lbs_[0]]
+            _os, _rs = _long_spans
+            _skw = dict(tier_budget=args.realistic, dividends=args.realistic, slip_bps=args.slip_bps,
+                        fee_bps=args.fee_bps, tax_rate=args.tax / 100.0, min_yield_override=mys[0])
+            _kwe = dict(tax_rate=args.tax / 100.0, slip_bps=args.slip_bps, fee_bps=args.fee_bps)
+            _ex, _ql, _notes = etf_ready(_etf_px, store["quotes"], _pn["date"].min())
+            _tp = _ex.get("1306")
+            _span17 = {f"{a_.date()}〜{b_.date()}": (a_, b_) for a_, b_ in wins}
+
+            class _Lab17Stop(Exception):
+                pass
+
+            def _ck17(key_, fn_):
+                if _ck is not None and key_ in _ck["misc"]:
+                    return _ck["misc"][key_]
+                if _long_stop("20年分の追加検証17の途中"):
+                    raise _Lab17Stop
+                v_ = fn_()
+                if _ck is not None:
+                    _ck["misc"][key_] = v_
+                    _ck_work[0] += 1
+                return v_
+
+            if _long_m0 is None:
+                print("\n【20年分の追加検証17】一度も見ていない期間の始まりが決められなかったので、出せません")
+            else:
+                log.info("20年分の追加検証17：直した計算（V3）のパネルを作ります…")
+                _pnF17 = lab16_add_actual(store, lab16_int_share_fix(store, lab16_with_fix(lambda: _panel_for(lbs_[0]))))
+                log.info("  パネル … いまの計算 %d件 ／ 直した計算 %d件", len(_pn), len(_pnF17))
+                _P17 = {"V0": _pn, "V3": _pnF17}
+                _d17 = sorted(pd.Timestamp(d) for d in _pn["date"].unique())
+                _m1_17 = _d17[-1]
+
+                def _cfg17(v_, n_):
+                    return dict(VARIANTS[n_], **LAB17_V3) if v_ == "V3" else VARIANTS[n_]
+
+                def _sub17(v_, a_, b_=None):
+                    p_ = _P17[v_]
+                    m_ = p_["date"] >= a_
+                    if b_ is not None:
+                        m_ &= p_["date"] <= b_
+                    return p_[m_]
+
+                def _b17(r_, curve_=False):
+                    m_ = metrics(r_)
+                    d_ = r_.get("diag") or {}
+                    cv_ = r_["curve"]
+                    ds_ = pd.to_datetime(cv_["date"])
+                    o_ = {"清算後年率": m_.get("清算後年率", m_.get("年率")), "年率": m_.get("年率"), "最大下落": m_.get("最大下落"),
+                          "liq": r_.get("liq_value"), "cut": int(d_.get("cut_exits", 0) or 0),
+                          "yrs": max((ds_.iloc[-1] - ds_.iloc[0]).days / 365.25, 0.5),
+                          "divyoy": lab13_divyoy(r_, ds_.iloc[0], ds_.iloc[-1])}
+                    if curve_:
+                        o_["curve"] = cv_[["date", "value"]].copy()
+                    return o_
+
+                def _run17(v_, n_, a_, b_=None, rp_=0, curve_=False):
+                    return _b17(simulate(_sub17(v_, a_, b_), _cfg17(v_, n_), args.capital, mxs_[0], ramp=rp_, **_skw), curve_)
+
+                def _short17(v_, a_, b_, rp_):
+                    m_ = metrics(simulate(_sub17(v_, a_, b_), _cfg17(v_, "live_small1_pit"), args.capital, mxs_[0], ramp=rp_, **_skw))
+                    return {"清算後年率": m_.get("清算後年率", m_.get("年率")), "年率": m_.get("年率")} if m_ else None
+
+                def _use17(v_):
+                    r_ = simulate(_sub17(v_, _long_m0), _cfg17(v_, "lab12_spend"), args.capital, mxs_[0], ramp=0, **_skw)
+                    d_ = r_.get("diag") or {}
+                    tab_ = lab11_table({"curve": r_["curve"], "trades": r_["trades"], "div_by_month": d_.get("div_by_month", {}),
+                                        "div_gross_by_month": d_.get("div_gross_by_month", {}),
+                                        "cut_exit_dates": d_.get("cut_exit_dates", [])}, set(), args.capital, 0)
+                    return lab17_use_summary(tab_, args.capital, r_.get("liq_value"))
+
+                def _acc17(v_):
+                    sub_ = _sub17(v_, _long_m0)
+                    r_ = simulate(sub_, _cfg17(v_, "live_small1_pit"), args.capital, mxs_[0], ramp=int(sub_["date"].nunique()), **_skw)
+                    return r_.get("liq_value")
+
+                _g17 = {"見ていない期間": (_long_m0, pd.Timestamp(LONG_OOS_END)), "最近": (pd.Timestamp(LONG_RECENT_FROM), None)}
+                _wl17 = [(sp_, "os" if sp_ in _os else "rs") for sp_ in list(_os) + list(_rs) if sp_ in _span17]
+                _m0s17 = pd.Timestamp(_os[0][:10]) if _os else _d17[0]
+                _st17 = [d for d in _d17 if d >= _m0s17 and d + pd.DateOffset(years=LAB17_ROLL_YEARS) <= _m1_17 + pd.Timedelta(days=3)]
+                log.info("20年分の追加検証17：通し（%dルール × 2）・2つの期間・積立・配当を使う・窓（%d × 資金投入%d）・"
+                         "始めた月（%d通り × 資金投入%d × 2）を回します", len(LAB17_CMP), len(_wl17), len(ramps), len(_st17), len(LAB17_ROLL_RAMPS))
+                _F17, _S17, _A17, _U17, _W17, _R17 = {}, {}, {}, {}, {}, {}
+                try:
+                    for sym_, n_, _, _ in LAB17_CMP:
+                        for v_ in ("V0", "V3"):
+                            _F17[(v_, sym_)] = _ck17(("F17", v_, sym_), lambda v=v_, n=n_, c=(sym_ == "本番"): _run17(v, n, _long_m0, None, 0, c))
+                            for g_, (a_, b_) in _g17.items():
+                                _S17[(v_, sym_, g_)] = _ck17(("S17", v_, sym_, g_), lambda v=v_, n=n_, a=a_, b=b_: _run17(v, n, a, b))
+                        log.info("  通しと2つの期間 %s が完了", sym_)
+                    for v_ in ("V0", "V3"):
+                        _A17[v_] = _ck17(("A17", v_), lambda v=v_: _acc17(v))
+                        _U17[v_] = _ck17(("U17", v_), lambda v=v_: _use17(v))
+                    log.info("  積立・配当を使う が完了")
+                    for i_, (sp_, _) in enumerate(_wl17):
+                        a_, b_ = _span17[sp_]
+                        if _sub17("V3", a_, b_)["date"].nunique() < 24:
+                            continue
+                        for rp_ in ramps:
+                            _W17[(sp_, rp_)] = _ck17(("W17", sp_, rp_), lambda a=a_, b=b_, r=rp_: _short17("V3", a, b, r))
+                    log.info("  窓 %d が完了", len(_wl17))
+                    for i_, a_ in enumerate(_st17):
+                        b_ = a_ + pd.DateOffset(years=LAB17_ROLL_YEARS)
+                        for v_ in ("V0", "V3"):
+                            for rp_ in LAB17_ROLL_RAMPS:
+                                _R17[(v_, a_, rp_)] = _ck17(("R17", v_, str(a_.date()), rp_),
+                                                            lambda v=v_, a=a_, b=b_, r=rp_: _short17(v, a, b, r))
+                        if (i_ + 1) % 20 == 0 or i_ + 1 == len(_st17):
+                            log.info("  始めた月 %d/%d 通りが完了", i_ + 1, len(_st17))
+                except _Lab17Stop:
+                    return EXIT_UNFINISHED
+                if _ck is not None and _ck_work[0] > 0:
+                    save_store(_long_raw, "20年分の追加検証17：計算が済んだ分を保存しました")
+
+                # TOPIX と表
+                _note17 = "" if _tp is not None else ("TOPIX（1306）が使えないので、TOPIX との比べは出せません（" + "・".join(_notes) + "）")
+                _dts_full = sorted(_sub17("V0", _long_m0)["date"].unique())
+                _tf17 = etf_hold(_tp, _dts_full, args.capital, 0, dist=ETF_DIST["1306"], **_kwe) if _tp is not None else None
+                _ta17 = (etf_hold(_tp, _dts_full, args.capital, len(_dts_full), dist=ETF_DIST["1306"], **_kwe)
+                         if _tp is not None else None)
+                _ecache17 = {}
+
+                def _tpx17(dts_, rp_):
+                    if _tp is None:
+                        return None
+                    k_ = (str(pd.Timestamp(dts_[0]).date()), str(pd.Timestamp(dts_[-1]).date()), rp_)
+                    if k_ not in _ecache17:
+                        _ecache17[k_] = etf_hold(_tp, dts_, args.capital, rp_, dist=ETF_DIST["1306"], **_kwe)
+                    return _ecache17[k_]
+
+                L0_ = VARIANTS["live_small1_pit"]["label"]
+                _win17 = {}
+                for v_ in ("V0", "V3"):
+                    rows_w = []
+                    for sp_, kind_ in _wl17:
+                        a_, b_ = _span17[sp_]
+                        dts_ = sorted(_pn[(_pn["date"] >= a_) & (_pn["date"] <= b_)]["date"].unique())
+                        for rp_ in ramps:
+                            if v_ == "V0":
+                                g_ = gf[(gf["ルール"] == L0_) & (gf["期間"] == sp_) & (gf["資金投入"] == rp_)]
+                                if g_.empty:
+                                    continue
+                                pl_, pm_ = float(g_["清算後年率"].iloc[0]), float(g_["評価額年率"].iloc[0])
+                            else:
+                                m_ = _W17.get((sp_, rp_))
+                                if not m_:
+                                    continue
+                                pl_, pm_ = m_["清算後年率"], m_["年率"]
+                            e_ = _tpx17(dts_, rp_) if len(dts_) >= 12 else None
+                            rows_w.append({"期間": sp_, "kind": kind_, "資金投入": rp_, "本番": pl_, "本番_評価額": pm_,
+                                           "TOPIX": float(e_["清算後年率"]) if e_ else float("nan"),
+                                           "TOPIX_評価額": float(e_["年率"]) if e_ else float("nan")})
+                    _win17[v_] = pd.DataFrame(rows_w)
+                _roll17 = {}
+                for v_ in ("V0", "V3"):
+                    rows_r = []
+                    for a_ in _st17:
+                        dts_ = [d for d in _d17 if a_ <= d <= a_ + pd.DateOffset(years=LAB17_ROLL_YEARS)]
+                        for rp_ in LAB17_ROLL_RAMPS:
+                            m_ = _R17.get((v_, a_, rp_))
+                            if not m_:
+                                continue
+                            e_ = _tpx17(dts_, rp_)
+                            rows_r.append({"始め": a_, "資金投入": rp_, "本番": m_["清算後年率"], "本番_評価額": m_["年率"],
+                                           "TOPIX": float(e_["清算後年率"]) if e_ else float("nan"),
+                                           "TOPIX_評価額": float(e_["年率"]) if e_ else float("nan")})
+                    _roll17[v_] = pd.DataFrame(rows_r)
+                _exs17 = {}
+                if _tf17:
+                    for v_ in ("V0", "V3"):
+                        f_ = _F17.get((v_, "本番"))
+                        if f_ and f_.get("curve") is not None:
+                            _exs17[v_] = lab12_excess(f_["curve"], _tf17["curve"], LONG_OOS_END)
+                lab17_report({"capital": args.capital, "m0": pd.Timestamp(_long_m0), "m1": _m1_17, "note": _note17,
+                              "full": _F17, "span": _S17, "tpx_full": _tf17, "win": _win17, "roll": _roll17, "ex": _exs17,
+                              "acc": {"V0": _A17.get("V0"), "V3": _A17.get("V3"), "T": (_ta17 or {}).get("liq_value")},
+                              "use": _U17})
+                try:
+                    pd.concat([d_.assign(計算=v_) for v_, d_ in _roll17.items() if d_ is not None and not d_.empty],
+                              ignore_index=True).to_csv(OUTDIR / "lab17_starts.csv", index=False, encoding="utf-8-sig")
+                except Exception as e_:
+                    log.warning("始めた月の明細を書き出せませんでした: %s", e_)
 
         if getattr(args, "long_test", False) and nm and nm[0] == "live_small1_pit":
             L0, Lb = VARIANTS["live_small1_pit"]["label"], VARIANTS["live_nobank"]["label"]
