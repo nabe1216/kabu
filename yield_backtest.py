@@ -2481,6 +2481,15 @@ LAB17_CMP = (("本番", "live_small1_pit", None, "本番"),
              ("R6", "lab6_combo", "相殺", "12月の損出し＋配当で買い増し"))
 LAB17_ROLL_RAMPS = (0, 12)       # 3 始めた月：資金投入（long_lab2 と同じ2通り）
 LAB17_ROLL_YEARS = 4             # 3 始めた月：持つ年数
+# ── 20年分の追加検証18（2026年10月25日に追加。計画は long_lab_plan_2026-10-19 の21）──
+#   A 8条件は配当を安定させるか（同じ株のままの1株配当・減配の割合） ／ B R6・X8 をいつ始めても効くか（lab14 の B を V3 で）。手法の採用の判定はしない
+LAB18_RULES = ["live_small1_pit"]
+LAB18_A = (("本番", "live_small1_pit"), ("C0", "lab4_c_all"), ("C1", "lab4_c_div"))
+LAB18_HALVES = ((2010, 2018), (2019, 2025))     # A1 の判定の2つの期間（年）
+LAB18_OFF_FROM = 2015                           # A1 (b) 公式の配当で比べる最初の年
+LAB18_GAP = 5.0                                 # A1：C0 のいちばん悪い年が本番より何pt深ければ「効いている」
+LAB18_CUT_RATIO = (0.6, 0.85)                   # A2：8条件を満たす月の減配の割合 ÷ 全体の割合
+LAB18_FETCH_MAX = 1500
 
 # 可変ルールの加減点。必要パーセンタイルを下げる＝買いやすくする。
 # 条件を増やすほど過去に合わせただけの数字になりやすいので、3つに絞っています。
@@ -11788,6 +11797,192 @@ def lab17_report(R: dict) -> dict:
     return out
 
 
+def lab18_actual_dps(panel: pd.DataFrame) -> dict:
+    """20年分の追加検証18 A1 (a)：実績の1株配当（act_int・act_fy。いまの株数の基準）を、銘柄 × 基準日の年ごとに足す。
+    その年に1つでも実績が入っていれば「分かる年」。返す値 … {銘柄: {年: 1株配当}}"""
+    out = {}
+    if panel is None or panel.empty or "act_int" not in panel.columns:
+        return out
+    d_ = panel[["code", "date", "act_int", "act_fy"]].copy()
+    d_["y"] = pd.to_datetime(d_["date"]).dt.year
+    d_ = d_[d_["act_int"].notna() | d_["act_fy"].notna()]
+    d_["v"] = d_["act_int"].fillna(0.0) + d_["act_fy"].fillna(0.0)
+    for (c_, y_), v_ in d_.groupby(["code", "y"])["v"].sum().items():
+        out.setdefault(str(c_), {})[int(y_)] = float(v_)
+    return out
+
+
+def lab18_month_panel(codes, d0, d1) -> pd.DataFrame:
+    """20年分の追加検証18 A1 (a)：銘柄 × 月末だけの表（実績の1株配当の列を、パネルの始まりより前の年まで付けるため）。"""
+    ms = pd.date_range(pd.Timestamp(d0) + pd.offsets.MonthEnd(0), pd.Timestamp(d1) + pd.offsets.MonthEnd(0), freq="ME")
+    cs = sorted({str(c_) for c_ in codes})
+    return pd.DataFrame({"code": np.repeat(cs, len(ms)), "date": np.tile(ms.to_numpy(), len(cs))})
+
+
+def lab18_official_dps(divs: dict, adj: dict) -> dict:
+    """20年分の追加検証18 A1 (b)：配当金情報の決まった配当（lab14_parse_divs の形）を、権利落日以降の分割・併合で直して、
+    銘柄 × 基準日の年ごとに足す（lab14_official と同じ直し方）。記録のある銘柄は、記録のない年を0とする。返す値 … {銘柄: {年: 1株配当}}"""
+    out = {}
+    for c_, rows in divs.items():
+        if not rows:
+            continue
+        m_ = out.setdefault(str(c_), {})
+        for r in rows:
+            k_ = (_lab14_factor(adj.get(c_), r["ex"], True) if r["ex"] is not None
+                  else _lab14_factor(adj.get(c_), r["rec"] - pd.Timedelta(days=7), True))
+            m_[int(r["rec"].year)] = m_.get(int(r["rec"].year), 0.0) + r["rate"] * k_
+        y0_, y1_ = min(m_), max(m_)
+        for y_ in range(y0_, y1_ + 1):
+            m_.setdefault(y_, 0.0)
+    return out
+
+
+def lab18_same_stock(hold: dict, dps: dict, y_from: int, y_to: int) -> list:
+    """20年分の追加検証18 A1：前の年の12月末に持っていた株数のまま受け取る1年分の1株配当の合計の、前の年からの変化。
+    前の年と今の年の両方で1株配当が分かる銘柄だけで比べる。返す値 … [(年, 変化, 分かった銘柄の割合), …]"""
+    decs = {}
+    for m_ in sorted(hold):
+        if m_.month == 12:
+            decs[m_.year] = m_
+    out = []
+    for y_ in range(y_from, y_to + 1):
+        m_ = decs.get(y_ - 1)
+        if m_ is None or not hold.get(m_):
+            continue
+        num = den = 0.0
+        known = 0
+        for c_, sh_ in hold[m_].items():
+            d_ = dps.get(str(c_)) or {}
+            if (y_ - 1) in d_ and y_ in d_:
+                num += sh_ * d_[y_]
+                den += sh_ * d_[y_ - 1]
+                known += 1
+        if den > 0:
+            out.append((y_, num / den - 1.0, known / len(hold[m_])))
+    return out
+
+
+def lab18_cut_rates(fw: pd.DataFrame) -> dict:
+    """20年分の追加検証18 A2：lab10 の2と同じ数え方。ツールの範囲・利回り3％以上・予想配当あり・翌1年が分かる銘柄×月のうち、
+    翌1年に減配の決算が出た割合。返す値 … {(区分, 期間): (割合, 件数)}"""
+    out = {}
+    if fw is None or fw.empty or "fwd_tot" not in fw.columns:
+        return out
+    uni = fw[fw["in_uni_live"].astype(bool)] if "in_uni_live" in fw.columns else fw
+    ok = uni[uni["fwd_tot"].notna()].copy()
+    ok["yield"] = pd.to_numeric(ok["yield"], errors="coerce").fillna(0.0)
+    hi = ok[(ok["yield"] >= 3.0) & (ok["dps"] > 0)]
+    for per_ in ("見ていない期間", "最近"):
+        s_ = hi[hi["period"] == per_]
+        for k_, m_ in (("全体", pd.Series(True, index=s_.index)),
+                       ("8条件をすべて満たす", s_["screen_pass"].astype(bool) if "screen_pass" in s_.columns else pd.Series(False, index=s_.index))):
+            g_ = s_[m_]
+            out[(k_, per_)] = ((float(g_["cut"].mean()) if len(g_) else float("nan")), int(len(g_)))
+    return out
+
+
+def lab18_report(A1: dict, A2: dict, B: dict, starts: list, note: str = "") -> dict:
+    """20年分の追加検証18（long_lab18）：8条件は配当を安定させるか・R6 と X8 をいつ始めても効くか（直した計算 V3 で）。2026年10月25日に追加。
+    基準は結果を見る前に決めたもの（プロジェクトの long_lab_plan_2026-10-19 の21）。手法の採用の判定はしない。"""
+    out = {"A1": "—", "A2": "—", "B": {}}
+    print("\n【20年分の追加検証18：8条件は配当を安定させるか・R6 と X8 をいつ始めても効くか（直した計算 V3）】（基準は結果を見る前に決めたもの。"
+          "計画はプロジェクトの long_lab_plan_2026-10-19 の21。手法の採用の判定はしない）")
+    print("  予想 … A1「一方の期間だけ効いている」（本番のいちばん悪い年 −3〜−8％） ／ A2「減配を減らしている」 ／ B R6・X8 とも「おおむね効く」")
+    if note:
+        print(f"  注意 … {note}")
+
+    # A1
+    print("\n  A1. 同じ株のままの1株配当（通し・資金投入0か月。前の年の12月末の株数のまま受け取る1年分の1株配当の合計の、前の年からの変化。"
+          "かっこは前の年と今の年の両方で1株配当が分かった銘柄の割合）")
+    worst = {}
+    for src_, nm_ in (("act", "(a) 実績"), ("off", "(b) 公式（配当金情報）")):
+        for sym_, _ in LAB18_A:
+            rows_ = (A1.get(src_) or {}).get(sym_) or []
+            if not rows_:
+                continue
+            print(f"    {nm_} {sym_} … " + " ".join(f"{y_}:{c_ * 100:+.1f}" for y_, c_, _ in rows_)
+                  + f"（分かった割合 平均 {np.mean([k_ for *_, k_ in rows_]) * 100:.0f}％）")
+            ch_ = [c_ for _, c_, _ in rows_]
+            print(f"      いちばん悪い年 {min(rows_, key=lambda x_: x_[1])[0]}年 {min(ch_) * 100:+.1f}％ ／ −5％以下の年 {sum(1 for c_ in ch_ if c_ <= -0.05)}回 ／ "
+                  f"−10％以下の年 {sum(1 for c_ in ch_ if c_ <= -0.10)}回 ／ 減った年 {sum(1 for c_ in ch_ if c_ < 0)}回（{len(ch_)}年のうち）")
+            if src_ == "act":
+                for h0_, h1_ in LAB18_HALVES:
+                    hv_ = [c_ for y_, c_, _ in rows_ if h0_ <= y_ <= h1_]
+                    if hv_:
+                        worst[(sym_, h0_)] = min(hv_)
+    res_ = []
+    for h0_, h1_ in LAB18_HALVES:
+        a_, b_ = worst.get(("本番", h0_)), worst.get(("C0", h0_))
+        if a_ is None or b_ is None:
+            continue
+        d_ = (a_ - b_) * 100
+        res_.append(d_ >= LAB18_GAP)
+        print(f"    {h0_}〜{h1_}年のいちばん悪い年（実績） … 本番 {a_ * 100:+.1f}％ ／ C0 {b_ * 100:+.1f}％（C0 の方が {d_:+.1f}pt 深い）")
+    if len(res_) == 2:
+        out["A1"] = "両方の期間で効いている" if all(res_) else ("一方の期間だけ効いている" if any(res_) else "差は見えない")
+        print(f"    → 判定：{out['A1']}（基準：C0 のいちばん悪い年が本番より{LAB18_GAP:.0f}pt以上深い期間がいくつあるか）")
+
+    # A2
+    print("\n  A2. 減配の割合（ツールの範囲・利回り3％以上の銘柄×月のうち、翌1年に実績の年間配当が前の通期より10％以上減った決算が出た割合。lab10 の2と同じ）")
+    rat_ = []
+    for kind_, nm_ in (("base", "いまの計算（V0）"), ("fix", "直した計算（V3）")):
+        c_ = A2.get(kind_) or {}
+        if not c_:
+            continue
+        parts_ = []
+        for per_ in ("見ていない期間", "最近"):
+            al_, na_ = c_.get(("全体", per_), (float("nan"), 0))
+            sp_, ns_ = c_.get(("8条件をすべて満たす", per_), (float("nan"), 0))
+            r_ = sp_ / al_ if al_ and al_ == al_ and al_ > 0 else float("nan")
+            if kind_ == "fix":
+                rat_.append(r_)
+            parts_.append(f"{per_} 全体 {al_ * 100:.1f}％（{na_:,}） ／ 8条件 {sp_ * 100:.1f}％（{ns_:,}）・比 {r_:.2f}")
+        print(f"    {nm_} … " + " ｜ ".join(parts_))
+    if len(rat_) == 2 and all(x_ == x_ for x_ in rat_):
+        lo_, hi_ = LAB18_CUT_RATIO
+        out["A2"] = ("減配を減らしている" if all(x_ <= lo_ for x_ in rat_) else
+                     "差は小さい" if any(x_ >= hi_ for x_ in rat_) else "おおむね減らしている")
+        print(f"    → 判定（V3）：{out['A2']}（基準：比が両方の期間で{lo_}以下＝減らしている ／ どちらかで{hi_}以上＝差は小さい）")
+
+    # B
+    print(f"\n  B. R6・X8 をいつ始めても効くか（V3。毎月末から{LAB14_B_YEARS}年・{len(starts)}通り・元本1,000万円・100株単位。"
+          f"見ていない期間＝{LAB14_B_YEARS}年が2018年7月末までに終わる回 ／ 最近＝2018年8月末以降に始めた回 ／ またがる＝その間）")
+    print("    参考：lab14（V0） … R6 見ていない期間 90％・最近 98％（平均 +0.90pt・+1.67pt） ／ X8 85〜87％・92〜94％（+0.88pt・+1.60pt）。どちらも「いつ始めても効く」")
+    oos_end, rec_from = pd.Timestamp(LONG_OOS_END), pd.Timestamp(LONG_RECENT_FROM)
+
+    def _grp(a_):
+        if a_ + pd.DateOffset(years=LAB14_B_YEARS) <= oos_end + pd.Timedelta(days=3):
+            return "見ていない期間"
+        return "最近" if a_ >= rec_from else "またがる"
+    for code_, n_, base_, sh_ in LAB14_B:
+        rs_ = {}
+        print(f"    {code_} {sh_}")
+        for g_ in ("見ていない期間", "最近", "またがる"):
+            rows_ = [(B.get((n_, a_)), B.get((base_, a_))) for a_ in starts if _grp(a_) == g_]
+            rows_ = [(x_, y_) for x_, y_ in rows_ if x_ and y_ and x_.get("清算後年率") is not None and y_.get("清算後年率") is not None]
+            if not rows_:
+                continue
+            dl_ = np.array([x_["清算後年率"] - y_["清算後年率"] for x_, y_ in rows_], dtype=float)
+            dm_ = np.array([x_["年率"] - y_["年率"] for x_, y_ in rows_], dtype=float)
+            dd_ = np.array([x_["最大下落"] < y_["最大下落"] for x_, y_ in rows_], dtype=float)
+            rs_[g_] = (float((dl_ > 0).mean()), float((dm_ > 0).mean()))
+            print(f"      {g_}（{len(rows_)}回） … 上回った 清算後 {(dl_ > 0).mean() * 100:.0f}％・評価額 {(dm_ > 0).mean() * 100:.0f}％ ／ "
+                  f"平均の差 {dl_.mean():+.2f}pt ／ いちばん悪い差 {dl_.min():+.2f}pt ／ 最大下落が浅かった回 {dd_.mean() * 100:.0f}％")
+        o_, r_ = rs_.get("見ていない期間"), rs_.get("最近")
+        if o_ and r_:
+            v_ = ("いつ始めても効く" if min(o_ + r_) >= 0.85 else "始める時期しだい" if min(o_ + r_) <= 0.50 else "おおむね効く")
+        else:
+            v_ = "—"
+        out["B"][code_] = v_
+        print(f"      → 判定：{v_}（基準は lab14 の B と同じ）")
+
+    print("\n  まとめ（結果を見る前に決めた基準）")
+    print(f"    A1 同じ株のままの1株配当 … {out['A1']} ／ A2 減配の割合 … {out['A2']}")
+    print("    B " + " ／ ".join(f"{c_} {v_}" for c_, v_ in out["B"].items()))
+    print("  （始めた回どうし・銘柄×月どうしは重なっているので、割合は目安。A1 (a) の2009〜2013年は配当金情報で確かめていない）")
+    return out
+
+
 def main() -> int:
     global LONG_MODE, CACHE, PIT_FROM, COMPUTE_START_LIMIT_MIN
     # 結果（print）と進み具合（log）の順番を、ファイルに書き出したときも崩さない。
@@ -11946,7 +12141,7 @@ def main() -> int:
     #   取り終わっていなければ取得から始める（途中で止まったら、同じ設定でもう一度押す）。
     args.long_test = args.long_lab = args.long_lab2 = args.long_lab3 = args.long_lab4 = args.long_lab5 = False
     args.long_lab6 = args.long_lab7 = args.long_lab8 = args.long_lab9 = args.long_lab10 = args.long_lab11 = False
-    args.long_lab12 = args.long_lab13 = args.long_lab14 = args.long_lab15 = args.long_lab16 = args.long_lab17 = False
+    args.long_lab12 = args.long_lab13 = args.long_lab14 = args.long_lab15 = args.long_lab16 = args.long_lab17 = args.long_lab18 = False
     # 20年分の追加検証（2026年10月19日に追加。計画はプロジェクトの long_lab_plan_2026-10-19）
     #   long_lab  … ルールの候補20個・近い設定6つ・参考2つを、本番と同じ52条件で回す
     #   long_lab2 … 運・偏り・始めた月・業種（20回目と同じ作り方。比べる指数は TOPIX）
@@ -11967,15 +12162,16 @@ def main() -> int:
     #   long_lab15 … 100株単位で少額ならどう回るか（2026年10月24日に追加。計画は同じ文書の18）
     #   long_lab16 … 配当の計算の直し方・分割と併合の読み違い・積立の買い方（2026年10月24日に追加。計画は同じ文書の19）
     #   long_lab17 … 主な数字を直した計算（V3）で出し直す（2026年10月25日に追加。計画は同じ文書の20）
+    #   long_lab18 … 8条件は配当を安定させるか・R6 と X8 をいつ始めても効くか（直した計算。2026年10月25日に追加。計画は同じ文書の21）
     if _mode0 in ("long_lab", "long_lab2", "long_lab3", "long_lab4", "long_lab5", "long_lab6", "long_lab7", "long_lab8",
-                  "long_lab9", "long_lab10", "long_lab11", "long_lab12", "long_lab13", "long_lab14", "long_lab15", "long_lab16", "long_lab17"):
+                  "long_lab9", "long_lab10", "long_lab11", "long_lab12", "long_lab13", "long_lab14", "long_lab15", "long_lab16", "long_lab17", "long_lab18"):
         (args.long_lab, args.long_lab2, args.long_lab3, args.long_lab4, args.long_lab5, args.long_lab6,
          args.long_lab7, args.long_lab8, args.long_lab9, args.long_lab10, args.long_lab11, args.long_lab12,
-         args.long_lab13, args.long_lab14, args.long_lab15, args.long_lab16, args.long_lab17) = (
+         args.long_lab13, args.long_lab14, args.long_lab15, args.long_lab16, args.long_lab17, args.long_lab18) = (
             _mode0 == "long_lab", _mode0 == "long_lab2", _mode0 == "long_lab3", _mode0 == "long_lab4", _mode0 == "long_lab5",
             _mode0 == "long_lab6", _mode0 == "long_lab7", _mode0 == "long_lab8", _mode0 == "long_lab9", _mode0 == "long_lab10",
             _mode0 == "long_lab11", _mode0 == "long_lab12", _mode0 == "long_lab13", _mode0 == "long_lab14",
-            _mode0 == "long_lab15", _mode0 == "long_lab16", _mode0 == "long_lab17")
+            _mode0 == "long_lab15", _mode0 == "long_lab16", _mode0 == "long_lab17", _mode0 == "long_lab18")
         args.liq_metric, args.grid = True, True
         args.only = ",".join(LAB_RULES if args.long_lab else LAB2_RULES if args.long_lab2
                              else LAB3_RULES if args.long_lab3 else LAB4_RULES if args.long_lab4
@@ -11984,7 +12180,7 @@ def main() -> int:
                              else LAB9_RULES if args.long_lab9 else LAB10_RULES if args.long_lab10
                              else LAB11_RULES if args.long_lab11 else LAB12_RULES if args.long_lab12
                              else LAB13_RULES if args.long_lab13 else LAB14_RULES if args.long_lab14
-                             else LAB15_RULES if args.long_lab15 else LAB16_RULES if args.long_lab16 else LAB17_RULES)
+                             else LAB15_RULES if args.long_lab15 else LAB16_RULES if args.long_lab16 else LAB17_RULES if args.long_lab17 else LAB18_RULES)
         args.universe = "prime"
         args.years = 20
         LONG_MODE = True
@@ -12048,7 +12244,7 @@ def main() -> int:
     args.long_any = bool(args.long_test or args.long_lab or args.long_lab2 or args.long_lab3 or args.long_lab4
                          or args.long_lab5 or args.long_lab6 or args.long_lab7 or args.long_lab8 or args.long_lab9
                          or args.long_lab10 or args.long_lab11 or args.long_lab12 or args.long_lab13 or args.long_lab14
-                         or args.long_lab15 or args.long_lab16 or args.long_lab17)
+                         or args.long_lab15 or args.long_lab16 or args.long_lab17 or args.long_lab18)
     args.long_name = ("long_test" if args.long_test else "long_lab" if args.long_lab
                       else "long_lab2" if args.long_lab2 else "long_lab3" if args.long_lab3
                       else "long_lab4" if args.long_lab4 else "long_lab5" if args.long_lab5
@@ -12057,7 +12253,7 @@ def main() -> int:
                       else "long_lab10" if args.long_lab10 else "long_lab11" if args.long_lab11
                       else "long_lab12" if args.long_lab12 else "long_lab13" if args.long_lab13
                       else "long_lab14" if args.long_lab14 else "long_lab15" if args.long_lab15
-                      else "long_lab16" if args.long_lab16 else "long_lab17" if args.long_lab17 else "")
+                      else "long_lab16" if args.long_lab16 else "long_lab17" if args.long_lab17 else "long_lab18" if args.long_lab18 else "")
 
     OUTDIR.mkdir(parents=True, exist_ok=True)
 
@@ -17887,6 +18083,91 @@ def main() -> int:
                               ignore_index=True).to_csv(OUTDIR / "lab17_starts.csv", index=False, encoding="utf-8-sig")
                 except Exception as e_:
                     log.warning("始めた月の明細を書き出せませんでした: %s", e_)
+
+        # ── 20年分の追加検証18（2026年10月25日に追加。計画は long_lab_plan_2026-10-19 の21。手法の採用の判定はしない）──
+        #   A1 同じ株のままの1株配当（本番・C0・C1。実績と配当金情報） ／ A2 減配の割合（lab10 の2を直したパネルで） ／ B lab14 の B を V3 で
+        if getattr(args, "long_lab18", False) and nm and nm[0] == "live_small1_pit":
+            _pn = panels[lbs_[0]]
+            _skw = dict(tier_budget=args.realistic, dividends=args.realistic, slip_bps=args.slip_bps,
+                        fee_bps=args.fee_bps, tax_rate=args.tax / 100.0, min_yield_override=mys[0])
+
+            class _Lab18Stop(Exception):
+                pass
+
+            def _ck18(key_, fn_):
+                if _ck is not None and key_ in _ck["misc"]:
+                    return _ck["misc"][key_]
+                if _long_stop("20年分の追加検証18の途中"):
+                    raise _Lab18Stop
+                v_ = fn_()
+                if _ck is not None:
+                    _ck["misc"][key_] = v_
+                    _ck_work[0] += 1
+                return v_
+
+            if _long_m0 is None:
+                print("\n【20年分の追加検証18】一度も見ていない期間の始まりが決められなかったので、出せません")
+            else:
+                log.info("20年分の追加検証18：直した計算（V3）のパネルを作ります…")
+                _pnF18 = lab16_add_actual(store, lab16_int_share_fix(store, lab16_with_fix(lambda: _panel_for(lbs_[0]))))
+                log.info("  パネル … いまの計算 %d件 ／ 直した計算 %d件", len(_pn), len(_pnF18))
+                _d18 = sorted(pd.Timestamp(d) for d in _pnF18["date"].unique())
+                _st18 = [d for d in _d18 if d >= _long_m0 and d + pd.DateOffset(years=LAB14_B_YEARS) <= _d18[-1] + pd.Timedelta(days=3)]
+
+                def _cfg18(n_):
+                    return dict(VARIANTS[n_], **LAB17_V3)
+
+                def _a18(n_):
+                    r_ = simulate(_pnF18[_pnF18["date"] >= _long_m0], _cfg18(n_), args.capital, mxs_[0], ramp=0, **_skw)
+                    return {"trades": r_["trades"][["date", "code", "side", "shares"]].copy(),
+                            "months": sorted(pd.Timestamp(d) for d in pd.to_datetime(r_["curve"]["date"]).unique())}
+
+                def _b18(n_, a_):
+                    sub_ = _pnF18[(_pnF18["date"] >= a_) & (_pnF18["date"] <= a_ + pd.DateOffset(years=LAB14_B_YEARS))]
+                    m_ = metrics(simulate(sub_, _cfg18(n_), args.capital, mxs_[0], ramp=0, **_skw))
+                    return {"清算後年率": m_.get("清算後年率"), "年率": m_.get("年率"), "最大下落": m_.get("最大下落")}
+
+                _bn18 = sorted({x_ for _, r_, b_, _ in LAB14_B for x_ in (r_, b_)})
+                log.info("20年分の追加検証18：通し（%dルール）・始めた月（%d通り × %dルール）を回します", len(LAB18_A), len(_st18), len(_bn18))
+                _A18, _B18 = {}, {}
+                try:
+                    for sym_, n_ in LAB18_A:
+                        _A18[sym_] = _ck18(("A18", sym_), lambda n=n_: _a18(n))
+                    log.info("  通し %d ルールが完了", len(_A18))
+                    for i_, a_ in enumerate(_st18):
+                        for n_ in _bn18:
+                            _B18[(n_, a_)] = _ck18(("B18", n_, str(a_.date())), lambda n=n_, a=a_: _b18(n, a))
+                        if (i_ + 1) % 20 == 0 or i_ + 1 == len(_st18):
+                            log.info("  始めた月 %d/%d 通りが完了", i_ + 1, len(_st18))
+                except _Lab18Stop:
+                    return EXIT_UNFINISHED
+                if _ck is not None and _ck_work[0] > 0:
+                    save_store(_long_raw, "20年分の追加検証18：計算が済んだ分を保存しました")
+
+                # 配当金情報：3つのルールで持った銘柄
+                _h18 = {sym_: lab14_holdings(_A18[sym_]["trades"], _A18[sym_]["months"]) for sym_ in _A18}
+                _codes18 = sorted({str(c_) for h_ in _h18.values() for hh_ in h_.values() for c_ in hh_})
+                _want18 = _codes18[:LAB18_FETCH_MAX]
+                _dc18 = _long_raw.setdefault("lab14_divs", {}) if _long_raw is not None else {}
+                _note18, _nf18 = lab16_fetch_divs(_want18, _dc18, os.environ.get("J_QUANTS_API_KEY"))
+                if _nf18 and _long_raw is not None:
+                    save_store(_long_raw, "20年分の追加検証18：配当金情報を保存しました")
+                if len(_codes18) > LAB18_FETCH_MAX:
+                    _note18 = ((_note18 + "。") if _note18 else "") + f"配当金情報は上限の{LAB18_FETCH_MAX}銘柄までで切った"
+                _divs18 = {c_: lab14_parse_divs(_dc18.get(c_)) for c_ in _want18 if c_ in _dc18}
+                _adj18 = {c_: lab14_adj_after(store["quotes"].get(c_)) for c_ in _divs18}
+                # 実績の1株配当は、パネルの始まりの前の年から（最初の年の比べに、前の年のまるごと1年分が要るため）
+                _act18 = lab18_actual_dps(lab16_add_actual(store, lab18_month_panel(_codes18, f"{int(_long_m0.year) - 1}-01-31", _d18[-1])))
+                _off18 = lab18_official_dps(_divs18, _adj18)
+                _y1_18 = int(_d18[-1].year) - 1
+                _A1 = {"act": {sym_: lab18_same_stock(_h18[sym_], _act18, int(_long_m0.year) + 1, _y1_18) for sym_ in _h18},
+                       "off": {sym_: lab18_same_stock(_h18[sym_], _off18, LAB18_OFF_FROM, _y1_18) for sym_ in _h18}}
+                log.info("20年分の追加検証18：減配の割合を数えています（いまの計算と直した計算）…")
+                _A2 = {"base": lab18_cut_rates(lab10_forward(_pn)), "fix": lab18_cut_rates(lab10_forward(_pnF18))}
+                log.info("  配当金情報 … 今回取った %d銘柄", _nf18)
+                lab18_report(_A1, _A2, _B18, _st18,
+                             ((_note18 + "。") if _note18 else "") + f"配当金情報 … 持った{len(_codes18)}銘柄のうち記録あり "
+                             f"{sum(1 for c_ in _divs18 if _divs18[c_])}銘柄")
 
         if getattr(args, "long_test", False) and nm and nm[0] == "live_small1_pit":
             L0, Lb = VARIANTS["live_small1_pit"]["label"], VARIANTS["live_nobank"]["label"]
