@@ -2568,6 +2568,24 @@ LAB22_J = (("J1 ナンピン", "D1", "本番", "ナンピンした方が良い",
            ("J2 X8 と比べる", "D1", "X8", "X8 より良い", "X8 より悪い", "決められない"),
            ("J2 X8 と比べる", "D2", "X8", "X8 より良い", "X8 より悪い", "決められない"),
            ("J2 X8 と比べる", "D3", "X8", "X8 より良い", "X8 より悪い", "決められない"))
+# ── 20年分の追加検証23（2026年10月26日に追加。計画は long_lab_plan_2026-10-19 の26）──
+#   ナンピンの程度を分ける（深さ：取得単価から10・20・30％下 ／ 大きさ：目標の1.25・1.5・2倍まで）。どれも D2 と同じ回し方。手法の採用の判定はしない
+LAB23_RULES = ["live_small1_pit"]
+VARIANTS.update({
+    "lab23_e1": _lab_rule("E1 ナンピン：取得単価より10％下で、目標の1.5倍まで（足りなければ回す）", nanpin={"drop": 0.10, "cap": 1.5, "trim": True}),
+    "lab23_e2": _lab_rule("E2 ナンピン：取得単価より20％下で、目標の1.5倍まで（足りなければ回す。lab22 の D2 と同じ）",
+                          nanpin={"drop": 0.20, "cap": 1.5, "trim": True}),
+    "lab23_e3": _lab_rule("E3 ナンピン：取得単価より30％下で、目標の1.5倍まで（足りなければ回す）", nanpin={"drop": 0.30, "cap": 1.5, "trim": True}),
+    "lab23_e4": _lab_rule("E4 ナンピン：取得単価より20％下で、目標の1.25倍まで（足りなければ回す）", nanpin={"drop": 0.20, "cap": 1.25, "trim": True}),
+    "lab23_e5": _lab_rule("E5 ナンピン：取得単価より20％下で、目標の2倍まで（足りなければ回す）", nanpin={"drop": 0.20, "cap": 2.0, "trim": True}),
+})
+LAB23_V = (("本番", "live_small1_pit"), ("X8", "lab_topup"), ("E1", "lab23_e1"), ("E2", "lab23_e2"), ("E3", "lab23_e3"),
+           ("E4", "lab23_e4"), ("E5", "lab23_e5"))
+LAB23_J = tuple([("J1 ナンピン", e_, "本番", "ナンピンした方が良い", "本番より悪い", "決められない") for e_ in ("E1", "E2", "E3", "E4", "E5")]
+                + [("J2 X8 と比べる", e_, "X8", "X8 より良い", "X8 より悪い", "決められない") for e_ in ("E1", "E2", "E3", "E4", "E5")])
+# J3 程度の向き（名前, 並び, 大きくなっていくとき, 小さくなっていくとき, それ以外）
+LAB23_T = (("深さ（10％ → 20％ → 30％下）", ("E1", "E2", "E3"), "深くしてからナンピンするほど良い", "浅いうちにナンピンするほど良い", "深さで差は見えない"),
+           ("大きさ（1.25倍 → 1.5倍 → 2倍まで）", ("E4", "E2", "E5"), "大きく足すほど良い", "小さく足すほど良い", "大きさで差は見えない"))
 
 # 可変ルールの加減点。必要パーセンタイルを下げる＝買いやすくする。
 # 条件を増やすほど過去に合わせただけの数字になりやすいので、3つに絞っています。
@@ -12760,6 +12778,99 @@ def lab22_report(F: dict, S: dict, B: dict, starts: list) -> dict:
     return out
 
 
+def lab23_report(F: dict, S: dict, B: dict, starts: list) -> dict:
+    """20年分の追加検証23（long_lab23）：ナンピンの程度を分ける。2026年10月26日に追加。
+    基準は結果を見る前に決めたもの（プロジェクトの long_lab_plan_2026-10-19 の26。lab22 と同じ物差し）。手法の採用の判定はしない。"""
+    out = {}
+    print("\n【20年分の追加検証23：ナンピンの程度を分ける（直した計算 V3・特定口座）】（基準は結果を見る前に決めたもの。"
+          "計画はプロジェクトの long_lab_plan_2026-10-19 の26。手法の採用の判定はしない）")
+    print("  ナンピンしてよい持ち株 … その月末に8条件を満たし・利回り3％以上・減配や業績急変に当たっていないもの。月末の終値で目標の1.5倍まで買い増す")
+    print("  回し方 … どれも、現金が足りなければ目標をいちばん上回っている持ち株を目標まで売って回す（lab22 の D2 と同じ）")
+    print("  予想 … J1 は5つとも「決められない」 ／ J2 は5つとも「決められない」か「X8 より悪い」 ／ J3 は深さ・大きさとも「差は見えない」 ／ "
+          "ナンピンは E1 が年3〜6回・E3 は年0.5回より少ない")
+    for sym_, n_ in LAB23_V:
+        print(f"    {sym_} … {VARIANTS[n_]['label']}")
+    print("\n  1. 通し（2009年6月末〜・資金投入0か月）と2つの期間（年率は清算後。売買＝1年あたりの売りと買いの回数）")
+    for sym_, _ in LAB23_V:
+        f_ = F.get(sym_)
+        if not f_:
+            continue
+        cells = [f"{g_} {(f_ if g_ == '通し' else S.get((sym_, g_)) or {}).get('清算後年率', float('nan')):.1f}％"
+                 for g_ in ("通し", "見ていない期間", "最近")]
+        print(f"    {sym_} … " + " ／ ".join(cells) + f" ／ 最大下落 {f_['最大下落']:.1f}％ ／ 売買 {f_['trades_y']:.1f}回/年"
+              + (f" ／ 現金 平均{f_['cash']:.0f}％" if f_.get("cash") is not None and f_["cash"] == f_["cash"] else "")
+              + (f" ／ ナンピン {f_['nanpin_y']:.1f}回/年" if f_.get("nanpin_y") else "")
+              + (f"（回すために売った {f_['trim_y']:.1f}回/年）" if f_.get("trim_y") else ""))
+    print("\n  参考（判定しない）：通しでナンピンした回のその後（値動きは配当を除く。1年後の株価がない回は数えない）")
+    for sym_, _ in LAB23_V:
+        r_ = (F.get(sym_) or {}).get("ref")
+        if not r_ or not r_.get("n"):
+            continue
+        print(f"    {sym_} … ナンピン {r_['n']}回 ／ ナンピンした値段の取得単価との差 平均{-r_['drop'] * 100:+.0f}％ ／ "
+              f"1年後に上がっていた {r_['up'] * 100:.0f}％（{r_['n12']}回のうち）・1年後の値動き 平均{r_['ret'] * 100:+.1f}％ ／ "
+              f"2年のうちに緊急売り {r_['cut'] * 100:.0f}％")
+    oos_end, rec_from = pd.Timestamp(LONG_OOS_END), pd.Timestamp(LONG_RECENT_FROM)
+
+    def _grp(a_):
+        if a_ + pd.DateOffset(years=LAB14_B_YEARS) <= oos_end + pd.Timedelta(days=3):
+            return "見ていない期間"
+        return "最近" if a_ >= rec_from else "またがる"
+    print(f"\n  2. 始めた月（毎月末から{LAB14_B_YEARS}年・{len(starts)}通り。見ていない期間＝{LAB14_B_YEARS}年が2018年7月末までに終わる回 ／ "
+          "最近＝2018年8月末以降に始めた回 ／ またがる＝その間）")
+    for jn_, a_sym, b_sym, good_, bad_, mid_ in LAB23_J:
+        rs_ = {}
+        print(f"    {jn_}：{a_sym} と {b_sym}")
+        for g_ in ("見ていない期間", "最近", "またがる"):
+            rows_ = [(B.get((a_sym, d_)), B.get((b_sym, d_))) for d_ in starts if _grp(d_) == g_]
+            rows_ = [(x_, y_) for x_, y_ in rows_ if x_ and y_ and x_.get("清算後年率") is not None and y_.get("清算後年率") is not None]
+            if not rows_:
+                continue
+            dl_ = np.array([x_["清算後年率"] - y_["清算後年率"] for x_, y_ in rows_], dtype=float)
+            dm_ = np.array([x_["年率"] - y_["年率"] for x_, y_ in rows_], dtype=float)
+            dd_ = np.array([x_["最大下落"] < y_["最大下落"] for x_, y_ in rows_], dtype=float)
+            tie_ = np.abs(dl_) < 1e-9
+            rs_[g_] = (float((dl_ > 0).mean()), float((dm_ > 0).mean()), float(dl_.mean()), float((dl_ < 0).mean()))
+            print(f"      {g_}（{len(rows_)}回） … 上回った 清算後 {(dl_ > 0).mean() * 100:.0f}％・評価額 {(dm_ > 0).mean() * 100:.0f}％ ／ "
+                  f"下回った {(dl_ < 0).mean() * 100:.0f}％" + (f"・まったく同じ {tie_.mean() * 100:.0f}％" if tie_.any() else "") + " ／ "
+                  f"平均の差 {dl_.mean():+.2f}pt ／ いちばん悪い差 {dl_.min():+.2f}pt ／ いちばん良い差 {dl_.max():+.2f}pt ／ 最大下落が浅かった回 {dd_.mean() * 100:.0f}％")
+        o_, r_ = rs_.get("見ていない期間"), rs_.get("最近")
+        if o_ and r_:
+            sh_, mg_ = LAB19_GOOD
+            if min(o_[0], o_[1], r_[0], r_[1]) >= sh_ and min(o_[2], r_[2]) >= mg_:
+                v_ = good_
+            elif max(o_[3], r_[3]) >= 1.0 - LAB19_BAD:
+                v_ = bad_
+            else:
+                v_ = mid_
+        else:
+            v_ = "—"
+        out[(jn_, a_sym)] = v_
+        print(f"      → 判定：{v_}")
+    # J3 程度の向き（本番との平均の差・清算後が、並びの順に両方の期間で大きく／小さくなっていくか）
+    print(f"\n  3. 程度の向き（本番との平均の差・清算後。始めた月の{len(starts)}通りから）")
+    for tn_, seq_, up_, dn_, mid_ in LAB23_T:
+        mv_ = {}
+        for g_ in ("見ていない期間", "最近"):
+            vals_ = []
+            for e_ in seq_:
+                rows_ = [(B.get((e_, d_)), B.get(("本番", d_))) for d_ in starts if _grp(d_) == g_]
+                dl_ = [x_["清算後年率"] - y_["清算後年率"] for x_, y_ in rows_
+                       if x_ and y_ and x_.get("清算後年率") is not None and y_.get("清算後年率") is not None]
+                vals_.append(float(np.mean(dl_)) if dl_ else float("nan"))
+            mv_[g_] = vals_
+            print(f"    {tn_} {g_} … " + " → ".join(f"{e_} {v_:+.2f}pt" for e_, v_ in zip(seq_, vals_)))
+        inc_ = all(all(b_ > a_ for a_, b_ in zip(v_, v_[1:])) for v_ in mv_.values())
+        dec_ = all(all(b_ < a_ for a_, b_ in zip(v_, v_[1:])) for v_ in mv_.values())
+        v_ = up_ if inc_ else (dn_ if dec_ else mid_)
+        out[("J3 程度の向き", tn_)] = v_
+        print(f"      → 判定：{v_}")
+    print("\n  まとめ（結果を見る前に決めた基準）")
+    for (jn_, a_sym), v_ in out.items():
+        print(f"    {jn_}（{a_sym}） … {v_}")
+    print("  （始めた回どうしは重なっているので、割合は目安）")
+    return out
+
+
 def main() -> int:
     global LONG_MODE, CACHE, PIT_FROM, COMPUTE_START_LIMIT_MIN
     # 結果（print）と進み具合（log）の順番を、ファイルに書き出したときも崩さない。
@@ -12918,7 +13029,7 @@ def main() -> int:
     #   取り終わっていなければ取得から始める（途中で止まったら、同じ設定でもう一度押す）。
     args.long_test = args.long_lab = args.long_lab2 = args.long_lab3 = args.long_lab4 = args.long_lab5 = False
     args.long_lab6 = args.long_lab7 = args.long_lab8 = args.long_lab9 = args.long_lab10 = args.long_lab11 = False
-    args.long_lab12 = args.long_lab13 = args.long_lab14 = args.long_lab15 = args.long_lab16 = args.long_lab17 = args.long_lab18 = args.long_lab19 = args.long_lab20 = args.long_lab21 = args.long_lab22 = False
+    args.long_lab12 = args.long_lab13 = args.long_lab14 = args.long_lab15 = args.long_lab16 = args.long_lab17 = args.long_lab18 = args.long_lab19 = args.long_lab20 = args.long_lab21 = args.long_lab22 = args.long_lab23 = False
     # 20年分の追加検証（2026年10月19日に追加。計画はプロジェクトの long_lab_plan_2026-10-19）
     #   long_lab  … ルールの候補20個・近い設定6つ・参考2つを、本番と同じ52条件で回す
     #   long_lab2 … 運・偏り・始めた月・業種（20回目と同じ作り方。比べる指数は TOPIX）
@@ -12944,15 +13055,16 @@ def main() -> int:
     #   long_lab20 … 増配の合図は効いているか・R6 に足すと良くなるか・B→S の入れ替え（2026年10月25日に追加。計画は同じ文書の23）
     #   long_lab21 … 順張り（高値を抜けたら買う）のうねり（2026年10月26日に追加。計画は同じ文書の24）
     #   long_lab22 … 下がり過ぎたらナンピン（2026年10月26日に追加。計画は同じ文書の25）
+    #   long_lab23 … ナンピンの程度を分ける（2026年10月26日に追加。計画は同じ文書の26）
     if _mode0 in ("long_lab", "long_lab2", "long_lab3", "long_lab4", "long_lab5", "long_lab6", "long_lab7", "long_lab8",
-                  "long_lab9", "long_lab10", "long_lab11", "long_lab12", "long_lab13", "long_lab14", "long_lab15", "long_lab16", "long_lab17", "long_lab18", "long_lab19", "long_lab20", "long_lab21", "long_lab22"):
+                  "long_lab9", "long_lab10", "long_lab11", "long_lab12", "long_lab13", "long_lab14", "long_lab15", "long_lab16", "long_lab17", "long_lab18", "long_lab19", "long_lab20", "long_lab21", "long_lab22", "long_lab23"):
         (args.long_lab, args.long_lab2, args.long_lab3, args.long_lab4, args.long_lab5, args.long_lab6,
          args.long_lab7, args.long_lab8, args.long_lab9, args.long_lab10, args.long_lab11, args.long_lab12,
-         args.long_lab13, args.long_lab14, args.long_lab15, args.long_lab16, args.long_lab17, args.long_lab18, args.long_lab19, args.long_lab20, args.long_lab21, args.long_lab22) = (
+         args.long_lab13, args.long_lab14, args.long_lab15, args.long_lab16, args.long_lab17, args.long_lab18, args.long_lab19, args.long_lab20, args.long_lab21, args.long_lab22, args.long_lab23) = (
             _mode0 == "long_lab", _mode0 == "long_lab2", _mode0 == "long_lab3", _mode0 == "long_lab4", _mode0 == "long_lab5",
             _mode0 == "long_lab6", _mode0 == "long_lab7", _mode0 == "long_lab8", _mode0 == "long_lab9", _mode0 == "long_lab10",
             _mode0 == "long_lab11", _mode0 == "long_lab12", _mode0 == "long_lab13", _mode0 == "long_lab14",
-            _mode0 == "long_lab15", _mode0 == "long_lab16", _mode0 == "long_lab17", _mode0 == "long_lab18", _mode0 == "long_lab19", _mode0 == "long_lab20", _mode0 == "long_lab21", _mode0 == "long_lab22")
+            _mode0 == "long_lab15", _mode0 == "long_lab16", _mode0 == "long_lab17", _mode0 == "long_lab18", _mode0 == "long_lab19", _mode0 == "long_lab20", _mode0 == "long_lab21", _mode0 == "long_lab22", _mode0 == "long_lab23")
         args.liq_metric, args.grid = True, True
         args.only = ",".join(LAB_RULES if args.long_lab else LAB2_RULES if args.long_lab2
                              else LAB3_RULES if args.long_lab3 else LAB4_RULES if args.long_lab4
@@ -12961,7 +13073,7 @@ def main() -> int:
                              else LAB9_RULES if args.long_lab9 else LAB10_RULES if args.long_lab10
                              else LAB11_RULES if args.long_lab11 else LAB12_RULES if args.long_lab12
                              else LAB13_RULES if args.long_lab13 else LAB14_RULES if args.long_lab14
-                             else LAB15_RULES if args.long_lab15 else LAB16_RULES if args.long_lab16 else LAB17_RULES if args.long_lab17 else LAB18_RULES if args.long_lab18 else LAB19_RULES if args.long_lab19 else LAB20_RULES if args.long_lab20 else LAB21_RULES if args.long_lab21 else LAB22_RULES)
+                             else LAB15_RULES if args.long_lab15 else LAB16_RULES if args.long_lab16 else LAB17_RULES if args.long_lab17 else LAB18_RULES if args.long_lab18 else LAB19_RULES if args.long_lab19 else LAB20_RULES if args.long_lab20 else LAB21_RULES if args.long_lab21 else LAB22_RULES if args.long_lab22 else LAB23_RULES)
         args.universe = "prime"
         args.years = 20
         LONG_MODE = True
@@ -13025,7 +13137,7 @@ def main() -> int:
     args.long_any = bool(args.long_test or args.long_lab or args.long_lab2 or args.long_lab3 or args.long_lab4
                          or args.long_lab5 or args.long_lab6 or args.long_lab7 or args.long_lab8 or args.long_lab9
                          or args.long_lab10 or args.long_lab11 or args.long_lab12 or args.long_lab13 or args.long_lab14
-                         or args.long_lab15 or args.long_lab16 or args.long_lab17 or args.long_lab18 or args.long_lab19 or args.long_lab20 or args.long_lab21 or args.long_lab22)
+                         or args.long_lab15 or args.long_lab16 or args.long_lab17 or args.long_lab18 or args.long_lab19 or args.long_lab20 or args.long_lab21 or args.long_lab22 or args.long_lab23)
     args.long_name = ("long_test" if args.long_test else "long_lab" if args.long_lab
                       else "long_lab2" if args.long_lab2 else "long_lab3" if args.long_lab3
                       else "long_lab4" if args.long_lab4 else "long_lab5" if args.long_lab5
@@ -13034,7 +13146,7 @@ def main() -> int:
                       else "long_lab10" if args.long_lab10 else "long_lab11" if args.long_lab11
                       else "long_lab12" if args.long_lab12 else "long_lab13" if args.long_lab13
                       else "long_lab14" if args.long_lab14 else "long_lab15" if args.long_lab15
-                      else "long_lab16" if args.long_lab16 else "long_lab17" if args.long_lab17 else "long_lab18" if args.long_lab18 else "long_lab19" if args.long_lab19 else "long_lab20" if args.long_lab20 else "long_lab21" if args.long_lab21 else "long_lab22" if args.long_lab22 else "")
+                      else "long_lab16" if args.long_lab16 else "long_lab17" if args.long_lab17 else "long_lab18" if args.long_lab18 else "long_lab19" if args.long_lab19 else "long_lab20" if args.long_lab20 else "long_lab21" if args.long_lab21 else "long_lab22" if args.long_lab22 else "long_lab23" if args.long_lab23 else "")
 
     OUTDIR.mkdir(parents=True, exist_ok=True)
 
@@ -19280,6 +19392,98 @@ def main() -> int:
                 if _ck is not None and _ck_work[0] > 0:
                     save_store(_long_raw, "20年分の追加検証22：計算が済んだ分を保存しました")
                 lab22_report(_F22, _S22, _B22, _st22)
+
+        # ── 20年分の追加検証23（2026年10月26日に追加。計画は long_lab_plan_2026-10-19 の26。手法の採用の判定はしない）──
+        #   ナンピンの程度（E1〜E5）を、本番・X8 と、通し・2つの期間・始めた月（161通り）で比べる
+        if getattr(args, "long_lab23", False) and nm and nm[0] == "live_small1_pit":
+            _skw23 = dict(tier_budget=args.realistic, dividends=args.realistic, slip_bps=args.slip_bps,
+                          fee_bps=args.fee_bps, tax_rate=args.tax / 100.0, min_yield_override=mys[0])
+
+            class _Lab23Stop(Exception):
+                pass
+
+            def _ck23(key_, fn_):
+                if _ck is not None and key_ in _ck["misc"]:
+                    return _ck["misc"][key_]
+                if _long_stop("20年分の追加検証23の途中"):
+                    raise _Lab23Stop
+                v_ = fn_()
+                if _ck is not None:
+                    _ck["misc"][key_] = v_
+                    _ck_work[0] += 1
+                return v_
+
+            if _long_m0 is None:
+                print("\n【20年分の追加検証23】一度も見ていない期間の始まりが決められなかったので、出せません")
+            else:
+                log.info("20年分の追加検証23：直した計算（V3）のパネルを作ります…")
+                _pnF23 = lab16_add_actual(store, lab16_int_share_fix(store, lab16_with_fix(lambda: _panel_for(lbs_[0]))))
+                log.info("  パネル … %d件", len(_pnF23))
+                _d23 = sorted(pd.Timestamp(d) for d in _pnF23["date"].unique())
+                _st23 = [d for d in _d23 if d >= _long_m0 and d + pd.DateOffset(years=LAB14_B_YEARS) <= _d23[-1] + pd.Timedelta(days=3)]
+                _g23 = {"見ていない期間": (_long_m0, pd.Timestamp(LONG_OOS_END)), "最近": (pd.Timestamp(LONG_RECENT_FROM), None)}
+                _px23 = _pnF23.drop_duplicates(["code", "date"], keep="last").set_index(["code", "date"])["price"]
+
+                def _sim23(n_, a_, b_=None):
+                    m_ = _pnF23["date"] >= a_
+                    if b_ is not None:
+                        m_ &= _pnF23["date"] <= b_
+                    return simulate(_pnF23[m_], dict(VARIANTS[n_], **LAB17_V3), args.capital, mxs_[0], ramp=0, **_skw23)
+
+                def _ref23(d_):
+                    """通しでナンピンした回のその後（1年後の値動き・2年のうちに緊急売りになったか）。"""
+                    lg_ = d_.get("nanpin_log", [])
+                    if not lg_:
+                        return {"n": 0}
+                    cuts_ = {}
+                    for c_, t_ in d_.get("cut_exit_dates", []):
+                        cuts_.setdefault(str(c_), []).append(pd.Timestamp(t_))
+                    rets_, cut_ = [], []
+                    for c_, t_, dr_, p_ in lg_:
+                        t_ = pd.Timestamp(t_)
+                        t12_ = (t_ + pd.DateOffset(months=12)) + pd.offsets.MonthEnd(0)
+                        p12_ = _px23.get((c_, t12_))
+                        if p12_ is not None and p12_ == p12_ and float(p12_) > 0 and p_ > 0:
+                            rets_.append(float(p12_) / p_ - 1.0)
+                        cut_.append(any(t_ < x_ <= t_ + pd.DateOffset(months=24) for x_ in cuts_.get(str(c_), [])))
+                    r_ = np.array(rets_, dtype=float)
+                    return {"n": len(lg_), "drop": float(np.mean([x_[2] for x_ in lg_])), "n12": int(len(r_)),
+                            "up": float((r_ > 0).mean()) if len(r_) else float("nan"),
+                            "ret": float(r_.mean()) if len(r_) else float("nan"), "cut": float(np.mean(cut_))}
+
+                def _f23(n_):
+                    r_ = _sim23(n_, _long_m0)
+                    m_ = metrics(r_)
+                    d_ = r_.get("diag") or {}
+                    ds_ = pd.to_datetime(r_["curve"]["date"])
+                    yrs_ = max((ds_.iloc[-1] - ds_.iloc[0]).days / 365.25, 0.5)
+                    return {"清算後年率": m_.get("清算後年率"), "年率": m_.get("年率"), "最大下落": m_.get("最大下落"),
+                            "trades_y": len(r_["trades"]) / yrs_, "nanpin_y": d_.get("nanpin_buys", 0) / yrs_,
+                            "trim_y": d_.get("nanpin_trims", 0) / yrs_, "cash": m_.get("現金比率"), "ref": _ref23(d_)}
+
+                def _s23(n_, a_, b_=None):
+                    m_ = metrics(_sim23(n_, a_, b_))
+                    return {"清算後年率": m_.get("清算後年率"), "年率": m_.get("年率"), "最大下落": m_.get("最大下落")}
+
+                log.info("20年分の追加検証23：通しと2つの期間（%dルール）・始めた月（%d通り × %dルール）を回します", len(LAB23_V), len(_st23), len(LAB23_V))
+                _F23, _S23, _B23 = {}, {}, {}
+                try:
+                    for sym_, n_ in LAB23_V:
+                        _F23[sym_] = _ck23(("F23", sym_), lambda n=n_: _f23(n))
+                        for g_, (a_, b_) in _g23.items():
+                            _S23[(sym_, g_)] = _ck23(("S23", sym_, g_), lambda n=n_, a=a_, b=b_: _s23(n, a, b))
+                    log.info("  通しと2つの期間が完了")
+                    for i_, a_ in enumerate(_st23):
+                        b_ = a_ + pd.DateOffset(years=LAB14_B_YEARS)
+                        for sym_, n_ in LAB23_V:
+                            _B23[(sym_, a_)] = _ck23(("B23", sym_, str(a_.date())), lambda n=n_, a=a_, b=b_: _s23(n, a, b))
+                        if (i_ + 1) % 20 == 0 or i_ + 1 == len(_st23):
+                            log.info("  始めた月 %d/%d 通りが完了", i_ + 1, len(_st23))
+                except _Lab23Stop:
+                    return EXIT_UNFINISHED
+                if _ck is not None and _ck_work[0] > 0:
+                    save_store(_long_raw, "20年分の追加検証23：計算が済んだ分を保存しました")
+                lab23_report(_F23, _S23, _B23, _st23)
 
         if getattr(args, "long_test", False) and nm and nm[0] == "live_small1_pit":
             L0, Lb = VARIANTS["live_small1_pit"]["label"], VARIANTS["live_nobank"]["label"]
