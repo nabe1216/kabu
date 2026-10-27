@@ -2586,6 +2586,15 @@ LAB23_J = tuple([("J1 ナンピン", e_, "本番", "ナンピンした方が良�
 # J3 程度の向き（名前, 並び, 大きくなっていくとき, 小さくなっていくとき, それ以外）
 LAB23_T = (("深さ（10％ → 20％ → 30％下）", ("E1", "E2", "E3"), "深くしてからナンピンするほど良い", "浅いうちにナンピンするほど良い", "深さで差は見えない"),
            ("大きさ（1.25倍 → 1.5倍 → 2倍まで）", ("E4", "E2", "E5"), "大きく足すほど良い", "小さく足すほど良い", "大きさで差は見えない"))
+# ── 20年分の追加検証24（2026年10月27日に追加。計画は long_lab_plan_2026-10-19 の27）──
+#   直した計算（V3）での出し直し。lab10・lab13・lab14 の C・lab15 を、計算だけ V3 に替えて元の回と同じ決まりで回し、
+#   逆張りのうねり（lab12 の W2'・N2'）の通しの17年も出し直す。手法の採用の判定はしない
+#   Summary に出せる長さ（最後の40,000バイト）に収めるため、2つのモードに分ける（作る途中で決めた。回す前）
+#     long_lab24 … 少額（lab13・lab14 の C・lab15） ／ long_lab25 … 市場の地形とうねり（lab10・逆張りのうねりの通し）
+LAB24_RULES = ["live_small1_pit"]
+LAB25_RULES = ["live_small1_pit"]
+LAB24_PARTS = {"long_lab24": ("lab13", "lab14c", "lab15"), "long_lab25": ("lab10", "swing")}
+LAB24_SW = (("本番", "live_small1_pit"), ("W2'", "lab12_w2"), ("N2'", "lab12_n2"))
 
 # 可変ルールの加減点。必要パーセンタイルを下げる＝買いやすくする。
 # 条件を増やすほど過去に合わせただけの数字になりやすいので、3つに絞っています。
@@ -4574,6 +4583,11 @@ DAILY_BOX_SETS = {
 }
 SWING_TOUCH_FRAC = 0.15
 SWING_DAILY = None
+# 20年分の追加検証24（2026年10月27日に追加。計画は long_lab_plan_2026-10-19 の27）：直した計算（V3）での出し直し。
+#   SIM_V3 … None 以外なら、simulate に渡したルールに足りない計算の決まり（int_col・div_actual）を、この値で足す（long_lab24 のときだけ使う）
+#   LAB14_ONLY_C … True なら、long_lab14 の回は C（単元未満株での少額）だけ回して出す（long_lab24 のときだけ使う）
+SIM_V3 = None
+LAB14_ONLY_C = False
 
 
 def box_lines(close: pd.Series, win: int, w_min: float, w_max: float,
@@ -5339,6 +5353,8 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
       gain_exit  … 取得単価から一定率上がったら降りる
       rotate     … 枠が埋まっているとき、もっと良い候補と入れ替える
     """
+    if SIM_V3 is not None:
+        cfg = dict(SIM_V3, **cfg)        # 20年分の追加検証24：ルールに書いてある決まりの方を優先する
     entry, exits = cfg["entry"], cfg.get("exit", [])
     dyn, cross = cfg.get("dynamic", False), cfg.get("cross", False)
     # 3回目の候補（2026年10月11日に追加）
@@ -11381,7 +11397,34 @@ def lab14_nisa_use(trades: pd.DataFrame) -> dict:
     return out
 
 
-def lab14_report(A: dict | None, B: dict, starts: list, C: dict, m_last) -> dict:
+def lab14_report_c(C: dict, m_last) -> None:
+    """long_lab14 の C（単元未満株での少額）の表を出す（lab14_report から分けた。中身は同じ）。"""
+    print(f"\n  C. 単元未満株での少額（2009年6月末〜{pd.Timestamp(m_last).date() if m_last is not None else ''}・1株単位で買う。"
+          f"積立＝毎月{LAB14_ACC / 1e4:.0f}万円 ／ 一括＝{LAB14_LUMP / 1e4:,.0f}万円。NISA は税なし・損出しなし）")
+    print("    始め方・口座・売買 … 入れた額 ／ 最後の評価額 ／ 清算後 ／ 年率 ／ 2025年の配当（税引き後） ／ 配当が前の年より減った年（いちばん減った幅） ／ "
+          "最大下落 ／ 平均の銘柄数 ／ 売買の回数（1年あたり）")
+    for (st_, ac_, cd_), r_ in C.items():
+        if not r_:
+            continue
+        w_ = r_.get("worst")
+        print(f"    {st_}・{ac_}・{cd_} … {r_['paid'] / 1e4:,.0f}万 ／ {r_['value'] / 1e4:,.0f}万 ／ {r_['liq'] / 1e4:,.0f}万 ／ {r_['irr']:.1f}％ ／ "
+              f"{r_['div2025'] / 1e4:,.1f}万 ／ {r_.get('n_down', 0)}回（{(w_ * 100 if w_ is not None else float('nan')):+.1f}％） ／ "
+              f"{r_['dd']:.1f}％ ／ {r_['names']:.1f}銘柄 ／ {r_['trades_y']:.1f}回")
+    print("    （年率＝お金の重みつき（入れた時期と額を考えた）清算後の年率。積立は入れる額が毎月増えるので、配当が減った年が見えにくい。"
+          "最大下落＝毎月入れたお金の影響を除いた値動きの落ち込み。1株単位の売買の費用は100株単位と同じ片道0.1％）")
+    nis_ = [(k_, r_) for k_, r_ in C.items() if r_ and k_[1] == "NISA" and r_.get("nisa")]
+    if nis_:
+        print(f"    NISA の枠（成長投資枠：1年{LAB14_NISA_YEAR / 1e4:,.0f}万円・生涯{LAB14_NISA_LIFE / 1e4:,.0f}万円（簿価））に収まるか。"
+              "売って買い直す分も1年の買いに数える。収まらない年は、実際には特定口座と分けて持つことになる")
+        for (st_, ac_, cd_), r_ in nis_:
+            n_ = r_["nisa"]
+            print(f"      {st_}・{cd_} … 1年の買いのいちばん多い年 {n_['buy_max'] / 1e4:,.0f}万円"
+                  + (f"（{n_['buy_over']}年から枠を超える）" if n_["buy_over"] else "（どの年も枠の中）")
+                  + f" ／ 簿価のいちばん大きい時 {n_['book_max'] / 1e4:,.0f}万円"
+                  + (f"（{n_['book_over']}年から生涯の枠を超える）" if n_["book_over"] else "（生涯の枠の中）"))
+
+
+def lab14_report(A: dict | None, B: dict, starts: list, C: dict, m_last, only_c: bool = False) -> dict:
     """20年分の追加検証14（long_lab14）：配当の検算・R6 をいつ始めても効くか・単元未満株での少額。2026年10月24日に追加。
     基準は結果を見る前に決めたもの（プロジェクトの long_lab_plan_2026-10-19 の17）。手法の採用の判定はしない。
       A 12年（2014〜2025年）すべてで差が±5％以内 →「計算は正しい」 ／ ±10％を超える年がある →「計算を直す必要がある」 ／ それ以外 →「おおむね正しい」
@@ -11389,6 +11432,13 @@ def lab14_report(A: dict | None, B: dict, starts: list, C: dict, m_last) -> dict
         どちらかの期間で50％以下（どちらかの年率で）→「始める時期しだい」 ／ それ以外 →「おおむね効く」
       C 判定しない"""
     out = {"A": "—", "B": {}}
+    if only_c:
+        # 20年分の追加検証24：C（単元未満株での少額）だけを出す
+        print("\n【20年分の追加検証14 の C：単元未満株での少額】（元の計画はプロジェクトの long_lab_plan_2026-10-19 の17。判定しない）")
+        print("  元の予想 … 毎月3万円の積立が清算後2,800〜3,600万円、2025年の配当は年40〜60万円（税引き後）。R6 と X8 は本番より少し良く、"
+              "NISA は特定口座より年率で1〜2pt高い")
+        lab14_report_c(C, m_last)
+        return out
     print("\n【20年分の追加検証14：配当の検算・R6 をいつ始めても効くか・単元未満株での少額】（基準は結果を見る前に決めたもの。"
           "計画はプロジェクトの long_lab_plan_2026-10-19 の17。手法の採用の判定はしない）")
     print("  予想 … A は「おおむね正しい」（ずれの多くは予想と実際の差と特別配当）。公式の配当で数え直しても減った年は2〜3回。"
@@ -11491,29 +11541,7 @@ def lab14_report(A: dict | None, B: dict, starts: list, C: dict, m_last) -> dict
               "どちらかで50％以下＝始める時期しだい ／ それ以外＝おおむね効く）")
 
     # C 単元未満株での少額
-    print(f"\n  C. 単元未満株での少額（2009年6月末〜{pd.Timestamp(m_last).date() if m_last is not None else ''}・1株単位で買う。"
-          f"積立＝毎月{LAB14_ACC / 1e4:.0f}万円 ／ 一括＝{LAB14_LUMP / 1e4:,.0f}万円。NISA は税なし・損出しなし）")
-    print("    始め方・口座・売買 … 入れた額 ／ 最後の評価額 ／ 清算後 ／ 年率 ／ 2025年の配当（税引き後） ／ 配当が前の年より減った年（いちばん減った幅） ／ "
-          "最大下落 ／ 平均の銘柄数 ／ 売買の回数（1年あたり）")
-    for (st_, ac_, cd_), r_ in C.items():
-        if not r_:
-            continue
-        w_ = r_.get("worst")
-        print(f"    {st_}・{ac_}・{cd_} … {r_['paid'] / 1e4:,.0f}万 ／ {r_['value'] / 1e4:,.0f}万 ／ {r_['liq'] / 1e4:,.0f}万 ／ {r_['irr']:.1f}％ ／ "
-              f"{r_['div2025'] / 1e4:,.1f}万 ／ {r_.get('n_down', 0)}回（{(w_ * 100 if w_ is not None else float('nan')):+.1f}％） ／ "
-              f"{r_['dd']:.1f}％ ／ {r_['names']:.1f}銘柄 ／ {r_['trades_y']:.1f}回")
-    print("    （年率＝お金の重みつき（入れた時期と額を考えた）清算後の年率。積立は入れる額が毎月増えるので、配当が減った年が見えにくい。"
-          "最大下落＝毎月入れたお金の影響を除いた値動きの落ち込み。1株単位の売買の費用は100株単位と同じ片道0.1％）")
-    nis_ = [(k_, r_) for k_, r_ in C.items() if r_ and k_[1] == "NISA" and r_.get("nisa")]
-    if nis_:
-        print(f"    NISA の枠（成長投資枠：1年{LAB14_NISA_YEAR / 1e4:,.0f}万円・生涯{LAB14_NISA_LIFE / 1e4:,.0f}万円（簿価））に収まるか。"
-              "売って買い直す分も1年の買いに数える。収まらない年は、実際には特定口座と分けて持つことになる")
-        for (st_, ac_, cd_), r_ in nis_:
-            n_ = r_["nisa"]
-            print(f"      {st_}・{cd_} … 1年の買いのいちばん多い年 {n_['buy_max'] / 1e4:,.0f}万円"
-                  + (f"（{n_['buy_over']}年から枠を超える）" if n_["buy_over"] else "（どの年も枠の中）")
-                  + f" ／ 簿価のいちばん大きい時 {n_['book_max'] / 1e4:,.0f}万円"
-                  + (f"（{n_['book_over']}年から生涯の枠を超える）" if n_["book_over"] else "（生涯の枠の中）"))
+    lab14_report_c(C, m_last)
 
     # まとめ
     print("\n  まとめ（結果を見る前に決めた基準）")
@@ -12871,6 +12899,56 @@ def lab23_report(F: dict, S: dict, B: dict, starts: list) -> dict:
     return out
 
 
+def lab24_capture(fn, buf: list):
+    """20年分の追加検証24：表を出す関数を包み、出した文字を buf にためる（表は最後にまとめて出す。中身は元の関数と同じ）。"""
+    import contextlib
+    import io as _io
+
+    def _w(*a, **k):
+        b_ = _io.StringIO()
+        with contextlib.redirect_stdout(b_):
+            r_ = fn(*a, **k)
+        buf.append(b_.getvalue())
+        return r_
+    return _w
+
+
+def lab24_report(buf: list, S: dict, etf0, mode: str = "long_lab24") -> None:
+    """20年分の追加検証24（long_lab24）：直した計算（V3）での出し直し。2026年10月27日に追加。
+    基準は結果を見る前に決めたもの（プロジェクトの long_lab_plan_2026-10-19 の27）。V0 との比べは、元の回の結果の文書と並べて行う。"""
+    sub_ = "少額（lab13・lab14 の C・lab15）" if mode == "long_lab24" else "市場の地形とうねり（lab10・逆張りのうねりの通し）"
+    print(f"\n【20年分の追加検証24：直した計算（V3）での出し直し・{sub_}】（基準は結果を見る前に決めたもの。計画はプロジェクトの long_lab_plan_2026-10-19 の27。"
+          "手法の採用の判定はしない）")
+    print("  中身 … 下の各回の表は、計算だけ V3（分割・併合の基準のずれを直し、中間と期末の割合を直し、受け取る額を実績にする）に替えて、"
+          "元の回と同じ決まり・同じ形で回したもの。表の中の「予想」は元の回のもの")
+    print("  予想（この回） … 判定はどれも変わらない（「数字だけ変わった」）。少額の積立・一括の最後の金額は V0 より少し多い（1〜5％）。"
+          "利回りの高さごとの並びは変わらない")
+    for t_ in buf:
+        print(t_, end="" if t_.endswith("\n") else "\n")
+    if not S:
+        print("\n  まとめ … この回の判定（「判定が変わった」か「数字だけ変わった」か）は、元の回の結果の文書（いまの計算 V0）と並べて決める")
+        return
+    print("\n【20年分の追加検証24：逆張りのうねりの通し（lab12 の W2'・N2'。公平な約定・V3）】（でたらめな日との比べは回していない）")
+    print("    " + f"{'':<6}{'清算後年率':>8}{'最大下落':>8}{'最後（清算後）':>10}{'売却益/年':>8}{'配当/年':>8}{'現金':>6}{'うねり売り/年':>10}{'勝ち':>6}")
+    for sym_, _ in LAB24_SW:
+        r_ = S.get(sym_)
+        if not r_:
+            continue
+        yrs_ = max(float(r_.get("years") or 0.0), 0.5)
+        lq_ = r_.get("liq")
+        cs_ = r_.get("現金比率")
+        print("    " + f"{sym_:<6}{r_['清算後年率']:>9.1f}％{r_['最大下落']:>8.1f}％"
+              + (f"{lq_ / 1e4:>11,.0f}万円" if lq_ else f"{'—':>13}")
+              + f"{r_['売却益'] / r_['capital'] / yrs_ * 100:>+8.1f}％{r_['配当'] / r_['capital'] / yrs_ * 100:>8.1f}％"
+              + (f"{cs_:>5.0f}％" if cs_ is not None and cs_ == cs_ else f"{'—':>6}")
+              + (f"{r_['sells'] / yrs_:>11.1f}回{r_['win'] * 100:>5.0f}％" if r_.get("n_ex") else f"{'—':>12}{'—':>6}"))
+    if etf0:
+        print("    " + f"{'TOPIX':<6}{float(etf0['清算後年率']):>9.1f}％{float(etf0['最大下落']):>8.1f}％"
+              + (f"{float(etf0['liq_value']) / 1e4:>11,.0f}万円" if etf0.get("liq_value") else ""))
+    print("    （売却益・配当は元本1,000万円に対する1年あたり（売却益は税引き前・損を差し引いたあと）。勝ち＝うねりで売った回のうち益が出た割合）")
+    print("\n  まとめ … この回の判定（「判定が変わった」か「数字だけ変わった」か）は、元の回の結果の文書（いまの計算 V0）と並べて決める")
+
+
 def main() -> int:
     global LONG_MODE, CACHE, PIT_FROM, COMPUTE_START_LIMIT_MIN
     # 結果（print）と進み具合（log）の順番を、ファイルに書き出したときも崩さない。
@@ -13029,7 +13107,7 @@ def main() -> int:
     #   取り終わっていなければ取得から始める（途中で止まったら、同じ設定でもう一度押す）。
     args.long_test = args.long_lab = args.long_lab2 = args.long_lab3 = args.long_lab4 = args.long_lab5 = False
     args.long_lab6 = args.long_lab7 = args.long_lab8 = args.long_lab9 = args.long_lab10 = args.long_lab11 = False
-    args.long_lab12 = args.long_lab13 = args.long_lab14 = args.long_lab15 = args.long_lab16 = args.long_lab17 = args.long_lab18 = args.long_lab19 = args.long_lab20 = args.long_lab21 = args.long_lab22 = args.long_lab23 = False
+    args.long_lab12 = args.long_lab13 = args.long_lab14 = args.long_lab15 = args.long_lab16 = args.long_lab17 = args.long_lab18 = args.long_lab19 = args.long_lab20 = args.long_lab21 = args.long_lab22 = args.long_lab23 = args.long_lab24 = args.long_lab25 = False
     # 20年分の追加検証（2026年10月19日に追加。計画はプロジェクトの long_lab_plan_2026-10-19）
     #   long_lab  … ルールの候補20個・近い設定6つ・参考2つを、本番と同じ52条件で回す
     #   long_lab2 … 運・偏り・始めた月・業種（20回目と同じ作り方。比べる指数は TOPIX）
@@ -13056,15 +13134,17 @@ def main() -> int:
     #   long_lab21 … 順張り（高値を抜けたら買う）のうねり（2026年10月26日に追加。計画は同じ文書の24）
     #   long_lab22 … 下がり過ぎたらナンピン（2026年10月26日に追加。計画は同じ文書の25）
     #   long_lab23 … ナンピンの程度を分ける（2026年10月26日に追加。計画は同じ文書の26）
+    #   long_lab24 … 直した計算（V3）での出し直し・少額（2026年10月27日に追加。計画は同じ文書の27）
+    #   long_lab25 … 直した計算（V3）での出し直し・市場の地形とうねり（2026年10月27日に追加。計画は同じ文書の27）
     if _mode0 in ("long_lab", "long_lab2", "long_lab3", "long_lab4", "long_lab5", "long_lab6", "long_lab7", "long_lab8",
-                  "long_lab9", "long_lab10", "long_lab11", "long_lab12", "long_lab13", "long_lab14", "long_lab15", "long_lab16", "long_lab17", "long_lab18", "long_lab19", "long_lab20", "long_lab21", "long_lab22", "long_lab23"):
+                  "long_lab9", "long_lab10", "long_lab11", "long_lab12", "long_lab13", "long_lab14", "long_lab15", "long_lab16", "long_lab17", "long_lab18", "long_lab19", "long_lab20", "long_lab21", "long_lab22", "long_lab23", "long_lab24", "long_lab25"):
         (args.long_lab, args.long_lab2, args.long_lab3, args.long_lab4, args.long_lab5, args.long_lab6,
          args.long_lab7, args.long_lab8, args.long_lab9, args.long_lab10, args.long_lab11, args.long_lab12,
-         args.long_lab13, args.long_lab14, args.long_lab15, args.long_lab16, args.long_lab17, args.long_lab18, args.long_lab19, args.long_lab20, args.long_lab21, args.long_lab22, args.long_lab23) = (
+         args.long_lab13, args.long_lab14, args.long_lab15, args.long_lab16, args.long_lab17, args.long_lab18, args.long_lab19, args.long_lab20, args.long_lab21, args.long_lab22, args.long_lab23, args.long_lab24, args.long_lab25) = (
             _mode0 == "long_lab", _mode0 == "long_lab2", _mode0 == "long_lab3", _mode0 == "long_lab4", _mode0 == "long_lab5",
             _mode0 == "long_lab6", _mode0 == "long_lab7", _mode0 == "long_lab8", _mode0 == "long_lab9", _mode0 == "long_lab10",
             _mode0 == "long_lab11", _mode0 == "long_lab12", _mode0 == "long_lab13", _mode0 == "long_lab14",
-            _mode0 == "long_lab15", _mode0 == "long_lab16", _mode0 == "long_lab17", _mode0 == "long_lab18", _mode0 == "long_lab19", _mode0 == "long_lab20", _mode0 == "long_lab21", _mode0 == "long_lab22", _mode0 == "long_lab23")
+            _mode0 == "long_lab15", _mode0 == "long_lab16", _mode0 == "long_lab17", _mode0 == "long_lab18", _mode0 == "long_lab19", _mode0 == "long_lab20", _mode0 == "long_lab21", _mode0 == "long_lab22", _mode0 == "long_lab23", _mode0 == "long_lab24", _mode0 == "long_lab25")
         args.liq_metric, args.grid = True, True
         args.only = ",".join(LAB_RULES if args.long_lab else LAB2_RULES if args.long_lab2
                              else LAB3_RULES if args.long_lab3 else LAB4_RULES if args.long_lab4
@@ -13073,7 +13153,7 @@ def main() -> int:
                              else LAB9_RULES if args.long_lab9 else LAB10_RULES if args.long_lab10
                              else LAB11_RULES if args.long_lab11 else LAB12_RULES if args.long_lab12
                              else LAB13_RULES if args.long_lab13 else LAB14_RULES if args.long_lab14
-                             else LAB15_RULES if args.long_lab15 else LAB16_RULES if args.long_lab16 else LAB17_RULES if args.long_lab17 else LAB18_RULES if args.long_lab18 else LAB19_RULES if args.long_lab19 else LAB20_RULES if args.long_lab20 else LAB21_RULES if args.long_lab21 else LAB22_RULES if args.long_lab22 else LAB23_RULES)
+                             else LAB15_RULES if args.long_lab15 else LAB16_RULES if args.long_lab16 else LAB17_RULES if args.long_lab17 else LAB18_RULES if args.long_lab18 else LAB19_RULES if args.long_lab19 else LAB20_RULES if args.long_lab20 else LAB21_RULES if args.long_lab21 else LAB22_RULES if args.long_lab22 else LAB23_RULES if args.long_lab23 else LAB24_RULES if args.long_lab24 else LAB25_RULES)
         args.universe = "prime"
         args.years = 20
         LONG_MODE = True
@@ -13137,7 +13217,7 @@ def main() -> int:
     args.long_any = bool(args.long_test or args.long_lab or args.long_lab2 or args.long_lab3 or args.long_lab4
                          or args.long_lab5 or args.long_lab6 or args.long_lab7 or args.long_lab8 or args.long_lab9
                          or args.long_lab10 or args.long_lab11 or args.long_lab12 or args.long_lab13 or args.long_lab14
-                         or args.long_lab15 or args.long_lab16 or args.long_lab17 or args.long_lab18 or args.long_lab19 or args.long_lab20 or args.long_lab21 or args.long_lab22 or args.long_lab23)
+                         or args.long_lab15 or args.long_lab16 or args.long_lab17 or args.long_lab18 or args.long_lab19 or args.long_lab20 or args.long_lab21 or args.long_lab22 or args.long_lab23 or args.long_lab24 or args.long_lab25)
     args.long_name = ("long_test" if args.long_test else "long_lab" if args.long_lab
                       else "long_lab2" if args.long_lab2 else "long_lab3" if args.long_lab3
                       else "long_lab4" if args.long_lab4 else "long_lab5" if args.long_lab5
@@ -13146,7 +13226,7 @@ def main() -> int:
                       else "long_lab10" if args.long_lab10 else "long_lab11" if args.long_lab11
                       else "long_lab12" if args.long_lab12 else "long_lab13" if args.long_lab13
                       else "long_lab14" if args.long_lab14 else "long_lab15" if args.long_lab15
-                      else "long_lab16" if args.long_lab16 else "long_lab17" if args.long_lab17 else "long_lab18" if args.long_lab18 else "long_lab19" if args.long_lab19 else "long_lab20" if args.long_lab20 else "long_lab21" if args.long_lab21 else "long_lab22" if args.long_lab22 else "long_lab23" if args.long_lab23 else "")
+                      else "long_lab16" if args.long_lab16 else "long_lab17" if args.long_lab17 else "long_lab18" if args.long_lab18 else "long_lab19" if args.long_lab19 else "long_lab20" if args.long_lab20 else "long_lab21" if args.long_lab21 else "long_lab22" if args.long_lab22 else "long_lab23" if args.long_lab23 else "long_lab24" if args.long_lab24 else "long_lab25" if args.long_lab25 else "")
 
     OUTDIR.mkdir(parents=True, exist_ok=True)
 
@@ -13437,7 +13517,9 @@ def main() -> int:
                       | ({VARIANTS[n_]["swing_daily"]["tag"] for _, a_, b_, _ in LAB12_SW for n_ in (a_, b_)}
                          if getattr(args, "long_lab12", False) else set())
                       | ({VARIANTS[n_]["swing_daily"]["tag"] for _, n_, _ in LAB21_V}
-                         if getattr(args, "long_lab21", False) else set()))
+                         if getattr(args, "long_lab21", False) else set())
+                      | ({VARIANTS[n_]["swing_daily"]["tag"] for _, n_ in LAB24_SW if VARIANTS[n_].get("swing_daily")}
+                         if getattr(args, "long_lab25", False) else set()))
     if _sw_tags:
         log.info("うねりを日ごとに売り買いするルールがあるので、日々の上の線・下の線を用意します…")
         SWING_DAILY = build_swing_daily(store, _sw_tags)
@@ -18081,6 +18163,28 @@ def main() -> int:
 
         # ── 20年分の追加検証10（2026年10月22日に追加。計画は long_lab_plan_2026-10-19 の13。手法の判定はしない）──
         #   翌1年の成績（パネルから）・減配の割合・暴落の場面（TOPIX・範囲全体・本番の日ごとの値）
+        # ── 20年分の追加検証24（2026年10月27日に追加。計画は long_lab_plan_2026-10-19 の27。手法の採用の判定はしない）──
+        #   準備：パネルを直した計算（V3）のものに替え、simulate に V3 の決まりを足すようにしてから、
+        #   lab10・lab13・lab14 の C・lab15 の回を、元のまま（同じ決まり・同じ形）で回す。各回の表は最後にまとめて出す
+        _L24_BUF = None
+        _L24_PARTS = LAB24_PARTS.get(getattr(args, "long_name", ""), ())
+        if _L24_PARTS and nm and nm[0] == "live_small1_pit":
+            if _long_m0 is None:
+                print("\n【20年分の追加検証24】一度も見ていない期間の始まりが決められなかったので、出せません")
+            else:
+                log.info("20年分の追加検証24：直した計算（V3）のパネルを作ります…")
+                panels[lbs_[0]] = lab16_add_actual(store, lab16_int_share_fix(store, lab16_with_fix(lambda: _panel_for(lbs_[0]))))
+                log.info("  パネル … %d件", len(panels[lbs_[0]]))
+                globals()["SIM_V3"] = dict(LAB17_V3)
+                globals()["LAB14_ONLY_C"] = "lab14c" in _L24_PARTS
+                _L24_BUF = []
+                for _fn24 in ("lab10_report", "lab13_report", "lab14_report", "lab15_report"):
+                    globals()[_fn24] = lab24_capture(globals()[_fn24], _L24_BUF)
+                args.long_lab10 = "lab10" in _L24_PARTS
+                args.long_lab13 = "lab13" in _L24_PARTS
+                args.long_lab14 = "lab14c" in _L24_PARTS
+                args.long_lab15 = "lab15" in _L24_PARTS
+
         if getattr(args, "long_lab10", False) and nm and nm[0] == "live_small1_pit":
             _pn = panels[lbs_[0]]
             _skw = dict(tier_budget=args.realistic, dividends=args.realistic, slip_bps=args.slip_bps,
@@ -18409,7 +18513,8 @@ def main() -> int:
             _K14, _B14, _C14 = {}, {}, {}
             try:
                 if _long_m0 is not None:
-                    _K14["A"] = _ck14(("K14", "A"), _a_run14)
+                    if not LAB14_ONLY_C:
+                        _K14["A"] = _ck14(("K14", "A"), _a_run14)
                     _nm14 = int(_subf14["date"].nunique())
                     for st_, cap_, rp_ in (("積立", LAB14_ACC * _nm14, _nm14), ("一括", LAB14_LUMP, 0)):
                         for ac_, tx_ in (("特定", args.tax / 100.0), ("NISA", 0.0)):
@@ -18419,7 +18524,7 @@ def main() -> int:
                                 _C14[(st_, ac_, cd_)] = _ck14(("C14", st_, ac_, cd_),
                                                               lambda n=n_, c=cap_, r=rp_, t=tx_: _c_run14(n, c, r, t))
                     log.info("  本番の通し・単元未満株 %d 通りが完了", len(_C14))
-                for i_, a_ in enumerate(_starts14):
+                for i_, a_ in enumerate([] if LAB14_ONLY_C else _starts14):
                     for n_ in _bn14:
                         _B14[(n_, a_)] = _ck14(("B14", n_, str(a_.date())), lambda a=a_, n=n_: _b_run14(a, n))
                     if (i_ + 1) % 40 == 0 or i_ + 1 == len(_starts14):
@@ -18497,7 +18602,7 @@ def main() -> int:
                             "noex": _off14["noex"], "cover": _cov14}
                 else:
                     _A14 = {"official": False, "note": _note14}
-            lab14_report(_A14, _B14, _starts14, _C14, _ds14[-1] if _ds14 else None)
+            lab14_report(_A14, _B14, _starts14, _C14, _ds14[-1] if _ds14 else None, only_c=LAB14_ONLY_C)
 
         # ── 20年分の追加検証15（2026年10月24日に追加。計画は long_lab_plan_2026-10-19 の18。手法の採用の判定はしない）──
         #   2018年10月末から、実際の100株（分割を調整する前の株価 × 100株）で、一括4通り・積立3通り × 買い方・売買の要素・口座
@@ -18579,6 +18684,47 @@ def main() -> int:
             if _ck is not None and _ck_work[0] > 0:
                 save_store(_long_raw, "20年分の追加検証15：計算が済んだ分を保存しました")
             lab15_report(_R15, _sub15["date"].min(), _sub15["date"].max(), _li15)
+
+        # ── 20年分の追加検証24：逆張りのうねりの通し（V3）と、まとめて表を出す ──
+        if _L24_BUF is not None:
+            _pn24 = panels[lbs_[0]]
+            _skw24 = dict(tier_budget=args.realistic, dividends=args.realistic, slip_bps=args.slip_bps,
+                          fee_bps=args.fee_bps, tax_rate=args.tax / 100.0, min_yield_override=mys[0])
+            _kwe24 = dict(tax_rate=args.tax / 100.0, slip_bps=args.slip_bps, fee_bps=args.fee_bps)
+
+            def _sw24(n_):
+                r_ = simulate(_pn24[_pn24["date"] >= _long_m0], VARIANTS[n_], args.capital, mxs_[0], ramp=0, **_skw24)
+                m_ = metrics(r_)
+                d_ = r_.get("diag", {})
+                ds_ = pd.to_datetime(r_["curve"]["date"])
+                g_ = np.array([float(x_[3]) for x_ in d_.get("sw_exits", [])], dtype=float)
+                g_ = g_[np.isfinite(g_)]
+                return {"清算後年率": m_.get("清算後年率"), "最大下落": m_.get("最大下落"), "売却益": m_.get("売却益", 0.0),
+                        "配当": m_.get("配当", 0.0), "現金比率": m_.get("現金比率"), "liq": r_.get("liq_value"),
+                        "years": float((ds_.iloc[-1] - ds_.iloc[0]).days / 365.25) if len(ds_) > 1 else 0.0,
+                        "sells": int(d_.get("range_sells", 0)), "n_ex": int(len(g_)), "win": float((g_ > 0).mean()) if len(g_) else float("nan"),
+                        "capital": float(r_["capital"])}
+            _S24 = {}
+            for sym_, n_ in (LAB24_SW if "swing" in _L24_PARTS else ()):
+                _k24 = ("C24", sym_)
+                if _ck is not None and _k24 in _ck["misc"]:
+                    _S24[sym_] = _ck["misc"][_k24]
+                    continue
+                if _long_stop("20年分の追加検証24の途中"):
+                    return EXIT_UNFINISHED
+                _S24[sym_] = _sw24(n_)
+                if _ck is not None:
+                    _ck["misc"][_k24] = _S24[sym_]
+                    _ck_work[0] += 1
+            if _ck is not None and _ck_work[0] > 0:
+                save_store(_long_raw, "20年分の追加検証24：計算が済んだ分を保存しました")
+            _e24 = None
+            if "swing" in _L24_PARTS:
+                _ex24, _, _ = etf_ready(_etf_px, store["quotes"], _pn24["date"].min())
+                _tp24 = _ex24.get("1306")
+                _e24 = (etf_hold(_tp24, sorted(_pn24[_pn24["date"] >= _long_m0]["date"].unique()), args.capital, 0,
+                                 dist=ETF_DIST["1306"], **_kwe24) if _tp24 is not None else None)
+            lab24_report(_L24_BUF, _S24, _e24, args.long_name)
 
         # ── 20年分の追加検証16（2026年10月24日に追加。計画は long_lab_plan_2026-10-19 の19。手法の採用の判定はしない）──
         #   A 配当の計算の直し方（V0〜V3） ／ B 分割・併合の読み違いの大きさと成績への影響 ／ C 積立の買い方 ／ D 直した計算での配当の推移
