@@ -14069,6 +14069,250 @@ def rev2_report(R, ST, MS, verdict, v6, d6, dd6, vm, v1, corr, dates, ev_dates, 
           + " ／ 分けて持つ相手の候補（C7・C8 で TOPIX より良く、本番との相関が0.6未満） … " + ("・".join(pair) if pair else "なし"))
 
 
+# ── 別手法の検証4（etf_lab1。2026年11月4日に追加。計画はプロジェクトの etf_lab_plan_2026-11-04）──
+#   本番に、日本株と動きの違う資産（東証の ETF）を決まった比率で足す。毎月末に比率へ戻す。
+#   今までのモードには何も足さない（「比較するルール」が etf_lab1 のときだけ動く）。
+#   株価は J-Quants（分割を調整した終値）。分配金は J-Quants にないので、野村アセットマネジメント NEXT FUNDS の各ETFのページ
+#   （nextfunds.jp/lineup/<コード>/ の分配金情報。100口あたり・いまの口数の基準）から写した（2026年11月4日）。
+#   金（1328・1540）は分配金がない。
+ETF_LAB = (("2513", "外国株"), ("2511", "外国債券"), ("2510", "国内債券"), ("1328", "金"), ("1343", "J-REIT"),
+           ("2514", "外国株・ヘッジあり"), ("2512", "外国債券・ヘッジあり"), ("1540", "金（確かめ用）"))
+ETF_LAB_MAIN = ("2513", "2511", "2510", "1328", "1343")
+ETF_LAB_DIST = {
+    "2513": (("2018-03-07", 140), ("2018-09-07", 980), ("2019-03-07", 800), ("2019-09-07", 730), ("2020-03-07", 550), ("2020-09-07", 590),
+             ("2021-03-07", 470), ("2021-09-07", 880), ("2022-03-07", 710), ("2022-09-07", 1430), ("2023-03-07", 1090), ("2023-09-07", 1790),
+             ("2024-03-07", 1340), ("2024-09-07", 1910), ("2025-03-07", 1320), ("2025-09-07", 2070), ("2026-03-07", 1300), ("2026-09-07", 2000)),
+    "2514": (("2018-03-07", 0), ("2018-09-07", 1040), ("2019-03-07", 830), ("2019-09-07", 420), ("2020-03-07", 410), ("2020-09-07", 470),
+             ("2021-03-07", 790), ("2021-09-07", 2290), ("2022-03-07", 650), ("2022-09-07", 1020), ("2023-03-07", 650), ("2023-09-07", 1740),
+             ("2024-03-07", 1190), ("2024-09-07", 1450), ("2025-03-07", 780), ("2025-09-07", 1370), ("2026-03-07", 800), ("2026-09-07", 1000)),
+    "2511": (("2018-03-07", 390), ("2018-09-07", 1270), ("2019-03-07", 1200), ("2019-09-07", 690), ("2020-03-07", 930), ("2020-09-07", 1150),
+             ("2021-03-07", 900), ("2021-09-07", 1140), ("2022-03-07", 1140), ("2022-09-07", 1360), ("2023-03-07", 1450), ("2023-09-07", 1610),
+             ("2024-03-07", 1560), ("2024-09-07", 1510), ("2025-03-07", 1340), ("2025-09-07", 1580), ("2026-03-07", 1810), ("2026-09-07", 1930)),
+    "2512": (("2018-03-07", 320), ("2018-09-07", 710), ("2019-03-07", 910), ("2019-09-07", 580), ("2020-03-07", 730), ("2020-09-07", 550),
+             ("2021-03-07", 490), ("2021-09-07", 580), ("2022-03-07", 590), ("2022-09-07", 640), ("2023-03-07", 730), ("2023-09-07", 870),
+             ("2024-03-07", 920), ("2024-09-07", 820), ("2025-03-07", 830), ("2025-09-07", 1010), ("2026-03-07", 1100), ("2026-09-07", 990)),
+    "2510": (("2018-03-07", 0), ("2018-09-07", 210), ("2019-03-07", 230), ("2019-09-07", 350), ("2020-03-07", 340), ("2020-09-07", 260),
+             ("2021-03-07", 160), ("2021-09-07", 220), ("2022-03-07", 260), ("2022-09-07", 260), ("2023-03-07", 270), ("2023-09-07", 300),
+             ("2024-03-07", 150), ("2024-09-07", 340), ("2025-03-07", 330), ("2025-09-07", 370), ("2026-03-07", 370), ("2026-09-07", 430)),
+    "1343": (("2009-02-10", 540), ("2009-05-10", 1160), ("2009-08-10", 1220), ("2009-11-10", 1560), ("2010-02-10", 1550), ("2010-05-10", 1630),
+             ("2010-08-10", 1080), ("2010-11-10", 920), ("2011-02-10", 1250), ("2011-05-10", 1180), ("2011-08-10", 1250), ("2011-11-10", 1020),
+             ("2012-02-10", 920), ("2012-05-10", 850), ("2012-08-10", 950), ("2012-11-10", 1060), ("2013-02-10", 930), ("2013-05-10", 1870),
+             ("2013-08-10", 1120), ("2013-11-10", 1050), ("2014-02-10", 1310), ("2014-05-10", 1100), ("2014-08-10", 1400), ("2014-11-10", 1200),
+             ("2015-02-10", 1320), ("2015-05-10", 1250), ("2015-08-10", 1330), ("2015-11-10", 1280), ("2016-02-10", 1500), ("2016-05-10", 1350),
+             ("2016-08-10", 1310), ("2016-11-10", 1300), ("2017-02-10", 1640), ("2017-05-10", 1500), ("2017-08-10", 1430), ("2017-11-10", 1580),
+             ("2018-02-10", 1730), ("2018-05-10", 1590), ("2018-08-10", 1570), ("2018-11-10", 1640), ("2019-02-10", 1880), ("2019-05-10", 1740),
+             ("2019-08-10", 1610), ("2019-11-10", 1650), ("2020-02-10", 1920), ("2020-05-10", 1810), ("2020-08-10", 1710), ("2020-11-10", 1880),
+             ("2021-02-10", 1660), ("2021-05-10", 1900), ("2021-08-10", 1610), ("2021-11-10", 1880), ("2022-02-10", 1630), ("2022-05-10", 1950),
+             ("2022-08-10", 1720), ("2022-11-10", 1880), ("2023-02-10", 1790), ("2023-05-10", 1960), ("2023-08-10", 1830), ("2023-11-10", 1920),
+             ("2024-02-10", 2020), ("2024-05-10", 2190), ("2024-08-10", 1890), ("2024-11-10", 2190), ("2025-02-10", 2130), ("2025-05-10", 2330),
+             ("2025-08-10", 1990), ("2025-11-10", 2310), ("2026-02-10", 2550), ("2026-05-10", 2370), ("2026-08-10", 2060)),
+}
+# 分配金の確かめ：ページの「基準価額（分配金再投資）÷ 基準価額」（2026年11月2日）。上場から全部の分配金を再投資した効き目
+ETF_LAB_TR = {"2513": 1.11667, "2514": 1.12620, "2511": 1.24764, "2512": 1.16867, "2510": 1.05361}
+ETF_LAB_MIX = (("P0", "本番だけ", {"C1": 1.0}),
+               ("P1", "金を足す", {"C1": 0.8, "1328": 0.2}),
+               ("P2", "外国株を足す", {"C1": 0.7, "2513": 0.3}),
+               ("P3", "債券を足す", {"C1": 0.7, "2511": 0.15, "2510": 0.15}),
+               ("P4", "広く分ける", {"C1": 0.5, "2513": 0.2, "2511": 0.1, "2510": 0.1, "1328": 0.1}))
+ETF_LAB_RV = 0.10      # 値動きの割（年率 ÷ ばらつき）の差の基準
+ETF_LAB_DD = 5.0       # 通しの最大下落が、これ以上浅いこと
+ETF_LAB_JUMP = 0.25    # 1日の値動きがこれを超えたら、分割の調整漏れを疑う
+ETF_LAB_TR_TOL = 0.01  # 分配金の確かめの許容（1％）
+
+
+def etf_month_tr(px: pd.Series, dist, dates) -> pd.Series:
+    """月末ごとの、分配金込みの1か月の成績（j 番目の値は、j−1 番目の月末から j 番目の月末まで）。
+    分配金は100口あたりなので1口に直し、決算日がその月の中にあるものを足す（決算日は7日・10日なので、権利落ちも同じ月）。
+    株価がまだない月は空のまま。"""
+    tr = pd.Series(np.nan, index=pd.DatetimeIndex(dates))
+    if px.empty:
+        return tr
+    m = px.reindex(pd.DatetimeIndex(dates), method="ffill")
+    first = px.index.min()
+    dl = [(pd.Timestamp(d_), float(a_) / 100.0) for d_, a_ in (dist or ())]
+    for j in range(1, len(dates)):
+        d0, d1 = pd.Timestamp(dates[j - 1]), pd.Timestamp(dates[j])
+        p0, p1 = float(m.iloc[j - 1]), float(m.iloc[j])
+        if d0 < first or not (p0 > 0 and p1 > 0):
+            continue
+        dd = sum(a_ for d_, a_ in dl if d0 < d_ <= d1)
+        tr.iloc[j] = (p1 + dd) / p0 - 1.0
+    return tr
+
+
+def etf_dist_factor(px: pd.Series, dist) -> tuple[float, int]:
+    """上場から全部の分配金を、決算日の終値で再投資したときの効き目（積）と、使った分配金の数。"""
+    f, n = 1.0, 0
+    if px.empty:
+        return float("nan"), 0
+    for d_s, a_ in dist or ():
+        d_ = pd.Timestamp(d_s)
+        if d_ < px.index.min() or d_ > px.index.max():
+            continue
+        p_ = float(px[px.index <= d_].iloc[-1])
+        f *= 1.0 + float(a_) / 100.0 / p_
+        n += 1
+    return f, n
+
+
+def etf_fixed_mix(R: pd.DataFrame, w: dict, slip: float) -> pd.Series:
+    """決まった比率で持ち、毎月末に比率へ戻す組み合わせの月ごとの成績。戻すときは、動かした比率 × slip を引く（最初の月は引かない）。
+    rev2_combo の M1 と同じ計算で、比率だけが違う。成績の抜けた月は0として扱う。"""
+    cols = list(w)
+    W = np.array([float(w[c]) for c in cols])
+    X = R[cols]
+    out = []
+    w_drift = None
+    for t in range(len(X)):
+        cost = 0.0 if w_drift is None else float(np.abs(W - w_drift).sum()) * slip
+        rr = X.iloc[t].to_numpy(dtype=float)
+        rr = np.where(np.isfinite(rr), rr, 0.0)
+        g = float((W * rr).sum())
+        out.append(g - cost)
+        w_drift = W * (1.0 + rr) / (1.0 + g) if (1.0 + g) != 0 else W
+    return pd.Series(out, index=R.index, dtype=float)
+
+
+def etf_lab1_main(store: dict, args, panel: pd.DataFrame) -> int:
+    """別手法の検証4：本番に ETF を決まった比率で足す（etf_lab1）。結果を印字して 0 を返す。"""
+    slip = float(args.slip_bps) / 10000.0
+    if panel.empty or "in_uni_live" not in panel.columns:
+        print("\n■ 別手法の検証4：パネルが空か、ツールと同じ範囲の列がありません。")
+        return 1
+    log.info("別手法の検証4：本番と ETF の成績を出しています…")
+    dates = sorted(pd.to_datetime(panel["date"].unique()))
+    kw = dict(tier_budget=True, dividends=True, slip_bps=args.slip_bps, fee_bps=args.fee_bps, tax_rate=0.0, ramp=0)
+    r_ = simulate(panel, VARIANTS["live_small1_pit"], args.capital, args.max_names, **kw)
+    cv_ = r_["curve"]
+    V1 = pd.Series(cv_["value"].to_numpy(dtype=float), index=pd.DatetimeIndex(cv_["date"]), dtype=float) \
+        .reindex(pd.DatetimeIndex(dates)).ffill()
+    eq = store.get("etf_quotes") or {}
+    PX = {c: etf_series(eq.get(c) or []) for c, _ in ETF_LAB}
+    PX["1306"] = etf_series(eq.get("1306") or [])
+    dist_of = dict(ETF_LAB_DIST)
+    dist_of["1306"] = ETF_DIST.get("1306", ())
+    TR = {c: etf_month_tr(PX[c], dist_of.get(c, ()), dates) for c in PX}
+    # 比べる期間：部品箱と同じ（パネルの最初の月末から12か月後）
+    j0 = REV2_HIST
+    if len(dates) <= j0 + 12:
+        print("\n■ 別手法の検証4：比べる期間が短すぎます（パネルの月数 %d）。" % len(dates))
+        return 1
+    ev_dates = pd.DatetimeIndex(dates[j0:])
+    R = pd.DataFrame({"C1": V1.reindex(ev_dates).pct_change()})
+    for c in PX:
+        R[c] = TR[c].reindex(ev_dates)
+    R = R.iloc[1:]
+    R = R.rename(columns={"1306": "TX"})
+    split = pd.Timestamp(REV2_SPLIT)
+    halves = {"前半": R.index < split, "後半": R.index >= split, "通し": np.ones(len(R), dtype=bool)}
+
+    def _st(s):
+        return {h: rev2_stats(s[m_]) for h, m_ in halves.items()}
+    # データの確かめ
+    chk = {}
+    for c, nm in ETF_LAB + (("1306", "TOPIX"),):
+        px = PX[c]
+        if px.empty:
+            chk[c] = dict(nm=nm, days=0)
+            continue
+        dr = px.pct_change().abs()
+        f_, n_ = etf_dist_factor(px, dist_of.get(c, ()))
+        want = ETF_LAB_TR.get(c)
+        chk[c] = dict(nm=nm, days=len(px), d0=px.index.min().date(), d1=px.index.max().date(),
+                      jump=float(dr.max()) if len(dr.dropna()) else float("nan"),
+                      jump_d=(dr.idxmax().date() if len(dr.dropna()) else None),
+                      miss=int(R[c if c != "1306" else "TX"].isna().sum()),
+                      fac=f_, nfac=n_, want=want,
+                      ok_fac=(None if want is None else bool(abs(f_ / want - 1.0) <= ETF_LAB_TR_TOL)))
+    g_corr = float(R[["1328", "1540"]].corr().iloc[0, 1]) if R[["1328", "1540"]].notna().sum().min() > 12 else float("nan")
+    bad = [c for c in ETF_LAB_MAIN if chk[c].get("days", 0) == 0 or chk[c].get("miss", 1) > 0
+           or (chk[c].get("jump", 0) > ETF_LAB_JUMP) or chk[c].get("ok_fac") is False]
+    # 組み合わせ
+    mixes = {p: etf_fixed_mix(R, w, slip) for p, _, w in ETF_LAB_MIX}
+    ST = {k: _st(R[k]) for k in R.columns}
+    MS = {p: _st(mixes[p]) for p in mixes}
+    va, vr, dA, dR, dD = {}, {}, {}, {}, {}
+    for p, _, _ in ETF_LAB_MIX[1:]:
+        dA[p] = [MS[p][h]["ann"] - MS["P0"][h]["ann"] for h in ("前半", "後半")]
+        dR[p] = [MS[p][h]["ann"] / MS[p][h]["vol"] - MS["P0"][h]["ann"] / MS["P0"][h]["vol"] for h in ("前半", "後半")]
+        dD[p] = MS["P0"]["通し"]["mdd"] - MS[p]["通し"]["mdd"]
+        va[p] = "年率で良い" if all(x >= REV2_PT for x in dA[p]) else ("年率で悪い" if all(x <= -REV2_PT for x in dA[p]) else "決められない")
+        vr[p] = ("値動きの割に良い" if (all(x >= ETF_LAB_RV for x in dR[p]) and dD[p] >= ETF_LAB_DD)
+                 else ("値動きの割に悪い" if all(x <= -ETF_LAB_RV for x in dR[p]) else "決められない"))
+    corr = {}
+    for c in list(ETF_LAB_MAIN) + ["2514", "2512", "TX"]:
+        corr[c] = tuple(float(R.loc[halves[h], [c, "C1"]].corr().iloc[0, 1]) for h in ("前半", "後半", "通し"))
+    SS = {}
+    for p, nm, _ in ETF_LAB_MIX[1:]:
+        SS[f"{p} {nm} ＞ P0 本番だけ"] = rev2_start_share(mixes[p], mixes["P0"], split)
+    etf_lab1_report(R, ST, MS, mixes, va, vr, dA, dR, dD, corr, SS, chk, g_corr, bad, dates)
+    return 0
+
+
+def etf_lab1_report(R, ST, MS, mixes, va, vr, dA, dR, dD, corr, SS, chk, g_corr, bad, dates):
+    def _h(st, k, fmt="{:.1f}"):
+        return " ／ ".join(fmt.format(st[h][k]) for h in ("前半", "後半"))
+
+    def _rv(st):
+        return " ／ ".join(f"{st[h]['ann'] / st[h]['vol']:.2f}" for h in ("前半", "後半"))
+    print("\n【別手法の検証4：本番に、日本株と動きの違う資産を足す（etf_lab1）】（基準は結果を見る前に決めたもの。計画はプロジェクトの etf_lab_plan_2026-11-04）")
+    print(f"  期間 … パネル {pd.Timestamp(dates[0]).date()}〜{pd.Timestamp(dates[-1]).date()}。比べる期間 {R.index[0].date()}〜{R.index[-1].date()}"
+          f"（{len(R)}か月。前半 〜{pd.Timestamp(REV2_SPLIT).date()} より前・後半 それ以後）")
+    print("  決まり … 本番は部品箱と同じ（実運用と同じ形・配当あり・税はかけない）。ETF は月末の終値＋その月の分配金。毎月末に比率へ戻し、動かした比率 × 片道0.1％を引く")
+    print("\n  0. データの確かめ（外れたら結果は保留）")
+    for c, d in chk.items():
+        if not d.get("days"):
+            print(f"     {c} {d['nm']} … 株価が取れませんでした")
+            continue
+        fac = ""
+        if d.get("want") is not None:
+            fac = f"・分配金の効き目 {d['fac']:.4f}（ページ {d['want']:.4f}・{d['nfac']}回） {'合う' if d['ok_fac'] else '合わない'}"
+        elif d.get("nfac"):
+            fac = f"・分配金 {d['nfac']}回"
+        print(f"     {c} {d['nm']} … {d['days']}日分（{d['d0']}〜{d['d1']}）・1日の最大の動き {d['jump'] * 100:.1f}％（{d['jump_d']}）"
+              f"・比べる期間の抜け {d['miss']}か月{fac}")
+    print(f"     金の確かめ … 1328 と 1540 の月ごとの成績の相関 {g_corr:.3f}（基準 0.95 以上） ・ 年率（通し） 1328 {ST['1328']['通し']['ann']:.1f}％ ／ 1540 {ST['1540']['通し']['ann']:.1f}％")
+    print("     判定 … " + ("確かめに外れた ETF：" + "・".join(bad) + "（結果は保留）" if bad else "すべて基準の中"))
+    print("\n  1. 部品（年率％。「前半 ／ 後半」。分配金込み・税なし）")
+    print("     " + f"{'部品':<22}{'年率':>14}{'最大下落':>14}{'ばらつき':>12}{'本番との相関（前半／後半／通し）':>30}")
+    rows = [("C1", "C1 本番"), ("TX", "TOPIX（1306）")] + [(c, f"{c} {n}") for c, n in ETF_LAB if c != "1540"]
+    for k, lab in rows:
+        cr = "" if k == "C1" else " ／ ".join(f"{x:.2f}" for x in corr.get(k, (np.nan,) * 3))
+        print("     " + f"{lab:<22}{_h(ST[k], 'ann'):>14}{_h(ST[k], 'mdd', '{:.0f}％'):>14}{_h(ST[k], 'vol', '{:.0f}'):>12}    {cr}")
+    print("     通し … " + " ・ ".join(f"{k if k in ('C1', 'TX') else k} {ST[k]['通し']['ann']:.1f}％" for k, _ in rows))
+    print("     為替ヘッジの差（ヘッジなし − あり。年率pt。「前半 ／ 後半」） … 外国株 " + " ／ ".join(
+        f"{ST['2513'][h]['ann'] - ST['2514'][h]['ann']:+.1f}" for h in ("前半", "後半"))
+          + " ・ 外国債券 " + " ／ ".join(f"{ST['2511'][h]['ann'] - ST['2512'][h]['ann']:+.1f}" for h in ("前半", "後半")))
+    print("\n  2. 組み合わせ（年率％。「前半 ／ 後半」）")
+    print("     " + f"{'組み合わせ':<16}{'年率':>14}{'P0との差':>14}{'最大下落':>14}{'ばらつき':>12}{'年率÷ばらつき':>16}  判定（年率 ・ 値動きの割）")
+    for p, nm, w in ETF_LAB_MIX:
+        d0 = " ／ ".join(f"{x:+.1f}" for x in dA[p]) if p in dA else "—"
+        jd = "（基準）" if p == "P0" else f"{va[p]} ・ {vr[p]}"
+        print("     " + f"{p + ' ' + nm:<16}{_h(MS[p], 'ann'):>14}{d0:>14}{_h(MS[p], 'mdd', '{:.0f}％'):>14}{_h(MS[p], 'vol', '{:.0f}'):>12}{_rv(MS[p]):>16}  {jd}")
+    print("     中身 … " + " ・ ".join(p + " " + "＋".join(f"{('本番' if c == 'C1' else c)} {int(round(v * 100))}％" for c, v in w.items()) for p, _, w in ETF_LAB_MIX[1:]))
+    print("     通し … " + " ・ ".join(f"{p} {MS[p]['通し']['ann']:.1f}％（最大下落 {MS[p]['通し']['mdd']:.0f}％）" for p, _, _ in ETF_LAB_MIX)
+          + f" ・ TOPIX {ST['TX']['通し']['ann']:.1f}％")
+    print("     値動きの割の差（P0 との差。「前半 ／ 後半」）と通しの最大下落の浅くなった幅 … " + " ・ ".join(
+        f"{p} " + " ／ ".join(f"{x:+.2f}" for x in dR[p]) + f"（{dD[p]:+.1f}pt）" for p in dR))
+    print("\n  3. 年ごとの成績（％）")
+    cols = ["C1", "TX"] + list(ETF_LAB_MAIN)
+    yr = {k: (1 + R[k].fillna(0)).groupby(R.index.year).prod() - 1 for k in cols}
+    for p, _, _ in ETF_LAB_MIX[1:]:
+        yr[p] = (1 + mixes[p]).groupby(mixes[p].index.year).prod() - 1
+    print("     " + f"{'年':<6}" + "".join(f"{k:>8}" for k in yr))
+    for y in sorted(yr["C1"].index):
+        print("     " + f"{y:<6}" + "".join(f"{yr[k][y] * 100:>8.1f}" for k in yr))
+    print(f"\n  4. 始めた月をずらした見方（参考。毎月末から{REV2_START_YEARS}年持ったとき、前者が上回った回の割合。「前半 ／ 後半」に始めた回）")
+    for lab_, v_ in SS.items():
+        print("     " + f"{lab_:<28} … " + " ／ ".join(
+            (f"{v_[h][0] / v_[h][1] * 100:.0f}％（{v_[h][1]}回）" if v_[h][1] else "—") for h in ("前半", "後半")))
+    print("\n  5. 判定のまとめ")
+    print("     " + " ・ ".join(f"{p} {nm} … {va[p]}／{vr[p]}" for p, nm, _ in ETF_LAB_MIX[1:]))
+    go = [p for p, _, _ in ETF_LAB_MIX[1:] if va[p] == "年率で良い" or vr[p] == "値動きの割に良い"]
+    print("     20年分で確かめる候補 … " + ("・".join(go) if go else "なし")
+          + ("（データの確かめに外れがあるので保留）" if bad else ""))
+
+
 def main() -> int:
     global LONG_MODE, CACHE, PIT_FROM, COMPUTE_START_LIMIT_MIN
     # 結果（print）と進み具合（log）の順番を、ファイルに書き出したときも崩さない。
@@ -14336,7 +14580,9 @@ def main() -> int:
     args.rev_lab1 = (args.only or "").strip() == "rev_lab1"
     # 別手法の検証2（2026年11月3日に追加）：手法の部品箱。本番と同じパネルを作るため、比較するルールを本番に置き換え、分位は12か月にする
     args.long_rev2 = (args.only or "").strip() == "long_rev2"
-    args.rev_lab2 = (args.only or "").strip() in ("rev_lab2", "long_rev2")
+    # 別手法の検証4（2026年11月4日に追加）：本番に ETF を決まった比率で足す。パネルは部品箱と同じ作り方
+    args.etf_lab1 = (args.only or "").strip() == "etf_lab1"
+    args.rev_lab2 = (args.only or "").strip() in ("rev_lab2", "long_rev2", "etf_lab1")
     if args.rev_lab2:
         args.only = "live_small1_pit"
         args.lookback = 12
@@ -14434,7 +14680,7 @@ def main() -> int:
         key = os.environ.get("J_QUANTS_API_KEY")
         if key:
             _jq = JQ(key)
-            for c_, n_ in ETF_LIST:
+            for c_, n_ in ETF_LIST + (ETF_LAB if getattr(args, "etf_lab1", False) else ()):
                 try:
                     time.sleep(API_SLEEP)
                     _rw = fetch_bars(_jq, c_, 9)
@@ -14446,7 +14692,7 @@ def main() -> int:
                 else:
                     log.warning("19回目：%s の株価が空でした（J-Quants にない可能性）", n_)
             save_store(store)
-        for c_, n_ in ETF_LIST:
+        for c_, n_ in ETF_LIST + (ETF_LAB if getattr(args, "etf_lab1", False) else ()):
             _s = etf_series(_eq.get(c_, []))
             if not _s.empty:
                 _etf_px[c_] = _s
@@ -14736,6 +14982,8 @@ def main() -> int:
                  float(_v9.groupby("date")["vol_top_pit"].sum().mean()))
 
     if getattr(args, "rev_lab2", False):
+        if getattr(args, "etf_lab1", False):
+            return etf_lab1_main(store, args, panel)
         return rev_lab2_main(store, args, panel)
 
     # 外部要因を使う検証では、追い風か逆風かをパネルに足す
