@@ -147,6 +147,9 @@ STMT_KEEP = frozenset({
     "Sales", "NetSales", "Revenue", "ShOutFY", "ShOut", "SharesOutstanding",
     "OP", "OpPrf", "OpProfit", "OperatingProfit", "EqAR", "PayoutRatioAnn",
     "DivAnn", "FDivAnn", "NxFDivAnn", "Div2Q", "ResultDividendPerShare2ndQuarter",
+    # 別手法の検証（2026年11月3日に追加）：業績予想の項目（上方修正を見つけるため）。今までの計算はこれらを読まない
+    "FOP", "FOdP", "FNP", "FNCOP", "FNCOdP", "FNCNP", "NxFOP", "NxFOdP", "NxFNp", "NxFNP",
+    "NxFNCOP", "NxFNCOdP", "NxFNCNP", "NxtFYSt", "NxtFYEn", "NCBPS",
 })
 LUCK_N_ALL = 20                  # 20回目：でたらめ（候補の中）を、期間ごとに何回回すか
 LUCK_N_TIER = 10                 # 20回目：でたらめ（Tier内）を、期間ごとに何回回すか
@@ -13550,7 +13553,8 @@ def rev_report(res, evs, raw, cnt, cal_ts, start_idx, split_idx, data_end, rng_n
 #   税はかけない。配当は受け取る。月末の終値で売り買いする（ツールのこれまでの決まりと同じ）。
 #   今までのモードには何も足さない（「比較するルール」が rev_lab2 のときだけ動く。simulate の first_col もこの回だけが使う）。
 # ══════════════════════════════════════════
-REV2_SPLIT = "2022-07-01"         # 前半＝これより前に終わる月、後半＝これ以後に終わる月
+REV2_SPLIT = "2022-07-01"         # 前半＝これより前に終わる月、後半＝これ以後に終わる月（20年分では REV2_SPLIT_LONG）
+REV2_SPLIT_LONG = "2018-08-01"    # 20年分（long_rev2）：見ていない期間＝これより前、最近＝これ以後（今までの20年分の検証と同じ分け方）
 REV2_N = 20                       # C2〜C5 の銘柄数
 REV2_REV_DAYS = 182               # 上方修正を「最近」とみなす日数（6か月）
 REV2_MIN_CHG = 0.10               # 上方修正の幅の下限
@@ -13563,13 +13567,51 @@ REV2_NAMES = {"C1": "本番", "C2": "上方修正", "C3": "勢い", "C4": "質�
 REV2_MIX = (("M0", "本番だけ"), ("M1", "均等"), ("M2", "値動きで揃える"), ("M3", "相場で切り替え"), ("M4", "最近の成績に寄せる"))
 
 
+def rev2_refresh_stmts(jq: "JQ", store: dict) -> bool:
+    """20年分（long_rev2）：キャッシュの財務は、使う項目だけに詰めてあり、業績予想の項目がない。
+    いまの一覧・その時点の一覧のすべての銘柄の財務を取り直し、業績予想の項目つき（STMT_KEEP）で入れ替える。
+    取り終えた銘柄は覚えておき、時間切れで止まっても次の実行で続きから取る。終わったら True。"""
+    done = set(store.get("rev_stmt_done") or [])
+    todo = [("stmts", c) for c in sorted(store.get("quotes", {})) if c not in done] + \
+           [("x_stmts", c) for c in sorted(store.get("x_quotes", {})) if c not in done]
+    if todo:
+        log.info("別手法の検証3：財務を業績予想の項目つきで取り直しています（残り %d銘柄・開始から%.0f分）…", len(todo), _elapsed_min())
+    last_save = time.monotonic()
+    for i, (k, c) in enumerate(todo, 1):
+        if _elapsed_min() >= FETCH_BUDGET_MIN:
+            store["rev_stmt_done"] = sorted(done)
+            save_store(store, "財務の取り直しを途中まで保存しました")
+            return False
+        time.sleep(API_SLEEP)
+        try:
+            st = jq.get("/v2/fins/summary", {"code": c})
+        except NotAllowed:
+            st = []
+        except Exception as e:
+            log.warning("財務の取り直しに失敗 %s: %s（前の財務のまま）", c, e)
+            continue
+        if st:
+            store.setdefault(k, {})[c] = prune_stmts(st)
+        done.add(c)
+        if i % 200 == 0:
+            log.info("  取り直し %d/%d（開始から%.0f分）", i, len(todo), _elapsed_min())
+        if (time.monotonic() - last_save) / 60 >= FETCH_SAVE_EVERY_MIN:
+            store["rev_stmt_done"] = sorted(done)
+            save_store(store, "途中まで保存しました")
+            last_save = time.monotonic()
+    store["rev_stmt_done"] = sorted(done)
+    store["rev_stmt_complete"] = True
+    save_store(store, "財務の取り直しが終わりました")
+    return True
+
+
 def rev2_add_rev_cols(store: dict, panel: pd.DataFrame) -> pd.DataFrame:
     """パネルに、その月末より前（月末の日を含まない）に出た、最新の10％以上の上方修正の日（rev_last）と、
     それが6か月以内か（rev6m）を足す。上方修正の見つけ方は rev_lab1 と同じ（rev_events）。"""
     panel = panel.copy()
     stm = store.get("stmts", {})
     dts = panel["date"].to_numpy(dtype="datetime64[ns]")
-    rl = np.full(len(panel), np.datetime64("NaT"), dtype="datetime64[ns]")
+    rl = np.full(len(panel), np.datetime64("NaT", "ns"), dtype="datetime64[ns]")
     for code, idx in panel.groupby("code").indices.items():
         ev, _ = rev_events(stm.get(code), code, REV2_MIN_CHG)
         if not ev:
@@ -13577,7 +13619,7 @@ def rev2_add_rev_cols(store: dict, panel: pd.DataFrame) -> pd.DataFrame:
         ds = np.array(sorted({pd.Timestamp(e["disc"]) for e in ev}), dtype="datetime64[ns]")
         k = np.searchsorted(ds, dts[idx], side="left") - 1
         ok = k >= 0
-        out = np.full(len(idx), np.datetime64("NaT"), dtype="datetime64[ns]")
+        out = np.full(len(idx), np.datetime64("NaT", "ns"), dtype="datetime64[ns]")
         out[ok] = ds[k[ok]]
         rl[idx] = out
     panel["rev_last"] = rl
@@ -13798,7 +13840,7 @@ def rev_lab2_main(store: dict, args, panel: pd.DataFrame) -> int:
     R = R.iloc[1:]
     TX = tr.reindex(R.index)
     mixes = {m: rev2_combo(R[["C1", "C2", "C3", "C4", "C5"]], m, topix_m, slip) for m, _ in REV2_MIX}
-    split = pd.Timestamp(REV2_SPLIT)
+    split = pd.Timestamp(REV2_SPLIT_LONG if LONG_MODE else REV2_SPLIT)
     halves = {"前半": R.index < split, "後半": R.index >= split, "通し": np.ones(len(R), dtype=bool)}
 
     def _st(s):
@@ -13848,9 +13890,13 @@ def rev_lab2_main(store: dict, args, panel: pd.DataFrame) -> int:
 def rev2_report(R, ST, MS, verdict, v6, d6, dd6, vm, v1, corr, dates, ev_dates, n_rng, n_rev, mixes, diag=None, n_diff=None):
     def _h(st, k, fmt="{:.1f}"):
         return " ／ ".join(fmt.format(st[h][k]) for h in ("前半", "後半"))
-    print("\n【別手法の検証2：手法の部品箱（rev_lab2）】（基準は結果を見る前に決めたもの。計画はプロジェクトの rev_lab_plan_2026-11-03 の2）")
+    if LONG_MODE:
+        print("\n【別手法の検証3：手法の部品箱を20年分で（long_rev2）】（基準は結果を見る前に決めたもの。計画はプロジェクトの rev_lab_plan_2026-11-03 の3）")
+        print("  （表の「前半 ／ 後半」は「見ていない期間 ／ 最近」）")
+    else:
+        print("\n【別手法の検証2：手法の部品箱（rev_lab2）】（基準は結果を見る前に決めたもの。計画はプロジェクトの rev_lab_plan_2026-11-03 の2）")
     print(f"  期間 … パネル {pd.Timestamp(dates[0]).date()}〜{pd.Timestamp(dates[-1]).date()}（{len(dates)}か月）。比べる期間 {R.index[0].date()}〜{R.index[-1].date()}"
-          f"（{len(R)}か月。前半 〜{pd.Timestamp(REV2_SPLIT).date()} より前・後半 それ以後）")
+          f"（{len(R)}か月。前半 〜{pd.Timestamp(REV2_SPLIT_LONG if LONG_MODE else REV2_SPLIT).date()} より前・後半 それ以後）")
     print(f"  範囲 … ツールと同じ範囲で配当の予想がある銘柄（1か月あたり平均 {n_rng:.0f}社）。上方修正が6か月以内に出ていた銘柄は平均 {n_rev:.0f}社")
     print("  決まり … 月末の終値で売り買い・約定のずれ片道0.1％・配当は受け取る・税はかけない。C2〜C5 は20銘柄を均等に毎月持ち直す")
     if diag:
@@ -14165,16 +14211,26 @@ def main() -> int:
     # 別手法の検証1（2026年11月3日に追加）：業績の上方修正に乗る手法。パネルは作らず、この検証だけを回す
     args.rev_lab1 = (args.only or "").strip() == "rev_lab1"
     # 別手法の検証2（2026年11月3日に追加）：手法の部品箱。本番と同じパネルを作るため、比較するルールを本番に置き換え、分位は12か月にする
-    args.rev_lab2 = (args.only or "").strip() == "rev_lab2"
+    args.long_rev2 = (args.only or "").strip() == "long_rev2"
+    args.rev_lab2 = (args.only or "").strip() in ("rev_lab2", "long_rev2")
     if args.rev_lab2:
         args.only = "live_small1_pit"
         args.lookback = 12
+    # 別手法の検証3（2026年11月3日に追加）：部品箱を20年分（プレミアムのときだけ）。20年分のキャッシュを使い、財務は業績予想の項目つきで取り直す
+    if args.long_rev2:
+        args.universe = "prime"
+        args.years = 20
+        LONG_MODE = True
+        CACHE = LONG_CACHE
+        PIT_FROM = LONG_PIT_FROM
+        COMPUTE_START_LIMIT_MIN = min(COMPUTE_START_LIMIT_MIN, LONG_COMPUTE_START_MIN)
 
     # 20年分のキャッシュを使うモードのどれか（long_test・long_lab・long_lab2）
     args.long_any = bool(args.long_test or args.long_lab or args.long_lab2 or args.long_lab3 or args.long_lab4
                          or args.long_lab5 or args.long_lab6 or args.long_lab7 or args.long_lab8 or args.long_lab9
                          or args.long_lab10 or args.long_lab11 or args.long_lab12 or args.long_lab13 or args.long_lab14
-                         or args.long_lab15 or args.long_lab16 or args.long_lab17 or args.long_lab18 or args.long_lab19 or args.long_lab20 or args.long_lab21 or args.long_lab22 or args.long_lab23 or args.long_lab24 or args.long_lab25)
+                         or args.long_lab15 or args.long_lab16 or args.long_lab17 or args.long_lab18 or args.long_lab19 or args.long_lab20 or args.long_lab21 or args.long_lab22 or args.long_lab23 or args.long_lab24 or args.long_lab25
+                         or getattr(args, "long_rev2", False))
     args.long_name = ("long_test" if args.long_test else "long_lab" if args.long_lab
                       else "long_lab2" if args.long_lab2 else "long_lab3" if args.long_lab3
                       else "long_lab4" if args.long_lab4 else "long_lab5" if args.long_lab5
@@ -14183,7 +14239,7 @@ def main() -> int:
                       else "long_lab10" if args.long_lab10 else "long_lab11" if args.long_lab11
                       else "long_lab12" if args.long_lab12 else "long_lab13" if args.long_lab13
                       else "long_lab14" if args.long_lab14 else "long_lab15" if args.long_lab15
-                      else "long_lab16" if args.long_lab16 else "long_lab17" if args.long_lab17 else "long_lab18" if args.long_lab18 else "long_lab19" if args.long_lab19 else "long_lab20" if args.long_lab20 else "long_lab21" if args.long_lab21 else "long_lab22" if args.long_lab22 else "long_lab23" if args.long_lab23 else "long_lab24" if args.long_lab24 else "long_lab25" if args.long_lab25 else "")
+                      else "long_lab16" if args.long_lab16 else "long_lab17" if args.long_lab17 else "long_lab18" if args.long_lab18 else "long_lab19" if args.long_lab19 else "long_lab20" if args.long_lab20 else "long_lab21" if args.long_lab21 else "long_lab22" if args.long_lab22 else "long_lab23" if args.long_lab23 else "long_lab24" if args.long_lab24 else "long_lab25" if args.long_lab25 else "long_rev2" if getattr(args, "long_rev2", False) else "")
 
     OUTDIR.mkdir(parents=True, exist_ok=True)
 
@@ -14298,6 +14354,19 @@ def main() -> int:
                 return EXIT_UNFINISHED
             if _elapsed_min() > COMPUTE_START_LIMIT_MIN:
                 print("\n■ まだ終わっていません（データは取り終えましたが、計算の時間が残っていません）")
+                print("　 同じ設定のまま、もう一度「Run workflow」を押してください。今度は計算から始まります。")
+                return EXIT_UNFINISHED
+        if getattr(args, "long_rev2", False) and not store.get("rev_stmt_complete"):
+            key = os.environ.get("J_QUANTS_API_KEY")
+            if not key:
+                log.error("J_QUANTS_API_KEY が設定されていません")
+                return 2
+            if not rev2_refresh_stmts(JQ(key), store):
+                print("\n■ まだ終わっていません（財務を業績予想の項目つきで取り直している途中です）")
+                print(f"　 取った分は保存しました（開始から{_elapsed_min():.0f}分）。同じ設定のまま、もう一度「Run workflow」を押してください。")
+                return EXIT_UNFINISHED
+            if _elapsed_min() > COMPUTE_START_LIMIT_MIN:
+                print("\n■ まだ終わっていません（財務は取り終えましたが、計算の時間が残っていません）")
                 print("　 同じ設定のまま、もう一度「Run workflow」を押してください。今度は計算から始まります。")
                 return EXIT_UNFINISHED
         UNI_NOW = {u["code"] for u in store["universe"]}
