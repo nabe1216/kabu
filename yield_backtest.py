@@ -13923,6 +13923,8 @@ def rev_lab2_main(store: dict, args, panel: pd.DataFrame) -> int:
     R = R.iloc[1:]
     TX = tr.reindex(R.index)
     mixes = {m: rev2_combo(R[["C1", "C2", "C3", "C4", "C5"]], m, topix_m, slip) for m, _ in REV2_MIX}
+    # 計画の5：本番と C8 を半分ずつ（毎月末に半分ずつへ戻す）。組み合わせの決まりは M1 と同じで、部品が2つだけ
+    mixes["M5"] = rev2_combo(R[["C1", "C8"]], "M1", topix_m, slip)
     split = pd.Timestamp(REV2_SPLIT_LONG if LONG_MODE else REV2_SPLIT)
     halves = {"前半": R.index < split, "後半": R.index >= split, "通し": np.ones(len(R), dtype=bool)}
 
@@ -13953,10 +13955,22 @@ def rev_lab2_main(store: dict, args, panel: pd.DataFrame) -> int:
         v1 = "本番だけの方が良い"
     else:
         v1 = "決められない"
+    # 計画の5：M5（本番と C8 を半分ずつ）と M0 本番だけ。決まりは M1 と M0 の比べと同じ
+    d5 = [MS["M5"][h]["ann"] - MS["M0"][h]["ann"] for h in ("前半", "後半")]
+    dd5 = [MS["M0"][h]["mdd"] - MS["M5"][h]["mdd"] for h in ("前半", "後半")]
+    if all(x >= REV2_PT for x in d5) or (all(abs(x) <= REV2_PT for x in d5) and all(x >= REV2_DD for x in dd5)):
+        v5 = "分けて持つ方が良い"
+    elif all(x <= -REV2_PT for x in d5):
+        v5 = "本番だけの方が良い"
+    else:
+        v5 = "決められない"
     corr = R[list(REV2_PARTS)].assign(TX=TX).corr()
+    # 参考：C7・C8 と本番の相関を、期間の半分ごとに
+    corr_h = {k: tuple(float(R.loc[halves[h], [k, "C1"]].corr().iloc[0, 1]) for h in ("前半", "後半")) for k in ("C7", "C8")}
     SS = {}
     for a_, b_, lab_ in (("M1", "M0", "M1 均等 ＞ M0 本番だけ"), ("C4", "C1", "C4 質の高い割安 ＞ C1 本番"),
                          ("C7", "C1", "C7 稼ぐ現金の多い株 ＞ C1 本番"), ("C8", "C1", "C8 現金を多く持つ割安株 ＞ C1 本番"),
+                         ("M5", "M0", "M5 本番とC8を半分ずつ ＞ M0 本番だけ"),
                          ("C1", "TX", "C1 本番 ＞ TOPIX")):
         sa = mixes[a_] if a_ in mixes else R[a_]
         sb = mixes[b_] if b_ in mixes else (TX if b_ == "TX" else R[b_])
@@ -13973,11 +13987,12 @@ def rev_lab2_main(store: dict, args, panel: pd.DataFrame) -> int:
             n_diff = len(k1 ^ k6)
     except Exception:
         n_diff = None
-    rev2_report(R, ST, MS, verdict, v6, d6, dd6, vm, v1, corr, dates, ev_dates, n_rng, n_rev, mixes, diag, n_diff, SS)
+    rev2_report(R, ST, MS, verdict, v6, d6, dd6, vm, v1, corr, dates, ev_dates, n_rng, n_rev, mixes, diag, n_diff, SS,
+                m5=(v5, d5, dd5, corr_h))
     return 0
 
 
-def rev2_report(R, ST, MS, verdict, v6, d6, dd6, vm, v1, corr, dates, ev_dates, n_rng, n_rev, mixes, diag=None, n_diff=None, SS=None):
+def rev2_report(R, ST, MS, verdict, v6, d6, dd6, vm, v1, corr, dates, ev_dates, n_rng, n_rev, mixes, diag=None, n_diff=None, SS=None, m5=None):
     def _h(st, k, fmt="{:.1f}"):
         return " ／ ".join(fmt.format(st[h][k]) for h in ("前半", "後半"))
     if LONG_MODE:
@@ -14000,7 +14015,7 @@ def rev2_report(R, ST, MS, verdict, v6, d6, dd6, vm, v1, corr, dates, ev_dates, 
         print("     " + f"{k + ' ' + REV2_NAMES[k]:<20}{_h(ST[k], 'ann'):>14}{dif:>16}{_h(ST[k], 'mdd', '{:.0f}％'):>14}{_h(ST[k], 'vol', '{:.0f}'):>12}  {verdict[k]}")
     print("     " + f"{'TOPIX（1306）':<20}{_h(ST['TX'], 'ann'):>14}{'':>16}{_h(ST['TX'], 'mdd', '{:.0f}％'):>14}{_h(ST['TX'], 'vol', '{:.0f}'):>12}")
     print("     通し … " + " ・ ".join(f"{k} {ST[k]['通し']['ann']:.1f}％（最大下落 {ST[k]['通し']['mdd']:.0f}％）" for k in list(REV2_PARTS) + ["TX"]))
-    print("     （C7・C8 は計画の4で足した部品。組み合わせ方には入れていない）")
+    print("     （C7・C8 は計画の4で足した部品。M0〜M4 には入れていない。C8 は計画の5の M5 にだけ使う）")
     print("\n  2. 上方修正を本番の選び方に足す（C6 本番＋上方修正の順 と C1 本番）")
     print(f"     C6 年率 {_h(ST['C6'], 'ann')}（C1 {_h(ST['C1'], 'ann')}）・差 " + " ／ ".join(f"{x:+.1f}" for x in d6)
           + f"pt・最大下落 C6 {ST['C6']['通し']['mdd']:.0f}％ ／ C1 {ST['C1']['通し']['mdd']:.0f}％（差 {dd6:+.1f}pt） … {v6}")
@@ -14014,6 +14029,15 @@ def rev2_report(R, ST, MS, verdict, v6, d6, dd6, vm, v1, corr, dates, ev_dates, 
     print("     通し … " + " ・ ".join(f"{m} {MS[m]['通し']['ann']:.1f}％（最大下落 {MS[m]['通し']['mdd']:.0f}％）" for m, _ in REV2_MIX)
           + f" ・ TOPIX {ST['TX']['通し']['ann']:.1f}％")
     print("     M1 と M0（分けて持つ効き目） … " + v1)
+    if m5 is not None and "M5" in MS:
+        v5, d5, dd5, corr_h = m5
+        print("\n  3の2. 本番と C8 を半分ずつ（M5。計画の5。毎月末に半分ずつへ戻す。年率％。「前半 ／ 後半」）")
+        print(f"     M5 年率 {_h(MS['M5'], 'ann')}（M0 本番だけ {_h(MS['M0'], 'ann')}）・差 " + " ／ ".join(f"{x:+.1f}" for x in d5)
+              + f"pt・最大下落 M5 {_h(MS['M5'], 'mdd', '{:.0f}％')} ／ M0 {_h(MS['M0'], 'mdd', '{:.0f}％')}（浅くなった幅 "
+              + " ／ ".join(f"{x:+.1f}" for x in dd5) + f"pt） … {v5}")
+        print(f"     通し … M5 {MS['M5']['通し']['ann']:.1f}％（最大下落 {MS['M5']['通し']['mdd']:.0f}％） ・ M0 {MS['M0']['通し']['ann']:.1f}％（最大下落 {MS['M0']['通し']['mdd']:.0f}％）")
+        print("     参考：本番との相関（前半 ／ 後半） … " + " ・ ".join(
+            f"{k} {a_:.2f} ／ {b_:.2f}" for k, (a_, b_) in corr_h.items()))
     print("\n  4. 部品どうしの月ごとの成績のつながり（相関）")
     cols = list(REV2_PARTS) + ["TX"]
     print("     " + f"{'':<4}" + "".join(f"{b_:>7}" for b_ in cols))
@@ -14039,7 +14063,8 @@ def rev2_report(R, ST, MS, verdict, v6, d6, dd6, vm, v1, corr, dates, ev_dates, 
     print("\n  7. 判定のまとめ")
     print("     部品 … " + " ・ ".join(f"{k} {REV2_NAMES[k]} {verdict[k]}" for k in REV2_PARTS))
     print(f"     上方修正を本番に足す … {v6} ／ 分けて持つ効き目 … {v1} ／ 組み合わせ方 … "
-          + " ・ ".join(f"{m} {vm[m]}" for m in vm))
+          + " ・ ".join(f"{m} {vm[m]}" for m in vm)
+          + (f" ／ 本番と C8 を半分ずつ（M5） … {m5[0]}" if m5 is not None else ""))
     print("     20年分で確かめる候補 … " + ("・".join(go[:2]) if go else "なし")
           + " ／ 分けて持つ相手の候補（C7・C8 で TOPIX より良く、本番との相関が0.6未満） … " + ("・".join(pair) if pair else "なし"))
 
