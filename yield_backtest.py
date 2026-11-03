@@ -150,6 +150,7 @@ STMT_KEEP = frozenset({
     # 別手法の検証（2026年11月3日に追加）：業績予想の項目（上方修正を見つけるため）。今までの計算はこれらを読まない
     "FOP", "FOdP", "FNP", "FNCOP", "FNCOdP", "FNCNP", "NxFOP", "NxFOdP", "NxFNp", "NxFNP",
     "NxFNCOP", "NxFNCOdP", "NxFNCNP", "NxtFYSt", "NxtFYEn", "NCBPS",
+    "CFO", "CFI", "CashEq",
 })
 LUCK_N_ALL = 20                  # 20回目：でたらめ（候補の中）を、期間ごとに何回回すか
 LUCK_N_TIER = 10                 # 20回目：でたらめ（Tier内）を、期間ごとに何回回すか
@@ -13563,7 +13564,9 @@ REV2_HIST = 12                    # 勢い・値動きの小さい株に要る�
 REV2_PT = 1.0                     # 判定の幅（pt）
 REV2_DD = 5.0                     # 最大下落の許し幅（pt）
 REV2_NAMES = {"C1": "本番", "C2": "上方修正", "C3": "勢い", "C4": "質の高い割安", "C5": "値動きの小さい株",
-              "C6": "本番＋上方修正の順"}
+              "C6": "本番＋上方修正の順", "C7": "稼ぐ現金の多い株", "C8": "現金を多く持つ割安株"}
+REV2_PARTS = ("C1", "C2", "C3", "C4", "C5", "C7", "C8")      # TOPIX と比べる部品（C7・C8 は計画の4で足した）
+REV2_START_YEARS = 4                                          # 始めた月をずらした見方：何年持つか
 REV2_MIX = (("M0", "本番だけ"), ("M1", "均等"), ("M2", "値動きで揃える"), ("M3", "相場で切り替え"), ("M4", "最近の成績に寄せる"))
 
 
@@ -13626,6 +13629,60 @@ def rev2_add_rev_cols(store: dict, panel: pd.DataFrame) -> pd.DataFrame:
     age = (panel["date"] - panel["rev_last"]).dt.days
     panel["rev6m"] = ((age > 0) & (age <= REV2_REV_DAYS)).fillna(False).astype(bool)
     return panel
+
+
+def rev2_add_cf_cols(store: dict, panel: pd.DataFrame) -> pd.DataFrame:
+    """パネルに、その月末より前（月末の日を含まない）に出た開示の、直近の通期のフリーキャッシュフロー（CFO＋CFI。円）と、
+    直近の開示の現金と現金同等物（CashEq。円）を足す（fcf・cash）。"""
+    panel = panel.copy()
+    stm = store.get("stmts", {})
+    dts = panel["date"].to_numpy(dtype="datetime64[ns]")
+    fcf = np.full(len(panel), np.nan)
+    cash = np.full(len(panel), np.nan)
+    for code, idx in panel.groupby("code").indices.items():
+        f_tl, c_tl = [], []
+        for st in stm.get(code) or []:
+            dd = str(st.get("DiscDate") or "")[:10]
+            if len(dd) != 10:
+                continue
+            doc = str(st.get("DocType") or "")
+            is_fy = doc.startswith("FYFinancialStatements") or (str(st.get("CurPerType") or "") == "FY" and doc != REV_DOC_REVISION)
+            cfo, cfi = _rev_num(st.get("CFO")), _rev_num(st.get("CFI"))
+            if is_fy and cfo is not None and cfi is not None:
+                f_tl.append((pd.Timestamp(dd), cfo + cfi))
+            ce = _rev_num(st.get("CashEq"))
+            if ce is not None and ce >= 0:
+                c_tl.append((pd.Timestamp(dd), ce))
+        for tl, out in ((f_tl, fcf), (c_tl, cash)):
+            if not tl:
+                continue
+            tl.sort(key=lambda x: x[0])
+            ds = np.array([x[0] for x in tl], dtype="datetime64[ns]")
+            vs = np.array([x[1] for x in tl], dtype=float)
+            k = np.searchsorted(ds, dts[idx], side="left") - 1
+            ok = k >= 0
+            v = np.full(len(idx), np.nan)
+            v[ok] = vs[k[ok]]
+            out[idx] = v
+    panel["fcf"] = fcf
+    panel["cash"] = cash
+    return panel
+
+
+def rev2_start_share(a: pd.Series, b: pd.Series, split: pd.Timestamp, years: int = REV2_START_YEARS) -> dict:
+    """始めた月をずらした見方：毎月末を始まりにして years 年持ったとき、a の年率が b を上回った回の割合（始めた月の期間ごと）。"""
+    n = 12 * years
+    va, vb = (1.0 + a.fillna(0.0)).cumprod(), (1.0 + b.fillna(0.0)).cumprod()
+    out = {"前半": [0, 0], "後半": [0, 0]}
+    idx = a.index
+    for i in range(0, len(idx) - n):
+        s0 = idx[i]
+        ra = va.iloc[i + n] / va.iloc[i]
+        rb = vb.iloc[i + n] / vb.iloc[i]
+        h = "前半" if s0 < split else "後半"
+        out[h][1] += 1
+        out[h][0] += int(ra > rb)
+    return out
 
 
 def rev2_month_px(store: dict, codes: list, dates: list) -> np.ndarray:
@@ -13758,6 +13815,7 @@ def rev_lab2_main(store: dict, args, panel: pd.DataFrame) -> int:
         return 1
     log.info("別手法の検証2：部品の成績を出しています…")
     panel = rev2_add_rev_cols(store, panel)
+    panel = rev2_add_cf_cols(store, panel)
     dates = sorted(pd.to_datetime(panel["date"].unique()))
     days = {d: g.set_index("code") for d, g in panel.groupby("date")}
     codes = sorted(panel["code"].unique())
@@ -13795,6 +13853,29 @@ def rev_lab2_main(store: dict, args, panel: pd.DataFrame) -> int:
         pbr = (pd.to_numeric(d_["price"], errors="coerce") / bps)[ok].dropna()
         return list(pbr.sort_values(ascending=True).index[:REV2_N])
 
+    def _nofin(d_):
+        sec = d_["sector"].fillna("").astype(str) if "sector" in d_.columns else pd.Series("", index=d_.index)
+        return d_[~sec.isin(FIN_SECTORS)]
+
+    def _mcap(d_):
+        mc = pd.to_numeric(d_["price"], errors="coerce") * pd.to_numeric(d_.get("sh"), errors="coerce")
+        return mc.where(mc > 0)
+
+    def pick_fcf(day, j, dt):
+        d_ = _nofin(_rng(day))
+        if "fcf" not in d_.columns or "sh" not in d_.columns:
+            return []
+        f_ = pd.to_numeric(d_["fcf"], errors="coerce")
+        y_ = (f_ / _mcap(d_))[f_ > 0].replace([np.inf, -np.inf], np.nan).dropna()
+        return list(y_.sort_values(ascending=False).index[:REV2_N])
+
+    def pick_cash(day, j, dt):
+        d_ = _nofin(_rng(day))
+        if "cash" not in d_.columns or "sh" not in d_.columns:
+            return []
+        y_ = (pd.to_numeric(d_["cash"], errors="coerce") / _mcap(d_)).replace([np.inf, -np.inf], np.nan).dropna()
+        return list(y_.sort_values(ascending=False).index[:REV2_N])
+
     def pick_lv(day, j, dt):
         if j < REV2_HIST:
             return []
@@ -13807,11 +13888,13 @@ def rev_lab2_main(store: dict, args, panel: pd.DataFrame) -> int:
         return list(sd.sort_values(ascending=True).index[:REV2_N])
 
     V = {}
-    NS = {k: [] for k in ("C2", "C3", "C4", "C5")}
+    NS = {k: [] for k in ("C2", "C3", "C4", "C5", "C7", "C8")}
     V["C2"] = rev2_sleeve(dates, days, PX, cidx, pick_rev, slip, NS["C2"])
     V["C3"] = rev2_sleeve(dates, days, PX, cidx, pick_mom, slip, NS["C3"])
     V["C4"] = rev2_sleeve(dates, days, PX, cidx, pick_qv, slip, NS["C4"])
     V["C5"] = rev2_sleeve(dates, days, PX, cidx, pick_lv, slip, NS["C5"])
+    V["C7"] = rev2_sleeve(dates, days, PX, cidx, pick_fcf, slip, NS["C7"])
+    V["C8"] = rev2_sleeve(dates, days, PX, cidx, pick_cash, slip, NS["C8"])
     TRD = {}
     kw = dict(tier_budget=True, dividends=True, slip_bps=args.slip_bps, fee_bps=args.fee_bps, tax_rate=0.0, ramp=0)
     for key, cfg in (("C1", VARIANTS["live_small1_pit"]), ("C6", dict(VARIANTS["live_small1_pit"], first_col="rev6m"))):
@@ -13836,7 +13919,7 @@ def rev_lab2_main(store: dict, args, panel: pd.DataFrame) -> int:
         print("\n■ 別手法の検証2：比べる期間が短すぎます（パネルの月数 %d）。" % len(dates))
         return 1
     ev_dates = dates[j0:]
-    R = pd.DataFrame({k: V[k].reindex(pd.DatetimeIndex(ev_dates)).pct_change() for k in ("C1", "C2", "C3", "C4", "C5", "C6")})
+    R = pd.DataFrame({k: V[k].reindex(pd.DatetimeIndex(ev_dates)).pct_change() for k in ("C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8")})
     R = R.iloc[1:]
     TX = tr.reindex(R.index)
     mixes = {m: rev2_combo(R[["C1", "C2", "C3", "C4", "C5"]], m, topix_m, slip) for m, _ in REV2_MIX}
@@ -13850,7 +13933,7 @@ def rev_lab2_main(store: dict, args, panel: pd.DataFrame) -> int:
     MS = {m: _st(mixes[m]) for m in mixes}
     # 判定
     verdict = {}
-    for k in ("C1", "C2", "C3", "C4", "C5"):
+    for k in REV2_PARTS:
         d_ = [ST[k][h]["ann"] - ST["TX"][h]["ann"] for h in ("前半", "後半")]
         verdict[k] = "TOPIX より良い" if all(x >= REV2_PT for x in d_) else ("TOPIX より悪い" if all(x <= -REV2_PT for x in d_) else "決められない")
     d6 = [ST["C6"][h]["ann"] - ST["C1"][h]["ann"] for h in ("前半", "後半")]
@@ -13870,7 +13953,14 @@ def rev_lab2_main(store: dict, args, panel: pd.DataFrame) -> int:
         v1 = "本番だけの方が良い"
     else:
         v1 = "決められない"
-    corr = R[["C1", "C2", "C3", "C4", "C5"]].assign(TX=TX).corr()
+    corr = R[list(REV2_PARTS)].assign(TX=TX).corr()
+    SS = {}
+    for a_, b_, lab_ in (("M1", "M0", "M1 均等 ＞ M0 本番だけ"), ("C4", "C1", "C4 質の高い割安 ＞ C1 本番"),
+                         ("C7", "C1", "C7 稼ぐ現金の多い株 ＞ C1 本番"), ("C8", "C1", "C8 現金を多く持つ割安株 ＞ C1 本番"),
+                         ("C1", "TX", "C1 本番 ＞ TOPIX")):
+        sa = mixes[a_] if a_ in mixes else R[a_]
+        sb = mixes[b_] if b_ in mixes else (TX if b_ == "TX" else R[b_])
+        SS[lab_] = rev2_start_share(sa, sb, split)
     # 確かめ用：部品ごとの、比べる期間の1か月あたりの銘柄数（平均・0銘柄の月）と、C6 と C1 で買い方が違った回数
     diag = {k: (float(np.mean(v[REV2_HIST:])) if len(v) > REV2_HIST else float("nan"),
                 int(sum(1 for x in v[REV2_HIST:] if x == 0))) for k, v in NS.items()}
@@ -13883,11 +13973,11 @@ def rev_lab2_main(store: dict, args, panel: pd.DataFrame) -> int:
             n_diff = len(k1 ^ k6)
     except Exception:
         n_diff = None
-    rev2_report(R, ST, MS, verdict, v6, d6, dd6, vm, v1, corr, dates, ev_dates, n_rng, n_rev, mixes, diag, n_diff)
+    rev2_report(R, ST, MS, verdict, v6, d6, dd6, vm, v1, corr, dates, ev_dates, n_rng, n_rev, mixes, diag, n_diff, SS)
     return 0
 
 
-def rev2_report(R, ST, MS, verdict, v6, d6, dd6, vm, v1, corr, dates, ev_dates, n_rng, n_rev, mixes, diag=None, n_diff=None):
+def rev2_report(R, ST, MS, verdict, v6, d6, dd6, vm, v1, corr, dates, ev_dates, n_rng, n_rev, mixes, diag=None, n_diff=None, SS=None):
     def _h(st, k, fmt="{:.1f}"):
         return " ／ ".join(fmt.format(st[h][k]) for h in ("前半", "後半"))
     if LONG_MODE:
@@ -13905,11 +13995,12 @@ def rev2_report(R, ST, MS, verdict, v6, d6, dd6, vm, v1, corr, dates, ev_dates, 
               + (f"。C6 と C1 で売り買いが違った回数 {n_diff}" if n_diff is not None else ""))
     print("\n  1. 部品（年率％。「前半 ／ 後半」。TOPIX は1306に分配金を入れた値）")
     print("     " + f"{'部品':<20}{'年率':>14}{'TOPIXとの差':>16}{'最大下落':>14}{'ばらつき':>12}  判定")
-    for k in ("C1", "C2", "C3", "C4", "C5"):
+    for k in REV2_PARTS:
         dif = " ／ ".join(f"{ST[k][h]['ann'] - ST['TX'][h]['ann']:+.1f}" for h in ("前半", "後半"))
         print("     " + f"{k + ' ' + REV2_NAMES[k]:<20}{_h(ST[k], 'ann'):>14}{dif:>16}{_h(ST[k], 'mdd', '{:.0f}％'):>14}{_h(ST[k], 'vol', '{:.0f}'):>12}  {verdict[k]}")
     print("     " + f"{'TOPIX（1306）':<20}{_h(ST['TX'], 'ann'):>14}{'':>16}{_h(ST['TX'], 'mdd', '{:.0f}％'):>14}{_h(ST['TX'], 'vol', '{:.0f}'):>12}")
-    print("     通し … " + " ・ ".join(f"{k} {ST[k]['通し']['ann']:.1f}％（最大下落 {ST[k]['通し']['mdd']:.0f}％）" for k in ("C1", "C2", "C3", "C4", "C5", "TX")))
+    print("     通し … " + " ・ ".join(f"{k} {ST[k]['通し']['ann']:.1f}％（最大下落 {ST[k]['通し']['mdd']:.0f}％）" for k in list(REV2_PARTS) + ["TX"]))
+    print("     （C7・C8 は計画の4で足した部品。組み合わせ方には入れていない）")
     print("\n  2. 上方修正を本番の選び方に足す（C6 本番＋上方修正の順 と C1 本番）")
     print(f"     C6 年率 {_h(ST['C6'], 'ann')}（C1 {_h(ST['C1'], 'ann')}）・差 " + " ／ ".join(f"{x:+.1f}" for x in d6)
           + f"pt・最大下落 C6 {ST['C6']['通し']['mdd']:.0f}％ ／ C1 {ST['C1']['通し']['mdd']:.0f}％（差 {dd6:+.1f}pt） … {v6}")
@@ -13924,11 +14015,12 @@ def rev2_report(R, ST, MS, verdict, v6, d6, dd6, vm, v1, corr, dates, ev_dates, 
           + f" ・ TOPIX {ST['TX']['通し']['ann']:.1f}％")
     print("     M1 と M0（分けて持つ効き目） … " + v1)
     print("\n  4. 部品どうしの月ごとの成績のつながり（相関）")
-    cols = ["C1", "C2", "C3", "C4", "C5", "TX"]
+    cols = list(REV2_PARTS) + ["TX"]
+    print("     " + f"{'':<4}" + "".join(f"{b_:>7}" for b_ in cols))
     for a_ in cols:
         print("     " + f"{a_:<4}" + "".join(f"{corr.loc[a_, b_]:>7.2f}" for b_ in cols))
     yr = {}
-    for k in ("C1", "C2", "C3", "C4", "C5"):
+    for k in REV2_PARTS:
         s_ = R[k]
         yr[k] = (1 + s_).groupby(s_.index.year).prod() - 1
     s_ = mixes["M1"]
@@ -13938,11 +14030,18 @@ def rev2_report(R, ST, MS, verdict, v6, d6, dd6, vm, v1, corr, dates, ev_dates, 
     for y in sorted(set().union(*[set(v.index) for v in yr.values()])):
         print("     " + f"{y:<6}" + "".join((f"{yr[k][y] * 100:>8.1f}" if y in yr[k].index else f"{'—':>8}") for k in yr))
     go = [k for k, v in (("C6", v6),) if v == "足すと良い"] + [m for m, v in vm.items() if v == "良い"]
-    print("\n  6. 判定のまとめ")
-    print("     部品 … " + " ・ ".join(f"{k} {REV2_NAMES[k]} {verdict[k]}" for k in ("C1", "C2", "C3", "C4", "C5")))
+    pair = [k for k in ("C7", "C8") if verdict[k] == "TOPIX より良い" and corr.loc[k, "C1"] < 0.6]
+    if SS:
+        print(f"\n  6. 始めた月をずらした見方（参考。毎月末から{REV2_START_YEARS}年持ったとき、前者が上回った回の割合。「前半 ／ 後半」に始めた回）")
+        for lab_, v_ in SS.items():
+            print("     " + f"{lab_:<26} … " + " ／ ".join(
+                (f"{v_[h][0] / v_[h][1] * 100:.0f}％（{v_[h][1]}回）" if v_[h][1] else "—") for h in ("前半", "後半")))
+    print("\n  7. 判定のまとめ")
+    print("     部品 … " + " ・ ".join(f"{k} {REV2_NAMES[k]} {verdict[k]}" for k in REV2_PARTS))
     print(f"     上方修正を本番に足す … {v6} ／ 分けて持つ効き目 … {v1} ／ 組み合わせ方 … "
           + " ・ ".join(f"{m} {vm[m]}" for m in vm))
-    print("     20年分で確かめる候補 … " + ("・".join(go[:2]) if go else "なし"))
+    print("     20年分で確かめる候補 … " + ("・".join(go[:2]) if go else "なし")
+          + " ／ 分けて持つ相手の候補（C7・C8 で TOPIX より良く、本番との相関が0.6未満） … " + ("・".join(pair) if pair else "なし"))
 
 
 def main() -> int:
