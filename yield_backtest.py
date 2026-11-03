@@ -13925,6 +13925,14 @@ def rev_lab2_main(store: dict, args, panel: pd.DataFrame) -> int:
     mixes = {m: rev2_combo(R[["C1", "C2", "C3", "C4", "C5"]], m, topix_m, slip) for m, _ in REV2_MIX}
     # 計画の5：本番と C8 を半分ずつ（毎月末に半分ずつへ戻す）。組み合わせの決まりは M1 と同じで、部品が2つだけ
     mixes["M5"] = rev2_combo(R[["C1", "C8"]], "M1", topix_m, slip)
+    # 計画の6：本番 80％＋金（1328）20％（etf_lab1 の P1 と同じ計算）
+    gpx = etf_series((store.get("etf_quotes") or {}).get("1328") or [])
+    G = etf_month_tr(gpx, (), dates).reindex(R.index)
+    g_chk = {"days": len(gpx), "miss": int(G.isna().sum()),
+             "jump": float(gpx.pct_change().abs().max()) if len(gpx) > 1 else float("nan"),
+             "jump_d": (gpx.pct_change().abs().idxmax().date() if len(gpx) > 1 else None)}
+    g_bad = (g_chk["days"] == 0) or g_chk["miss"] > 0 or not (g_chk["jump"] <= ETF_LAB_JUMP)
+    mixes["M6"] = etf_fixed_mix(pd.DataFrame({"C1": R["C1"], "G": G}), {"C1": 0.8, "G": 0.2}, slip)
     split = pd.Timestamp(REV2_SPLIT_LONG if LONG_MODE else REV2_SPLIT)
     halves = {"前半": R.index < split, "後半": R.index >= split, "通し": np.ones(len(R), dtype=bool)}
 
@@ -13964,6 +13972,16 @@ def rev_lab2_main(store: dict, args, panel: pd.DataFrame) -> int:
         v5 = "本番だけの方が良い"
     else:
         v5 = "決められない"
+    # 計画の6：M6（本番＋金）と M0 本番だけ。etf_lab1 と同じ2つの判定
+    ST_G = _st(G)
+    d6a = [MS["M6"][h]["ann"] - MS["M0"][h]["ann"] for h in ("前半", "後半")]
+    d6r = [MS["M6"][h]["ann"] / MS["M6"][h]["vol"] - MS["M0"][h]["ann"] / MS["M0"][h]["vol"] for h in ("前半", "後半")]
+    d6d = MS["M0"]["通し"]["mdd"] - MS["M6"]["通し"]["mdd"]
+    v6a = "年率で良い" if all(x >= REV2_PT for x in d6a) else ("年率で悪い" if all(x <= -REV2_PT for x in d6a) else "決められない")
+    v6r = ("値動きの割に良い" if (all(x >= ETF_LAB_RV for x in d6r) and d6d >= ETF_LAB_DD)
+           else ("値動きの割に悪い" if all(x <= -ETF_LAB_RV for x in d6r) else "決められない"))
+    g_corr_h = tuple(float(pd.concat([G[halves[h]], R.loc[halves[h], "C1"]], axis=1).corr().iloc[0, 1]) for h in ("前半", "後半", "通し"))
+    g_yr = {k: (1 + s_.fillna(0)).groupby(s_.index.year).prod() - 1 for k, s_ in (("本番", R["C1"]), ("金", G), ("M6", mixes["M6"]))}
     corr = R[list(REV2_PARTS)].assign(TX=TX).corr()
     # 参考：C7・C8 と本番の相関を、期間の半分ごとに
     corr_h = {k: tuple(float(R.loc[halves[h], [k, "C1"]].corr().iloc[0, 1]) for h in ("前半", "後半")) for k in ("C7", "C8")}
@@ -13971,6 +13989,7 @@ def rev_lab2_main(store: dict, args, panel: pd.DataFrame) -> int:
     for a_, b_, lab_ in (("M1", "M0", "M1 均等 ＞ M0 本番だけ"), ("C4", "C1", "C4 質の高い割安 ＞ C1 本番"),
                          ("C7", "C1", "C7 稼ぐ現金の多い株 ＞ C1 本番"), ("C8", "C1", "C8 現金を多く持つ割安株 ＞ C1 本番"),
                          ("M5", "M0", "M5 本番とC8を半分ずつ ＞ M0 本番だけ"),
+                         ("M6", "M0", "M6 本番＋金 ＞ M0 本番だけ"),
                          ("C1", "TX", "C1 本番 ＞ TOPIX")):
         sa = mixes[a_] if a_ in mixes else R[a_]
         sb = mixes[b_] if b_ in mixes else (TX if b_ == "TX" else R[b_])
@@ -13988,11 +14007,12 @@ def rev_lab2_main(store: dict, args, panel: pd.DataFrame) -> int:
     except Exception:
         n_diff = None
     rev2_report(R, ST, MS, verdict, v6, d6, dd6, vm, v1, corr, dates, ev_dates, n_rng, n_rev, mixes, diag, n_diff, SS,
-                m5=(v5, d5, dd5, corr_h))
+                m5=(v5, d5, dd5, corr_h),
+                m6=dict(va=v6a, vr=v6r, dA=d6a, dR=d6r, dD=d6d, chk=g_chk, bad=g_bad, corr=g_corr_h, yr=g_yr, ST_G=ST_G))
     return 0
 
 
-def rev2_report(R, ST, MS, verdict, v6, d6, dd6, vm, v1, corr, dates, ev_dates, n_rng, n_rev, mixes, diag=None, n_diff=None, SS=None, m5=None):
+def rev2_report(R, ST, MS, verdict, v6, d6, dd6, vm, v1, corr, dates, ev_dates, n_rng, n_rev, mixes, diag=None, n_diff=None, SS=None, m5=None, m6=None):
     def _h(st, k, fmt="{:.1f}"):
         return " ／ ".join(fmt.format(st[h][k]) for h in ("前半", "後半"))
     if LONG_MODE:
@@ -14038,6 +14058,24 @@ def rev2_report(R, ST, MS, verdict, v6, d6, dd6, vm, v1, corr, dates, ev_dates, 
         print(f"     通し … M5 {MS['M5']['通し']['ann']:.1f}％（最大下落 {MS['M5']['通し']['mdd']:.0f}％） ・ M0 {MS['M0']['通し']['ann']:.1f}％（最大下落 {MS['M0']['通し']['mdd']:.0f}％）")
         print("     参考：本番との相関（前半 ／ 後半） … " + " ・ ".join(
             f"{k} {a_:.2f} ／ {b_:.2f}" for k, (a_, b_) in corr_h.items()))
+    if m6 is not None and "M6" in MS:
+        c_ = m6["chk"]
+        print("\n  3の3. 本番＋金（M6。計画の6。本番 80％・金（1328）20％を毎月末に戻す。年率％。「前半 ／ 後半」）")
+        print(f"     データの確かめ … 1328 {c_['days']}日分・1日の最大の動き {c_['jump'] * 100:.1f}％（{c_['jump_d']}）・比べる期間の抜け {c_['miss']}か月 … "
+              + ("外れ（M6 は保留）" if m6["bad"] else "基準の中"))
+        print(f"     金（1328） 年率 {_h(m6['ST_G'], 'ann')}・最大下落 {_h(m6['ST_G'], 'mdd', '{:.0f}％')}・本番との相関 "
+              + " ／ ".join(f"{x:.2f}" for x in m6["corr"]) + "（前半 ／ 後半 ／ 通し）")
+        print(f"     M6 年率 {_h(MS['M6'], 'ann')}（M0 {_h(MS['M0'], 'ann')}）・差 " + " ／ ".join(f"{x:+.1f}" for x in m6["dA"])
+              + f"pt・最大下落 M6 {_h(MS['M6'], 'mdd', '{:.0f}％')} ／ M0 {_h(MS['M0'], 'mdd', '{:.0f}％')}")
+        print("     年率÷ばらつき M6 " + " ／ ".join(f"{MS['M6'][h]['ann'] / MS['M6'][h]['vol']:.2f}" for h in ("前半", "後半"))
+              + "（M0 " + " ／ ".join(f"{MS['M0'][h]['ann'] / MS['M0'][h]['vol']:.2f}" for h in ("前半", "後半")) + "）・差 "
+              + " ／ ".join(f"{x:+.2f}" for x in m6["dR"]) + f"・通しの最大下落の浅くなった幅 {m6['dD']:+.1f}pt")
+        print(f"     判定 … {m6['va']} ・ {m6['vr']}" + ("（データの確かめに外れがあるので保留）" if m6["bad"] else ""))
+        print(f"     通し … M6 {MS['M6']['通し']['ann']:.1f}％（最大下落 {MS['M6']['通し']['mdd']:.0f}％） ・ M0 {MS['M0']['通し']['ann']:.1f}％（最大下落 {MS['M0']['通し']['mdd']:.0f}％） ・ 金 {m6['ST_G']['通し']['ann']:.1f}％")
+        yy = [y for y in (2008, 2009, 2011, 2013, 2014, 2015, 2018, 2020, 2022) if y in m6["yr"]["M6"].index]
+        if yy:
+            print("     年ごと（％） … " + " ・ ".join(
+                f"{y} 本番 {m6['yr']['本番'][y] * 100:+.1f}／金 {m6['yr']['金'][y] * 100:+.1f}／M6 {m6['yr']['M6'][y] * 100:+.1f}" for y in yy))
     print("\n  4. 部品どうしの月ごとの成績のつながり（相関）")
     cols = list(REV2_PARTS) + ["TX"]
     print("     " + f"{'':<4}" + "".join(f"{b_:>7}" for b_ in cols))
@@ -14064,7 +14102,8 @@ def rev2_report(R, ST, MS, verdict, v6, d6, dd6, vm, v1, corr, dates, ev_dates, 
     print("     部品 … " + " ・ ".join(f"{k} {REV2_NAMES[k]} {verdict[k]}" for k in REV2_PARTS))
     print(f"     上方修正を本番に足す … {v6} ／ 分けて持つ効き目 … {v1} ／ 組み合わせ方 … "
           + " ・ ".join(f"{m} {vm[m]}" for m in vm)
-          + (f" ／ 本番と C8 を半分ずつ（M5） … {m5[0]}" if m5 is not None else ""))
+          + (f" ／ 本番と C8 を半分ずつ（M5） … {m5[0]}" if m5 is not None else "")
+          + (f" ／ 本番＋金（M6） … {m6['va']}・{m6['vr']}" + ("（保留）" if m6["bad"] else "") if m6 is not None else ""))
     print("     20年分で確かめる候補 … " + ("・".join(go[:2]) if go else "なし")
           + " ／ 分けて持つ相手の候補（C7・C8 で TOPIX より良く、本番との相関が0.6未満） … " + ("・".join(pair) if pair else "なし"))
 
@@ -14078,6 +14117,7 @@ def rev2_report(R, ST, MS, verdict, v6, d6, dd6, vm, v1, corr, dates, ev_dates, 
 ETF_LAB = (("2513", "外国株"), ("2511", "外国債券"), ("2510", "国内債券"), ("1328", "金"), ("1343", "J-REIT"),
            ("2514", "外国株・ヘッジあり"), ("2512", "外国債券・ヘッジあり"), ("1540", "金（確かめ用）"))
 ETF_LAB_MAIN = ("2513", "2511", "2510", "1328", "1343")
+ETF_GOLD = (("1328", "金"),)   # 部品箱（rev_lab2・long_rev2）の M6（本番＋金。計画は rev_lab_plan_2026-11-03 の6）で使う
 ETF_LAB_DIST = {
     "2513": (("2018-03-07", 140), ("2018-09-07", 980), ("2019-03-07", 800), ("2019-09-07", 730), ("2020-03-07", 550), ("2020-09-07", 590),
              ("2021-03-07", 470), ("2021-09-07", 880), ("2022-03-07", 710), ("2022-09-07", 1430), ("2023-03-07", 1090), ("2023-09-07", 1790),
@@ -15097,7 +15137,7 @@ def main() -> int:
         key = os.environ.get("J_QUANTS_API_KEY")
         if key:
             _jq = JQ(key)
-            for c_, n_ in ETF_LIST + (ETF_LAB if getattr(args, "etf_lab1", False) else ()):
+            for c_, n_ in ETF_LIST + (ETF_LAB if getattr(args, "etf_lab1", False) else ETF_GOLD if getattr(args, "rev_lab2", False) else ()):
                 try:
                     time.sleep(API_SLEEP)
                     _rw = fetch_bars(_jq, c_, 9)
@@ -15109,7 +15149,7 @@ def main() -> int:
                 else:
                     log.warning("19回目：%s の株価が空でした（J-Quants にない可能性）", n_)
             save_store(store)
-        for c_, n_ in ETF_LIST + (ETF_LAB if getattr(args, "etf_lab1", False) else ()):
+        for c_, n_ in ETF_LIST + (ETF_LAB if getattr(args, "etf_lab1", False) else ETF_GOLD if getattr(args, "rev_lab2", False) else ()):
             _s = etf_series(_eq.get(c_, []))
             if not _s.empty:
                 _etf_px[c_] = _s
