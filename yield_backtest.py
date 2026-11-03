@@ -14118,6 +14118,7 @@ ETF_LAB_RV = 0.10      # 値動きの割（年率 ÷ ばらつき）の差の基
 ETF_LAB_DD = 5.0       # 通しの最大下落が、これ以上浅いこと
 ETF_LAB_JUMP = 0.25    # 1日の値動きがこれを超えたら、分割の調整漏れを疑う
 ETF_LAB_TR_TOL = 0.01  # 分配金の確かめの許容（1％）
+ETF_LAB_GOLD = 0.95    # 金の確かめ：1328 と 1540 の月ごとの成績の相関がこれ以上
 
 
 def etf_month_tr(px: pd.Series, dist, dates) -> pd.Series:
@@ -14227,6 +14228,13 @@ def etf_lab1_main(store: dict, args, panel: pd.DataFrame) -> int:
     g_corr = float(R[["1328", "1540"]].corr().iloc[0, 1]) if R[["1328", "1540"]].notna().sum().min() > 12 else float("nan")
     bad = [c for c in ETF_LAB_MAIN if chk[c].get("days", 0) == 0 or chk[c].get("miss", 1) > 0
            or (chk[c].get("jump", 0) > ETF_LAB_JUMP) or chk[c].get("ok_fac") is False]
+    # 金の確かめ（1328 と 1540 の相関 0.95 以上）も、外れたら 1328 を保留にする（11月4日に足した。#196 では判定に入っていなかった）
+    if not (g_corr >= ETF_LAB_GOLD) and "1328" not in bad:
+        bad.append("1328")
+    # 参考：1328 と 1540 の月ごとの成績の差が大きかった月（相関が低いときに、どこで離れたかを見るため）
+    gd = (R["1328"] - R["1540"]).dropna()
+    gold_gap = [(d_.strftime("%Y-%m"), float(R.at[d_, "1328"]) * 100, float(R.at[d_, "1540"]) * 100)
+                for d_ in gd.abs().sort_values(ascending=False).index[:5]]
     # 組み合わせ
     mixes = {p: etf_fixed_mix(R, w, slip) for p, _, w in ETF_LAB_MIX}
     ST = {k: _st(R[k]) for k in R.columns}
@@ -14242,14 +14250,18 @@ def etf_lab1_main(store: dict, args, panel: pd.DataFrame) -> int:
     corr = {}
     for c in list(ETF_LAB_MAIN) + ["2514", "2512", "TX"]:
         corr[c] = tuple(float(R.loc[halves[h], [c, "C1"]].corr().iloc[0, 1]) for h in ("前半", "後半", "通し"))
+    if getattr(args, "etf_lab2", False):
+        TRall = pd.DataFrame({("TX" if c == "1306" else c): TR[c] for c in TR})
+        etf_lab2_part(R, TRall, dates, mixes, split, halves, slip, chk, bad, g_corr, gold_gap)
+        return 0
     SS = {}
     for p, nm, _ in ETF_LAB_MIX[1:]:
         SS[f"{p} {nm} ＞ P0 本番だけ"] = rev2_start_share(mixes[p], mixes["P0"], split)
-    etf_lab1_report(R, ST, MS, mixes, va, vr, dA, dR, dD, corr, SS, chk, g_corr, bad, dates)
+    etf_lab1_report(R, ST, MS, mixes, va, vr, dA, dR, dD, corr, SS, chk, g_corr, bad, dates, gold_gap)
     return 0
 
 
-def etf_lab1_report(R, ST, MS, mixes, va, vr, dA, dR, dD, corr, SS, chk, g_corr, bad, dates):
+def etf_lab1_report(R, ST, MS, mixes, va, vr, dA, dR, dD, corr, SS, chk, g_corr, bad, dates, gold_gap=()):
     def _h(st, k, fmt="{:.1f}"):
         return " ／ ".join(fmt.format(st[h][k]) for h in ("前半", "後半"))
 
@@ -14271,7 +14283,9 @@ def etf_lab1_report(R, ST, MS, mixes, va, vr, dA, dR, dD, corr, SS, chk, g_corr,
             fac = f"・分配金 {d['nfac']}回"
         print(f"     {c} {d['nm']} … {d['days']}日分（{d['d0']}〜{d['d1']}）・1日の最大の動き {d['jump'] * 100:.1f}％（{d['jump_d']}）"
               f"・比べる期間の抜け {d['miss']}か月{fac}")
-    print(f"     金の確かめ … 1328 と 1540 の月ごとの成績の相関 {g_corr:.3f}（基準 0.95 以上） ・ 年率（通し） 1328 {ST['1328']['通し']['ann']:.1f}％ ／ 1540 {ST['1540']['通し']['ann']:.1f}％")
+    print(f"     金の確かめ … 1328 と 1540 の月ごとの成績の相関 {g_corr:.3f}（基準 {ETF_LAB_GOLD:.2f} 以上） ・ 年率（通し） 1328 {ST['1328']['通し']['ann']:.1f}％ ／ 1540 {ST['1540']['通し']['ann']:.1f}％")
+    if gold_gap:
+        print("     参考：差が大きかった月 … " + " ・ ".join(f"{m_} 1328 {a_:+.1f}％ ／ 1540 {b_:+.1f}％" for m_, a_, b_ in gold_gap))
     print("     判定 … " + ("確かめに外れた ETF：" + "・".join(bad) + "（結果は保留）" if bad else "すべて基準の中"))
     print("\n  1. 部品（年率％。「前半 ／ 後半」。分配金込み・税なし）")
     print("     " + f"{'部品':<22}{'年率':>14}{'最大下落':>14}{'ばらつき':>12}{'本番との相関（前半／後半／通し）':>30}")
@@ -14311,6 +14325,406 @@ def etf_lab1_report(R, ST, MS, mixes, va, vr, dA, dR, dD, corr, SS, chk, g_corr,
     go = [p for p, _, _ in ETF_LAB_MIX[1:] if va[p] == "年率で良い" or vr[p] == "値動きの割に良い"]
     print("     20年分で確かめる候補 … " + ("・".join(go) if go else "なし")
           + ("（データの確かめに外れがあるので保留）" if bad else ""))
+
+
+# ── 別手法の検証4の2回目（etf_lab2。2026年11月4日に追加。計画は etf_lab_plan_2026-11-04 の2回目）──
+#   資産の勢いで入れ替える。6つの ETF（分配金込み）を、毎月末に勢いで選び直す。持たない分は現金（利息0）
+ETF2_ASSETS = ("TX", "2513", "2511", "2510", "1328", "1343")
+ETF2_NAMES = {"TX": "日本株", "2513": "外国株", "2511": "外国債券", "2510": "国内債券", "1328": "金", "1343": "J-REIT"}
+ETF2_RULES = (("B6", "6つを均等に持ち続ける"), ("T1", "上げのときだけ持つ"), ("T2", "強い2つを持つ"), ("T3", "強い3つを持つ（6か月）"))
+
+
+def etf2_weights(TRall: pd.DataFrame, dec_dates, rule: str) -> pd.DataFrame:
+    """月末ごと（dec_dates：決める日）の持ち方。列は6つの資産と CASH。決めるのは、その月末までの成績だけ。
+    TRall は月末ごとの1か月の成績（行＝月末）。勢いは、決める日までの L か月の成績の積 − 1（L か月そろっていなければ使わない）。"""
+    rows = []
+    for d in dec_dates:
+        past = TRall[TRall.index <= d]
+        w = dict.fromkeys(list(ETF2_ASSETS) + ["CASH"], 0.0)
+        if rule == "B6":
+            for a in ETF2_ASSETS:
+                w[a] = 1.0 / len(ETF2_ASSETS)
+        else:
+            L = 6 if rule == "T3" else 12
+            seg = past.iloc[-L:]
+            mom = {}
+            for a in ETF2_ASSETS:
+                s = seg[a]
+                if len(s) == L and s.notna().all():
+                    mom[a] = float((1.0 + s).prod() - 1.0)
+            if rule == "T1":
+                for a in ETF2_ASSETS:
+                    if mom.get(a, -1.0) > 0:
+                        w[a] = 1.0 / len(ETF2_ASSETS)
+            else:
+                k = 2 if rule == "T2" else 3
+                top = sorted(mom, key=lambda a: -mom[a])[:k]
+                for a in top:
+                    if mom[a] > 0:
+                        w[a] = 1.0 / k
+        w["CASH"] = max(0.0, 1.0 - sum(w[a] for a in ETF2_ASSETS))
+        rows.append(w)
+    return pd.DataFrame(rows, index=pd.DatetimeIndex(dec_dates))
+
+
+def etf2_dyn_mix(R: pd.DataFrame, W: pd.DataFrame, slip: float) -> tuple[pd.Series, float]:
+    """月ごとに変わる持ち方（W の t 行目＝ R の t 行目の月の初めに持つ比率）で回した成績と、1か月あたりの入れ替えの量の平均。
+    入れ替えるときは、動かした比率（現金を含む）× slip を引く（最初の月は引かない）。成績の抜けた月は0として扱う。"""
+    cols = list(W.columns)
+    X = R.reindex(columns=[c for c in cols if c != "CASH"]).copy()
+    X["CASH"] = 0.0
+    X = X[cols]
+    out, turns = [], []
+    w_drift = None
+    for t in range(len(R)):
+        w = W.iloc[t].to_numpy(dtype=float)
+        if w_drift is None:
+            cost = 0.0
+        else:
+            tv = float(np.abs(w - w_drift).sum())
+            turns.append(tv)
+            cost = tv * slip
+        rr = X.iloc[t].to_numpy(dtype=float)
+        rr = np.where(np.isfinite(rr), rr, 0.0)
+        g = float((w * rr).sum())
+        out.append(g - cost)
+        w_drift = w * (1.0 + rr) / (1.0 + g) if (1.0 + g) != 0 else w
+    return pd.Series(out, index=R.index, dtype=float), (float(np.mean(turns)) if turns else 0.0)
+
+
+def etf_lab2_part(R, TRall, dates, mixes1, split, halves, slip, chk, bad, g_corr, gold_gap=()):
+    """2回目の計算と印字。R は1回目と同じ（列：C1・TX・各 ETF）。TRall は月末ごとの1か月の成績（パネルの全期間）。"""
+    def _st(s):
+        return {h: rev2_stats(s[m_]) for h, m_ in halves.items()}
+    # R の t 行目の月を決めるのは、その前の月末
+    alld = pd.DatetimeIndex(dates)
+    dec = [alld[alld < d][-1] for d in R.index]
+    W, S, TV = {}, {}, {}
+    for r_, _ in ETF2_RULES:
+        W[r_] = etf2_weights(TRall, dec, r_)
+        W[r_].index = R.index
+        S[r_], TV[r_] = etf2_dyn_mix(R, W[r_], slip)
+    S["H1"] = etf_fixed_mix(pd.DataFrame({"C1": R["C1"], "T2": S["T2"]}), {"C1": 0.7, "T2": 0.3}, slip)
+    S["HB"] = etf_fixed_mix(pd.DataFrame({"C1": R["C1"], "B6": S["B6"]}), {"C1": 0.7, "B6": 0.3}, slip)
+    ST = {k: _st(v) for k, v in S.items()}
+    ST["C1"] = _st(R["C1"])
+    ST["TX"] = _st(R["TX"])
+    va, vr, dA, dR, dD = {}, {}, {}, {}, {}
+    for k, base in (("T1", "B6"), ("T2", "B6"), ("T3", "B6"), ("H1", "HB")):
+        dA[k] = [ST[k][h]["ann"] - ST[base][h]["ann"] for h in ("前半", "後半")]
+        dR[k] = [ST[k][h]["ann"] / ST[k][h]["vol"] - ST[base][h]["ann"] / ST[base][h]["vol"] for h in ("前半", "後半")]
+        dD[k] = ST[base]["通し"]["mdd"] - ST[k]["通し"]["mdd"]
+        va[k] = "年率で良い" if all(x >= REV2_PT for x in dA[k]) else ("年率で悪い" if all(x <= -REV2_PT for x in dA[k]) else "決められない")
+        vr[k] = ("値動きの割に良い" if (all(x >= ETF_LAB_RV for x in dR[k]) and dD[k] >= ETF_LAB_DD)
+                 else ("値動きの割に悪い" if all(x <= -ETF_LAB_RV for x in dR[k]) else "決められない"))
+
+    def _h(st, k, fmt="{:.1f}"):
+        return " ／ ".join(fmt.format(st[h][k]) for h in ("前半", "後半"))
+
+    def _rv(st):
+        return " ／ ".join(f"{st[h]['ann'] / st[h]['vol']:.2f}" for h in ("前半", "後半"))
+    print("\n【別手法の検証4の2回目：資産の勢いで入れ替える（etf_lab2）】（基準は結果を見る前に決めたもの。計画はプロジェクトの etf_lab_plan_2026-11-04 の2回目）")
+    print(f"  期間 … 比べる期間 {R.index[0].date()}〜{R.index[-1].date()}（{len(R)}か月。前半 〜{split.date()} より前・後半 それ以後）")
+    print("  決まり … 6つの ETF（日本株1306・外国株2513・外国債券2511・国内債券2510・金1328・J-REIT1343。分配金込み・税なし）。"
+          "毎月末の終値で決めて入れ替える。持たない分は現金（利息0）。動かした比率 × 片道0.1％を引く")
+    print("  データの確かめ … " + ("外れた ETF：" + "・".join(bad) + "（その ETF を使う形の結果は保留）" if bad else "1回目と同じ基準で、すべて基準の中")
+          + f"（金の確かめの相関 {g_corr:.3f}。基準 {ETF_LAB_GOLD:.2f} 以上）")
+    if gold_gap:
+        print("  参考：1328 と 1540 の月ごとの成績の差が大きかった月 … " + " ・ ".join(
+            f"{m_} 1328 {a_:+.1f}％ ／ 1540 {b_:+.1f}％" for m_, a_, b_ in gold_gap))
+    print("\n  1. 形ごとの成績（年率％。「前半 ／ 後半」）")
+    print("     " + f"{'形':<22}{'年率':>14}{'基準との差':>14}{'最大下落':>14}{'ばらつき':>12}{'年率÷ばらつき':>16}  判定（年率 ・ 値動きの割）")
+    lab = {"B6": "B6 6つを均等", "T1": "T1 上げのときだけ", "T2": "T2 強い2つ", "T3": "T3 強い3つ（6か月）",
+           "HB": "HB 本番7割＋B6 3割", "H1": "H1 本番7割＋T2 3割", "C1": "（参考）本番だけ", "TX": "（参考）TOPIX"}
+    for k in ("B6", "T1", "T2", "T3", "HB", "H1", "C1", "TX"):
+        d0 = " ／ ".join(f"{x:+.1f}" for x in dA[k]) if k in dA else "—"
+        jd = (f"{va[k]} ・ {vr[k]}" if k in va else ("（T1〜T3 の基準）" if k == "B6" else ("（H1 の基準）" if k == "HB" else "")))
+        print("     " + f"{lab[k]:<22}{_h(ST[k], 'ann'):>14}{d0:>14}{_h(ST[k], 'mdd', '{:.0f}％'):>14}{_h(ST[k], 'vol', '{:.0f}'):>12}{_rv(ST[k]):>16}  {jd}")
+    print("     通し … " + " ・ ".join(f"{k} {ST[k]['通し']['ann']:.1f}％（最大下落 {ST[k]['通し']['mdd']:.0f}％）" for k in ("B6", "T1", "T2", "T3", "HB", "H1", "C1", "TX")))
+    print("     値動きの割の差と通しの最大下落の浅くなった幅 … " + " ・ ".join(
+        f"{k} " + " ／ ".join(f"{x:+.2f}" for x in dR[k]) + f"（{dD[k]:+.1f}pt）" for k in dR))
+    print("\n  2. 入れ替えの量と現金（参考）")
+    for r_, nm in ETF2_RULES:
+        print(f"     {r_} {nm} … 1か月あたりの入れ替え {TV[r_] * 100:.0f}％・現金の割合の平均 {W[r_]['CASH'].mean() * 100:.0f}％"
+              f"・本番との相関 {float(pd.concat([S[r_], R['C1']], axis=1).corr().iloc[0, 1]):.2f}")
+    print("\n  3. 下げのときに持っていたもの（T2 強い2つ。その月の初めに持っていた資産と比率）")
+    for d in R.index:
+        if (pd.Timestamp("2020-01-31") <= d <= pd.Timestamp("2020-06-30")) or (pd.Timestamp("2022-01-31") <= d <= pd.Timestamp("2022-12-31")):
+            w = W["T2"].loc[d]
+            held = " ・ ".join(f"{ETF2_NAMES.get(a, a)} {w[a] * 100:.0f}％" for a in list(ETF2_ASSETS) + ["CASH"] if w[a] > 0).replace("CASH", "現金")
+            print(f"     {d.strftime('%Y-%m')} … {held}（その月の T2 {S['T2'][d] * 100:+.1f}％・B6 {S['B6'][d] * 100:+.1f}％・本番 {R['C1'][d] * 100:+.1f}％）")
+    print("\n  4. 年ごとの成績（％）")
+    yr = {k: (1 + S[k]).groupby(S[k].index.year).prod() - 1 for k in ("B6", "T1", "T2", "T3", "HB", "H1")}
+    yr["C1"] = (1 + R["C1"]).groupby(R.index.year).prod() - 1
+    print("     " + f"{'年':<6}" + "".join(f"{k:>8}" for k in yr))
+    for y in sorted(yr["B6"].index):
+        print("     " + f"{y:<6}" + "".join(f"{yr[k][y] * 100:>8.1f}" for k in yr))
+    print("\n  5. 判定のまとめ")
+    print("     " + " ・ ".join(f"{k} … {va[k]}／{vr[k]}" for k in ("T1", "T2", "T3", "H1")))
+    go = [k for k in ("T1", "T2", "T3", "H1") if va[k] == "年率で良い" or vr[k] == "値動きの割に良い"]
+    print("     20年分で確かめる候補 … " + ("・".join(go) if go else "なし") + ("（データの確かめに外れがあるので保留）" if bad else ""))
+
+
+# ── 別手法の検証5（st_lab1。2026年11月4日に追加。計画はプロジェクトの st_lab_plan_2026-11-04）──
+#   数日で大きく下げた株を買う（短期の逆張り）。道具は別手法の検証1（rev_lab1）と同じ（でたらめな比べ・rev_sim）。
+#   今は上場していない銘柄も入れる（下げたまま上場をやめた銘柄を外すと、逆張りが良く見えすぎるため）。main で merge_pit_store により
+#   quotes に合わせてあるので、rev_lab1 と同じ取り方で入る（数えるときは、いまの一覧 UNI_NOW にないものを数える）。
+#   今までのモードには何も足さない（「比較するルール」が st_lab1 のときだけ動く）。
+ST_VARIANTS = (   # (名前, 説明, 見る日数, 基準, 持つ日数, 向き)  向き：-1＝下げ（逆張り）、+1＝上げ（順張り）、"rank"＝下から10銘柄
+    ("S1", "5日で−10％以上下げた・5日持つ", 5, -0.10, 5, -1),
+    ("S2", "5日で−10％以上下げた・10日持つ", 5, -0.10, 10, -1),
+    ("S3", "5日で−15％以上下げた・5日持つ", 5, -0.15, 5, -1),
+    ("S4", "5日の成績が範囲の下から10銘柄・5日持つ", 5, 10, 5, "rank"),
+    ("S5", "20日で−20％以上下げた・20日持つ", 20, -0.20, 20, -1),
+    ("S6", "（比べ）5日で＋10％以上上げた・5日持つ", 5, 0.10, 5, 1),
+)
+ST_SLIP_HI = 0.003     # 参考：値段のずれを片道0.3％にした運用
+
+
+def st_events(C, CF, O, INR, look: int, thr, H: int, side) -> list:
+    """合図の一覧 [(買う日の番号, 銘柄の番号, 幅), …]。合図はその日の終値までで計算し、翌営業日の寄りで買う。
+    その日に値段（終値）がない銘柄・look 日前の終値がない銘柄・翌営業日に範囲の外か寄りがない銘柄は数えない。
+    同じ銘柄は、前の合図で買ってから H 営業日たつまでの合図を数えない（持っている間の合図）。"""
+    S, T = C.shape
+    out = []
+    last_t = np.full(S, -10 ** 9)
+    for s in range(look, T - 1):
+        t = s + 1
+        ok = (C[:, s] > 0) & (CF[:, s - look] > 0) & INR[:, t] & (O[:, t] > 0)
+        if not ok.any():
+            continue
+        r = np.full(S, np.nan)
+        r[ok] = C[ok, s] / CF[ok, s - look] - 1.0
+        if side == "rank":
+            idx = np.nonzero(ok & np.isfinite(r))[0]
+            if len(idx) == 0:
+                continue
+            pick = idx[np.argsort(r[idx], kind="stable")[:int(thr)]]
+            sc = -r[pick]
+        elif side < 0:
+            pick = np.nonzero(ok & (r <= thr))[0]
+            sc = -r[pick]
+        else:
+            pick = np.nonzero(ok & (r >= thr))[0]
+            sc = r[pick]
+        for i, v in zip(pick, sc):
+            if t - last_t[i] < H:
+                continue
+            last_t[i] = t
+            out.append((t, int(i), float(v)))
+    return out
+
+
+def st_lab1_main(store: dict, args) -> int:
+    """別手法の検証5：短期の逆張り（st_lab1）。結果を印字して 0 を返す。"""
+    slip = float(args.slip_bps) / 10000.0
+    tax = float(args.tax) / 100.0
+    cap = float(args.capital)
+    nmax = int(args.max_names)
+    log.info("別手法の検証5：大きく下げた株を探しています…")
+    tp = _rev_px((store.get("etf_quotes") or {}).get("1306") or [])
+    if tp.empty:
+        print("\n■ 別手法の検証5：TOPIX（1306）の株価が取れなかったので、比べられません。もう一度押してください。")
+        return 1
+    now_codes = [u["code"] for u in store.get("universe", []) if u["code"] in store.get("quotes", {})]
+    last_ds = sorted(q_last_date(store["quotes"][c]) for c in now_codes[:400] if q_last_date(store["quotes"][c]))
+    data_end = pd.Timestamp(last_ds[-1]) if last_ds else tp["date"].max()
+    tp = tp[(tp["date"] <= data_end) & (tp["open"] > 0)].reset_index(drop=True)
+    cal = tp["date"].to_numpy(dtype="datetime64[ns]")
+    T = len(cal)
+    TO = tp["open"].to_numpy(dtype=float)
+    TC = tp["close"].to_numpy(dtype=float)
+    cal_ts = pd.DatetimeIndex(cal)
+    cal_year = cal_ts.year.to_numpy()
+    day_month = [_rev_prev_key(d) for d in cal_ts]
+    months = sorted(set(day_month))
+    rng_sets, rng_note = _rev_range_sets(months)
+    allq = {**(store.get("x_quotes") or {}), **store.get("quotes", {})}
+    codes = sorted({c for s_ in rng_sets.values() for c in s_} & set(allq))
+    if not codes:
+        print("\n■ 別手法の検証5：ツールと同じ範囲の銘柄が見つかりませんでした（その時点の一覧と規模区分が要ります）。")
+        return 1
+    cidx = {c: i for i, c in enumerate(codes)}
+    S = len(codes)
+    O = np.full((S, T), np.nan, dtype=float)
+    C = np.full((S, T), np.nan, dtype=float)
+    n_x = 0
+    for c, i in cidx.items():
+        px = _rev_px(allq.get(c))
+        if px.empty:
+            continue
+        if UNI_NOW and c not in UNI_NOW:
+            n_x += 1
+        d_ = px["date"].to_numpy(dtype="datetime64[ns]")
+        k_ = np.searchsorted(cal, d_)
+        ok_ = (k_ < T)
+        ok_[ok_] = cal[k_[ok_]] == d_[ok_]
+        O[i, k_[ok_]] = px["open"].to_numpy(dtype=float)[ok_]
+        C[i, k_[ok_]] = px["close"].to_numpy(dtype=float)[ok_]
+    CF = pd.DataFrame(C).ffill(axis=1).to_numpy(dtype=float)
+    m_idx = {m: j for j, m in enumerate(months)}
+    MEM = np.zeros((S, len(months)), dtype=bool)
+    for m, s_ in rng_sets.items():
+        j = m_idx[m]
+        for c in s_:
+            i = cidx.get(c)
+            if i is not None:
+                MEM[i, j] = True
+    INR = MEM[:, np.array([m_idx[m] for m in day_month])]
+    split_idx = int(np.searchsorted(cal, np.datetime64(pd.Timestamp(REV_SPLIT))))
+    start_idx = int(np.argmax(INR.any(axis=0))) if INR.any() else 0
+    D = REV_PLACEBO_N
+    need = int(np.ceil(REV_J1_MIN / 20.0 * D - 1e-9))
+    half_rng = ((start_idx, split_idx - 1), (split_idx, T - 1))
+    res = {}
+    for vi, (vn, vlab, look, thr, H, side) in enumerate(ST_VARIANTS):
+        sel = [e for e in st_events(C, CF, O, INR, look, thr, H, side) if e[0] >= start_idx]
+        comp = [e for e in sel if e[0] + H <= T - 1]
+        out_h = []
+        near = np.zeros((S, T), dtype=bool)
+        for t_, i_, _ in sel:
+            near[i_, max(0, t_ - H):min(T, t_ + H + 1)] = True
+        for h, (a_, b_) in enumerate(half_rng):
+            ee = [e for e in comp if a_ <= e[0] <= b_]
+            if not ee:
+                out_h.append(None)
+                continue
+            tt = np.array([e[0] for e in ee])
+            ii = np.array([e[1] for e in ee])
+            xx = tt + H
+            pe = O[ii, tt]
+            px_ = np.where(O[ii, xx] > 0, O[ii, xx], CF[ii, xx])
+            exc = px_ / pe - 1.0 - (TO[xx] / TO[tt] - 1.0) - 2.0 * slip
+            ok = np.isfinite(exc)
+            exc, ii, tt = exc[ok], ii[ok], tt[ok]
+            mean_ = float(np.mean(exc)) if len(exc) else float("nan")
+            rA = np.random.default_rng(36000 + 100 * vi + h)
+            base_ok = np.zeros(T, dtype=bool)
+            base_ok[a_:min(b_, T - 1 - H) + 1] = True
+            sumsA = np.zeros(D)
+            nA = np.zeros(D)
+            for i_ in np.unique(ii):
+                m_ = int((ii == i_).sum())
+                cand = np.nonzero(base_ok & INR[i_] & (O[i_] > 0) & ~near[i_])[0]
+                if len(cand) == 0:
+                    continue
+                pick = cand[rA.integers(0, len(cand), size=(D, m_))]
+                xs = pick + H
+                p_x = np.where(O[i_, xs] > 0, O[i_, xs], CF[i_, xs])
+                ex_ = p_x / O[i_, pick] - 1.0 - (TO[xs] / TO[pick] - 1.0) - 2.0 * slip
+                ex_ = np.where(np.isfinite(ex_), ex_, np.nan)
+                sumsA += np.nansum(ex_, axis=1)
+                nA += np.sum(np.isfinite(ex_), axis=1)
+            mA = sumsA / np.maximum(nA, 1)
+            rB = np.random.default_rng(37000 + 100 * vi + h)
+            sumsB = np.zeros(D)
+            nB = np.zeros(D)
+            for t_ in np.unique(tt):
+                cand = np.nonzero(INR[:, t_] & (O[:, t_] > 0))[0]
+                own = ii[tt == t_]
+                cand = np.setdiff1d(cand, own)
+                if len(cand) == 0:
+                    continue
+                m_ = len(own)
+                pick = cand[rB.integers(0, len(cand), size=(D, m_))]
+                x_ = t_ + H
+                p_x = np.where(O[pick, x_] > 0, O[pick, x_], CF[pick, x_])
+                ex_ = p_x / O[pick, t_] - 1.0 - (TO[x_] / TO[t_] - 1.0) - 2.0 * slip
+                ex_ = np.where(np.isfinite(ex_), ex_, np.nan)
+                sumsB += np.nansum(ex_, axis=1)
+                nB += np.sum(np.isfinite(ex_), axis=1)
+            mB = sumsB / np.maximum(nB, 1)
+            out_h.append({"n": int(len(exc)), "mean": mean_ * 100, "med": float(np.median(exc)) * 100 if len(exc) else float("nan"),
+                          "win": float(np.mean(exc > 0)) * 100 if len(exc) else float("nan"),
+                          "beatA": int(np.sum(mean_ > mA)), "beatB": int(np.sum(mean_ > mB)),
+                          "mA": float(np.mean(mA)) * 100, "mB": float(np.mean(mB)) * 100})
+        sims = {}
+        for pk, (a_, b_) in (("前半", half_rng[0]), ("後半", half_rng[1]), ("全体", (start_idx, T - 1))):
+            if b_ - a_ < 60:
+                continue
+            day_ev = {}
+            for t_, i_, v_ in sel:
+                if a_ <= t_ <= b_:
+                    day_ev.setdefault(t_, []).append((v_, i_, t_ + H))
+            for k in day_ev:
+                day_ev[k].sort(key=lambda x: -x[0])
+            r1 = rev_sim(day_ev, O, CF, TO, TC, cal_year, a_, b_, cap, nmax, slip, tax, use_topix=False)
+            r2 = rev_sim(day_ev, O, CF, TO, TC, cal_year, a_, b_, cap, nmax, slip, tax, use_topix=True)
+            r3 = rev_sim(day_ev, O, CF, TO, TC, cal_year, a_, b_, cap, nmax, ST_SLIP_HI, tax, use_topix=True)
+            u_ = cap / (TO[a_] * (1.0 + slip))
+            fin_t = u_ * TC[b_] * (1.0 - slip)
+            fin_t -= max(0.0, fin_t - cap) * tax
+            yrs = max((cal_ts[b_] - cal_ts[a_]).days / 365.25, 0.25)
+            tv = TC[a_:b_ + 1] / TO[a_]
+            sims[pk] = {"P1": _rev_cagr(r1["final"], cap, cal_ts[a_], cal_ts[b_]),
+                        "P2": _rev_cagr(r2["final"], cap, cal_ts[a_], cal_ts[b_]),
+                        "P2h": _rev_cagr(r3["final"], cap, cal_ts[a_], cal_ts[b_]),
+                        "TX": _rev_cagr(fin_t, cap, cal_ts[a_], cal_ts[b_]),
+                        "mdd2": r2["mdd"], "mddT": float(np.max(1.0 - tv / np.maximum.accumulate(tv))) * 100,
+                        "buys": r2["n_buy"] / yrs, "held": r2["held"],
+                        "full": (r2["n_full"] / r2["n_seen"] * 100) if r2["n_seen"] else 0.0}
+        j1 = all(o is not None and o["beatA"] >= need and o["beatB"] >= need for o in out_h)
+        j2 = all(pk in sims and sims[pk]["P2"] - sims[pk]["TX"] >= REV_J2_PT for pk in ("前半", "後半"))
+        verdict = "20年分で確かめる" if (j1 and j2) else ("弱い可能性" if j1 else "見込みなし")
+        yc = {}
+        for t_, _, _ in sel:
+            yc[int(cal_year[t_])] = yc.get(int(cal_year[t_]), 0) + 1
+        mc = {}
+        for t_, _, _ in sel:
+            k_ = cal_ts[t_].strftime("%Y-%m")
+            mc[k_] = mc.get(k_, 0) + 1
+        top_m = sorted(mc.items(), key=lambda x: -x[1])[:3]
+        res[vn] = {"label": vlab, "H": H, "halves": out_h, "sims": sims, "j1": j1, "j2": j2, "verdict": verdict,
+                   "n_all": len(sel), "years": yc, "top_m": top_m}
+    st_report(res, cal_ts, start_idx, split_idx, data_end, rng_note, need, D, cap, nmax, slip, S, n_x)
+    return 0
+
+
+def st_report(res, cal_ts, start_idx, split_idx, data_end, rng_note, need, D, cap, nmax, slip, S, n_x):
+    T = len(cal_ts)
+    print("\n【別手法の検証5：数日で大きく下げた株を買う（短期の逆張り。st_lab1）】（基準は結果を見る前に決めたもの。計画はプロジェクトの st_lab_plan_2026-11-04）")
+    print(f"  期間 … {cal_ts[start_idx].date()}〜{cal_ts[T - 1].date()}（株価のデータの終わり {pd.Timestamp(data_end).date()}）。"
+          f"前半 〜{cal_ts[split_idx - 1].date()}・後半 {cal_ts[split_idx].date()}〜")
+    print(f"  範囲 … ツールと同じ範囲（前の月末で判定）に一度でも入った {S}銘柄（うち今は上場していない銘柄 {n_x}）"
+          + (f"。{rng_note}" if rng_note else ""))
+    print(f"  決まり … 合図はその日の終値まで・翌営業日の寄りで買い・決めた日数あとの寄りで売る。超過＝値上がり − 同じ期間の TOPIX − 往復{2 * slip * 100:.1f}％。"
+          f"運用は元本{cap / 1e4:,.0f}万円・{nmax}銘柄まで・1株単位・特定口座の税")
+    print("\n  1. 1回ごとの成績（「前半 ／ 後半」）")
+    print("     " + f"{'形':<34}{'件数':>14}{'超過の平均':>18}{'超過の中央値':>18}{'勝ち':>12}{'でたらめA':>10}{'でたらめB':>10}  J1")
+    for vn, r in res.items():
+        hh = r["halves"]
+
+        def _g(k, fmt):
+            return " ／ ".join((fmt.format(o[k]) if o else "—") for o in hh)
+        print("     " + f"{vn + ' ' + r['label']:<34}{_g('n', '{:,}'):>14}{_g('mean', '{:+.2f}％'):>18}{_g('med', '{:+.2f}％'):>18}"
+              f"{_g('win', '{:.0f}％'):>12}{_g('beatA', '{}'):>10}{_g('beatB', '{}'):>10}  {'満たす' if r['j1'] else '満たさない'}")
+    print("     でたらめの平均（超過、％。「前半 ／ 後半」） … " + " ・ ".join(
+        f"{vn} A " + " ／ ".join((f"{o['mA']:+.2f}" if o else "—") for o in r["halves"]) + " B "
+        + " ／ ".join((f"{o['mB']:+.2f}" if o else "—") for o in r["halves"]) for vn, r in res.items()))
+    print(f"     （でたらめ A＝同じ銘柄・でたらめな日、B＝同じ日・でたらめな範囲の銘柄。{D}回のうち平均が上回った回数。J1 は両方の期間で両方とも{need}回以上）")
+    print("\n  2. 実際の運用（清算後の年率％。配当は入れない。「前半 ／ 後半」）")
+    print("     " + f"{'形':<6}{'P1 現金で待つ':>16}{'P2 TOPIXで待つ':>16}{'TOPIX':>14}{'P2−TOPIX':>14}{'P2 片道0.3％':>16}{'P2 の最大下落':>14}{'買い/年':>12}{'枠で買えない':>12}  J2")
+    for vn, r in res.items():
+        sm = r["sims"]
+
+        def _s(k, fmt):
+            return " ／ ".join((fmt.format(sm[p][k]) if p in sm else "—") for p in ("前半", "後半"))
+        dif = " ／ ".join((f"{sm[p]['P2'] - sm[p]['TX']:+.1f}" if p in sm else "—") for p in ("前半", "後半"))
+        print("     " + f"{vn:<6}{_s('P1', '{:.1f}'):>16}{_s('P2', '{:.1f}'):>16}{_s('TX', '{:.1f}'):>14}{dif:>14}{_s('P2h', '{:.1f}'):>16}"
+              f"{_s('mdd2', '{:.0f}％'):>14}{_s('buys', '{:.0f}'):>12}{_s('full', '{:.0f}％'):>12}  {'満たす' if r['j2'] else '満たさない'}")
+    print("     通し（参考） … " + " ・ ".join(
+        f"{vn} P2 {r['sims']['全体']['P2']:.1f}％（片道0.3％ {r['sims']['全体']['P2h']:.1f}％）" for vn, r in res.items() if "全体" in r["sims"])
+          + (f" ・ TOPIX {next(iter(res.values()))['sims']['全体']['TX']:.1f}％" if "全体" in next(iter(res.values()))["sims"] else ""))
+    print("\n  3. 合図の数（年ごと）と、いちばん多かった月")
+    yrs = sorted({y for r in res.values() for y in r["years"]})
+    print("     " + f"{'形':<6}" + "".join(f"{y:>8}" for y in yrs) + "   多かった月")
+    for vn, r in res.items():
+        print("     " + f"{vn:<6}" + "".join(f"{r['years'].get(y, 0):>8,}" for y in yrs) + "   "
+              + " ・ ".join(f"{m} {n:,}" for m, n in r["top_m"]))
+    print("\n  4. 判定のまとめ")
+    print("     " + " ・ ".join(f"{vn} {r['verdict']}" for vn, r in res.items()))
+    go = [vn for vn, r in res.items() if r["verdict"] == "20年分で確かめる"]
+    print("     20年分で確かめる候補 … " + ("・".join(go) if go else "なし"))
 
 
 def main() -> int:
@@ -14578,11 +14992,14 @@ def main() -> int:
         args.only = "tier_pit_mix_scr,line_2y_pit,eye_2y_pit,line_buy_pit,eye_buy_pit"
     # 別手法の検証1（2026年11月3日に追加）：業績の上方修正に乗る手法。パネルは作らず、この検証だけを回す
     args.rev_lab1 = (args.only or "").strip() == "rev_lab1"
+    # 別手法の検証5（2026年11月4日に追加）：短期の逆張り。rev_lab1 と同じく、パネルは作らず、この検証だけを回す
+    args.st_lab1 = (args.only or "").strip() == "st_lab1"
     # 別手法の検証2（2026年11月3日に追加）：手法の部品箱。本番と同じパネルを作るため、比較するルールを本番に置き換え、分位は12か月にする
     args.long_rev2 = (args.only or "").strip() == "long_rev2"
     # 別手法の検証4（2026年11月4日に追加）：本番に ETF を決まった比率で足す。パネルは部品箱と同じ作り方
-    args.etf_lab1 = (args.only or "").strip() == "etf_lab1"
-    args.rev_lab2 = (args.only or "").strip() in ("rev_lab2", "long_rev2", "etf_lab1")
+    args.etf_lab2 = (args.only or "").strip() == "etf_lab2"
+    args.etf_lab1 = (args.only or "").strip() in ("etf_lab1", "etf_lab2")
+    args.rev_lab2 = (args.only or "").strip() in ("rev_lab2", "long_rev2", "etf_lab1", "etf_lab2")
     if args.rev_lab2:
         args.only = "live_small1_pit"
         args.lookback = 12
@@ -14675,7 +15092,7 @@ def main() -> int:
     _etf_px = {}
     if getattr(args, "etf_test", False) or getattr(args, "luck_test", False) or getattr(args, "near_test", False) \
             or getattr(args, "sector_test", False) or getattr(args, "long_any", False) \
-            or getattr(args, "rev_lab1", False) or getattr(args, "rev_lab2", False):
+            or getattr(args, "rev_lab1", False) or getattr(args, "rev_lab2", False) or getattr(args, "st_lab1", False):
         _eq = store.setdefault("etf_quotes", {})
         key = os.environ.get("J_QUANTS_API_KEY")
         if key:
@@ -14708,7 +15125,7 @@ def main() -> int:
                    or getattr(args, "luck_test", False) or getattr(args, "near_test", False)
                    or getattr(args, "sector_test", False)
                    or getattr(args, "long_any", False)
-                   or getattr(args, "rev_lab1", False) or getattr(args, "rev_lab2", False))
+                   or getattr(args, "rev_lab1", False) or getattr(args, "rev_lab2", False) or getattr(args, "st_lab1", False))
     if getattr(args, "survivor_test", False) or _need_scale:
         if not store.get("pit_complete") or (_need_scale and not store.get("pit_scale_complete")):
             key = os.environ.get("J_QUANTS_API_KEY")
@@ -14854,6 +15271,8 @@ def main() -> int:
 
     if getattr(args, "rev_lab1", False):
         return rev_lab1_main(store, args)
+    if getattr(args, "st_lab1", False):
+        return st_lab1_main(store, args)
 
     log.info("パネルを作成中…")
     panel = build_panel(store, args.years, args.lookback)
