@@ -6626,6 +6626,12 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                         and not (_dc is not None and not pd.isna(_dc) and float(_dc) > 0)):
                     diag["drop_skip"] = diag.get("drop_skip", 0) + 1
                     continue    # 株価の下落だけで利回りが上がった銘柄は買わない
+            if cfg.get("skip_col"):
+                # 別手法の検証6（2026年11月4日に追加）：この列が True の銘柄は、この月は新しく買わない（買い増しもしない）
+                _sv = row.get(cfg["skip_col"])
+                if _sv is not None and _sv == _sv and bool(_sv):
+                    diag["skip_col"] = diag.get("skip_col", 0) + 1
+                    continue
             p = level(row)
             ent = entry_for(row)
             need = [required_pct(e, row, dyn) if measure == "pct" else e
@@ -14767,6 +14773,300 @@ def st_report(res, cal_ts, start_idx, split_idx, data_end, rng_note, need, D, ca
     print("     20年分で確かめる候補 … " + ("・".join(go) if go else "なし"))
 
 
+# ── 別手法の検証6（mg_lab1・long_mg1。2026年11月4日に追加。計画はプロジェクトの mg_lab_plan_2026-11-04）──
+#   信用取引週末残高（/v2/markets/margin-interest）で、買い残の重い株・軽い株を比べ、本番から重い株を外す形を試す。
+#   今までのモードには何も足さない（「比較するルール」が mg_lab1・long_mg1 のときだけ動く。simulate の skip_col もこの回だけが使う）。
+MG_LAG_DAYS = 7          # 週末の残高は翌週の火曜ごろの公表 → その月末より7日以上前の残高だけを使う
+MG_STALE_DAYS = 35       # その月末より35日以上前の残高しかなければ、その月は使わない（データが途切れた銘柄）
+MG_VOL_DAYS = 20         # 買い残日数の分母：残高の日までの20営業日の出来高の平均
+MG_HEAVY = 0.20          # C9：その月の範囲（買い残日数が出せた銘柄）で、上位20％を「重い」とする
+MG_COVER_MIN = 0.70      # データの確かめ：範囲の銘柄のうち、買い残日数が出せた割合の下限
+MG_COVER_BAD = 3         # その割合が下限未満の月がこれ以上あれば、結果は保留
+
+
+def _mg_num(v):
+    try:
+        x = float(v)
+        return x if x == x else None
+    except (TypeError, ValueError):
+        return None
+
+
+def mg_refresh(jq: "JQ", store: dict):
+    """いまの一覧・その時点の一覧のすべての銘柄の信用取引週末残高を取る。取った分は覚えておき、時間切れなら次の実行で続きから。
+    終わったら True、時間切れなら False、契約プランに含まれなければ None。"""
+    done = set(store.get("mg_done") or [])
+    mg = store.setdefault("margin", {})
+    codes = sorted(set(store.get("quotes", {})) | set(store.get("x_quotes") or {}))
+    todo = [c for c in codes if c not in done]
+    if todo:
+        log.info("別手法の検証6：信用取引週末残高を取っています（残り %d銘柄・開始から%.0f分）…", len(todo), _elapsed_min())
+    last_save = time.monotonic()
+    path = "/v2/markets/margin-interest"
+    for i, c in enumerate(todo, 1):
+        if _elapsed_min() >= FETCH_BUDGET_MIN:
+            store["mg_done"] = sorted(done)
+            save_store(store, "信用残高の取得を途中まで保存しました")
+            return False
+        time.sleep(API_SLEEP)
+        try:
+            rows = jq.get(path, {"code": c})
+        except NotAllowed as e:
+            log.error("信用取引週末残高が取れません（%s）。契約プランに含まれていない可能性があります", e)
+            return None
+        except RangeTooLong:
+            yrs = _ok_years or (max(LONG_YEARS) if LONG_MODE else 9)
+            frm = (date.today() - timedelta(days=int(365.25 * yrs) - 5)).isoformat()
+            try:
+                rows = jq.get(path, {"code": c, "from": frm, "to": date.today().isoformat()})
+            except Exception as e:
+                log.warning("信用残高の取得に失敗 %s: %s", c, e)
+                continue
+        except Exception as e:
+            log.warning("信用残高の取得に失敗 %s: %s", c, e)
+            continue
+        rec = []
+        for r in rows or []:
+            d = str(r.get("Date") or "")[:10]
+            if len(d) == 10:
+                rec.append((d, _mg_num(r.get("LongVol")), _mg_num(r.get("ShrtVol")), str(r.get("IssType") or "")))
+        mg[c] = sorted(rec)
+        done.add(c)
+        if i % 200 == 0:
+            log.info("  信用残高 %d/%d（開始から%.0f分）", i, len(todo), _elapsed_min())
+        if (time.monotonic() - last_save) / 60 >= FETCH_SAVE_EVERY_MIN:
+            store["mg_done"] = sorted(done)
+            save_store(store, "途中まで保存しました")
+            last_save = time.monotonic()
+    store["mg_done"] = sorted(done)
+    store["mg_complete"] = True
+    save_store(store, "信用残高の取得が終わりました")
+    return True
+
+
+def mg_cols_for(rows, rec, dates) -> tuple[np.ndarray, np.ndarray]:
+    """1銘柄の、月末ごとの買い残日数と信用倍率（その月末より MG_LAG_DAYS 日以上前の最新の残高。MG_STALE_DAYS 日より古ければ空）。
+    rows … 株価の行（分割を調整した出来高と、分割の係数を使う）。rec … [(日付, 買い残, 売り残, 銘柄区分), …]（日付の順）。"""
+    n = len(dates)
+    days_, ratio_ = np.full(n, np.nan), np.full(n, np.nan)
+    if not rec:
+        return days_, ratio_
+    df = pd.DataFrame(rows or [])
+    if df.empty or "Date" not in df.columns:
+        return days_, ratio_
+    vk = next((k for k in ("AdjVo", "AdjustmentVolume", "Vo", "Volume") if k in df.columns), None)
+    px = _rev_px(rows)
+    if vk is None or px.empty:
+        return days_, ratio_
+    vo = pd.DataFrame({"date": pd.to_datetime(df["Date"]).astype("datetime64[ns]"), "vo": pd.to_numeric(df[vk], errors="coerce")})
+    vo = vo.dropna().drop_duplicates("date", keep="last").sort_values("date").set_index("date")["vo"]
+    v20 = vo.rolling(MG_VOL_DAYS, min_periods=MG_VOL_DAYS).mean()
+    evx = _div_events(px[["date", "adj"]])
+    w_d = np.array([np.datetime64(r[0]) for r in rec], dtype="datetime64[ns]")
+    lv = np.array([np.nan if r[1] is None else r[1] for r in rec], dtype=float)
+    sv = np.array([np.nan if r[2] is None else r[2] for r in rec], dtype=float)
+    it = np.array([r[3] for r in rec])
+    ok = it != "3"
+    vv = v20.reindex(pd.DatetimeIndex(w_d), method="ffill").to_numpy(dtype=float) if len(v20) else np.full(len(rec), np.nan)
+    fac = np.array([_fac_from(evx, pd.Timestamp(d) + pd.Timedelta(days=1)) for d in w_d], dtype=float)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        kd = np.where(ok & (vv > 0) & (fac > 0) & np.isfinite(lv), (lv / fac) / vv, np.nan)
+        kr = np.where(ok & (it == "2") & (sv > 0) & np.isfinite(lv), lv / sv, np.nan)
+    for j, m in enumerate(dates):
+        cut = np.datetime64(pd.Timestamp(m) - pd.Timedelta(days=MG_LAG_DAYS))
+        k = int(np.searchsorted(w_d, cut, side="right")) - 1
+        if k < 0 or (pd.Timestamp(m) - pd.Timestamp(w_d[k])).days > MG_STALE_DAYS:
+            continue
+        days_[j], ratio_[j] = kd[k], kr[k]
+    return days_, ratio_
+
+
+def mg_add_cols(store: dict, panel: pd.DataFrame) -> pd.DataFrame:
+    """パネルに、買い残日数（mg_days）・信用倍率（mg_ratio）・重い株の印（mg_heavy：その月の範囲で買い残日数が上位 MG_HEAVY）を足す。"""
+    mg = store.get("margin") or {}
+    qs = store.get("quotes", {})
+    dates = sorted(pd.to_datetime(panel["date"].unique()))
+    di = {d: j for j, d in enumerate(dates)}
+    D, Rt = {}, {}
+    for c in panel["code"].unique():
+        a_, b_ = mg_cols_for(qs.get(c), mg.get(c), dates)
+        D[c], Rt[c] = a_, b_
+    panel = panel.copy()
+    jj = pd.to_datetime(panel["date"]).map(di).to_numpy()
+    cc = panel["code"].to_numpy()
+    panel["mg_days"] = [D[c][j] for c, j in zip(cc, jj)]
+    panel["mg_ratio"] = [Rt[c][j] for c, j in zip(cc, jj)]
+    rng = panel["in_uni_live"].astype(bool) if "in_uni_live" in panel.columns else pd.Series(True, index=panel.index)
+    pr = panel["mg_days"].where(rng).groupby(panel["date"]).rank(pct=True)
+    panel["mg_heavy"] = (pr > 1.0 - MG_HEAVY).fillna(False) & rng
+    return panel
+
+
+def mg_lab1_main(store: dict, args, panel: pd.DataFrame) -> int:
+    """別手法の検証6：信用の買い残（mg_lab1・long_mg1）。結果を印字して 0 を返す。"""
+    slip = float(args.slip_bps) / 10000.0
+    if panel.empty or "in_uni_live" not in panel.columns:
+        print("\n■ 別手法の検証6：パネルが空か、ツールと同じ範囲の列がありません。")
+        return 1
+    if not store.get("margin"):
+        print("\n■ 別手法の検証6：キャッシュに信用取引週末残高がありません。")
+        return 1
+    log.info("別手法の検証6：買い残日数と信用倍率を出しています…")
+    panel = mg_add_cols(store, panel)
+    dates = sorted(pd.to_datetime(panel["date"].unique()))
+    days = {d: g.set_index("code") for d, g in panel.groupby("date")}
+    codes = sorted(panel["code"].unique())
+    cidx = {c: i for i, c in enumerate(codes)}
+    PX = rev2_month_px(store, codes, dates)
+
+    def _rng(day):
+        return day[day["in_uni_live"].astype(bool)]
+    MC = {"G1": [], "G2": []}
+
+    def _mcap_med(d_, sel):
+        if not sel or "sh" not in d_.columns:
+            return np.nan
+        m_ = (pd.to_numeric(d_.loc[sel, "price"], errors="coerce") * pd.to_numeric(d_.loc[sel, "sh"], errors="coerce")).dropna()
+        return float(m_.median()) if len(m_) else np.nan
+
+    def _mk(col, asc, tag=None):
+        def pick(day, j, dt):
+            d_ = _rng(day)
+            s_ = pd.to_numeric(d_[col], errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+            sel = list(s_.sort_values(ascending=asc, kind="stable").index[:REV2_N])
+            if tag and j >= REV2_HIST:
+                MC[tag].append(_mcap_med(d_, sel))
+            return sel
+        return pick
+    V, NS = {}, {k: [] for k in ("G1", "G2", "G3", "G4")}
+    V["G1"] = rev2_sleeve(dates, days, PX, cidx, _mk("mg_days", True, "G1"), slip, NS["G1"])
+    V["G2"] = rev2_sleeve(dates, days, PX, cidx, _mk("mg_days", False, "G2"), slip, NS["G2"])
+    V["G3"] = rev2_sleeve(dates, days, PX, cidx, _mk("mg_ratio", True), slip, NS["G3"])
+    V["G4"] = rev2_sleeve(dates, days, PX, cidx, _mk("mg_ratio", False), slip, NS["G4"])
+    kw = dict(tier_budget=True, dividends=True, slip_bps=args.slip_bps, fee_bps=args.fee_bps, tax_rate=0.0, ramp=0)
+    diag9 = {}
+    for key, cfg in (("C1", VARIANTS["live_small1_pit"]), ("C9", dict(VARIANTS["live_small1_pit"], skip_col="mg_heavy"))):
+        r_ = simulate(panel, cfg, args.capital, args.max_names, **kw)
+        if key == "C9":
+            diag9 = r_.get("diag") or {}
+        cv_ = r_["curve"]
+        V[key] = pd.Series(cv_["value"].to_numpy(dtype=float), index=pd.DatetimeIndex(cv_["date"]), dtype=float) \
+            .reindex(pd.DatetimeIndex(dates)).ffill()
+    tp = etf_series((store.get("etf_quotes") or {}).get("1306") or [])
+    topix_m = tp.reindex(pd.DatetimeIndex(dates), method="ffill") if not tp.empty else pd.Series(dtype=float)
+    tr = pd.Series(np.nan, index=pd.DatetimeIndex(dates))
+    if not topix_m.empty:
+        dist = [(pd.Timestamp(d_), float(a_) / 100.0) for d_, a_ in ETF_DIST.get("1306", ())]
+        for j in range(1, len(dates)):
+            d0, d1 = dates[j - 1], dates[j]
+            dd = sum(a_ for d_, a_ in dist if d0 < d_ <= d1)
+            tr.iloc[j] = (float(topix_m.iloc[j]) + dd) / float(topix_m.iloc[j - 1]) - 1.0
+    j0 = REV2_HIST
+    if len(dates) <= j0 + 12:
+        print("\n■ 別手法の検証6：比べる期間が短すぎます（パネルの月数 %d）。" % len(dates))
+        return 1
+    ev_dates = dates[j0:]
+    R = pd.DataFrame({k: V[k].reindex(pd.DatetimeIndex(ev_dates)).pct_change() for k in ("C1", "C9", "G1", "G2", "G3", "G4")})
+    R = R.iloc[1:]
+    TX = tr.reindex(R.index)
+    split = pd.Timestamp(REV2_SPLIT_LONG if LONG_MODE else REV2_SPLIT)
+    halves = {"前半": R.index < split, "後半": R.index >= split, "通し": np.ones(len(R), dtype=bool)}
+
+    def _st(s):
+        return {h: rev2_stats(s[m_]) for h, m_ in halves.items()}
+    ST = {k: _st(R[k]) for k in R.columns}
+    ST["TX"] = _st(TX)
+    HH = ("前半", "後半")
+    vtx = {}
+    for k in ("G1", "G2", "G3", "G4"):
+        d_ = [ST[k][h]["ann"] - ST["TX"][h]["ann"] for h in HH]
+        vtx[k] = "TOPIX より良い" if all(x >= REV2_PT for x in d_) else ("TOPIX より悪い" if all(x <= -REV2_PT for x in d_) else "決められない")
+    sp = {}
+    for nm, a_, b_ in (("買い残日数（G2 重い − G1 軽い）", "G2", "G1"), ("信用倍率（G4 高い − G3 低い）", "G4", "G3")):
+        d_ = [ST[a_][h]["ann"] - ST[b_][h]["ann"] for h in HH]
+        sp[nm] = (d_, "重い株は負ける" if all(x <= -REV2_PT for x in d_) else ("逆（重い株が勝つ）" if all(x >= REV2_PT for x in d_) else "決められない"))
+    d9 = [ST["C9"][h]["ann"] - ST["C1"][h]["ann"] for h in HH]
+    dd9 = ST["C9"]["通し"]["mdd"] - ST["C1"]["通し"]["mdd"]
+    v9 = "外すと良い" if (all(x >= REV2_PT for x in d9) and dd9 < REV2_DD) else ("外すと悪い" if all(x <= -REV2_PT for x in d9) else "決められない")
+    # データの確かめ：比べる期間の各月で、範囲の銘柄のうち買い残日数が出せた割合
+    cov = []
+    for d in ev_dates[1:]:
+        g = _rng(days[d])
+        cov.append(float(g["mg_days"].notna().mean()) if len(g) else 0.0)
+    n_low = int(sum(1 for x in cov if x < MG_COVER_MIN))
+    bad = n_low >= MG_COVER_BAD
+    n_heavy = float(np.mean([int(_rng(days[d])["mg_heavy"].sum()) for d in ev_dates[1:]]))
+    corr = R[["C1", "G1", "G2", "G3", "G4"]].assign(TX=TX).corr()
+    SS = {}
+    for a_, b_, lab_ in (("C9", "C1", "C9 重い株を外す ＞ C1 本番"), ("G1", "G2", "G1 軽い ＞ G2 重い"), ("G3", "G4", "G3 倍率が低い ＞ G4 高い")):
+        SS[lab_] = rev2_start_share(R[a_], R[b_], split)
+    mg_report(R, ST, vtx, sp, d9, dd9, v9, cov, n_low, bad, n_heavy, diag9, MC, NS, corr, SS, dates, store)
+    return 0
+
+
+def mg_report(R, ST, vtx, sp, d9, dd9, v9, cov, n_low, bad, n_heavy, diag9, MC, NS, corr, SS, dates, store):
+    HH = ("前半", "後半")
+
+    def _h(st, k, fmt="{:.1f}"):
+        return " ／ ".join(fmt.format(st[h][k]) for h in HH)
+    if LONG_MODE:
+        print("\n【別手法の検証6を20年分で（long_mg1）：信用の買い残が重い株・軽い株】（基準は結果を見る前に決めたもの。計画はプロジェクトの mg_lab_plan_2026-11-04）")
+        print("  （表の「前半 ／ 後半」は「見ていない期間 ／ 最近」）")
+    else:
+        print("\n【別手法の検証6：信用の買い残が重い株・軽い株（mg_lab1）】（基準は結果を見る前に決めたもの。計画はプロジェクトの mg_lab_plan_2026-11-04）")
+    split = REV2_SPLIT_LONG if LONG_MODE else REV2_SPLIT
+    print(f"  期間 … パネル {pd.Timestamp(dates[0]).date()}〜{pd.Timestamp(dates[-1]).date()}。比べる期間 {R.index[0].date()}〜{R.index[-1].date()}"
+          f"（{len(R)}か月。前半 〜{pd.Timestamp(split).date()} より前・後半 それ以後）")
+    mg = store.get("margin") or {}
+    n_rec = sum(len(v) for v in mg.values())
+    first = min((v[0][0] for v in mg.values() if v), default="—")
+    print(f"  データ … 信用取引週末残高 {len(mg)}銘柄・{n_rec:,}件（いちばん古い日 {first}）。その月末より{MG_LAG_DAYS}日以上前の最新の残高を使う（{MG_STALE_DAYS}日より古ければ使わない）")
+    print(f"  データの確かめ … 範囲の銘柄のうち買い残日数が出せた割合 平均 {np.mean(cov) * 100:.0f}％・最低 {min(cov) * 100:.0f}％・"
+          f"{MG_COVER_MIN * 100:.0f}％未満の月 {n_low}か月 … " + ("外れ（結果は保留）" if bad else "基準の中"))
+    print("  確かめ … 1か月あたりの銘柄数（比べる期間） … " + " ・ ".join(
+        f"{k} {np.mean(v[REV2_HIST:]) if len(v) > REV2_HIST else float('nan'):.1f}" for k, v in NS.items())
+          + f" ・ 重い株の印（範囲の上位{MG_HEAVY * 100:.0f}％） 1か月あたり {n_heavy:.0f}銘柄 ・ C9 で買わなかった回数 {int(diag9.get('skip_col', 0)):,}")
+    m1 = np.nanmean(MC["G1"]) if MC["G1"] else np.nan
+    m2 = np.nanmean(MC["G2"]) if MC["G2"] else np.nan
+    print(f"  大きさ … 選んだ20銘柄の時価総額の中央値（月の平均） G1 軽い {m1 / 1e8:,.0f}億円 ・ G2 重い {m2 / 1e8:,.0f}億円")
+    print("\n  1. 部品（年率％。「前半 ／ 後半」。配当は受け取る・税なし）")
+    print("     " + f"{'部品':<24}{'年率':>14}{'TOPIXとの差':>16}{'最大下落':>14}{'ばらつき':>12}  判定（TOPIX と比べて）")
+    lab = {"C1": "C1 本番", "C9": "C9 本番から重い株を外す", "G1": "G1 買い残の軽い株", "G2": "G2 買い残の重い株",
+           "G3": "G3 信用倍率の低い株", "G4": "G4 信用倍率の高い株"}
+    for k in ("C1", "C9", "G1", "G2", "G3", "G4"):
+        dif = " ／ ".join(f"{ST[k][h]['ann'] - ST['TX'][h]['ann']:+.1f}" for h in HH)
+        print("     " + f"{lab[k]:<24}{_h(ST[k], 'ann'):>14}{dif:>16}{_h(ST[k], 'mdd', '{:.0f}％'):>14}{_h(ST[k], 'vol', '{:.0f}'):>12}  {vtx.get(k, '')}")
+    print("     " + f"{'TOPIX（1306）':<24}{_h(ST['TX'], 'ann'):>14}{'':>16}{_h(ST['TX'], 'mdd', '{:.0f}％'):>14}{_h(ST['TX'], 'vol', '{:.0f}'):>12}")
+    print("     通し … " + " ・ ".join(f"{k} {ST[k]['通し']['ann']:.1f}％（最大下落 {ST[k]['通し']['mdd']:.0f}％）" for k in ("C1", "C9", "G1", "G2", "G3", "G4", "TX")))
+    print("\n  2. 重さの効き目（年率の差、pt。「前半 ／ 後半」）")
+    for nm, (d_, v_) in sp.items():
+        print(f"     {nm} … " + " ／ ".join(f"{x:+.1f}" for x in d_) + f" … {v_}")
+    print("\n  3. 本番から重い株を外す（C9 と C1）")
+    print(f"     C9 年率 {_h(ST['C9'], 'ann')}（C1 {_h(ST['C1'], 'ann')}）・差 " + " ／ ".join(f"{x:+.1f}" for x in d9)
+          + f"pt・最大下落（通し） C9 {ST['C9']['通し']['mdd']:.0f}％ ／ C1 {ST['C1']['通し']['mdd']:.0f}％（差 {dd9:+.1f}pt） … {v9}")
+    print("\n  4. 月ごとの成績のつながり（相関）")
+    cols = ["C1", "G1", "G2", "G3", "G4", "TX"]
+    print("     " + f"{'':<4}" + "".join(f"{b_:>7}" for b_ in cols))
+    for a_ in cols:
+        print("     " + f"{a_:<4}" + "".join(f"{corr.loc[a_, b_]:>7.2f}" for b_ in cols))
+    print("\n  5. 年ごとの成績（％）")
+    yr = {k: (1 + R[k]).groupby(R.index.year).prod() - 1 for k in ("C1", "C9", "G1", "G2", "G3", "G4")}
+    print("     " + f"{'年':<6}" + "".join(f"{k:>8}" for k in yr))
+    for y in sorted(yr["C1"].index):
+        print("     " + f"{y:<6}" + "".join(f"{yr[k][y] * 100:>8.1f}" for k in yr))
+    print(f"\n  6. 始めた月をずらした見方（参考。毎月末から{REV2_START_YEARS}年持ったとき、前者が上回った回の割合。「前半 ／ 後半」に始めた回）")
+    for lab_, v_ in SS.items():
+        print("     " + f"{lab_:<26} … " + " ／ ".join(
+            (f"{v_[h][0] / v_[h][1] * 100:.0f}％（{v_[h][1]}回）" if v_[h][1] else "—") for h in HH))
+    print("\n  7. 判定のまとめ")
+    print("     " + " ・ ".join(f"{nm} {v_}" for nm, (_, v_) in sp.items()) + f" ・ 本番から重い株を外す {v9}")
+    go = [nm for nm, (_, v_) in sp.items() if v_ == "重い株は負ける"] + (["C9"] if v9 == "外すと良い" else [])
+    if LONG_MODE:
+        print("     本番のツールに足す候補（20年分の両方の期間で同じ判定） … " + ("・".join(go) if go else "なし") + ("（保留）" if bad else ""))
+    else:
+        print("     20年分（long_mg1）で確かめる候補 … " + ("・".join(go) if go else "なし") + ("（データの確かめに外れがあるので保留）" if bad else ""))
+
+
 def main() -> int:
     global LONG_MODE, CACHE, PIT_FROM, COMPUTE_START_LIMIT_MIN
     # 結果（print）と進み具合（log）の順番を、ファイルに書き出したときも崩さない。
@@ -15039,12 +15339,15 @@ def main() -> int:
     # 別手法の検証4（2026年11月4日に追加）：本番に ETF を決まった比率で足す。パネルは部品箱と同じ作り方
     args.etf_lab2 = (args.only or "").strip() == "etf_lab2"
     args.etf_lab1 = (args.only or "").strip() in ("etf_lab1", "etf_lab2")
-    args.rev_lab2 = (args.only or "").strip() in ("rev_lab2", "long_rev2", "etf_lab1", "etf_lab2")
+    # 別手法の検証6（2026年11月4日に追加）：信用の買い残。パネルは部品箱と同じ作り方。long_mg1 は20年分（プレミアムのときだけ）
+    args.long_mg1 = (args.only or "").strip() == "long_mg1"
+    args.mg_lab1 = (args.only or "").strip() in ("mg_lab1", "long_mg1")
+    args.rev_lab2 = (args.only or "").strip() in ("rev_lab2", "long_rev2", "etf_lab1", "etf_lab2", "mg_lab1", "long_mg1")
     if args.rev_lab2:
         args.only = "live_small1_pit"
         args.lookback = 12
     # 別手法の検証3（2026年11月3日に追加）：部品箱を20年分（プレミアムのときだけ）。20年分のキャッシュを使い、財務は業績予想の項目つきで取り直す
-    if args.long_rev2:
+    if args.long_rev2 or args.long_mg1:
         args.universe = "prime"
         args.years = 20
         LONG_MODE = True
@@ -15057,7 +15360,7 @@ def main() -> int:
                          or args.long_lab5 or args.long_lab6 or args.long_lab7 or args.long_lab8 or args.long_lab9
                          or args.long_lab10 or args.long_lab11 or args.long_lab12 or args.long_lab13 or args.long_lab14
                          or args.long_lab15 or args.long_lab16 or args.long_lab17 or args.long_lab18 or args.long_lab19 or args.long_lab20 or args.long_lab21 or args.long_lab22 or args.long_lab23 or args.long_lab24 or args.long_lab25
-                         or getattr(args, "long_rev2", False))
+                         or getattr(args, "long_rev2", False) or getattr(args, "long_mg1", False))
     args.long_name = ("long_test" if args.long_test else "long_lab" if args.long_lab
                       else "long_lab2" if args.long_lab2 else "long_lab3" if args.long_lab3
                       else "long_lab4" if args.long_lab4 else "long_lab5" if args.long_lab5
@@ -15066,7 +15369,7 @@ def main() -> int:
                       else "long_lab10" if args.long_lab10 else "long_lab11" if args.long_lab11
                       else "long_lab12" if args.long_lab12 else "long_lab13" if args.long_lab13
                       else "long_lab14" if args.long_lab14 else "long_lab15" if args.long_lab15
-                      else "long_lab16" if args.long_lab16 else "long_lab17" if args.long_lab17 else "long_lab18" if args.long_lab18 else "long_lab19" if args.long_lab19 else "long_lab20" if args.long_lab20 else "long_lab21" if args.long_lab21 else "long_lab22" if args.long_lab22 else "long_lab23" if args.long_lab23 else "long_lab24" if args.long_lab24 else "long_lab25" if args.long_lab25 else "long_rev2" if getattr(args, "long_rev2", False) else "")
+                      else "long_lab16" if args.long_lab16 else "long_lab17" if args.long_lab17 else "long_lab18" if args.long_lab18 else "long_lab19" if args.long_lab19 else "long_lab20" if args.long_lab20 else "long_lab21" if args.long_lab21 else "long_lab22" if args.long_lab22 else "long_lab23" if args.long_lab23 else "long_lab24" if args.long_lab24 else "long_lab25" if args.long_lab25 else "long_rev2" if getattr(args, "long_rev2", False) else "long_mg1" if getattr(args, "long_mg1", False) else "")
 
     OUTDIR.mkdir(parents=True, exist_ok=True)
 
@@ -15194,6 +15497,23 @@ def main() -> int:
                 return EXIT_UNFINISHED
             if _elapsed_min() > COMPUTE_START_LIMIT_MIN:
                 print("\n■ まだ終わっていません（財務は取り終えましたが、計算の時間が残っていません）")
+                print("　 同じ設定のまま、もう一度「Run workflow」を押してください。今度は計算から始まります。")
+                return EXIT_UNFINISHED
+        if getattr(args, "mg_lab1", False) and not store.get("mg_complete"):
+            key = os.environ.get("J_QUANTS_API_KEY")
+            if not key:
+                log.error("J_QUANTS_API_KEY が設定されていません")
+                return 2
+            _mg_ok = mg_refresh(JQ(key), store)
+            if _mg_ok is None:
+                print("\n■ 止めました：信用取引週末残高が取れません（契約プランに含まれていない可能性があります）。")
+                return 1
+            if not _mg_ok:
+                print("\n■ まだ終わっていません（信用取引週末残高を取っている途中です）")
+                print(f"　 取った分は保存しました（開始から{_elapsed_min():.0f}分）。同じ設定のまま、もう一度「Run workflow」を押してください。")
+                return EXIT_UNFINISHED
+            if _elapsed_min() > COMPUTE_START_LIMIT_MIN:
+                print("\n■ まだ終わっていません（信用残高は取り終えましたが、計算の時間が残っていません）")
                 print("　 同じ設定のまま、もう一度「Run workflow」を押してください。今度は計算から始まります。")
                 return EXIT_UNFINISHED
         UNI_NOW = {u["code"] for u in store["universe"]}
@@ -15441,6 +15761,8 @@ def main() -> int:
                  float(_v9.groupby("date")["vol_top_pit"].sum().mean()))
 
     if getattr(args, "rev_lab2", False):
+        if getattr(args, "mg_lab1", False):
+            return mg_lab1_main(store, args, panel)
         if getattr(args, "etf_lab1", False):
             return etf_lab1_main(store, args, panel)
         return rev_lab2_main(store, args, panel)
