@@ -1806,8 +1806,8 @@ def x_days(store: dict, name: str) -> list:
     return [str(d) for d in days]
 
 
-def x_complete(store: dict, xs: dict) -> bool:
-    for n in X_SETS:
+def x_complete(store: dict, xs: dict, names=None) -> bool:
+    for n in (names or X_SETS):
         st = xs.get(n, {})
         if st.get("bad"):
             continue
@@ -1816,11 +1816,13 @@ def x_complete(store: dict, xs: dict) -> bool:
     return True
 
 
-def fetch_x(jq, store: dict, xs: dict) -> bool:
+def fetch_x(jq, store: dict, xs: dict, names=None) -> bool:
     """配当金情報・空売り残高の報告・決算発表予定日・信用取引の週末残高を、日ごとに取る。時間切れなら取った分を保存して False。
     取れない種類（プランにない・項目が違う・最近の日でも取れない）は、その種類だけ「保留」にして先へ進む。"""
     last = time.monotonic()
     for name, (path, _start, prm, _kind) in X_SETS.items():
+        if names and name not in names:
+            continue
         st = xs.setdefault(name, {"done": set(), "fail": set(), "rows": [], "keys": None})
         st.setdefault("fail", set())
         if st.get("bad"):
@@ -2056,14 +2058,24 @@ def lab5(store: dict, xs: dict) -> int:
     return 0
 
 
-def lab5_events(store: dict, xs: dict, fill: bool = False) -> int:
-    """5段目の出来事の型（DIVUP・E2C）。fill=True なら10段目（空いている資金を 1306 で持つ形）。"""
-    log("5段目の出来事の型を回します（指標を作っています）…" if not fill else "10段目（出来事の型 ＋ 空いている資金は TOPIX）を回します（指標を作っています）…")
-    D = build(store)
+CONFIRM_X_FROM = pd.Timestamp("2014-03-31")      # 11段目の確かめる段階：配当金情報が1年分たまってから比べ始める
+
+
+def lab5_events(store: dict, xs: dict, fill: bool = False, topn: int | None = None, D: dict | None = None, keys: set | None = None) -> int:
+    """5段目の出来事の型（DIVUP・E2C）。fill=True なら10段目（空いている資金を 1306 で持つ形）。
+    topn を渡すと11段目（買う日の前の月末に、時価総額の順位が上から topn 位までの銘柄だけ。でたらめも同じ範囲から）。keys で回す型を絞る。"""
+    stage = "11段目（出来事の型を大型株だけで ＋ 空いている資金は TOPIX）" if topn else ("10段目（出来事の型 ＋ 空いている資金は TOPIX）" if fill else "5段目の出来事の型")
+    log(f"{stage}を回します" + (f"（上位{topn}社）" if topn else "") + "（指標を作っています）…")
+    if D is None:
+        D = build(store)
     dates, UNI, me_idx, cal = D["dates"], D["UNI"], D["me_idx"], D["cal"]
+    if topn:
+        UNI = UNI & topn_mask(D, topn)
     T = len(cal)
     C = D["C"]
     j0 = next((j for j, t in enumerate(me_idx) if t >= 252), None)
+    if topn and LONG and STAGE == "confirm":
+        j0 = next((j for j, t in enumerate(me_idx) if t >= 252 and dates[j] >= CONFIRM_X_FROM), None)
     t0 = me_idx[j0]
     ev = dates[j0:]
     yrs = max((ev[-1] - ev[0]).days / 365.25, 0.5)
@@ -2200,7 +2212,7 @@ def lab5_events(store: dict, xs: dict, fill: bool = False) -> int:
               (("A", "10日前に買う", lambda: e2c(10), pool_nosched(10)), ("B", "5日前に買う", lambda: e2c(5), pool_nosched(5)))))
     res = {}
     for key, lab, variants in TYPES:
-        if ONLY and key not in ONLY:
+        if (ONLY and key not in ONLY) or (keys is not None and key not in keys):
             continue
         r = {"lab": lab, "var": {}}
         for nm, vlab, mk, pf in variants:
@@ -2209,7 +2221,9 @@ def lab5_events(store: dict, xs: dict, fill: bool = False) -> int:
         res[key] = r
         log(f"  {key} … {r['verdict']}")
     HH = ("前半", "後半")
-    if fill:
+    if topn:
+        print(f"\n【日本株の手法・11段目（出来事の型を時価総額の上位{topn}社だけで ＋ 空いている資金は TOPIX）（wide_lab）】（基準は結果を見る前に決めたもの。計画はプロジェクトの wide_lab_plan11_2026-11-05）")
+    elif fill:
         print("\n【日本株の手法・10段目（出来事の型 ＋ 空いている資金は TOPIX）（wide_lab）：東証全銘柄】（基準は結果を見る前に決めたもの。計画はプロジェクトの wide_lab_plan10_2026-11-05）")
     else:
         print("\n【日本株の手法・5段目（残りの型：出来事）（wide_lab）：東証全銘柄】（基準は結果を見る前に決めたもの。計画はプロジェクトの wide_lab_plan5_2026-11-04）")
@@ -2228,10 +2242,45 @@ def lab5_events(store: dict, xs: dict, fill: bool = False) -> int:
                   f" でたらめ {rn['前半']:.1f} ／ {rn['後半']:.1f}・合図 {x['n_cand']:,}回・買い 前半 {x['nb']['前半']}回・後半 {x['nb']['後半']}回・"
                   f"平均の持ち数 {x['held']:.1f}銘柄・" + (f"1306 の割合 {x['etf'] * 100:.0f}％・" if fill else "") +
                   f"でたらめの買いの回数 {x['fill'] * 100:.0f}％・清算後の通し {((x['liq'] / CAP) ** (1 / yrs) - 1) * 100:.1f}％")
-    print("\n  判定のまとめ（出来事" + ("＋TOPIX" if fill else "") + "）")
+    print("\n  判定のまとめ（出来事" + ("＋TOPIX" if fill else "") + (f"・上位{topn}社" if topn else "") + "）")
     for v in ("候補", "範囲の中では効く", "効かない", "保留（データ不足）"):
         ks = [k for k, r in res.items() if r["verdict"] == v]
         print(f"     {v} … " + ("・".join(ks) if ks else "なし"))
+    if topn and LONG and STAGE == "confirm":
+        print("  ※ 確かめる段階：「前半」＝見ていない期間（2014年3月〜2018年7月）。前半で候補の基準を満たせば「確立」（wide_lab_plan11 の4）")
+    return res
+
+
+def topn_mask(D: dict, n: int) -> np.ndarray:
+    """月末ごとに、範囲の中で時価総額の上から n 位までの印。"""
+    UNI, MC = D["UNI"], D["MCAP"]
+    out = np.zeros(UNI.shape, dtype=bool)
+    for j in range(UNI.shape[1]):
+        idx = np.nonzero(UNI[:, j] & np.isfinite(MC[:, j]))[0]
+        if len(idx):
+            out[idx[np.argsort(-MC[idx, j], kind="stable")[:n]], j] = True
+    return out
+
+
+def lab11(store: dict, xs: dict) -> int:
+    """11段目：DIVUP・E2C を、時価総額の上位500社・1,000社だけで（空いている資金は 1306）。確かめる段階では --cfg（例 DIVUP/TOP1000）で選んだものだけ。"""
+    sel = {}
+    for x in CFG:
+        k, _, u = x.partition("/")
+        sel.setdefault(int(u.upper().replace("TOP", "")), set()).add(k.upper())
+    if LONG and STAGE == "confirm" and not sel:
+        print("\n■ 確かめる段階では、--cfg で候補（例 DIVUP/TOP1000）を指定してください。")
+        return 2
+    D = build(store)
+    allres = {}
+    for n in (500, 1000):
+        if sel and n not in sel:
+            continue
+        allres[n] = lab5_events(store, xs, fill=True, topn=n, D=D, keys=sel.get(n))
+    print("\n【11段目のまとめ】")
+    for n, res in allres.items():
+        for k, r in res.items():
+            print(f"     {k}/TOP{n} … {r['verdict']}")
     return 0
 
 
@@ -2923,7 +2972,7 @@ def bd_score(bd: dict, kind: str):
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab5", "lab6", "lab7", "lab8", "lab9", "lab10"], default="lab1")
+    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab5", "lab6", "lab7", "lab8", "lab9", "lab10", "lab11", "xfetch"], default="lab1")
     ap.add_argument("--combo", default="", help="3回目：1回目で「範囲の中では効く」以上だった型の記号（カンマ区切り）。2つ以上なら SEL として回す")
     ap.add_argument("--only", default="", help="回す型の記号（カンマ区切り。空欄なら全部）。確かめる段階で候補だけを回すとき")
     ap.add_argument("--cfg", default="", help="7段目の確かめる段階で回す組み立て（例: VQM/TOP500/20/Q,NXG/TOP500/20/Q）")
@@ -2967,12 +3016,31 @@ def main() -> int:
         return lab6(store)
     if args.mode == "lab9":
         return lab9(store)
-    if args.mode == "lab10":
+    if args.mode in ("lab10", "lab11", "xfetch"):
         xs = x_load()
-        if not x_complete(store, xs):
-            print("\n■ 5段目のデータ（配当金情報・決算発表予定日）がそろっていません。先に lab5 を回してください。")
-            return 2
-        return lab5_events(store, xs, fill=True)
+        need = ("div", "ed")              # 10・11段目で使うのは、配当金情報と決算発表予定日の履歴だけ
+        if not x_complete(store, xs, need):
+            if args.mode == "lab10":
+                print("\n■ 5段目のデータ（配当金情報・決算発表予定日）がそろっていません。先に lab5 か xfetch を回してください。")
+                return 2
+            key = os.environ.get("J_QUANTS_API_KEY")
+            if not key:
+                print("J_QUANTS_API_KEY が設定されていません")
+                return 2
+            if not fetch_x(yb.JQ(key), store, xs, need):
+                print("\n■ まだ終わっていません（配当金情報などを取っている途中です）。同じ設定のまま、もう一度押してください。")
+                return EXIT_UNFINISHED
+        if args.mode == "xfetch":
+            for n in need:
+                st = xs.get(n, {})
+                d = sorted(st.get("done", ()))
+                print(f"  {n} … {len(st.get('rows', [])):,}件・取れた日 {len(d)}日（{d[0] if d else '-'}〜{d[-1] if d else '-'}）・取れなかった日 {len(st.get('fail', ()))}日" + ("・取るのをやめた：" + str(st['bad']) if st.get('bad') else ""))
+            print("\n■ 配当金情報と決算発表予定日の履歴がそろっています（成績は計算していません）。")
+            return 0
+        if args.mode == "lab11":
+            return lab11(store, xs)
+        lab5_events(store, xs, fill=True)
+        return 0
     if args.mode == "lab5":
         xs = x_load()
         if not x_complete(store, xs):
