@@ -14851,7 +14851,8 @@ def mg_cols_for(rows, rec, dates) -> tuple[np.ndarray, np.ndarray]:
     days_, ratio_ = np.full(n, np.nan), np.full(n, np.nan)
     if not rec:
         return days_, ratio_
-    df = pd.DataFrame(rows or [])
+    # 20年分のキャッシュの株価は詰めた形（numpy の配列）なので、「rows or []」ではなく長さで見る
+    df = pd.DataFrame(rows) if (rows is not None and len(rows)) else pd.DataFrame()
     if df.empty or "Date" not in df.columns:
         return days_, ratio_
     vk = next((k for k in ("AdjVo", "AdjustmentVolume", "Vo", "Volume") if k in df.columns), None)
