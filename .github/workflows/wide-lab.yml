@@ -7,6 +7,7 @@ name: wide-lab
 #   mode=fetch … 東証全銘柄のデータを集める（時間切れなら取った分を保存して止まるので、もう一度押すと続きから）
 #   mode=lab1  … データがそろっていれば、1回目の型（24通り）をまとめて回す
 #   mode=lab2  … 同じく、2回目の型（出来事と暦の7通り）をまとめて回す
+#   mode=lab3  … 3回目（組み合わせ。VQM は固定、SEL は combo に1回目で効いた型を入れる。wide_lab_plan3_2026-11-04）
 #   years=9  … 探す段階（スタンダードで足りる9年分。data/wide_cache.pkl）
 #   years=20 … 確かめる段階（プレミアムの20年分。data/wide_long.pkl。キャッシュの名前を yield-backtest-long- で始めているので、
 #              プレミアムをやめる前に long-cleanup を1回動かせば、yield-backtest の20年分と一緒に消える）
@@ -14,7 +15,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "fetch＝データを集める ／ lab1＝1回目の型（24通り） ／ lab2＝2回目の型（出来事と暦）"
+        description: "fetch＝データを集める ／ lab1＝1回目の型（24通り） ／ lab2＝2回目の型（出来事と暦） ／ lab3＝3回目（組み合わせ）"
         required: true
         default: "fetch"
         type: choice
@@ -22,6 +23,7 @@ on:
           - fetch
           - lab1
           - lab2
+          - lab3
       years:
         description: "9＝探す段階（9年分） ／ 20＝確かめる段階（プレミアムの20年分）"
         required: true
@@ -32,6 +34,10 @@ on:
           - "20"
       only:
         description: "回す型の記号（カンマ区切り。空欄なら全部）。確かめる段階で候補だけを回すとき。例: BP,E1"
+        required: false
+        default: ""
+      combo:
+        description: "lab3 だけ：1回目で「範囲の中では効く」以上だった型の記号（カンマ区切り。2つ以上で SEL を回す）"
         required: false
         default: ""
 
@@ -79,7 +85,7 @@ jobs:
           set +e
           set -o pipefail
           # 途中の様子が実行の画面で見えるように、画面とファイルの両方に出す
-          python wide_lab.py --mode "${{ inputs.mode }}" --only "${{ inputs.only }}" 2>&1 | tee run.log
+          python wide_lab.py --mode "${{ inputs.mode }}" --only "${{ inputs.only }}" --combo "${{ inputs.combo }}" 2>&1 | tee run.log
           code=${PIPESTATUS[0]}
           {
             echo "## wide-lab（${{ inputs.mode }}・${{ inputs.years }}年分${{ inputs.only != '' && format('・{0}', inputs.only) || '' }}）"
