@@ -539,6 +539,9 @@ def sim(ranks: list, PXM: np.ndarray, DIV: np.ndarray, j0: int, keep: int, nmax:
                 cash += g * (1.0 - tax)
                 st["tax"] += g * tax
         rk = ranks[j]
+        if rk is None:            # 入れ替えない月：配当を受け取って評価するだけ
+            vals.append(cash + sum(sh * p_(i, j) for i, (sh, _c) in pos.items()))
+            continue
         rp = {i: k for k, i in enumerate(rk)}
         for i in list(pos):
             if i not in rp or rp[i] >= keep:
@@ -1328,6 +1331,134 @@ def report2(res, ref_bad, ST_TX, TXliq, ev, yrs, D, j0):
     print(f"     （TOPIX の清算後の通し {((TXliq / CAP) ** (1 / yrs) - 1) * 100:.1f}％）")
 
 
+# ───────────────────────── 7段目：組み立て方の探索 ─────────────────────────
+# 計画は wide_lab_plan7_2026-11-04（結果を見る前に決めたもの）。1回目の24通り＋VQM の点数ごとに、
+# 範囲（全銘柄／時価総額の上から1,000位／500位）× 持つ数（10・20・40・100）× 入れ替え（毎月／四半期）を回す。売る決まりは A（持つ数）・B（持つ数の3倍）
+G7_UNIS = (("ALL", None), ("TOP1000", 1000), ("TOP500", 500))
+G7_NS = (10, 20, 40, 100)
+G7_FREQ = (("M", None), ("Q", (3, 6, 9, 12)))
+G7_CARRY = 3                 # 確かめる段階に持っていく数の上限
+
+
+def lab7(store: dict) -> int:
+    log("7段目（組み立て方の探索）を回します（指標を作っています）…")
+    D = build(store)
+    dates, UNI, F, PXM, DIV = D["dates"], D["UNI"], D["F"], D["PXM"], D["DIV"]
+    F["VQM"] = combo_score(F, list(VQM), UNI)
+    M = len(dates)
+    j0 = next((j for j, t in enumerate(D["me_idx"]) if t >= 252), None)
+    if j0 is None or M - j0 < 36:
+        print("\n■ 比べる期間が短すぎます。")
+        return 1
+    ev = dates[j0:]
+    TXv, TXliq = topix_taxed(D, j0)
+    ST_TX = half_stats(TXv, ev)
+    rank_mc = np.full(UNI.shape, np.inf)
+    for j in range(M):
+        idx = np.nonzero(UNI[:, j])[0]
+        o = idx[np.argsort(-D["MCAP"][idx, j])]
+        rank_mc[o, j] = np.arange(len(o))
+    unis = {nm: (UNI if lim is None else (UNI & (rank_mc < lim))) for nm, lim in G7_UNIS}
+    months = [d.month for d in dates]
+
+    def thin(rk, fq):
+        return rk if fq is None else [r if months[j] in fq else None for j, r in enumerate(rk)]
+    # でたらめ（範囲・持つ数・入れ替えごとに20回）
+    rnd = {}
+    rng = np.random.default_rng(20261104)
+    seeds = [rng.random(UNI.shape[0]) for _ in range(N_RAND)]
+    for un, U in unis.items():
+        rks = [ranks_from(np.repeat(sd[:, None], M, axis=1), U) for sd in seeds]
+        for n in G7_NS:
+            for fn, fq in G7_FREQ:
+                for rule, kp in (("A", n), ("B", 3 * n)):
+                    rnd[(un, n, fn, rule)] = [half_stats(sim(thin(rk, fq), PXM, DIV, j0, kp, nmax=n)[0], ev) for rk in rks]
+    log(f"  でたらめの比べ … {len(rnd)}通り × {N_RAND}回")
+    keys = [k for k, _ in LAB1] + ["VQM"]
+    labs = dict(LAB1)
+    labs["VQM"] = "割安・質・勢い（固定）"
+    res = []
+    for key in keys:
+        if ONLY and key not in ONLY:
+            continue
+        for un, U in unis.items():
+            rk_full = ranks_from(F[key], U)
+            for n in G7_NS:
+                for fn, fq in G7_FREQ:
+                    rk = thin(rk_full, fq)
+                    r = {"key": key, "uni": un, "n": n, "freq": fn}
+                    ok_tx, ok_rn, worst = True, True, np.inf
+                    for rule, kp in (("A", n), ("B", 3 * n)):
+                        v, liq, s_ = sim(rk, PXM, DIV, j0, kp, nmax=n)
+                        stt = half_stats(v, ev)
+                        r[rule] = stt
+                        r[rule + "_buy"] = s_["n_buy"]
+                        for h in ("前半", "後半"):
+                            a = stt[h]["ann"]
+                            rr = [x[h]["ann"] for x in rnd[(un, n, fn, rule)]]
+                            d_tx, d_rn = a - ST_TX[h]["ann"], a - float(np.mean(rr))
+                            beat = int(sum(1 for x in rr if a > x))
+                            r[(rule, h)] = (d_tx, d_rn, beat)
+                            ok_tx &= d_tx >= PT_TX
+                            ok_rn &= (d_rn >= PT_RND) and (beat >= BEAT_MIN)
+                            worst = min(worst, d_tx)
+                    r["verdict"] = "候補" if (ok_tx and ok_rn) else ("範囲の中では効く" if ok_rn else "効かない")
+                    r["worst"] = worst
+                    res.append(r)
+        log(f"  {key} … 候補 {sum(1 for x in res if x['key'] == key and x['verdict'] == '候補')}・"
+            f"範囲の中では効く {sum(1 for x in res if x['key'] == key and x['verdict'] == '範囲の中では効く')}")
+    report7(res, rnd, ST_TX, TXliq, ev, labs)
+    return 0
+
+
+def report7(res, rnd, ST_TX, TXliq, ev, labs):
+    HH = ("前半", "後半")
+    print("\n【日本株の手法・7段目（組み立て方の探索）（wide_lab）：東証全銘柄】（基準は結果を見る前に決めたもの。計画はプロジェクトの wide_lab_plan7_2026-11-04）")
+    stage_note()
+    print(f"  期間 … 比べる期間 {ev[0].date()}〜{ev[-1].date()}（{len(ev)}か月。前半 〜{(SPLIT - pd.Timedelta(days=1)).date()}・後半 {SPLIT.date()}〜）")
+    print(f"  試した組み立て … 点数 {len({r['key'] for r in res})}通り × 範囲 {len(G7_UNIS)} × 持つ数 {len(G7_NS)} × 入れ替え {len(G7_FREQ)} ＝ {len(res)}通り（それぞれ売る決まり A・B）")
+    print(f"  判定 … 1回目と同じ（前半・後半の両方で、A・B の両方とも TOPIX +{PT_TX:.1f}pt・でたらめ +{PT_RND:.1f}pt かつ20回のうち{BEAT_MIN}回以上）。"
+          f"でたらめは、同じ範囲・同じ持つ数・同じ入れ替えで作る")
+    print(f"  TOPIX（税あり） … {ST_TX['前半']['ann']:.1f} ／ {ST_TX['後半']['ann']:.1f}")
+    print("\n  でたらめの平均（年率％。前半 ／ 後半。A）")
+    for un, _l in G7_UNIS:
+        line = " ・ ".join(f"{n}銘柄{fn} {np.mean([x['前半']['ann'] for x in rnd[(un, n, fn, 'A')]]):.1f}／{np.mean([x['後半']['ann'] for x in rnd[(un, n, fn, 'A')]]):.1f}"
+                           for n in G7_NS for fn, _f in G7_FREQ)
+        print(f"     {un} … {line}")
+    cand = [r for r in res if r["verdict"] == "候補"]
+    eff = [r for r in res if r["verdict"] == "範囲の中では効く"]
+    print(f"\n  1. 判定のまとめ … 候補 {len(cand)}通り・範囲の中では効く {len(eff)}通り・効かない {len(res) - len(cand) - len(eff)}通り")
+
+    def line(r):
+        d = " ".join(f"{r[(rule, h)][0]:+.1f}/{r[(rule, h)][1]:+.1f}・{r[(rule, h)][2]}" for rule in ("A", "B") for h in HH)
+        return (f"     {r['key']:<7}{r['uni']:<8}{r['n']:>3}銘柄 {r['freq']} … A {r['A']['前半']['ann']:.1f}／{r['A']['後半']['ann']:.1f}"
+                f" B {r['B']['前半']['ann']:.1f}／{r['B']['後半']['ann']:.1f}［{d}］ 最大下落 A {r['A']['通し']['mdd']:.0f}％ … {r['verdict']}")
+    print("\n  2. 候補（TOPIX との差のいちばん悪い値の大きい順）")
+    for r in sorted(cand, key=lambda x: -x["worst"]):
+        print(line(r))
+    if not cand:
+        print("     なし")
+    print("\n  3. 範囲の中では効く（同じ順に上から20）")
+    for r in sorted(eff, key=lambda x: -x["worst"])[:20]:
+        print(line(r))
+    if not eff:
+        print("     なし")
+    print("\n  4. 点数ごとのいちばん良い組み立て（TOPIX との差のいちばん悪い値で）")
+    for k in sorted({r["key"] for r in res}, key=lambda x: list(labs).index(x) if x in labs else 99):
+        rs = [r for r in res if r["key"] == k]
+        b = max(rs, key=lambda x: x["worst"])
+        print(line(b))
+    carry = []
+    for r in sorted(cand, key=lambda x: -x["worst"]):
+        if r["key"] not in {c["key"] for c in carry}:
+            carry.append(r)
+        if len(carry) >= G7_CARRY:
+            break
+    print("\n  5. 確かめる段階に持っていくもの（計画どおり、候補の中から点数の違うものを上から3つまで）")
+    print("     " + ("・".join(f"{r['key']}／{r['uni']}／{r['n']}銘柄／{r['freq']}" for r in carry) if carry else "なし"))
+    print(f"     （TOPIX の清算後の通し {((TXliq / CAP) ** (1 / max((ev[-1] - ev[0]).days / 365.25, 0.5)) - 1) * 100:.1f}％）")
+
+
 # ───────────────────────── 4回目：売買の内訳（プレミアムだけのデータ）─────────────────────────
 # 計画は wide_lab_plan4_2026-11-04（結果を見る前に決めたもの）。毎日の銘柄ごとの売買の内訳（実売り・空売り・信用の新規と返済）を、
 # 「その日のデータが使えるようになる次の営業日」の月に足し上げ、月末ごとの比率を点数にする。比べ方と判定は1回目と同じ。
@@ -1429,7 +1560,7 @@ def bd_score(bd: dict, kind: str):
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4"], default="lab1")
+    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab7"], default="lab1")
     ap.add_argument("--combo", default="", help="3回目：1回目で「範囲の中では効く」以上だった型の記号（カンマ区切り）。2つ以上なら SEL として回す")
     ap.add_argument("--only", default="", help="回す型の記号（カンマ区切り。空欄なら全部）。確かめる段階で候補だけを回すとき")
     args = ap.parse_args()
@@ -1463,6 +1594,8 @@ def main() -> int:
     if elapsed() > COMPUTE_LIMIT_MIN:
         print("\n■ まだ終わっていません（データは取り終えましたが、計算の時間が残っていません）。もう一度押してください。")
         return EXIT_UNFINISHED
+    if args.mode == "lab7":
+        return lab7(store)
     if args.mode == "lab4":
         bd = bd_load()
         if not bd.get("complete"):
