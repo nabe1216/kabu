@@ -270,6 +270,11 @@ def build(store: dict) -> dict:
     tp = store.get("etf1306")
     if not tp:
         raise SystemExit("TOPIX（1306）の株価がありません")
+    # 1306 の値がつかなかった日（取った時点でまだ値が入っていない最後の日など）は、前の日の値で埋める
+    n_nan = int(np.isnan(tp["c"]).sum())
+    if n_nan:
+        log(f"  1306 の値がない日 {n_nan}日（前の日の値で埋めました。いちばん新しい日 {tp['d'][np.isnan(tp['c'])][-1]}）")
+    tp = dict(tp, c=pd.Series(tp["c"]).ffill().bfill().to_numpy(dtype=np.float32))
     cal = tp["d"]
     T = len(cal)
     codes = sorted(store["bars"])
