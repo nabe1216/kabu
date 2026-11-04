@@ -9,6 +9,8 @@ name: wide-lab
 #   mode=lab2  … 同じく、2回目の型（出来事と暦の7通り）をまとめて回す
 #   mode=lab3  … 3回目（組み合わせ。VQM は固定、SEL は combo に1回目で効いた型を入れる。wide_lab_plan3_2026-11-04）
 #   mode=lab4  … 4回目（売買の内訳。プレミアムだけのデータ。wide_lab_plan4_2026-11-04。スタンダードに戻す前に long-cleanup で消す）
+#   mode=lab5  … 5段目（残りの型。配当金情報（プレミアムだけ）・空売り残高の報告・決算発表予定日を営業日ごとに取る。wide_lab_plan5_2026-11-04。
+#                キャッシュの名前を yield-backtest-long- で始めているので、long-cleanup で消える）
 #   years=9  … 探す段階（スタンダードで足りる9年分。data/wide_cache.pkl）
 #   years=20 … 確かめる段階（プレミアムの20年分。data/wide_long.pkl。キャッシュの名前を yield-backtest-long- で始めているので、
 #              プレミアムをやめる前に long-cleanup を1回動かせば、yield-backtest の20年分と一緒に消える）
@@ -16,7 +18,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "fetch＝データを集める ／ lab1＝1回目の型（24通り） ／ lab2＝2回目（出来事と暦） ／ lab3＝3回目（組み合わせ） ／ lab4＝4回目（売買の内訳） ／ lab6＝6段目（短期売買） ／ lab7＝7段目（組み立て方） ／ lab8＝8段目（空売り） ／ lab9＝9段目（まとめて学ばせる）"
+        description: "fetch＝データを集める ／ lab1＝1回目の型（24通り） ／ lab2＝2回目（出来事と暦） ／ lab3＝3回目（組み合わせ） ／ lab4＝4回目（売買の内訳） ／ lab5＝5段目（残りの型） ／ lab6＝6段目（短期売買） ／ lab7＝7段目（組み立て方） ／ lab8＝8段目（空売り） ／ lab9＝9段目（まとめて学ばせる）"
         required: true
         default: "fetch"
         type: choice
@@ -26,6 +28,7 @@ on:
           - lab2
           - lab3
           - lab4
+          - lab5
           - lab6
           - lab7
           - lab8
@@ -83,6 +86,9 @@ env:
   # 売買の内訳（プレミアムだけのデータ）。名前を yield-backtest-long- で始めて、long-cleanup で一緒に消えるようにする
   BD_PATH: ${{ inputs.years == '20' && 'data/wide_bd_long.pkl' || 'data/wide_bd.pkl' }}
   BD_PREFIX: ${{ inputs.years == '20' && 'yield-backtest-long-bdl-v1-' || 'yield-backtest-long-bd-v1-' }}
+  # 5段目のデータ（配当金情報はプレミアムだけ）。同じく long-cleanup で消えるように
+  X_PATH: ${{ inputs.years == '20' && 'data/wide_x_long.pkl' || 'data/wide_x.pkl' }}
+  X_PREFIX: ${{ inputs.years == '20' && 'yield-backtest-long-xl-v1-' || 'yield-backtest-long-x-v1-' }}
 
 jobs:
   run:
@@ -115,6 +121,15 @@ jobs:
           key: ${{ env.BD_PREFIX }}
           restore-keys: |
             ${{ env.BD_PREFIX }}
+
+      - name: 5段目のデータのキャッシュを復元
+        if: ${{ inputs.mode == 'lab5' }}
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.X_PATH }}
+          key: ${{ env.X_PREFIX }}
+          restore-keys: |
+            ${{ env.X_PREFIX }}
 
       - name: 実行
         env:
@@ -154,6 +169,13 @@ jobs:
           path: ${{ env.BD_PATH }}
           key: ${{ env.BD_PREFIX }}${{ github.run_id }}
 
+      - name: 5段目のデータのキャッシュを保存
+        if: ${{ always() && inputs.mode == 'lab5' && hashFiles(env.X_PATH) != '' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.X_PATH }}
+          key: ${{ env.X_PREFIX }}${{ github.run_id }}
+
       # 1回の保存が大きいので、新しい2つだけ残す（GitHub のキャッシュは全部で10GBまで。
       # 超えると、使われていない古いものから消され、yield-backtest の9年分が消えることがある）
       - name: 古い控えを整理する（新しい2つは残す）
@@ -170,6 +192,11 @@ jobs:
           echo "古い控えを ${n} 個消しました。"
           if [ "${{ inputs.mode }}" = "lab4" ]; then
             ids=$(gh api "repos/${GITHUB_REPOSITORY}/actions/caches?key=${BD_PREFIX}&sort=created_at&direction=desc&per_page=100" \
+                  --jq '.actions_caches[2:][] | .id' || true)
+            for id in $ids; do gh api -X DELETE "repos/${GITHUB_REPOSITORY}/actions/caches/${id}" || true; done
+          fi
+          if [ "${{ inputs.mode }}" = "lab5" ]; then
+            ids=$(gh api "repos/${GITHUB_REPOSITORY}/actions/caches?key=${X_PREFIX}&sort=created_at&direction=desc&per_page=100" \
                   --jq '.actions_caches[2:][] | .id' || true)
             for id in $ids; do gh api -X DELETE "repos/${GITHUB_REPOSITORY}/actions/caches/${id}" || true; done
           fi
