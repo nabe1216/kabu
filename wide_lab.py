@@ -1763,14 +1763,53 @@ X_CACHE = OUT / ("wide_x_long.pkl" if LONG else "wide_x.pkl")
 X_SETS = {"div": ("/v2/fins/dividend", "2013-02-20", "date", "D"),               # 公表日ごと（プレミアムだけ）
           "ssr": ("/v2/markets/short-sale-report", "2013-11-07", "disc_date", "D"),  # 公表日ごと
           "ed": ("/v2/fins/earnings-date", "2013-01-01", "date", "D"),              # 予定日を公表・変更した日ごと（始まりは仕様にない）
-          "mi": ("/v2/markets/margin-interest", "2008-05-01", "date", "W")}         # 信用取引の週末残高（週の最後の営業日）
+          "mi": ("/v2/markets/margin-interest", "2008-05-01", "date", "W"),         # 信用取引の週末残高（週の最後の営業日）
+          "fsd": ("/v2/fins/details", "2008-05-01", "date", "D")}                  # 財務の明細（開示日ごと。プレミアムだけ。12段目）
 X_FIELDS = {"div": {"pub": ("PubDate",), "time": ("PubTime",), "code": ("Code",), "stat": ("StatCode",), "if": ("IFCode",),
                     "fr": ("FRCode",), "term": ("IFTerm",), "rate": ("DivRate",), "cs": ("CommSpecCode",), "rec": ("RecDate",)},
             "ssr": {"disc": ("DiscDate",), "calc": ("CalcDate",), "code": ("Code",), "seller": ("SSName",),
                     "dic": ("DICName",), "fund": ("FundName",), "ratio": ("ShrtPosToSO",)},
             "ed": {"pub": ("PubDate",), "sch": ("SchDate",), "fq": ("FQName",), "fye": ("FYE",), "code": ("Code",)},
-            "mi": {"date": ("Date",), "code": ("Code",), "long": ("LongVol",), "short": ("ShrtVol",), "iss": ("IssType",)}}
-X_OPTIONAL = {("ssr", "dic"), ("ssr", "fund"), ("div", "time"), ("ed", "fye"), ("mi", "iss")}
+            "mi": {"date": ("Date",), "code": ("Code",), "long": ("LongVol",), "short": ("ShrtVol",), "iss": ("IssType",)},
+            "fsd": {"disc": ("DiscDate",), "time": ("DiscTime",), "code": ("Code",), "doc": ("DocType",),
+                    "gp": (), "sales": (), "ta": (), "ca": (), "cl": (), "ltd": ()}}      # 明細の項目は fs_pick で取り出す
+X_OPTIONAL = {("ssr", "dic"), ("ssr", "fund"), ("div", "time"), ("ed", "fye"), ("mi", "iss"), ("fsd", "time"), ("fsd", "doc")}
+FSD_PICKED = ("gp", "sales", "ta", "ca", "cl", "ltd")
+
+
+def fs_base(k: str) -> str:
+    """明細の項目名から、会計基準の印（(IFRS) など）を外し、小文字にする。"""
+    import re
+    k = re.sub(r"\s*\((IFRS|US GAAP|USGAAP|JMIS|Japanese GAAP|J-GAAP|JGAAP)\)\s*$", "", str(k)).strip()
+    return k.lower()
+
+
+FS_NAMES = {"gp": ("gross profit", "gross profit (loss)", "gross profit on sales", "gross profit (loss) on sales"),
+            "sales": ("net sales", "revenue", "revenues", "operating revenue", "operating revenues", "net sales of goods", "sales"),
+            "ta": ("assets", "total assets"),
+            "ca": ("current assets", "total current assets"),
+            "cl": ("current liabilities", "total current liabilities")}
+FS_LTD_TOTAL = ("bonds and borrowings - ncl",)
+FS_LTD_PARTS = ("long-term borrowings - ncl", "long-term loans payable - ncl", "bonds payable - ncl", "bonds - ncl",
+                "long-term debt - ncl", "borrowings - ncl")
+
+
+def fs_pick(fs: dict) -> dict:
+    """財務の明細（FS）から、売上総利益・売上・総資産・流動資産・流動負債・長期の借入と社債を取り出す。見つからなければ None。"""
+    base = {}
+    for k, v in (fs or {}).items():
+        b = fs_base(k)
+        if b not in base:
+            base[b] = num(v)
+    out = {}
+    for lk, names in FS_NAMES.items():
+        out[lk] = next((base[n] for n in names if base.get(n) is not None), None)
+    tot = next((base[n] for n in FS_LTD_TOTAL if base.get(n) is not None), None)
+    if tot is None:
+        parts = [base[n] for n in FS_LTD_PARTS if base.get(n) is not None]
+        tot = float(sum(parts)) if parts else (0.0 if out["ta"] is not None else None)   # 借入の項目がなければ0（借入なし）とみなす
+    out["ltd"] = tot
+    return out
 
 
 def x_load() -> dict:
@@ -1797,6 +1836,11 @@ def x_days(store: dict, name: str) -> list:
     if STAGE == "explore":
         start = max(start, EXPLORE_FROM - np.timedelta64(500, "D"))
     days = [d for d in store["etf1306"]["d"] if d >= start]
+    if name == "fsd":
+        c0 = store["etf1306"]["d"][0]
+        if start < c0:
+            pre = [np.datetime64(x.date()) for x in pd.bdate_range(pd.Timestamp(str(start)), pd.Timestamp(str(c0)) - pd.Timedelta(days=1))]
+            days = pre + days
     if kind == "W":
         wk = {}
         for d in days:
@@ -1870,6 +1914,23 @@ def fetch_x(jq, store: dict, xs: dict, names=None) -> bool:
                     break
                 continue
             fails, ok_once = 0, True
+            if name == "fsd":
+                if rows and st["keys"] is None:
+                    st["keys"] = list(rows[0].keys())
+                    fs0 = rows[0].get("FS") or {}
+                    log(f"  書類の種類の例 … {rows[0].get('DocType')}")
+                    log("  受け取った項目 … " + "・".join(st["keys"]) + f"（明細の項目 {len(fs0)}個。例：" +
+                        "・".join([k for k in fs0 if any(w in k.lower() for w in ("gross", "current", "borrow", "bond", "total assets", "net sales", "revenue"))][:12]) + "）")
+                for r in rows or []:
+                    pk = fs_pick(r.get("FS") or {})
+                    st["rows"].append((r.get("DiscDate"), r.get("DiscTime"), r.get("Code"), r.get("DocType")) + tuple(pk[k] for k in FSD_PICKED))
+                st["done"].add(d)
+                if n % 500 == 0:
+                    log(f"  {n}/{len(todo)}（開始から{elapsed():.0f}分）")
+                if (time.monotonic() - last) / 60 >= SAVE_EVERY_MIN:
+                    x_save(xs, "途中まで保存しました")
+                    last = time.monotonic()
+                continue
             if rows and fmap is None:
                 ks = list(rows[0].keys())
                 st["keys"] = ks
@@ -2034,6 +2095,143 @@ def mi_score(store: dict, xs: dict, kind: str):
                     out[i, j] = -(lv / fac_after(b["fd"], b["ff"], dd)) * float(px) / va
         return out
     return fn
+
+
+def fsd_timeline(store: dict, xs: dict) -> dict:
+    """銘柄ごとに、通期の決算（決算短信の要約）に、財務の明細の売上総利益・流動資産・流動負債・長期の借入を合わせた並びを作る。
+    明細は、要約の開示日の3日前〜100日後の、通期の明細のうち最初のもの。使えるのは、両方の開示日の遅いほうの翌日から。"""
+    det = {}
+    docs = {}
+    for r in x_rows(xs, "fsd"):
+        docs[str(r.get("doc"))] = docs.get(str(r.get("doc")), 0) + 1
+    log("  財務の明細の書類の種類（多い順） … " + "・".join(f"{k} {v:,}" for k, v in sorted(docs.items(), key=lambda x: -x[1])[:6]))
+    for r in x_rows(xs, "fsd"):
+        c = yb.norm_code(r.get("code") or "")
+        d = str(r.get("disc") or "")[:10]
+        doc = str(r.get("doc") or "")
+        if len(d) == 10 and ("FY" in doc or not doc):
+            det.setdefault(c, []).append((d, r))
+    for c in det:
+        det[c].sort(key=lambda x: x[0])
+    out, stat = {}, {"fy": 0, "gp": 0, "ca": 0, "cl": 0}
+    for c, st in store["fins"].items():
+        tl = [r for r in fin_timeline(st) if is_fy(r)]
+        if not tl:
+            continue
+        dl = det.get(c, [])
+        dd = [x[0] for x in dl]
+        rows = []
+        for r in tl:
+            d0 = str(r["DiscDate"])[:10]
+            lo = (pd.Timestamp(d0) - pd.Timedelta(days=3)).strftime("%Y-%m-%d")
+            hi = (pd.Timestamp(d0) + pd.Timedelta(days=100)).strftime("%Y-%m-%d")
+            k = int(np.searchsorted(dd, lo, side="left"))
+            m = dl[k] if k < len(dl) and dl[k][0] <= hi else None
+            x = m[1] if m else {}
+            avail = max(d0, m[0]) if m else d0
+            rows.append({"avail": avail, "disc": d0, "np": num(r.get("NP")), "cfo": num(r.get("CFO")), "ta": num(r.get("TA")),
+                         "sales": num(r.get("Sales")), "sh": num(r.get("ShOutFY")), "tr": num(r.get("TrShFY")) or 0.0,
+                         "gp": x.get("gp"), "ca": x.get("ca"), "cl": x.get("cl"), "ltd": x.get("ltd"), "ta_d": x.get("ta")})
+            stat["fy"] += 1
+            stat["gp"] += x.get("gp") is not None
+            stat["ca"] += x.get("ca") is not None
+            stat["cl"] += x.get("cl") is not None
+        out[c] = rows
+    return out, stat
+
+
+def fscore_items(cur: dict, prv: dict, fd, ff) -> list:
+    """Fスコアの9項目（1か0。計算できない項目は None）。"""
+    def ratio(a, b):
+        return a / b if (a is not None and b is not None and b > 0) else None
+    ta_c = cur["ta"] if cur["ta"] else cur.get("ta_d")
+    ta_p = prv["ta"] if prv["ta"] else prv.get("ta_d")
+    roa_c, roa_p = ratio(cur["np"], ta_c), ratio(prv["np"], ta_p)
+    it = [None] * 9
+    it[0] = None if roa_c is None else int(roa_c > 0)
+    it[1] = None if cur["cfo"] is None else int(cur["cfo"] > 0)
+    it[2] = None if (roa_c is None or roa_p is None) else int(roa_c > roa_p)
+    it[3] = None if (cur["cfo"] is None or cur["np"] is None) else int(cur["cfo"] > cur["np"])
+    lv_c, lv_p = ratio(cur["ltd"], ta_c), ratio(prv["ltd"], ta_p)
+    it[4] = None if (lv_c is None or lv_p is None) else int(lv_c <= lv_p)
+    cr_c, cr_p = ratio(cur["ca"], cur["cl"]), ratio(prv["ca"], prv["cl"])
+    it[5] = None if (cr_c is None or cr_p is None) else int(cr_c > cr_p)
+    if cur["sh"] and prv["sh"]:
+        s_c = (cur["sh"] - cur["tr"]) / fac_after(fd, ff, cur["disc"])
+        s_p = (prv["sh"] - prv["tr"]) / fac_after(fd, ff, prv["disc"])
+        it[6] = int(s_c <= s_p * 1.001)
+    gm_c, gm_p = ratio(cur["gp"], cur["sales"]), ratio(prv["gp"], prv["sales"])
+    it[7] = None if (gm_c is None or gm_p is None) else int(gm_c > gm_p)
+    at_c, at_p = ratio(cur["sales"], ta_c), ratio(prv["sales"], ta_p)
+    it[8] = None if (at_c is None or at_p is None) else int(at_c > at_p)
+    return it
+
+
+def lab12_scores(store: dict, xs: dict):
+    tl, stat = fsd_timeline(store, xs)
+    log(f"  財務の明細 … 通期の決算 {stat['fy']:,}件のうち、売上総利益 {stat['gp'] / max(1, stat['fy']) * 100:.0f}％・"
+        f"流動資産 {stat['ca'] / max(1, stat['fy']) * 100:.0f}％・流動負債 {stat['cl'] / max(1, stat['fy']) * 100:.0f}％が取れた（金融を含む）")
+    cache = {}
+
+    def mats(D):
+        if "m" in cache:
+            return cache["m"]
+        codes, dates = D["codes"], D["dates"]
+        GPA = np.full((len(codes), len(dates)), np.nan)
+        FS = np.full((len(codes), len(dates)), np.nan)
+        me = [d.strftime("%Y-%m-%d") for d in dates]
+        for i, c in enumerate(codes):
+            if D["sector"].get(c, "") in yb.FIN_SECTORS or c not in tl:
+                continue
+            rows = tl[c]
+            b = store["bars"].get(c, {"fd": np.array([], dtype="datetime64[D]"), "ff": np.array([])})
+            av = [r["avail"] for r in rows]
+            for j, m in enumerate(me):
+                k = int(np.searchsorted(av, m, side="left")) - 1       # 月末より前に使えるようになった最新の通期
+                if k < 0:
+                    continue
+                r = rows[k]
+                ta = r["ta"] if r["ta"] else r.get("ta_d")
+                if r["gp"] is not None and ta and ta > 0:
+                    GPA[i, j] = r["gp"] / ta
+                if k >= 1:
+                    it = fscore_items(r, rows[k - 1], b["fd"], b["ff"])
+                    ok = [x for x in it if x is not None]
+                    if len(ok) >= 8:
+                        FS[i, j] = sum(ok) * 9.0 / len(ok)
+        cache["m"] = (GPA, FS)
+        return cache["m"]
+    noise_c = {}
+
+    def noise(D):
+        if "n" not in noise_c:
+            noise_c["n"] = np.random.default_rng(1205).random(len(D["codes"]))[:, None] * 1e-6
+        return noise_c["n"]
+
+    def gpa(D):
+        return mats(D)[0]
+
+    def fscore(D):
+        return mats(D)[1] + noise(D)
+
+    def fsv(D):
+        FS = mats(D)[1]
+        BP, UNI = D["F"]["BP"], D["UNI"]
+        out = np.full(FS.shape, np.nan)
+        for j in range(FS.shape[1]):
+            ok = UNI[:, j] & np.isfinite(BP[:, j])
+            if ok.sum() < 30:
+                continue
+            pr = pd.Series(BP[ok, j]).rank(pct=True).to_numpy()
+            idx = np.nonzero(ok)[0]
+            val = idx[pr >= 0.7]
+            col = np.full(FS.shape[0], -1000.0)                      # 割安の上位30％に入らない株は買わない（いちばん下）
+            col[val] = np.nan_to_num(FS[val, j], nan=-500.0)
+            out[:, j] = np.where(UNI[:, j], col, np.nan)
+        return out + noise(D)
+    return {"GPA": (gpa, "粗利益の大きさ（売上総利益 ÷ 総資産。金融を除く）"),
+            "FSCORE": (fscore, "Fスコア（9項目の合計。金融を除く）"),
+            "FSV": (fsv, "割安株の中のFスコア（純資産に対して安い上位30％の中で、Fスコアの大きい順）")}
 
 
 def lab5(store: dict, xs: dict) -> int:
@@ -2972,7 +3170,7 @@ def bd_score(bd: dict, kind: str):
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab5", "lab6", "lab7", "lab8", "lab9", "lab10", "lab11", "xfetch"], default="lab1")
+    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab5", "lab6", "lab7", "lab8", "lab9", "lab10", "lab11", "lab12", "xfetch"], default="lab1")
     ap.add_argument("--combo", default="", help="3回目：1回目で「範囲の中では効く」以上だった型の記号（カンマ区切り）。2つ以上なら SEL として回す")
     ap.add_argument("--only", default="", help="回す型の記号（カンマ区切り。空欄なら全部）。確かめる段階で候補だけを回すとき")
     ap.add_argument("--cfg", default="", help="7段目の確かめる段階で回す組み立て（例: VQM/TOP500/20/Q,NXG/TOP500/20/Q）")
@@ -2986,6 +3184,8 @@ def main() -> int:
         LAB_TITLE, LAB_PLAN = "4回目（売買の内訳）", "wide_lab_plan4_2026-11-04"
     elif args.mode == "lab5":
         LAB_TITLE, LAB_PLAN = "5段目（残りの型：毎月の点数）", "wide_lab_plan5_2026-11-04"
+    elif args.mode == "lab12":
+        LAB_TITLE, LAB_PLAN = "12段目（財務の明細の型）", "wide_lab_plan12_2026-11-05"
     if LONG:
         yb.LONG_MODE = True          # 株価を「20年前まで」で取る。取れなければプレミアムではないので止まる
         yb.API_SLEEP = float(os.environ.get("LONG_API_SLEEP", "0.25"))    # プレミアムは呼び出しの上限が大きい
@@ -3016,6 +3216,21 @@ def main() -> int:
         return lab6(store)
     if args.mode == "lab9":
         return lab9(store)
+    if args.mode == "lab12":
+        xs = x_load()
+        if not x_complete(store, xs, ("fsd",)):
+            key = os.environ.get("J_QUANTS_API_KEY")
+            if not key:
+                print("J_QUANTS_API_KEY が設定されていません")
+                return 2
+            if not fetch_x(yb.JQ(key), store, xs, ("fsd",)):
+                print("\n■ まだ終わっていません（財務の明細を取っている途中です）。同じ設定のまま、もう一度押してください。")
+                return EXIT_UNFINISHED
+        if xs.get("fsd", {}).get("bad"):
+            print(f"\n■ 財務の明細が取れませんでした（{xs['fsd']['bad']}）。12段目は保留です。")
+            return 2
+        log("12段目（財務の明細の型）を回します…")
+        return lab1(store, extra=lab12_scores(store, xs))
     if args.mode in ("lab10", "lab11", "xfetch"):
         xs = x_load()
         need = ("div", "ed")              # 10・11段目で使うのは、配当金情報と決算発表予定日の履歴だけ
