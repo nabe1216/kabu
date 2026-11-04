@@ -6,17 +6,19 @@ name: wide-lab
 # Actions タブ → 左の wide-lab → 右の「Run workflow」
 #   mode=fetch … 東証全銘柄のデータを集める（全部で2〜4時間。時間切れなら取った分を保存して止まるので、もう一度押すと続きから）
 #   mode=lab1  … データがそろっていれば、1回目の型（24通り）をまとめて回す
+#   mode=lab2  … 同じく、2回目の型（出来事と暦の7通り）をまとめて回す
 on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "fetch＝データを集める ／ lab1＝1回目の型をまとめて回す"
+        description: "fetch＝データを集める ／ lab1＝1回目の型（24通り） ／ lab2＝2回目の型（出来事と暦）"
         required: true
         default: "fetch"
         type: choice
         options:
           - fetch
           - lab1
+          - lab2
 
 permissions:
   contents: read
