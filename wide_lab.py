@@ -27,7 +27,12 @@ OUT = Path("data")
 YEARS = int(os.environ.get("WIDE_YEARS", "9"))
 LONG = YEARS > 10        # 20年分（プレミアム）で確かめる段階。データは別のファイルに持ち、プレミアムをやめる前に long-cleanup で消す
 CACHE = OUT / ("wide_long.pkl" if LONG else "wide_cache.pkl")
-LONG_FIRST_ME = pd.Timestamp("2008-05-30")    # J-Quants の株価は2008年5月7日から。銘柄一覧もこの月末から取る
+LONG_FIRST_ME = pd.Timestamp("2008-05-30")
+KEEP_OHLC = LONG or os.environ.get("WIDE_OHLC") == "1"     # 20年分は始値・高値・安値も持つ（11月4日夜に追加）
+# 20年分のデータで「探す段階」を回すとき（WIDE_STAGE=explore）は、9年分のキャッシュと同じ期間だけを使う（見ていない期間を見ないため）
+STAGE = os.environ.get("WIDE_STAGE", "confirm" if LONG else "explore")
+EXPLORE_FROM = np.datetime64("2017-10-05")      # 9年分のキャッシュの株価の最初の日
+EXPLORE_FIRST_MONTH = "2017-12"                 # 9年分のキャッシュの銘柄一覧の最初の月    # J-Quants の株価は2008年5月7日から。銘柄一覧もこの月末から取る
 BUDGET_MIN = float(os.environ.get("FETCH_BUDGET_MIN", "130"))
 COMPUTE_LIMIT_MIN = float(os.environ.get("COMPUTE_START_LIMIT_MIN", "140"))
 SAVE_EVERY_MIN = 15
@@ -57,7 +62,7 @@ N_RAND = 20
 PT_TX = 2.0              # TOPIX（税あり）を上回る幅（年率pt）
 PT_RND = 2.0             # でたらめな20銘柄の平均を上回る幅（年率pt）
 BEAT_MIN = 18            # でたらめな20回のうち、上回る回数の下限
-SPLIT = pd.Timestamp("2018-08-01" if LONG else "2022-11-01")
+SPLIT = pd.Timestamp("2018-08-01" if (LONG and STAGE == "confirm") else "2022-11-01")
 # 探す段階（9年分）：前半＝2022年10月まで・後半＝11月から。確かめる段階（20年分）：前半＝見ていない期間（2018年7月まで）・後半＝最近（wide_lab_plan で決めた）
 START_T = {"REV24": 504}   # 2年の戻りは2年前の株価が要るので、比べる期間を2年目の終わりから始める（wide_lab_plan に書いた）
 SURP_DAYS = 400          # 決算の驚き：通期の決算短信が出てから、次の通期の決算短信が出るまで（約1年）使う
@@ -157,7 +162,13 @@ def pack_bars(rows) -> dict | None:
     f = col("AdjFactor", "AdjustmentFactor")
     f = np.where(np.isfinite(f) & (f > 0), f, 1.0)[o]
     fm = np.abs(f - 1.0) > 1e-12          # 分割・併合の係数は、1でない日だけ持つ（キャッシュを小さくする）
-    return {"d": d[o], "c": c[o].astype(np.float32), "va": va[o].astype(np.float32), "fd": d[o][fm], "ff": f[fm]}
+    out = {"d": d[o], "c": c[o].astype(np.float32), "va": va[o].astype(np.float32), "fd": d[o][fm], "ff": f[fm]}
+    if KEEP_OHLC:              # 短期売買の型のために、始値・高値・安値・出来高（どれも分割を調整したもの）も持つ
+        out["o"] = col("AdjO", "AdjustmentOpen", "O", "Open")[o].astype(np.float32)
+        out["h"] = col("AdjH", "AdjustmentHigh", "H", "High")[o].astype(np.float32)
+        out["l"] = col("AdjL", "AdjustmentLow", "L", "Low")[o].astype(np.float32)
+        out["v"] = v[o].astype(np.float32)
+    return out
 
 
 def prune_fins(st) -> list:
@@ -176,7 +187,11 @@ def fetch_all(jq, store) -> bool:
     fins = store.setdefault("fins", {})
     done = set(store.get("done") or [])
     nodata = set(store.get("nodata") or [])
-    todo = [c for c in codes if c not in done]
+    # 始値などを持っていない銘柄（11月4日夜より前に取った分）は、取り直す
+    redo = {c for c in done if KEEP_OHLC and c in bars and "o" not in bars[c]}
+    if redo:
+        log(f"  始値・高値・安値がない {len(redo)}銘柄を取り直します")
+    todo = [c for c in codes if c not in done or c in redo]
     if "etf1306" not in store:
         time.sleep(yb.API_SLEEP)
         store["etf1306"] = pack_bars(yb.fetch_bars(jq, "1306", YEARS))
@@ -275,6 +290,12 @@ def build(store: dict) -> dict:
     if n_nan:
         log(f"  1306 の値がない日 {n_nan}日（前の日の値で埋めました。いちばん新しい日 {tp['d'][np.isnan(tp['c'])][-1]}）")
     tp = dict(tp, c=pd.Series(tp["c"]).ffill().bfill().to_numpy(dtype=np.float32))
+    months_keys = sorted(store["months"])
+    if LONG and STAGE == "explore":
+        keep = tp["d"] >= EXPLORE_FROM
+        tp = {k: (v[keep] if (isinstance(v, np.ndarray) and len(v) == len(keep)) else v) for k, v in tp.items()}
+        months_keys = [k for k in months_keys if k >= EXPLORE_FIRST_MONTH]
+        log(f"  探す段階：20年分のうち {str(tp['d'][0])} からだけを使います（見ていない期間は使いません）")
     cal = tp["d"]
     T = len(cal)
     codes = sorted(store["bars"])
@@ -307,7 +328,7 @@ def build(store: dict) -> dict:
     CF = pd.DataFrame(C).ffill(axis=1).to_numpy(dtype=np.float32)
     mret = np.r_[np.nan, tp["c"][1:] / tp["c"][:-1] - 1.0]
     me_keys, me_dates, me_idx = [], [], []
-    for k in sorted(store["months"]):
+    for k in months_keys:
         y, m = map(int, k.split("-"))
         end = pd.Timestamp(year=y, month=m, day=1) + pd.offsets.MonthEnd(0)
         t = int(np.searchsorted(cal, np.datetime64(end.date()), side="right")) - 1
@@ -734,7 +755,10 @@ def lab1(store: dict, combos: dict | None = None, extra: dict | None = None) -> 
 
 
 def stage_note() -> None:
-    if LONG:
+    if LONG and STAGE == "explore":
+        print("  ※ 探す段階（20年分のデータのうち、9年分のキャッシュと同じ期間だけを使う。見ていない期間（2018年7月まで）は使わない）"
+              + (f"。回した型：{'・'.join(sorted(ONLY))}" if ONLY else ""))
+    elif LONG:
         print("  ※ 確かめる段階（プレミアム・20年分）。「前半」＝見ていない期間（2018年7月まで）・「後半」＝最近（2018年8月から）。"
               "両方で「候補」の基準を満たせば「確立」（method_map_2026-11-04）" + (f"。回した型：{'・'.join(sorted(ONLY))}" if ONLY else ""))
 
@@ -1420,7 +1444,8 @@ def main() -> int:
         yb.API_SLEEP = float(os.environ.get("LONG_API_SLEEP", "0.25"))    # プレミアムは呼び出しの上限が大きい
         log(f"確かめる段階（{YEARS}年分・データは {CACHE}）")
     store = load()
-    if not store.get("complete"):
+    need_ohlc = KEEP_OHLC and any("o" not in b for b in store.get("bars", {}).values())
+    if not store.get("complete") or need_ohlc:
         key = os.environ.get("J_QUANTS_API_KEY")
         if not key:
             print("J_QUANTS_API_KEY が設定されていません")
