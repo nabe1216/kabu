@@ -1578,6 +1578,288 @@ def report6(res, ST_TX, TXliq, ev, yrs):
     print(f"     （TOPIX の清算後の通し {((TXliq / CAP) ** (1 / yrs) - 1) * 100:.1f}％）")
 
 
+# ───────────────────────── 8段目：空売り・ロングショート ─────────────────────────
+# 計画は wide_lab_plan8_2026-11-04（結果を見る前に決めたもの）。点数の下位の銘柄（制度信用で売れる貸借銘柄だけ）を信用で売る。
+# 形は2つ：LS＝上位を買い（現金）、下位を売る（同じ額）。TXS＝TOPIX（1306）を全額持ち、下位を同じ額だけ売る
+LEND_FEE = 0.0115            # 貸株料（年率。制度信用の目安）
+SHORT_MAX_MONTHS = 6         # 制度信用の返済期限（6か月）。期限が来たら一度買い戻し、まだ下位なら売り直す
+
+
+def fetch_margin(jq, store: dict) -> bool:
+    """各月の銘柄一覧から、貸借銘柄（制度信用で売れる銘柄）を取り出して覚える。"""
+    mg = store.setdefault("mrgn", {})
+    need = [k for k in sorted(store["months"]) if k not in mg]
+    if not need:
+        return True
+    log(f"貸借銘柄を取っています（{len(need)}か月分）…")
+    shown = False
+    for k in need:
+        if elapsed() >= BUDGET_MIN:
+            save(store, "貸借銘柄を途中まで保存しました")
+            return False
+        y, m = map(int, k.split("-"))
+        d = pd.bdate_range(pd.Timestamp(year=y, month=m, day=1), pd.Timestamp(year=y, month=m, day=1) + pd.offsets.MonthEnd(0), freq="BME")[-1]
+        time.sleep(yb.API_SLEEP)
+        rows = jq.get("/v2/equities/master", {"date": d.strftime("%Y-%m-%d")})
+        if rows and not shown:
+            ks = [x for x in rows[0].keys() if "rgn" in x or "argin" in x]
+            log("  信用の区分の項目 … " + ("・".join(f"{x}={rows[0].get(x)}" for x in ks) if ks else "見つかりません"))
+            shown = True
+        ok = set()
+        for r in rows:
+            code_v = str(r.get("Mrgn") or r.get("MarginCode") or "")
+            name_v = str(r.get("MrgnNm") or r.get("MarginCodeName") or "")
+            if code_v == "2" or "貸借" in name_v:
+                c = yb.norm_code(r.get("Code", ""))
+                if c:
+                    ok.add(c)
+        mg[k] = ok
+    save(store, "貸借銘柄をそろえました")
+    log(f"  貸借銘柄の数 … 最初の月 {len(mg[sorted(mg)[0]])}・最後の月 {len(mg[sorted(mg)[-1]])}")
+    return True
+
+
+def sim_ls(long_rk, short_rk, PXM, DIV, j0, keep, nmax=NMAX, cap=CAP, slip=SLIP, tax=TAX, fee=LEND_FEE, txpx=None, txdist=None):
+    """long_rk[j]・short_rk[j]：その月末の買う順位・売る順位（None は売り買いしない月）。txpx があれば TOPIX（1306）を全額持つ形（TXS）。
+    資産＝自由に使える現金＋空売りの担保（売った代金）＋買っている株の評価額＋1306 の評価額 − 空売りの買い戻しの額。"""
+    M = PXM.shape[1]
+    free = float(cap)          # 自由に使える現金
+    coll = 0.0                 # 空売りの担保（売った代金。使えない）
+    longs, shorts = {}, {}
+    loss = 0.0
+    tx_units, tx_cost = 0.0, 0.0
+    vals = []
+    st = {"n_long": 0, "n_short": 0, "fee": 0.0, "divpay": 0.0, "tax": 0.0}
+
+    def p_(i, j):
+        v = PXM[i, j]
+        return float(v) if (v == v and v > 0) else 0.0
+
+    def realize(g):
+        nonlocal loss
+        if g > 0:
+            t = max(0.0, g - loss) * tax
+            loss = max(0.0, loss - g)
+            st["tax"] += t
+            return t
+        loss += -g
+        return 0.0
+
+    def equity(j):
+        e = free + coll + sum(sh * p_(i, j) for i, (sh, _c) in longs.items()) - sum(sh * p_(i, j) for i, (sh, _p, _e) in shorts.items())
+        if txpx is not None:
+            e += tx_units * txpx[j]
+        return e
+
+    for j in range(j0, M):
+        if txpx is not None and j == j0:
+            px = txpx[j] * (1.0 + slip / 2)
+            tx_units = free / px
+            tx_cost = free
+            free = 0.0
+        # 配当：買っている株は受け取る（税）、売っている株は払う（配当落調整金）
+        for i, (sh, _c) in longs.items():
+            d = DIV[i, j]
+            if d > 0:
+                free += sh * d * (1.0 - tax)
+                st["tax"] += sh * d * tax
+        for i, (sh, _p, _e) in shorts.items():
+            d = DIV[i, j]
+            if d > 0:
+                free -= sh * d
+                st["divpay"] += sh * d
+        if txpx is not None and txdist is not None and txdist[j] > 0:
+            free += tx_units * txdist[j] * (1.0 - tax)
+        # 貸株料（月ごと）
+        sv = sum(sh * p_(i, j) for i, (sh, _p, _e) in shorts.items())
+        free -= sv * fee / 12.0
+        st["fee"] += sv * fee / 12.0
+        lr, sr = (long_rk[j] if long_rk is not None else None), short_rk[j]
+        if sr is not None:
+            if lr is not None:
+                lp = {i: k for k, i in enumerate(lr)}
+                for i in list(longs):
+                    if i not in lp or lp[i] >= keep:
+                        sh, cost = longs.pop(i)
+                        pr = sh * p_(i, j) * (1.0 - slip)
+                        free += pr - realize(pr - cost)
+            sp = {i: k for k, i in enumerate(sr)}
+            for i in list(shorts):
+                sh, proceeds, e0 = shorts[i]
+                if i not in sp or sp[i] >= keep or (j - e0) >= SHORT_MAX_MONTHS:
+                    shorts.pop(i)
+                    cover = sh * p_(i, j) * (1.0 + slip)
+                    coll -= proceeds
+                    free += proceeds - cover - realize(proceeds - cover)
+            eq = equity(j)
+            tgt = eq / nmax
+            if lr is not None:
+                for i in lr[:nmax]:
+                    if len(longs) >= nmax:
+                        break
+                    if i in longs or not p_(i, j):
+                        continue
+                    px = p_(i, j) * (1.0 + slip)
+                    sh = int(min(tgt, free) / px)
+                    if sh < 1:
+                        continue
+                    free -= sh * px
+                    longs[i] = [sh, sh * px]
+                    st["n_long"] += 1
+            for i in sr[:nmax]:
+                if len(shorts) >= nmax:
+                    break
+                if i in shorts or i in longs or not p_(i, j):
+                    continue
+                px = p_(i, j) * (1.0 - slip)
+                sh = int(tgt / px)
+                if sh < 1:
+                    continue
+                coll += sh * px
+                shorts[i] = [sh, sh * px, j]
+                st["n_short"] += 1
+        vals.append(equity(j))
+    # 最後に全部閉じる
+    liq = free + coll
+    g = 0.0
+    for i, (sh, cost) in longs.items():
+        pr = sh * p_(i, M - 1) * (1.0 - slip)
+        liq += pr
+        g += pr - cost
+    for i, (sh, proceeds, _e) in shorts.items():
+        cover = sh * p_(i, M - 1) * (1.0 + slip)
+        liq -= cover
+        g += proceeds - cover
+    if txpx is not None:
+        pr = tx_units * txpx[M - 1] * (1.0 - slip / 2)
+        liq += pr
+        g += pr - tx_cost
+    liq -= tax * max(0.0, g - loss)
+    return np.array(vals), liq, st
+
+
+def lab8(store: dict) -> int:
+    log("8段目（空売り・ロングショート）を回します（指標を作っています）…")
+    D = build(store)
+    dates, UNI, F, PXM, DIV = D["dates"], D["UNI"], D["F"], D["PXM"], D["DIV"]
+    F["VQM"] = combo_score(F, list(VQM), UNI)
+    M = len(dates)
+    j0 = next((j for j, t in enumerate(D["me_idx"]) if t >= 252), None)
+    if j0 is None or M - j0 < 36:
+        print("\n■ 比べる期間が短すぎます。")
+        return 1
+    ev = dates[j0:]
+    mg = store.get("mrgn", {})
+    codes = D["codes"]
+    ci = {c: i for i, c in enumerate(codes)}
+    SH = np.zeros(UNI.shape, dtype=bool)
+    for j, d in enumerate(dates):
+        for c in mg.get(d.strftime("%Y-%m"), ()):
+            i = ci.get(c)
+            if i is not None:
+                SH[i, j] = True
+    SHU = UNI & SH
+    share = [float(SHU[:, j].sum()) / max(1, UNI[:, j].sum()) for j in range(j0, M)]
+    log(f"  売れる銘柄（範囲の中の貸借銘柄） … 平均 {np.mean([SHU[:, j].sum() for j in range(j0, M)]):.0f}銘柄（範囲の {np.mean(share) * 100:.0f}％）")
+    if np.mean(share) < 0.2:
+        print("\n■ 貸借銘柄が取れていません（信用の区分の項目を確かめてください）")
+        return 2
+    TXv, TXliq = topix_taxed(D, j0)
+    ST_TX = half_stats(TXv, ev)
+    txpx = np.array([float(D["tp"]["c"][t]) for t in D["me_idx"]])
+    txdist = np.zeros(M)
+    for dd, a in yb.ETF_DIST.get("1306", ()):
+        k = int(np.searchsorted(np.array([np.datetime64(x.date()) for x in dates]), np.datetime64(pd.Timestamp(dd).date())))
+        if k < M:
+            txdist[k] += a / 100.0
+    months = [d.month for d in dates]
+
+    def thin(rk, fq):
+        return rk if fq is None else [r if months[j] in fq else None for j, r in enumerate(rk)]
+    rng = np.random.default_rng(20261104)
+    seeds = [(rng.random(UNI.shape[0]), rng.random(UNI.shape[0])) for _ in range(N_RAND)]
+    rnd = {}
+    for fn, fq in G7_FREQ:
+        rl = [thin(ranks_from(np.repeat(a[:, None], M, axis=1), UNI), fq) for a, _b in seeds]
+        rs = [thin(ranks_from(np.repeat(b[:, None], M, axis=1), SHU), fq) for _a, b in seeds]
+        for rule, kp in (("A", NMAX), ("B", 3 * NMAX)):
+            rnd[("LS", fn, rule)] = [half_stats(sim_ls(rl[k], rs[k], PXM, DIV, j0, kp)[0], ev) for k in range(N_RAND)]
+            rnd[("TXS", fn, rule)] = [half_stats(sim_ls(None, rs[k], PXM, DIV, j0, kp, txpx=txpx, txdist=txdist)[0], ev) for k in range(N_RAND)]
+    log(f"  でたらめの比べ … {len(rnd)}通り × {N_RAND}回")
+    keys = [k for k, _ in LAB1] + ["VQM"]
+    res = []
+    for key in keys:
+        if ONLY and key not in ONLY:
+            continue
+        sc = F[key]
+        rl_full = ranks_from(sc, UNI)
+        rs_full = ranks_from(-sc, SHU)            # 点数の低い順（売る側）
+        for form in ("LS", "TXS"):
+            for fn, fq in G7_FREQ:
+                r = {"key": key, "form": form, "freq": fn}
+                ok_tx, ok_rn, worst = True, True, np.inf
+                for rule, kp in (("A", NMAX), ("B", 3 * NMAX)):
+                    v, liq, s_ = sim_ls(thin(rl_full, fq) if form == "LS" else None, thin(rs_full, fq), PXM, DIV, j0, kp,
+                                        txpx=txpx if form == "TXS" else None, txdist=txdist if form == "TXS" else None)
+                    stt = half_stats(v, ev)
+                    r[rule], r[rule + "_st"], r[rule + "_liq"], r[rule + "_avg"] = stt, s_, liq, float(np.mean(v))
+                    for h in ("前半", "後半"):
+                        a = stt[h]["ann"]
+                        rr = [x[h]["ann"] for x in rnd[(form, fn, rule)]]
+                        d_tx, d_rn = a - ST_TX[h]["ann"], a - float(np.mean(rr))
+                        beat = int(sum(1 for x in rr if a > x))
+                        r[(rule, h)] = (d_tx, d_rn, beat)
+                        ok_tx &= d_tx >= PT_TX
+                        ok_rn &= (d_rn >= PT_RND) and (beat >= BEAT_MIN)
+                        worst = min(worst, d_tx)
+                r["verdict"] = "候補" if (ok_tx and ok_rn) else ("範囲の中では効く" if ok_rn else "効かない")
+                r["worst"] = worst
+                res.append(r)
+        log(f"  {key} … " + "・".join(f"{r['form']}{r['freq']} {r['verdict']}" for r in res if r["key"] == key))
+    report8(res, rnd, ST_TX, TXliq, ev)
+    return 0
+
+
+def report8(res, rnd, ST_TX, TXliq, ev):
+    HH = ("前半", "後半")
+    yrs = max((ev[-1] - ev[0]).days / 365.25, 0.5)
+    print("\n【日本株の手法・8段目（空売り・ロングショート）（wide_lab）：東証全銘柄】（基準は結果を見る前に決めたもの。計画はプロジェクトの wide_lab_plan8_2026-11-04）")
+    stage_note()
+    print(f"  期間 … 比べる期間 {ev[0].date()}〜{ev[-1].date()}（{len(ev)}か月。前半 〜{(SPLIT - pd.Timedelta(days=1)).date()}・後半 {SPLIT.date()}〜）")
+    print(f"  形 … LS＝点数の上位20を買い（現金）、下位20を信用で売る（同じ額）・TXS＝TOPIX（1306）を全額持ち、下位20を同じ額だけ信用で売る。"
+          f"売れるのはその月末の貸借銘柄だけ。貸株料 年{LEND_FEE * 100:.2f}％・配当落調整金を払う・6か月で一度買い戻す・片道{SLIP * 100:.1f}％・税（買いと売りの損益を合わせる）")
+    print("  判定 … 1回目と同じ（前半・後半の両方で、A（20位）・B（60位）の両方とも TOPIX +2pt・でたらめ（同じ形ででたらめに選ぶ）+2pt かつ20回のうち18回）")
+    print(f"  TOPIX（税あり） … {ST_TX['前半']['ann']:.1f} ／ {ST_TX['後半']['ann']:.1f}")
+    print("  でたらめの平均（A） … " + " ・ ".join(f"{fm}{fn} {np.mean([x['前半']['ann'] for x in rnd[(fm, fn, 'A')]]):.1f}／{np.mean([x['後半']['ann'] for x in rnd[(fm, fn, 'A')]]):.1f}"
+                                          for fm in ("LS", "TXS") for fn, _f in G7_FREQ))
+    cand = [r for r in res if r["verdict"] == "候補"]
+    eff = [r for r in res if r["verdict"] == "範囲の中では効く"]
+    print(f"\n  1. 判定のまとめ … {len(res)}通りのうち 候補 {len(cand)}・範囲の中では効く {len(eff)}・効かない {len(res) - len(cand) - len(eff)}")
+
+    def line(r):
+        d = " ".join(f"{r[(ru, h)][0]:+.1f}/{r[(ru, h)][1]:+.1f}・{r[(ru, h)][2]}" for ru in ("A", "B") for h in HH)
+        return (f"     {r['key']:<7}{r['form']:<4}{r['freq']} … A {r['A']['前半']['ann']:.1f}／{r['A']['後半']['ann']:.1f}（最大下落 {r['A']['通し']['mdd']:.0f}％）"
+                f" B {r['B']['前半']['ann']:.1f}／{r['B']['後半']['ann']:.1f}［{d}］ 清算後の通し A {((r['A_liq'] / CAP) ** (1 / yrs) - 1) * 100:.1f}％・"
+                f"貸株料 {r['A_st']['fee'] / r['A_avg'] * 100 / yrs:.1f}％／年・配当落 {r['A_st']['divpay'] / r['A_avg'] * 100 / yrs:.1f}％／年（資産の平均に対して） … {r['verdict']}")
+    print("\n  2. 候補")
+    for r in sorted(cand, key=lambda x: -x["worst"]):
+        print(line(r))
+    if not cand:
+        print("     なし")
+    print("\n  3. 全部（TOPIX との差のいちばん悪い値の大きい順）")
+    for r in sorted(res, key=lambda x: -x["worst"]):
+        print(line(r))
+    carry = []
+    for r in sorted(cand, key=lambda x: -x["worst"]):
+        if r["key"] not in {c["key"] for c in carry}:
+            carry.append(r)
+        if len(carry) >= G7_CARRY:
+            break
+    print("\n  4. 確かめる段階に持っていくもの（候補の中から点数の違うものを上から3つまで）")
+    print("     " + ("・".join(f"{r['key']}/{r['form']}/{r['freq']}" for r in carry) if carry else "なし"))
+    print(f"     （TOPIX の清算後の通し {((TXliq / CAP) ** (1 / yrs) - 1) * 100:.1f}％）")
+
+
 # ───────────────────────── 7段目：組み立て方の探索 ─────────────────────────
 # 計画は wide_lab_plan7_2026-11-04（結果を見る前に決めたもの）。1回目の24通り＋VQM の点数ごとに、
 # 範囲（全銘柄／時価総額の上から1,000位／500位）× 持つ数（10・20・40・100）× 入れ替え（毎月／四半期）を回す。売る決まりは A（持つ数）・B（持つ数の3倍）
@@ -1837,7 +2119,7 @@ def bd_score(bd: dict, kind: str):
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab6", "lab7"], default="lab1")
+    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab6", "lab7", "lab8"], default="lab1")
     ap.add_argument("--combo", default="", help="3回目：1回目で「範囲の中では効く」以上だった型の記号（カンマ区切り）。2つ以上なら SEL として回す")
     ap.add_argument("--only", default="", help="回す型の記号（カンマ区切り。空欄なら全部）。確かめる段階で候補だけを回すとき")
     ap.add_argument("--cfg", default="", help="7段目の確かめる段階で回す組み立て（例: VQM/TOP500/20/Q,NXG/TOP500/20/Q）")
@@ -1877,6 +2159,16 @@ def main() -> int:
         return lab7(store)
     if args.mode == "lab6":
         return lab6(store)
+    if args.mode == "lab8":
+        if not all(k in store.get("mrgn", {}) for k in store["months"]):
+            key = os.environ.get("J_QUANTS_API_KEY")
+            if not key:
+                print("J_QUANTS_API_KEY が設定されていません")
+                return 2
+            if not fetch_margin(yb.JQ(key), store):
+                print("\n■ まだ終わっていません（貸借銘柄を取っている途中です）。もう一度押してください。")
+                return EXIT_UNFINISHED
+        return lab8(store)
     if args.mode == "lab4":
         bd = bd_load()
         if not bd.get("complete"):
