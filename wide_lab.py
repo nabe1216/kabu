@@ -516,9 +516,59 @@ def build(store: dict) -> dict:
     for k in ("CASH", "FCF", "ROA", "EQR", "AGROW"):
         F[k][fin, :] = np.nan
     PXM = np.stack([CF[:, t] for t in me_idx], axis=1).astype(float)
+    LIMU, LIMD = limit_masks(store, codes, cal, C, CF, OHLV) if OHLV is not None else (None, None)
     return {"codes": codes, "names": names, "sector": sector, "dates": me_dates, "me_idx": me_idx, "F": F, "UNI": UNI,
             "MCAP": MCAP, "LIQ": LIQ, "PXM": PXM, "DIV": DIV, "cal": cal, "tp": tp, "C": C, "CF": CF, "SEG": SEG, "seg_first": seg_first,
-            "OHLV": OHLV, "VA": VA}
+            "OHLV": OHLV, "VA": VA, "LIMU": LIMU, "LIMD": LIMD}
+
+
+# 制限値幅（東証。基準値段 → 上下の値幅）。https://www.jpx.co.jp/equities/trading/domestic/06.html
+LIMIT_TABLE = ((100, 30), (200, 50), (500, 80), (700, 100), (1000, 150), (1500, 300), (2000, 400), (3000, 500), (5000, 700),
+               (7000, 1000), (10000, 1500), (15000, 3000), (20000, 4000), (30000, 5000), (50000, 7000), (70000, 10000),
+               (100000, 15000), (150000, 30000), (200000, 40000), (300000, 50000), (500000, 70000), (700000, 100000),
+               (1000000, 150000), (1500000, 300000), (2000000, 400000), (3000000, 500000), (5000000, 700000),
+               (7000000, 1000000), (10000000, 1500000), (15000000, 3000000), (20000000, 4000000), (30000000, 5000000),
+               (50000000, 7000000))
+
+
+def price_limit(base: np.ndarray) -> np.ndarray:
+    edges = np.array([e for e, _ in LIMIT_TABLE], dtype=float)
+    widths = np.array([w for _, w in LIMIT_TABLE] + [10000000], dtype=float)
+    return widths[np.searchsorted(edges, base, side="right")]
+
+
+def limit_masks(store: dict, codes: list, cal: np.ndarray, C: np.ndarray, CF: np.ndarray, OHLV: dict):
+    """ストップ高・ストップ安で引けた日の印。終値が高値（安値）と同じで、前の日の終値から制限値幅いっぱいまで動いた日。
+    値幅は分割の調整をはずした「その日の株価」で決まるので、調整後の株価を、その日より後の分割の係数で割って戻す。
+    ストップ高で引けた日は、終値では買えない（買いが残る）。ストップ安で引けた日は、終値では売れない。"""
+    S, T = C.shape
+    LIMU = np.zeros((S, T), dtype=bool)
+    LIMD = np.zeros((S, T), dtype=bool)
+    H, L = OHLV["h"], OHLV["l"]
+    calD = cal.astype("datetime64[D]")
+    for i, c in enumerate(codes):
+        b = store["bars"][c]
+        fd, ff = b["fd"], b["ff"]
+        if len(fd):
+            suf = np.r_[np.cumprod(ff[::-1])[::-1], 1.0]                 # suf[k] = ff[k:] の積
+            fac = suf[np.searchsorted(fd, calD, side="right")]
+        else:
+            fac = np.ones(T)
+        cl = C[i]
+        ok = np.isfinite(cl) & (cl > 0)
+        ok[0] = False
+        if not ok.any():
+            continue
+        t = np.nonzero(ok)[0]
+        base = CF[i, t - 1] / fac[t]                  # その日の株価の基準（前の日の終値を、その日の基準に）
+        close = cl[t] / fac[t]
+        w = price_limit(base)
+        tol = 1e-4 * np.maximum(base, 1.0)
+        up = (close >= base + w - tol) & (np.abs(cl[t] - H[i, t]) <= 1e-6 * np.maximum(cl[t], 1.0))
+        dn = (close <= base - w + tol) & (np.abs(cl[t] - L[i, t]) <= 1e-6 * np.maximum(cl[t], 1.0))
+        LIMU[i, t] = up
+        LIMD[i, t] = dn
+    return LIMU, LIMD
 
 
 # ───────────────────────── 実際の運用の形のエンジン ─────────────────────────
@@ -895,18 +945,22 @@ def ev_sim(cands: dict, D: dict, divpay: dict, t0: int, nmax: int = NMAX, cap: f
     毎日、①売る日が来た銘柄を終値で売る ②その日の候補を優先度の高い順に買う（20銘柄まで・そのときの資産の20分の1まで・1株単位）
     ③権利付き最終日の終わりに持っている銘柄の配当を受け取る（税）。上場をやめた銘柄は最後の値段で売る。月末ごとの評価額を返す。"""
     CF, C, me_idx = D["CF"], D["C"], D["me_idx"]
+    LIMU, LIMD = D.get("LIMU"), D.get("LIMD")       # 始値・高値・安値があるときだけ（20年分のデータ）
     T = CF.shape[1]
     me_set = {t: j for j, t in enumerate(me_idx)}
     cash, loss = float(cap), 0.0
     pos: dict = {}
     vals = []
-    st = {"n_buy": 0, "buy_t": [], "tax": 0.0, "held": []}
+    st = {"n_buy": 0, "buy_t": [], "tax": 0.0, "held": [], "skip_up": 0, "late_dn": 0}
 
     def px(i, t):
         v = CF[i, t]
         return float(v) if (v == v and v > 0) else 0.0
     for t in range(t0, T):
         for i in [k for k, p in pos.items() if p[2] <= t]:
+            if LIMD is not None and LIMD[i, t] and t < T - 1:     # ストップ安で引けた日は売れないので、次の日に売る
+                st["late_dn"] += 1
+                continue
             sh, cost, _o = pos.pop(i)
             eff = px(i, t) * (1.0 - slip)
             cash += sh * eff
@@ -929,6 +983,9 @@ def ev_sim(cands: dict, D: dict, divpay: dict, t0: int, nmax: int = NMAX, cap: f
                     continue
                 v = C[i, t]
                 if not (v == v and v > 0):          # その日に売買がなければ買わない
+                    continue
+                if LIMU is not None and LIMU[i, t]:     # ストップ高で引けた日は、終値では買えない
+                    st["skip_up"] += 1
                     continue
                 p = float(v) * (1.0 + slip)
                 sh = int(min(tgt, cash) / p)
@@ -1548,16 +1605,18 @@ def lab6(store: dict) -> int:
         r["verdict"], r["detail"] = judge2(r["var"], ST_TX, lambda _x: False)
         res["T9"] = r
         log(f"  T9 … {r['verdict']}")
-    report6(res, ST_TX, TXliq, ev, yrs)
+    report6(res, ST_TX, TXliq, ev, yrs, D.get("LIMU") is not None)
     return 0
 
 
-def report6(res, ST_TX, TXliq, ev, yrs):
+def report6(res, ST_TX, TXliq, ev, yrs, has_lim=False):
     HH = ("前半", "後半")
     print("\n【日本株の手法・6段目（短期売買・テクニカル）（wide_lab）：東証全銘柄・実際の運用の形】（基準は結果を見る前に決めたもの。計画はプロジェクトの wide_lab_plan6_2026-11-04）")
     stage_note()
     print(f"  期間 … 比べる期間 {ev[0].date()}〜{ev[-1].date()}（{len(ev)}か月。前半 〜{(SPLIT - pd.Timedelta(days=1)).date()}・後半 {SPLIT.date()}〜）")
     print(f"  決まり … 2回目と同じ（元本1,000万円・20銘柄まで・その日の終値で売り買い・片道{SLIP * 100:.1f}％・税20.315％）。T9 は 1306 を売り買い（片道{ETF_SLIP * 100:.1f}％）")
+    if has_lim:
+        print("  ストップ高・ストップ安 … ストップ高で引けた日は終値で買えない（その銘柄は買わない）・ストップ安で引けた日は終値で売れない（次の日に売る）。でたらめの比べも同じ（11月5日に追加）")
     print(f"  判定 … 2通り（A・B）の両方・前半と後半の両方で、TOPIX +{PT_TX:.1f}pt・でたらめ（同じ日に同じ数だけ範囲のでたらめな銘柄を同じ日数持つ。T9 は持つ期間の長さをそのままに順番を入れ替える）"
           f" +{PT_RND:.1f}pt かつ20回のうち{BEAT_MIN}回以上")
     print(f"  TOPIX（税あり） … {ST_TX['前半']['ann']:.1f} ／ {ST_TX['後半']['ann']:.1f}")
@@ -1568,7 +1627,8 @@ def report6(res, ST_TX, TXliq, ev, yrs):
             rn = {h: float(np.mean([y[h]['ann'] for y in x['rnd']])) for h in HH}
             dd = " ".join(f"{r['detail'][(nm, h)][0]:+.1f}/{r['detail'][(nm, h)][1]:+.1f}・{r['detail'][(nm, h)][2]}回" for h in HH)
             extra = (f"持っていた日の割合 {x['held'] * 100:.0f}％" if key == "T9" else
-                     f"合図 {x['n_cand']:,}回・買い 前半 {x['nb']['前半']}回・後半 {x['nb']['後半']}回・平均の持ち数 {x['held']:.1f}・でたらめの買いの回数 {x['fill'] * 100:.0f}％")
+                     f"合図 {x['n_cand']:,}回・買い 前半 {x['nb']['前半']}回・後半 {x['nb']['後半']}回・平均の持ち数 {x['held']:.1f}・でたらめの買いの回数 {x['fill'] * 100:.0f}％・"
+                     f"ストップ高で買えなかった {x['s'].get('skip_up', 0):,}回・ストップ安で売りを次の日へ {x['s'].get('late_dn', 0):,}回")
             print(f"         {nm}（{x['vlab']}） {x['st']['前半']['ann']:6.1f} ／ {x['st']['後半']['ann']:6.1f}（最大下落 {x['st']['通し']['mdd']:.0f}％）［{dd}］"
                   f" でたらめ {rn['前半']:.1f} ／ {rn['後半']:.1f}・{extra}・清算後の通し {((x['liq'] / CAP) ** (1 / yrs) - 1) * 100:.1f}％")
     print("\n  2. 判定のまとめ")
