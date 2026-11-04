@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "fetch＝データを集める ／ lab1＝1回目の型（24通り） ／ lab2＝2回目（出来事と暦） ／ lab3＝3回目（組み合わせ） ／ lab4＝4回目（売買の内訳） ／ lab7＝7段目（組み立て方の探索）"
+        description: "fetch＝データを集める ／ lab1＝1回目の型（24通り） ／ lab2＝2回目（出来事と暦） ／ lab3＝3回目（組み合わせ） ／ lab4＝4回目（売買の内訳） ／ lab6＝6段目（短期売買） ／ lab7＝7段目（組み立て方）"
         required: true
         default: "fetch"
         type: choice
@@ -26,6 +26,7 @@ on:
           - lab2
           - lab3
           - lab4
+          - lab6
           - lab7
       years:
         description: "9＝探す段階（9年分） ／ 20＝確かめる段階（プレミアムの20年分）"
@@ -41,6 +42,10 @@ on:
         default: ""
       combo:
         description: "lab3 だけ：1回目で「範囲の中では効く」以上だった型の記号（カンマ区切り。2つ以上で SEL を回す）"
+        required: false
+        default: ""
+      cfg:
+        description: "lab7 の確かめる段階だけ：回す組み立て（例: VQM/TOP500/20/Q,NXG/TOP500/20/Q）"
         required: false
         default: ""
       stage:
@@ -120,7 +125,7 @@ jobs:
           set +e
           set -o pipefail
           # 途中の様子が実行の画面で見えるように、画面とファイルの両方に出す
-          python wide_lab.py --mode "${{ inputs.mode }}" --only "${{ inputs.only }}" --combo "${{ inputs.combo }}" 2>&1 | tee run.log
+          python wide_lab.py --mode "${{ inputs.mode }}" --only "${{ inputs.only }}" --combo "${{ inputs.combo }}" --cfg "${{ inputs.cfg }}" 2>&1 | tee run.log
           code=${PIPESTATUS[0]}
           {
             echo "## wide-lab（${{ inputs.mode }}・${{ inputs.years }}年分${{ inputs.years == '20' && format('・{0}', inputs.stage) || '' }}${{ inputs.only != '' && format('・{0}', inputs.only) || '' }}）"
