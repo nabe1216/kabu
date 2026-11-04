@@ -34,7 +34,8 @@ T0 = time.monotonic()
 TSE_MKT = {"0101", "0102", "0104", "0106", "0107", "0111", "0112", "0113"}
 FIN_KEEP = ("Code", "DiscDate", "DiscTime", "DocType", "CurPerType", "CurPerSt", "CurPerEn", "CurFYSt", "CurFYEn",
             "Sales", "OP", "OdP", "NP", "EPS", "BPS", "TA", "Eq", "EqAR", "CFO", "CFI", "CashEq",
-            "DivAnn", "Div2Q", "FDivAnn", "ShOutFY", "TrShFY", "FSales", "FOP", "FNP", "NxFSales", "NxFOP", "NxFNp", "NxFNP")
+            "DivAnn", "Div2Q", "FDivAnn", "ShOutFY", "TrShFY", "FSales", "FOP", "FNP", "NxFSales", "NxFOP", "NxFNp", "NxFNP",
+            "FNCNP", "NxFNCNP", "NxFNCNp")      # 単体だけの会社の予想（連結の予想の項目が空のときに使う）
 
 # ── 共通の決まり（method_map_2026-11-04 で、結果を見る前に決めたもの）──
 MIN_LIQ = 5e7            # その月末までの60営業日の売買代金の中央値の下限（円）
@@ -53,6 +54,7 @@ SPLIT = pd.Timestamp("2022-11-01")    # 前半＝これより前・後半＝こ�
 START_T = {"REV24": 504}   # 2年の戻りは2年前の株価が要るので、比べる期間を2年目の終わりから始める（wide_lab_plan に書いた）
 SURP_DAYS = 400          # 決算の驚き：通期の決算短信が出てから、次の通期の決算短信が出るまで（約1年）使う
 LARGE_N, MID_N = 500, 1500
+GAP_DAYS = 60            # 売買のない日がこれより長く続いたら、その前とあとを別の銘柄とみなす（コードの使い回し・長い売買停止）
 
 
 def log(msg: str) -> None:
@@ -226,6 +228,14 @@ def is_fy(r) -> bool:
     return str(r.get("CurPerType") or "") == "FY" and "FinancialStatements" in str(r.get("DocType") or "")
 
 
+def first_num(r, keys):
+    for k in keys:
+        v = num(r.get(k))
+        if v is not None:
+            return v
+    return None
+
+
 def build(store: dict) -> dict:
     """月末ごとの値段・時価総額・売買代金・配当・各型の点数を作る。"""
     tp = store.get("etf1306")
@@ -239,16 +249,27 @@ def build(store: dict) -> dict:
     C = np.full((S, T), np.nan, dtype=np.float32)
     VA = np.zeros((S, T), dtype=np.float32)
     LT = np.full((S, T), -1, dtype=np.int32)     # その日までの最後に売買があった日の番号
+    SEG = np.full((S, T), T, dtype=np.int32)     # その日が入っている「ひと続きの売買」の最初の日の番号（まだ売買がなければ T）
+    seg_first = np.full(S, T, dtype=np.int32)    # 最初のひと続きの最初の日
     for c, i in ci.items():
         b = store["bars"][c]
         k = np.searchsorted(cal, b["d"])
         ok = (k < T)
         ok[ok] = cal[k[ok]] == b["d"][ok]
-        C[i, k[ok]] = b["c"][ok]
-        VA[i, k[ok]] = np.nan_to_num(b["va"][ok])
+        ok &= np.isfinite(b["c"]) & (b["c"] > 0)          # 値のつかなかった日は、売買のない日として扱う
+        kk = k[ok]
+        C[i, kk] = b["c"][ok]
+        VA[i, kk] = np.nan_to_num(b["va"][ok])
         idx = np.full(T, -1, dtype=np.int32)
-        idx[k[ok]] = k[ok]
+        idx[kk] = kk
         LT[i] = np.maximum.accumulate(idx)
+        if len(kk):
+            st_ = kk[np.r_[True, np.diff(kk) > GAP_DAYS]]
+            sidx = np.full(T, -1, dtype=np.int32)
+            sidx[st_] = st_
+            sg = np.maximum.accumulate(sidx)
+            SEG[i] = np.where(sg < 0, T, sg)
+            seg_first[i] = st_[0]
     CF = pd.DataFrame(C).ffill(axis=1).to_numpy(dtype=np.float32)
     mret = np.r_[np.nan, tp["c"][1:] / tp["c"][:-1] - 1.0]
     me_keys, me_dates, me_idx = [], [], []
@@ -283,6 +304,7 @@ def build(store: dict) -> dict:
         if not tl:
             continue
         dd = np.array([np.datetime64(str(r["DiscDate"])[:10]) for r in tl])
+        cal_i = cal.astype("datetime64[D]")
         # 配当（受け取る側）：通期の決算短信の実績。中間は期末の6か月前の月、期末は期末の月に、前の月末から持っていれば受け取る
         seen_fy = set()
         for r in tl:
@@ -306,14 +328,20 @@ def build(store: dict) -> dict:
             k = int(np.searchsorted(dd, me_np[j], side="left")) - 1      # 月末の日より前に出た開示だけ
             if k < 0:
                 continue
+            # 売買が長く途切れたあと（コードの使い回しなど）は、途切れたあとに出た開示だけを使う
+            sg = int(SEG[i, me_idx[j]])
+            k_lo = int(np.searchsorted(dd, cal_i[sg], side="left")) if (sg < T and sg > seg_first[i]) else 0
+            if k_lo > k:
+                continue
+            sub = tl[k_lo:k + 1]
             m_date = me_dates[j]
-            fy = [r for r in tl[:k + 1] if is_fy(r)]
+            fy = [r for r in sub if is_fy(r)]
             fy_by_end = {}
             for r in fy:
                 fy_by_end[str(r.get("CurFYEn") or "")[:10]] = r
             fy_list = [fy_by_end[e] for e in sorted(fy_by_end)]
             # 株数（自己株を除く）：直近の開示。いまの株数の基準へ
-            sh_r = next((r for r in reversed(tl[:k + 1]) if num(r.get("ShOutFY"))), None)
+            sh_r = next((r for r in reversed(sub) if num(r.get("ShOutFY"))), None)
             if sh_r is None:
                 continue
             sh = num(sh_r.get("ShOutFY")) - (num(sh_r.get("TrShFY")) or 0.0)
@@ -323,9 +351,9 @@ def build(store: dict) -> dict:
                 continue
             mcap = float(px) * sh_cur
             MCAP[i, j] = mcap
-            eq_r = next((r for r in reversed(tl[:k + 1]) if num(r.get("Eq")) is not None), None)
-            ta_r = next((r for r in reversed(tl[:k + 1]) if num(r.get("TA")) is not None), None)
-            cash_r = next((r for r in reversed(tl[:k + 1]) if num(r.get("CashEq")) is not None), None)
+            eq_r = next((r for r in reversed(sub) if num(r.get("Eq")) is not None), None)
+            ta_r = next((r for r in reversed(sub) if num(r.get("TA")) is not None), None)
+            cash_r = next((r for r in reversed(sub) if num(r.get("CashEq")) is not None), None)
             eq = num(eq_r.get("Eq")) if eq_r else None
             ta = num(ta_r.get("TA")) if ta_r else None
             if eq is not None:
@@ -351,7 +379,9 @@ def build(store: dict) -> dict:
                 ann = num(r.get("DivAnn"))
                 if ann is not None:
                     F["DY"][i, j] = ann * fac_after(fd, ff, str(r["DiscDate"])[:10]) / float(px)
-                nx = num(r.get("NxFNp")) if num(r.get("NxFNp")) is not None else num(r.get("NxFNP"))
+                nc = "NonConsolidated" in str(r.get("DocType") or "")      # 単体だけの会社は、単体の予想も見る
+                k_fc = ("FNP",) + (("FNCNP",) if nc else ())
+                nx = first_num(r, ("NxFNp", "NxFNP") + (("NxFNCNP", "NxFNCNp") if nc else ()))
                 if nx is not None and np_ and np_ > 0:
                     F["NXG"][i, j] = nx / np_ - 1.0
                 # 決算の驚き：通期の実績 ÷ その期の最後の会社予想（決算短信が出てから SURP_DAYS 日まで）
@@ -359,11 +389,11 @@ def build(store: dict) -> dict:
                 r_d = str(r["DiscDate"])[:10]
                 if np_ is not None and (m_date - pd.Timestamp(r_d)).days <= SURP_DAYS:
                     fc = None
-                    for q in tl[:k + 1]:
+                    for q in sub:
                         if str(q["DiscDate"])[:10] >= r_d:
                             break
-                        if str(q.get("CurFYEn") or "")[:10] == fy_end and num(q.get("FNP")):
-                            fc = num(q.get("FNP"))
+                        if str(q.get("CurFYEn") or "")[:10] == fy_end and first_num(q, k_fc):
+                            fc = first_num(q, k_fc)
                     if fc and fc > 0:
                         F["SURP"][i, j] = np_ / fc - 1.0
                 if len(fy_list) >= 2:
@@ -389,13 +419,17 @@ def build(store: dict) -> dict:
         LIQ[:, j] = np.median(VA[:, max(0, t - 59):t + 1], axis=1)
         TRADE_OK[:, j] = (LT[:, t] >= 0) & (t - LT[:, t] <= STALE_DAYS)
         px = CF[:, t]
+        seg_t = SEG[:, t]
+
+        def inseg(L):
+            return seg_t <= t - L          # L 営業日前から、ひと続きの売買の中にいる
         if t >= 252:
-            F["MOM12"][:, j] = CF[:, t - 21] / CF[:, t - 252] - 1.0
+            F["MOM12"][:, j] = np.where(inseg(252), CF[:, t - 21] / CF[:, t - 252] - 1.0, np.nan)
             w = CF[:, t - 251:t + 1]
-            F["HI52"][:, j] = px / np.nanmax(w, axis=1)
+            F["HI52"][:, j] = np.where(inseg(252), px / np.nanmax(w, axis=1), np.nan)
             r = w[:, 1:] / w[:, :-1] - 1.0
             mr = mret[t - 250:t + 1]
-            ok = np.isfinite(r).sum(axis=1) >= 200
+            ok = (np.isfinite(r).sum(axis=1) >= 200) & inseg(251)
             sd = np.nanstd(r, axis=1)
             F["LOWVOL"][:, j] = np.where(ok, -sd, np.nan)
             rm = np.where(np.isfinite(r), r, np.nan)
@@ -403,13 +437,13 @@ def build(store: dict) -> dict:
             cov = np.nanmean((rm - np.nanmean(rm, axis=1, keepdims=True)) * (mr - mm_), axis=1)
             var = np.nanvar(mr)
             F["LOWBETA"][:, j] = np.where(ok & (var > 0), -cov / var, np.nan)
-            F["LOTTERY"][:, j] = -np.nanmax(r[:, -21:], axis=1)
+            F["LOTTERY"][:, j] = np.where(inseg(21), -np.nanmax(r[:, -21:], axis=1), np.nan)
         if t >= 126:
-            F["MOM6"][:, j] = CF[:, t - 21] / CF[:, t - 126] - 1.0
+            F["MOM6"][:, j] = np.where(inseg(126), CF[:, t - 21] / CF[:, t - 126] - 1.0, np.nan)
         if t >= 21:
-            F["REV1"][:, j] = -(px / CF[:, t - 21] - 1.0)
+            F["REV1"][:, j] = np.where(inseg(21), -(px / CF[:, t - 21] - 1.0), np.nan)
         if t >= 504:
-            F["REV24"][:, j] = -(px / CF[:, t - 504] - 1.0)
+            F["REV24"][:, j] = np.where(inseg(504), -(px / CF[:, t - 504] - 1.0), np.nan)
         F["ILLIQ"][:, j] = -(VA[:, max(0, t - 20):t + 1].sum(axis=1) / MCAP[:, j])
         F["SMALL"][:, j] = -MCAP[:, j]
     UNI = np.zeros((S, M), dtype=bool)
