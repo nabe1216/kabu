@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "fetch＝データを集める ／ lab1＝1回目の型（24通り） ／ lab2＝2回目（出来事と暦） ／ lab3＝3回目（組み合わせ） ／ lab4＝4回目（売買の内訳） ／ lab6＝6段目（短期売買） ／ lab7＝7段目（組み立て方）"
+        description: "fetch＝データを集める ／ lab1＝1回目の型（24通り） ／ lab2＝2回目（出来事と暦） ／ lab3＝3回目（組み合わせ） ／ lab4＝4回目（売買の内訳） ／ lab6＝6段目（短期売買） ／ lab7＝7段目（組み立て方） ／ lab8＝8段目（空売り）"
         required: true
         default: "fetch"
         type: choice
@@ -28,6 +28,7 @@ on:
           - lab4
           - lab6
           - lab7
+          - lab8
       years:
         description: "9＝探す段階（9年分） ／ 20＝確かめる段階（プレミアムの20年分）"
         required: true
