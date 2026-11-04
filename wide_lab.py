@@ -584,10 +584,41 @@ LAB1 = (("EP", "利益に対する安さ（純利益÷時価総額）"), ("BP", 
         ("ILLIQ", "売買の少なさ"), ("SMALL", "小型株（時価総額の小さい順）"))
 
 
-def lab1(store: dict) -> int:
-    log("1回目の型をまとめて回します（指標を作っています）…")
+def pct_rank(sc: np.ndarray, uni: np.ndarray) -> np.ndarray:
+    """月末ごとに、範囲の中で点数を0（いちばん下）〜1（いちばん上）の順位にする。点数のない銘柄は空。"""
+    out = np.full(sc.shape, np.nan)
+    for j in range(sc.shape[1]):
+        idx = np.nonzero(uni[:, j] & np.isfinite(sc[:, j]))[0]
+        n = len(idx)
+        if n > 1:
+            r = np.argsort(np.argsort(sc[idx, j], kind="stable"), kind="stable")
+            out[idx, j] = r / (n - 1)
+    return out
+
+
+def combo_score(F: dict, keys: list, uni: np.ndarray) -> np.ndarray:
+    """組み合わせ：型ごとの順位（0〜1）の平均。半分以上の型に点数がある銘柄だけ。"""
+    R = np.stack([pct_rank(F[k], uni) for k in keys])
+    cnt = np.isfinite(R).sum(axis=0)
+    with np.errstate(invalid="ignore"):
+        m = np.nanmean(R, axis=0)
+    return np.where(cnt >= int(np.ceil(len(keys) / 2)), m, np.nan)
+
+
+# 3回目の組み合わせ（wide_lab_plan3_2026-11-04 で、1回目の結果を見る前に決めたもの）
+VQM = ("BP", "ROE", "MOM12")      # 割安・質・勢いの古典的な組み合わせ（結果を見ずに決めた固定の組み合わせ）
+
+
+def lab1(store: dict, combos: dict | None = None) -> int:
+    log("1回目の型をまとめて回します（指標を作っています）…" if not combos else "3回目（組み合わせ）を回します（指標を作っています）…")
     D = build(store)
     dates, UNI, F, PXM, DIV = D["dates"], D["UNI"], D["F"], D["PXM"], D["DIV"]
+    items = LAB1
+    if combos:
+        items = []
+        for nm, (keys, lab) in combos.items():
+            F[nm] = combo_score(F, list(keys), UNI)
+            items.append((nm, f"{lab}（{'・'.join(keys)} の順位の平均）"))
     M = len(dates)
     j0 = next((j for j, t in enumerate(D["me_idx"]) if t >= 252), None)
     if j0 is None or M - j0 < 36:
@@ -621,7 +652,7 @@ def lab1(store: dict) -> int:
         rank_mc[o, j] = np.arange(len(o))
     buckets = {"大型": rank_mc < LARGE_N, "中型": (rank_mc >= LARGE_N) & (rank_mc < MID_N), "小型": rank_mc >= MID_N}
     res = {}
-    for key, lab in LAB1:
+    for key, lab in items:
         if ONLY and key not in ONLY:
             continue
         sc = F[key]
@@ -1240,7 +1271,8 @@ def report2(res, ref_bad, ST_TX, TXliq, ev, yrs, D, j0):
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2"], default="lab1")
+    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3"], default="lab1")
+    ap.add_argument("--combo", default="", help="3回目：1回目で「範囲の中では効く」以上だった型の記号（カンマ区切り）。2つ以上なら SEL として回す")
     ap.add_argument("--only", default="", help="回す型の記号（カンマ区切り。空欄なら全部）。確かめる段階で候補だけを回すとき")
     args = ap.parse_args()
     global ONLY
@@ -1268,6 +1300,16 @@ def main() -> int:
     if elapsed() > COMPUTE_LIMIT_MIN:
         print("\n■ まだ終わっていません（データは取り終えましたが、計算の時間が残っていません）。もう一度押してください。")
         return EXIT_UNFINISHED
+    if args.mode == "lab3":
+        sel = [x.strip().upper() for x in args.combo.split(",") if x.strip()]
+        bad = [k for k in sel if k not in dict(LAB1)]
+        if bad:
+            print(f"\n■ 組み合わせに使えない記号があります：{'・'.join(bad)}")
+            return 2
+        combos = {"VQM": (VQM, "割安・質・勢い（固定）")}
+        if len(sel) >= 2:
+            combos["SEL"] = (tuple(sel), "1回目で効いた型の組み合わせ")
+        return lab1(store, combos)
     return lab1(store) if args.mode == "lab1" else lab2(store)
 
 
