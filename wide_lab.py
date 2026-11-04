@@ -22,8 +22,10 @@ import pandas as pd
 import yield_backtest as yb
 
 OUT = Path("data")
-CACHE = OUT / "wide_cache.pkl"
 YEARS = int(os.environ.get("WIDE_YEARS", "9"))
+LONG = YEARS > 10        # 20年分（プレミアム）で確かめる段階。データは別のファイルに持ち、プレミアムをやめる前に long-cleanup で消す
+CACHE = OUT / ("wide_long.pkl" if LONG else "wide_cache.pkl")
+LONG_FIRST_ME = pd.Timestamp("2008-05-30")    # J-Quants の株価は2008年5月7日から。銘柄一覧もこの月末から取る
 BUDGET_MIN = float(os.environ.get("FETCH_BUDGET_MIN", "130"))
 COMPUTE_LIMIT_MIN = float(os.environ.get("COMPUTE_START_LIMIT_MIN", "140"))
 SAVE_EVERY_MIN = 15
@@ -51,7 +53,8 @@ N_RAND = 20
 PT_TX = 2.0              # TOPIX（税あり）を上回る幅（年率pt）
 PT_RND = 2.0             # でたらめな20銘柄の平均を上回る幅（年率pt）
 BEAT_MIN = 18            # でたらめな20回のうち、上回る回数の下限
-SPLIT = pd.Timestamp("2022-11-01")    # 前半＝これより前・後半＝これ以後（wide_lab_plan で決めた）
+SPLIT = pd.Timestamp("2018-08-01" if LONG else "2022-11-01")
+# 探す段階（9年分）：前半＝2022年10月まで・後半＝11月から。確かめる段階（20年分）：前半＝見ていない期間（2018年7月まで）・後半＝最近（wide_lab_plan で決めた）
 START_T = {"REV24": 504}   # 2年の戻りは2年前の株価が要るので、比べる期間を2年目の終わりから始める（wide_lab_plan に書いた）
 SURP_DAYS = 400          # 決算の驚き：通期の決算短信が出てから、次の通期の決算短信が出るまで（約1年）使う
 LARGE_N, MID_N = 500, 1500
@@ -95,6 +98,8 @@ def num(v):
 def month_ends() -> list:
     today = pd.Timestamp(date.today())
     start = today - pd.DateOffset(years=YEARS) + pd.DateOffset(days=40)
+    if LONG:
+        start = max(start, LONG_FIRST_ME)
     me = pd.bdate_range(start, today, freq="BME")
     return [d for d in me if d <= today]
 
@@ -566,6 +571,8 @@ def half_stats(vals: np.ndarray, dates: list) -> dict:
 
 
 # 1回目の型（wide_lab_plan_2026-11-04 で、結果を見る前に決めたもの）。点数は大きいほど上
+ONLY: set = set()        # 回す型（空なら全部）
+
 LAB1 = (("EP", "利益に対する安さ（純利益÷時価総額）"), ("BP", "純資産に対する安さ"), ("SP", "売上に対する安さ"),
         ("CASH", "現金に対する安さ（金融を除く）"), ("FCF", "稼ぐ現金に対する安さ（金融を除く）"), ("DY", "配当利回り（実績）"),
         ("MOM12", "12か月の勢い（直近1か月を除く）"), ("MOM6", "6か月の勢い（直近1か月を除く）"), ("HI52", "52週高値への近さ"),
@@ -615,6 +622,8 @@ def lab1(store: dict) -> int:
     buckets = {"大型": rank_mc < LARGE_N, "中型": (rank_mc >= LARGE_N) & (rank_mc < MID_N), "小型": rank_mc >= MID_N}
     res = {}
     for key, lab in LAB1:
+        if ONLY and key not in ONLY:
+            continue
         sc = F[key]
         jf = j0 if key not in START_T else next((j for j, t in enumerate(D["me_idx"]) if t >= START_T[key]), M)
         if M - jf < 36:
@@ -658,10 +667,17 @@ def lab1(store: dict) -> int:
     return 0
 
 
+def stage_note() -> None:
+    if LONG:
+        print("  ※ 確かめる段階（プレミアム・20年分）。「前半」＝見ていない期間（2018年7月まで）・「後半」＝最近（2018年8月から）。"
+              "両方で「候補」の基準を満たせば「確立」（method_map_2026-11-04）" + (f"。回した型：{'・'.join(sorted(ONLY))}" if ONLY else ""))
+
+
 def report(D, res, RND, ST_TX, TXliq, ev, j0):
     HH = ("前半", "後半")
     yrs = max((ev[-1] - ev[0]).days / 365.25, 0.5)
     print("\n【日本株の手法の型・1回目（wide_lab）：東証全銘柄・実際の運用の形】（基準は結果を見る前に決めたもの。計画はプロジェクトの method_map_2026-11-04 と wide_lab_plan_2026-11-04）")
+    stage_note()
     print(f"  期間 … 比べる期間 {ev[0].date()}〜{ev[-1].date()}（{len(ev)}か月。前半 〜{(SPLIT - pd.Timedelta(days=1)).date()}・後半 {SPLIT.date()}〜）")
     nu = D["UNI"][:, j0:].sum(axis=0)
     print(f"  範囲 … 東証の全市場の普通株（配当のない株・上場をやめた銘柄も入れる）。売買代金の中央値5,000万円以上・時価総額100億円以上。"
@@ -1074,6 +1090,8 @@ def lab2(store: dict) -> int:
              ("E7", "株式分割の効力発生日に買う", (("A", "20日持つ", lambda: e7(20), elig_list), ("B", "60日持つ", lambda: e7(60), elig_list))))
     res = {}
     for key, lab, variants in TYPES:
+        if ONLY and key not in ONLY:
+            continue
         r = {"lab": lab, "var": {}}
         for nm, vlab, mk, pool_fn in variants:
             cands = mk()
@@ -1082,8 +1100,9 @@ def lab2(store: dict) -> int:
         res[key] = r
         log(f"  {key} … {r['verdict']}")
     # 参考：決算発表の反応が悪い株を買う（判定には使わない）
-    ref_bad = run(e1(60, good=False), ann_pool_fn, "E1bad")
+    ref_bad = run(e1(60, good=False), ann_pool_fn, "E1bad") if (not ONLY or "E1" in ONLY) else None
     # E4：上場直後の株（毎月の順位で回す。売る決まりは1回目と同じ A・B。比べるでたらめも1回目と同じ）
+    run_e4 = not ONLY or "E4" in ONLY
     SEG = D["SEG"]
     sc4 = np.full(UNI.shape, np.nan)
     for j, t in enumerate(me_idx):
@@ -1096,20 +1115,21 @@ def lab2(store: dict) -> int:
     r4 = {"lab": "上場直後の株（上場から1か月〜1年。新しい順）", "var": {}, "nsc": nsc}
     rng = np.random.default_rng(20261104)
     rnd4 = {nm: [] for nm, _ in KEEPS}
-    for _k in range(N_RAND):
+    for _k in range(N_RAND if run_e4 else 0):
         sc_r = np.repeat(rng.random(UNI.shape[0])[:, None], M, axis=1)
         rk_r = ranks_from(sc_r, UNI)
         for nm, kp in KEEPS:
             v, _l, _s = sim(rk_r, D["PXM"], D["DIV"], j0, kp)
             rnd4[nm].append(half_stats(v, ev))
-    for nm, kp in KEEPS:
-        v, liq, s_ = sim(rk4, D["PXM"], D["DIV"], j0, kp)
-        r4["var"][nm] = {"st": half_stats(v, ev), "liq": liq, "s": s_, "rnd": rnd4[nm], "vlab": f"{kp}位より下で売る",
-                         "nb": {}, "held": float("nan"), "n_cand": int(np.isfinite(sc4).sum())}
-    share_ok = float(np.mean([n >= IPO_MIN_N for n in nsc])) if nsc else 0.0
-    r4["verdict"], r4["detail"] = judge2(r4["var"], ST_TX, lambda _x: share_ok < IPO_MIN_SHARE)
-    res["E4"] = r4
-    log(f"  E4 … {r4['verdict']}")
+    if run_e4:
+        for nm, kp in KEEPS:
+            v, liq, s_ = sim(rk4, D["PXM"], D["DIV"], j0, kp)
+            r4["var"][nm] = {"st": half_stats(v, ev), "liq": liq, "s": s_, "rnd": rnd4[nm], "vlab": f"{kp}位より下で売る",
+                             "nb": {}, "held": float("nan"), "n_cand": int(np.isfinite(sc4).sum())}
+        share_ok = float(np.mean([n >= IPO_MIN_N for n in nsc])) if nsc else 0.0
+        r4["verdict"], r4["detail"] = judge2(r4["var"], ST_TX, lambda _x: share_ok < IPO_MIN_SHARE)
+        res["E4"] = r4
+        log(f"  E4 … {r4['verdict']}")
     # 暦の型（1306 を売り買い）
     mb = month_bounds(cal)
     mon = (cal.astype("datetime64[M]").astype(int) % 12) + 1
@@ -1146,6 +1166,8 @@ def lab2(store: dict) -> int:
                  ("E6", "冬だけ TOPIX を持つ（10月末に買う）", (("A", "4月末に売る（6か月）", lambda: sim_may(4), lambda s: cal_placebo_may(6, s)),
                                                       ("B", "5月末に売る（7か月）", lambda: sim_may(5), lambda s: cal_placebo_may(7, s)))))
     for key, lab, variants in CAL_TYPES:
+        if ONLY and key not in ONLY:
+            continue
         r = {"lab": lab, "var": {}}
         for nm, vlab, mk, pmk in variants:
             x = mk()
@@ -1184,6 +1206,7 @@ def judge2(var: dict, ST_TX: dict, short) -> tuple:
 def report2(res, ref_bad, ST_TX, TXliq, ev, yrs, D, j0):
     HH = ("前半", "後半")
     print("\n【日本株の手法の型・2回目（wide_lab）：出来事と暦・東証全銘柄・実際の運用の形】（基準は結果を見る前に決めたもの。計画はプロジェクトの wide_lab_plan2_2026-11-04）")
+    stage_note()
     print(f"  期間 … 比べる期間 {ev[0].date()}〜{ev[-1].date()}（{len(ev)}か月。前半 〜{(SPLIT - pd.Timedelta(days=1)).date()}・後半 {SPLIT.date()}〜）")
     print(f"  決まり … 元本1,000万円・20銘柄まで・1株単位・終値で売り買い・片道{SLIP * 100:.1f}％（暦の型の 1306 は{ETF_SLIP * 100:.1f}％）・税20.315％（繰り越しの損あり）・"
           "使っていないお金に利息はつけない。買う候補は、その日より前の最後の月末に範囲（1回目と同じ）に入っていた銘柄")
@@ -1204,9 +1227,10 @@ def report2(res, ref_bad, ST_TX, TXliq, ev, yrs, D, j0):
         if key == "E4":
             ns = r["nsc"]
             print(f"         点数のある銘柄の数（範囲の中） 平均 {np.mean(ns):.0f}・最少 {min(ns)}・20以上の月 {np.mean([n >= IPO_MIN_N for n in ns]) * 100:.0f}％")
-    print(f"\n  参考（判定には使わない）：決算発表の反応が TOPIX より −5％以下の株を買って60日持つ … {ref_bad['st']['前半']['ann']:.1f} ／ {ref_bad['st']['後半']['ann']:.1f}"
-          f"（でたらめ {np.mean([y['前半']['ann'] for y in ref_bad['rnd']]):.1f} ／ {np.mean([y['後半']['ann'] for y in ref_bad['rnd']]):.1f}・"
-          f"買い 前半 {ref_bad['nb']['前半']}回・後半 {ref_bad['nb']['後半']}回）")
+    if ref_bad is not None:
+        print(f"\n  参考（判定には使わない）：決算発表の反応が TOPIX より −5％以下の株を買って60日持つ … {ref_bad['st']['前半']['ann']:.1f} ／ {ref_bad['st']['後半']['ann']:.1f}"
+              f"（でたらめ {np.mean([y['前半']['ann'] for y in ref_bad['rnd']]):.1f} ／ {np.mean([y['後半']['ann'] for y in ref_bad['rnd']]):.1f}・"
+              f"買い 前半 {ref_bad['nb']['前半']}回・後半 {ref_bad['nb']['後半']}回）")
     print("\n  2. 判定のまとめ")
     for v in ("候補", "範囲の中では効く", "効かない", "保留（データ不足）"):
         ks = [k for k, r in res.items() if r["verdict"] == v]
@@ -1217,7 +1241,14 @@ def report2(res, ref_bad, ST_TX, TXliq, ev, yrs, D, j0):
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--mode", choices=["fetch", "lab1", "lab2"], default="lab1")
+    ap.add_argument("--only", default="", help="回す型の記号（カンマ区切り。空欄なら全部）。確かめる段階で候補だけを回すとき")
     args = ap.parse_args()
+    global ONLY
+    ONLY = {x.strip().upper() for x in args.only.split(",") if x.strip()}
+    if LONG:
+        yb.LONG_MODE = True          # 株価を「20年前まで」で取る。取れなければプレミアムではないので止まる
+        yb.API_SLEEP = float(os.environ.get("LONG_API_SLEEP", "0.25"))    # プレミアムは呼び出しの上限が大きい
+        log(f"確かめる段階（{YEARS}年分・データは {CACHE}）")
     store = load()
     if not store.get("complete"):
         key = os.environ.get("J_QUANTS_API_KEY")
