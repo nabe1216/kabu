@@ -1578,6 +1578,151 @@ def report6(res, ST_TX, TXliq, ev, yrs):
     print(f"     （TOPIX の清算後の通し {((TXliq / CAP) ** (1 / yrs) - 1) * 100:.1f}％）")
 
 
+# ───────────────────────── 9段目：多くの型をまとめて学ばせる ─────────────────────────
+# 計画は wide_lab_plan9_2026-11-04（結果を見る前に決めたもの）。月末ごとに、それまでの36か月だけを使って型の重みを決め（先の情報は使わない）、
+# その重みで点数を作って運用する。ML1＝型ごとの「次の月の成績との順位の相関（IC）」の平均を重みにする（正のものだけ）。ML2＝リッジ回帰
+ML_WIN = 36                  # 重みを決めるのに使う月数
+ML_MIN = 24                  # これより少ない月しかないときは点数を出さない
+ML_RIDGE = 10.0              # リッジ回帰の強さ（型の順位を平均0にしたあとの、1銘柄・1か月あたり）
+ML_CONS = (("ALL", 20, "M"), ("TOP500", 20, "Q"), ("TOP1000", 40, "Q"))
+
+
+def ml_scores(F: dict, keys: list, UNI: np.ndarray, PXM: np.ndarray, DIV: np.ndarray) -> tuple:
+    """月末ごとに、その月までに分かっていることだけで2つの点数（ML1・ML2）を作る。"""
+    S, M = UNI.shape
+    R = np.stack([pct_rank(F[k], UNI) for k in keys])           # 型 × 銘柄 × 月（0〜1）
+    X = np.nan_to_num(R - 0.5, nan=0.0)                           # 点数のない型は真ん中
+    fr = np.full((S, M), np.nan)                                  # 次の月の成績（配当込み）
+    with np.errstate(invalid="ignore", divide="ignore"):
+        fr[:, :-1] = (PXM[:, 1:] + DIV[:, 1:]) / PXM[:, :-1] - 1.0
+    Y = pct_rank(fr, UNI) - 0.5                                   # 次の月の成績の順位（範囲の中）
+    K = len(keys)
+    ic = np.full((K, M), np.nan)                                  # 月ごとの順位の相関
+    for j in range(M - 1):
+        ok = UNI[:, j] & np.isfinite(Y[:, j])
+        if ok.sum() < 30:
+            continue
+        y = Y[ok, j]
+        for k in range(K):
+            x = X[k, ok, j]
+            if np.std(x) > 0:
+                ic[k, j] = float(np.corrcoef(x, y)[0, 1])
+    ML1 = np.full((S, M), np.nan)
+    ML2 = np.full((S, M), np.nan)
+    W1, W2 = [], []
+    for j in range(M):
+        # 月 m の IC は m+1 月末に分かる → j より前の月まで。半分以上の型に IC がある月だけ（2年の戻りなど、遅れて始まる型があるため）
+        past = [m for m in range(max(0, j - ML_WIN), j) if m + 1 <= j and np.isfinite(ic[:, m]).sum() >= K / 2]
+        if len(past) < ML_MIN:
+            W1.append(None)
+            W2.append(None)
+            continue
+        with np.errstate(invalid="ignore"):
+            w1 = np.clip(np.nan_to_num(np.nanmean(ic[:, past], axis=1), nan=0.0), 0.0, None)
+        w1 = w1 / w1.sum() if w1.sum() > 0 else np.full(K, 1.0 / K)
+        ok_now = UNI[:, j]
+        ML1[ok_now, j] = np.tensordot(w1, X[:, ok_now, j], axes=1)
+        # リッジ回帰（過去の月の、銘柄 × 型 → 次の月の順位）
+        xs, ys = [], []
+        for m in past:
+            ok = UNI[:, m] & np.isfinite(Y[:, m])
+            xs.append(X[:, ok, m].T)
+            ys.append(Y[ok, m])
+        A = np.vstack(xs)
+        b = np.concatenate(ys)
+        w2 = np.linalg.solve(A.T @ A + ML_RIDGE * len(b) / 100.0 * np.eye(K), A.T @ b)
+        ML2[ok_now, j] = X[:, ok_now, j].T @ w2
+        W1.append(w1)
+        W2.append(w2)
+    return ML1, ML2, W1, W2, ic
+
+
+def lab9(store: dict) -> int:
+    log("9段目（多くの型をまとめて学ばせる）を回します（指標を作っています）…")
+    D = build(store)
+    dates, UNI, F, PXM, DIV = D["dates"], D["UNI"], D["F"], D["PXM"], D["DIV"]
+    M = len(dates)
+    keys = [k for k, _ in LAB1]
+    ML1, ML2, W1, W2, ic = ml_scores(F, keys, UNI, PXM, DIV)
+    F["ML1"], F["ML2"] = ML1, ML2
+    jstart = next((j for j in range(M) if W1[j] is not None), None)
+    if jstart is None or M - jstart < 36:
+        print("\n■ 学ばせる期間を取ると、比べる期間が短すぎます。")
+        return 1
+    j0 = max(jstart, next(j for j, t in enumerate(D["me_idx"]) if t >= 252))
+    ev = dates[j0:]
+    log(f"  点数が出るのは {dates[jstart].date()} から。比べる期間 {ev[0].date()}〜{ev[-1].date()}（{len(ev)}か月）")
+    TXv, TXliq = topix_taxed(D, j0)
+    ST_TX = half_stats(TXv, ev)
+    rank_mc = np.full(UNI.shape, np.inf)
+    for j in range(M):
+        idx = np.nonzero(UNI[:, j])[0]
+        o = idx[np.argsort(-D["MCAP"][idx, j])]
+        rank_mc[o, j] = np.arange(len(o))
+    unis = {nm: (UNI if lim is None else (UNI & (rank_mc < lim))) for nm, lim in G7_UNIS}
+    months = [d.month for d in dates]
+    fqs = dict(G7_FREQ)
+
+    def thin(rk, fq):
+        return rk if fq is None else [r if months[j] in fq else None for j, r in enumerate(rk)]
+    rng = np.random.default_rng(20261104)
+    seeds = [rng.random(UNI.shape[0]) for _ in range(N_RAND)]
+    res = []
+    for un, n, fn in ML_CONS:
+        U, fq = unis[un], fqs[fn]
+        rks_r = [thin(ranks_from(np.repeat(sd[:, None], M, axis=1), U), fq) for sd in seeds]
+        rnd = {rule: [half_stats(sim(rk, PXM, DIV, j0, kp, nmax=n)[0], ev) for rk in rks_r] for rule, kp in (("A", n), ("B", 3 * n))}
+        for key in ("ML1", "ML2"):
+            if ONLY and key not in ONLY:
+                continue
+            rk = thin(ranks_from(F[key], U), fq)
+            r = {"key": key, "uni": un, "n": n, "freq": fn, "rnd": rnd}
+            ok_tx, ok_rn, worst = True, True, np.inf
+            for rule, kp in (("A", n), ("B", 3 * n)):
+                v, liq, s_ = sim(rk, PXM, DIV, j0, kp, nmax=n)
+                stt = half_stats(v, ev)
+                r[rule], r[rule + "_liq"] = stt, liq
+                for h in ("前半", "後半"):
+                    a = stt[h]["ann"]
+                    rr = [x[h]["ann"] for x in rnd[rule]]
+                    d_tx, d_rn = a - ST_TX[h]["ann"], a - float(np.mean(rr))
+                    beat = int(sum(1 for x in rr if a > x))
+                    r[(rule, h)] = (d_tx, d_rn, beat)
+                    ok_tx &= d_tx >= PT_TX
+                    ok_rn &= (d_rn >= PT_RND) and (beat >= BEAT_MIN)
+                    worst = min(worst, d_tx)
+            r["verdict"] = "候補" if (ok_tx and ok_rn) else ("範囲の中では効く" if ok_rn else "効かない")
+            r["worst"] = worst
+            res.append(r)
+            log(f"  {key}／{un}／{n}銘柄／{fn} … {r['verdict']}")
+    # 報告
+    HH = ("前半", "後半")
+    print("\n【日本株の手法・9段目（多くの型をまとめて学ばせる）（wide_lab）：東証全銘柄】（基準は結果を見る前に決めたもの。計画はプロジェクトの wide_lab_plan9_2026-11-04）")
+    stage_note()
+    print(f"  期間 … 比べる期間 {ev[0].date()}〜{ev[-1].date()}（{len(ev)}か月。前半 〜{(SPLIT - pd.Timedelta(days=1)).date()}・後半 {SPLIT.date()}〜）。"
+          f"重みは、その月末までの{ML_WIN}か月（{ML_MIN}か月未満なら点数なし）だけで決める")
+    print("  ML1＝型ごとの順位の相関（次の月の成績と）の平均を重みにする（正のものだけ）・ML2＝リッジ回帰（型24通りの順位から、次の月の成績の順位を当てる）")
+    print(f"  TOPIX（税あり） … {ST_TX['前半']['ann']:.1f} ／ {ST_TX['後半']['ann']:.1f}")
+    print("\n  1. 成績（年率％。［TOPIX との差 ／ でたらめの平均との差・回数］）")
+    for r in res:
+        d = " ".join(f"{r[(ru, h)][0]:+.1f}/{r[(ru, h)][1]:+.1f}・{r[(ru, h)][2]}" for ru in ("A", "B") for h in HH)
+        rn = " ／ ".join(f"{np.mean([x[h]['ann'] for x in r['rnd']['A']]):.1f}" for h in HH)
+        print(f"     {r['key']}／{r['uni']}／{r['n']}銘柄／{r['freq']} … A {r['A']['前半']['ann']:.1f}／{r['A']['後半']['ann']:.1f}（最大下落 {r['A']['通し']['mdd']:.0f}％）"
+              f" B {r['B']['前半']['ann']:.1f}／{r['B']['後半']['ann']:.1f}［{d}］ でたらめ（A） {rn} … {r['verdict']}")
+    print("\n  2. 重みの平均（ML1。比べる期間の月の平均。大きい順に上から8）")
+    ws = np.array([w for w in W1[j0:] if w is not None])
+    if len(ws):
+        mw = ws.mean(axis=0)
+        print("     " + "・".join(f"{keys[k]} {mw[k] * 100:.0f}％" for k in np.argsort(-mw)[:8]))
+    icm = np.nanmean(ic[:, j0:], axis=1)
+    print("     （型ごとの順位の相関の平均：" + "・".join(f"{keys[k]} {icm[k]:+.3f}" for k in np.argsort(-icm)) + "）")
+    print("\n  3. 判定のまとめ")
+    for v in ("候補", "範囲の中では効く", "効かない"):
+        ks = [f"{r['key']}／{r['uni']}／{r['n']}／{r['freq']}" for r in res if r["verdict"] == v]
+        print(f"     {v} … " + ("・".join(ks) if ks else "なし"))
+    return 0
+
+
 # ───────────────────────── 8段目：空売り・ロングショート ─────────────────────────
 # 計画は wide_lab_plan8_2026-11-04（結果を見る前に決めたもの）。点数の下位の銘柄（制度信用で売れる貸借銘柄だけ）を信用で売る。
 # 形は2つ：LS＝上位を買い（現金）、下位を売る（同じ額）。TXS＝TOPIX（1306）を全額持ち、下位を同じ額だけ売る
@@ -2119,7 +2264,7 @@ def bd_score(bd: dict, kind: str):
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab6", "lab7", "lab8"], default="lab1")
+    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab6", "lab7", "lab8", "lab9"], default="lab1")
     ap.add_argument("--combo", default="", help="3回目：1回目で「範囲の中では効く」以上だった型の記号（カンマ区切り）。2つ以上なら SEL として回す")
     ap.add_argument("--only", default="", help="回す型の記号（カンマ区切り。空欄なら全部）。確かめる段階で候補だけを回すとき")
     ap.add_argument("--cfg", default="", help="7段目の確かめる段階で回す組み立て（例: VQM/TOP500/20/Q,NXG/TOP500/20/Q）")
@@ -2159,6 +2304,8 @@ def main() -> int:
         return lab7(store)
     if args.mode == "lab6":
         return lab6(store)
+    if args.mode == "lab9":
+        return lab9(store)
     if args.mode == "lab8":
         if not all(k in store.get("mrgn", {}) for k in store["months"]):
             key = os.environ.get("J_QUANTS_API_KEY")
