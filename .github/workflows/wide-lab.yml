@@ -1,0 +1,99 @@
+name: wide-lab
+
+# 東証の全銘柄で、日本株の手法の型をまとめて確かめる（2026年11月4日に追加）。
+# 今までの yield-backtest（配当の手法）とは別物で、データも別のキャッシュ（data/wide_cache.pkl）に持つ。
+# 計画と記録はプロジェクトの method_map_2026-11-04 と wide_lab_plan_2026-11-04。
+# Actions タブ → 左の wide-lab → 右の「Run workflow」
+#   mode=fetch … 東証全銘柄のデータを集める（全部で2〜4時間。時間切れなら取った分を保存して止まるので、もう一度押すと続きから）
+#   mode=lab1  … データがそろっていれば、1回目の型（24通り）をまとめて回す
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "fetch＝データを集める ／ lab1＝1回目の型をまとめて回す"
+        required: true
+        default: "fetch"
+        type: choice
+        options:
+          - fetch
+          - lab1
+
+permissions:
+  contents: read
+  actions: write        # キャッシュの古い控えを消すため
+
+concurrency:
+  group: wide-lab       # 2つ同時に走ると、キャッシュを取り合うので1つずつ
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 170
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 依存関係をインストール
+        run: pip install --quiet numpy pandas requests
+
+      # 復元と保存を分けて、途中で止まった実行でも取った分を保存する（yield-backtest と同じ考え方）
+      - name: キャッシュを復元
+        uses: actions/cache/restore@v4
+        with:
+          path: data/wide_cache.pkl
+          key: wide-lab-cache-v1-
+          restore-keys: |
+            wide-lab-cache-v1-
+
+      - name: 実行
+        env:
+          J_QUANTS_API_KEY: ${{ secrets.J_QUANTS_API_KEY }}
+        run: |
+          set +e
+          python wide_lab.py --mode "${{ inputs.mode }}" > run.log 2>&1
+          code=$?
+          {
+            echo "## wide-lab（${{ inputs.mode }}）"
+            echo ""
+            if [ $code -eq 3 ]; then echo "**まだ終わっていません。同じ設定のまま、もう一度「Run workflow」を押してください（取った分は保存しました）**"; fi
+            if [ $code -ne 0 ] && [ $code -ne 3 ]; then echo "**失敗しました（終了コード $code）**"; fi
+            echo '```'
+            tail -c 40000 run.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          cat run.log
+          exit $code
+
+      - name: キャッシュを保存
+        if: ${{ always() && hashFiles('data/wide_cache.pkl') != '' }}
+        uses: actions/cache/save@v4
+        with:
+          path: data/wide_cache.pkl
+          key: wide-lab-cache-v1-${{ github.run_id }}
+
+      # 1回の保存が大きいので、新しい2つだけ残す（GitHub のキャッシュは全部で10GBまで。
+      # 超えると、使われていない古いものから消され、yield-backtest の9年分が消えることがある）
+      - name: 古い控えを整理する（新しい2つは残す）
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ids=$(gh api "repos/${GITHUB_REPOSITORY}/actions/caches?key=wide-lab-cache-v1-&sort=created_at&direction=desc&per_page=100" \
+                --jq '.actions_caches[2:][] | .id' || true)
+          n=0
+          for id in $ids; do
+            gh api -X DELETE "repos/${GITHUB_REPOSITORY}/actions/caches/${id}" && n=$((n+1))
+          done
+          echo "古い控えを ${n} 個消しました。"
+
+      - name: 結果をダウンロードできるようにする
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wide-lab-${{ inputs.mode }}-result
+          path: run.log
+          if-no-files-found: ignore
