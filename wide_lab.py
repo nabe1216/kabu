@@ -1012,6 +1012,121 @@ def ev_sim(cands: dict, D: dict, divpay: dict, t0: int, nmax: int = NMAX, cap: f
     return np.array(vals), liq, st
 
 
+def ev_sim_fill(cands: dict, D: dict, divpay: dict, t0: int, nmax: int = NMAX, cap: float = CAP, slip: float = SLIP, tax: float = TAX,
+                eslip: float = ETF_SLIP):
+    """ev_sim と同じ運用で、空いている資金をいつも 1306 で持つ（10段目）。
+    毎日、①売る日が来た銘柄を売る ②候補を買う。お金が足りなければ、その分の 1306 を売る ③残ったお金で 1306 を買う（資産の1％を超えるとき）。
+    1306 の分配金（yb.ETF_DIST）は、その日以降の最初の営業日に受け取る（税）。1306 の売買の益と損は、株の益と損と合わせて税を計算する。"""
+    CF, C, me_idx, cal = D["CF"], D["C"], D["me_idx"], D["cal"]
+    LIMU, LIMD = D.get("LIMU"), D.get("LIMD")
+    tpc = np.asarray(D["tp"]["c"], dtype=float)
+    T = CF.shape[1]
+    me_set = set(me_idx)
+    dist: dict = {}
+    for d_, a_ in yb.ETF_DIST.get("1306", ()):
+        tt = int(np.searchsorted(cal, np.datetime64(pd.Timestamp(d_).date()), side="left"))
+        if tt < T:
+            dist[tt] = dist.get(tt, 0.0) + a_ / 100.0
+    cash, loss = float(cap), 0.0
+    eu, ecost = 0, 0.0
+    pos: dict = {}
+    vals = []
+    st = {"n_buy": 0, "buy_t": [], "tax": 0.0, "held": [], "skip_up": 0, "late_dn": 0, "etf_share": []}
+
+    def px(i, t):
+        v = CF[i, t]
+        return float(v) if (v == v and v > 0) else 0.0
+
+    def realize(g):
+        nonlocal cash, loss
+        if g > 0:
+            tx = max(0.0, g - loss) * tax
+            loss = max(0.0, loss - g)
+            cash -= tx
+            st["tax"] += tx
+        else:
+            loss += -g
+
+    def etf_sell(units, t):
+        nonlocal eu, ecost, cash
+        units = min(int(units), eu)
+        if units <= 0:
+            return
+        pr = tpc[t] * (1.0 - eslip)
+        c_part = ecost * units / eu
+        cash += units * pr
+        eu -= units
+        ecost -= c_part
+        realize(units * pr - c_part)
+    for t in range(t0, T):
+        ep = float(tpc[t])
+        if t in dist and eu > 0:
+            g = eu * dist[t]
+            cash += g * (1.0 - tax)
+            st["tax"] += g * tax
+        for i in [k for k, p in pos.items() if p[2] <= t]:
+            if LIMD is not None and LIMD[i, t] and t < T - 1:
+                st["late_dn"] += 1
+                continue
+            sh, cost, _o = pos.pop(i)
+            eff = px(i, t) * (1.0 - slip)
+            cash += sh * eff
+            realize(sh * eff - cost)
+        cl = cands.get(t)
+        if cl:
+            value = cash + eu * ep + sum(p[0] * px(k, t) for k, p in pos.items())
+            tgt = value / nmax
+            for _pr, i, t_out in sorted(cl, key=lambda x: (-x[0], x[1])):
+                if len(pos) >= nmax:
+                    break
+                if i in pos or t_out <= t:
+                    continue
+                v = C[i, t]
+                if not (v == v and v > 0):
+                    continue
+                if LIMU is not None and LIMU[i, t]:
+                    st["skip_up"] += 1
+                    continue
+                p = float(v) * (1.0 + slip)
+                if cash < tgt and eu > 0:
+                    etf_sell(np.ceil((tgt - cash) / (ep * (1.0 - eslip))), t)
+                sh = int(min(tgt, cash) / p)
+                if sh < 1:
+                    continue
+                cash -= sh * p
+                pos[i] = [sh, sh * p, t_out]
+                st["n_buy"] += 1
+                st["buy_t"].append(t)
+        for i, amt in divpay.get(t, ()):
+            if i in pos:
+                g = pos[i][0] * amt
+                cash += g * (1.0 - tax)
+                st["tax"] += g * tax
+        value = cash + eu * ep + sum(p[0] * px(k, t) for k, p in pos.items())
+        if cash > 0.01 * value and ep > 0:
+            u = int(cash / (ep * (1.0 + eslip)))
+            if u > 0:
+                cash -= u * ep * (1.0 + eslip)
+                eu += u
+                ecost += u * ep * (1.0 + eslip)
+        if t in me_set:
+            value = cash + eu * ep + sum(p[0] * px(k, t) for k, p in pos.items())
+            vals.append(value)
+            st["held"].append(len(pos))
+            st["etf_share"].append(eu * ep / value if value > 0 else 0.0)
+    liq, gain = cash, 0.0
+    for k, p in pos.items():
+        eff = px(k, T - 1) * (1.0 - slip)
+        liq += p[0] * eff
+        gain += p[0] * eff - p[1]
+    if eu > 0:
+        eff = tpc[T - 1] * (1.0 - eslip) * eu
+        liq += eff
+        gain += eff - ecost
+    liq -= tax * max(0.0, gain - loss)
+    return np.array(vals), liq, st
+
+
 def cal_sim(inmkt: np.ndarray, D: dict, t0: int, slip: float = ETF_SLIP, tax: float = TAX, cap: float = CAP):
     """1306 を、inmkt[t] が真の日の終わりに持つように終値で売り買いする（暦の型）。分配金は権利付き最終日の終わりに持っていれば受け取る。"""
     tp, cal, me_idx = D["tp"], D["cal"], D["me_idx"]
@@ -1932,8 +2047,18 @@ def lab5(store: dict, xs: dict) -> int:
             log(f"  {nm} … データが取れなかったので飛ばします（保留）")
             extra.pop(nm)
     lab1(store, extra=extra)
-    # 出来事の型
-    log("5段目の出来事の型を回します（指標を作っています）…")
+    lab5_events(store, xs)
+    # SSR の空売りの形：大口の空売りの報告が多い株を売る（LS・TXS。8段目と同じ道具・同じ判定）
+    if (not ONLY or "SSR" in ONLY) and not xs.get("ssr", {}).get("bad"):
+        lab8(store, extra={"SSR": (ssr_score(xs), "大口の空売りの報告")},
+             head="【日本株の手法・5段目（残りの型：SSR の空売りの形）（wide_lab）：東証全銘柄】（基準は結果を見る前に決めたもの。計画はプロジェクトの wide_lab_plan5_2026-11-04。"
+                  "売る側は、大口の空売りの報告の比率の合計が大きい順）")
+    return 0
+
+
+def lab5_events(store: dict, xs: dict, fill: bool = False) -> int:
+    """5段目の出来事の型（DIVUP・E2C）。fill=True なら10段目（空いている資金を 1306 で持つ形）。"""
+    log("5段目の出来事の型を回します（指標を作っています）…" if not fill else "10段目（出来事の型 ＋ 空いている資金は TOPIX）を回します（指標を作っています）…")
     D = build(store)
     dates, UNI, me_idx, cal = D["dates"], D["UNI"], D["me_idx"], D["cal"]
     T = len(cal)
@@ -2020,8 +2145,10 @@ def lab5(store: dict, xs: dict) -> int:
     evs_cal = sorted({(i, t_s) for i, _p, t_s, _n in sched_recs})
     log(f"  出来事 … 増配の予想 {len(evs_div):,}回・決算発表予定日 {len(evs_cal):,}回")
 
+    sim_fn = ev_sim_fill if fill else ev_sim
+
     def placebo_run(cands, pool_fn):
-        v, liq, s_ = ev_sim(cands, D, E["divpay"], t0)
+        v, liq, s_ = sim_fn(cands, D, E["divpay"], t0)
         rnd, rnb = [], []
         for k in range(N_RAND):
             rg = np.random.default_rng(5000 + k)
@@ -2032,13 +2159,14 @@ def lab5(store: dict, xs: dict) -> int:
                     continue
                 pick = rg.choice(pool, size=min(len(cl), len(pool)), replace=False)
                 pl[t] = [(float(rg.random()), int(i), t_out) for i, (_p, _i, t_out) in zip(pick, cl)]
-            pv, _l, ps_ = ev_sim(pl, D, E["divpay"], t0)
+            pv, _l, ps_ = sim_fn(pl, D, E["divpay"], t0)
             rnd.append(half_stats(pv, ev))
             rnb.append(ps_["n_buy"])
         nb = {"前半": sum(1 for t in s_["buy_t"] if pd.Timestamp(cal[t]) < SPLIT),
               "後半": sum(1 for t in s_["buy_t"] if pd.Timestamp(cal[t]) >= SPLIT)}
         return {"st": half_stats(v, ev), "liq": liq, "s": s_, "rnd": rnd, "nb": nb, "held": float(np.mean(s_["held"])) if s_["held"] else 0.0,
-                "fill": float(np.mean(rnb)) / max(1, s_["n_buy"]), "n_cand": sum(len(x) for x in cands.values())}
+                "fill": float(np.mean(rnb)) / max(1, s_["n_buy"]), "n_cand": sum(len(x) for x in cands.values()),
+                "etf": float(np.mean(s_["etf_share"])) if s_.get("etf_share") else 0.0}
 
     def divup(H):
         out = {}
@@ -2081,9 +2209,15 @@ def lab5(store: dict, xs: dict) -> int:
         res[key] = r
         log(f"  {key} … {r['verdict']}")
     HH = ("前半", "後半")
-    print("\n【日本株の手法・5段目（残りの型：出来事）（wide_lab）：東証全銘柄】（基準は結果を見る前に決めたもの。計画はプロジェクトの wide_lab_plan5_2026-11-04）")
+    if fill:
+        print("\n【日本株の手法・10段目（出来事の型 ＋ 空いている資金は TOPIX）（wide_lab）：東証全銘柄】（基準は結果を見る前に決めたもの。計画はプロジェクトの wide_lab_plan10_2026-11-05）")
+    else:
+        print("\n【日本株の手法・5段目（残りの型：出来事）（wide_lab）：東証全銘柄】（基準は結果を見る前に決めたもの。計画はプロジェクトの wide_lab_plan5_2026-11-04）")
     stage_note()
     print(f"  期間 … 比べる期間 {ev[0].date()}〜{ev[-1].date()}（{len(ev)}か月。前半 〜{(SPLIT - pd.Timedelta(days=1)).date()}・後半 {SPLIT.date()}〜）。決まりと判定は2回目と同じ")
+    if fill:
+        print(f"  形 … 出来事の銘柄は5段目と同じ（1銘柄は資産の20分の1・20銘柄まで）。それ以外の資金はいつも 1306 で持つ（片道{ETF_SLIP * 100:.1f}％・分配金と売った益に税）。"
+              "出来事の銘柄を買うお金が足りなければ 1306 を売る。でたらめの比べも同じ形")
     print(f"  TOPIX（税あり） … {ST_TX['前半']['ann']:.1f} ／ {ST_TX['後半']['ann']:.1f}")
     for key, r in res.items():
         print(f"     {key:<6}{r['lab']} … {r['verdict']}")
@@ -2092,16 +2226,12 @@ def lab5(store: dict, xs: dict) -> int:
             dd = " ".join(f"{r['detail'][(nm, h)][0]:+.1f}/{r['detail'][(nm, h)][1]:+.1f}・{r['detail'][(nm, h)][2]}回" for h in HH)
             print(f"         {nm}（{x['vlab']}） {x['st']['前半']['ann']:6.1f} ／ {x['st']['後半']['ann']:6.1f}（最大下落 {x['st']['通し']['mdd']:.0f}％）［{dd}］"
                   f" でたらめ {rn['前半']:.1f} ／ {rn['後半']:.1f}・合図 {x['n_cand']:,}回・買い 前半 {x['nb']['前半']}回・後半 {x['nb']['後半']}回・"
+                  f"平均の持ち数 {x['held']:.1f}銘柄・" + (f"1306 の割合 {x['etf'] * 100:.0f}％・" if fill else "") +
                   f"でたらめの買いの回数 {x['fill'] * 100:.0f}％・清算後の通し {((x['liq'] / CAP) ** (1 / yrs) - 1) * 100:.1f}％")
-    print("\n  判定のまとめ（出来事）")
+    print("\n  判定のまとめ（出来事" + ("＋TOPIX" if fill else "") + "）")
     for v in ("候補", "範囲の中では効く", "効かない", "保留（データ不足）"):
         ks = [k for k, r in res.items() if r["verdict"] == v]
         print(f"     {v} … " + ("・".join(ks) if ks else "なし"))
-    # SSR の空売りの形：大口の空売りの報告が多い株を売る（LS・TXS。8段目と同じ道具・同じ判定）
-    if (not ONLY or "SSR" in ONLY) and not xs.get("ssr", {}).get("bad"):
-        lab8(store, extra={"SSR": (ssr_score(xs), "大口の空売りの報告")},
-             head="【日本株の手法・5段目（残りの型：SSR の空売りの形）（wide_lab）：東証全銘柄】（基準は結果を見る前に決めたもの。計画はプロジェクトの wide_lab_plan5_2026-11-04。"
-                  "売る側は、大口の空売りの報告の比率の合計が大きい順）")
     return 0
 
 
@@ -2793,7 +2923,7 @@ def bd_score(bd: dict, kind: str):
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab5", "lab6", "lab7", "lab8", "lab9"], default="lab1")
+    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab5", "lab6", "lab7", "lab8", "lab9", "lab10"], default="lab1")
     ap.add_argument("--combo", default="", help="3回目：1回目で「範囲の中では効く」以上だった型の記号（カンマ区切り）。2つ以上なら SEL として回す")
     ap.add_argument("--only", default="", help="回す型の記号（カンマ区切り。空欄なら全部）。確かめる段階で候補だけを回すとき")
     ap.add_argument("--cfg", default="", help="7段目の確かめる段階で回す組み立て（例: VQM/TOP500/20/Q,NXG/TOP500/20/Q）")
@@ -2837,6 +2967,12 @@ def main() -> int:
         return lab6(store)
     if args.mode == "lab9":
         return lab9(store)
+    if args.mode == "lab10":
+        xs = x_load()
+        if not x_complete(store, xs):
+            print("\n■ 5段目のデータ（配当金情報・決算発表予定日）がそろっていません。先に lab5 を回してください。")
+            return 2
+        return lab5_events(store, xs, fill=True)
     if args.mode == "lab5":
         xs = x_load()
         if not x_complete(store, xs):
