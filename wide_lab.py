@@ -12,7 +12,9 @@ import argparse
 import os
 import pickle
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from pathlib import Path
 
@@ -29,6 +31,8 @@ LONG_FIRST_ME = pd.Timestamp("2008-05-30")    # J-Quants の株価は2008年5月
 BUDGET_MIN = float(os.environ.get("FETCH_BUDGET_MIN", "130"))
 COMPUTE_LIMIT_MIN = float(os.environ.get("COMPUTE_START_LIMIT_MIN", "140"))
 SAVE_EVERY_MIN = 15
+# 株価と財務を同時に取る数。プレミアムは呼び出しの上限が大きい（1分に500回ほど）ので増やせる。スタンダード（1分に120回ほど）は1にする
+THREADS = max(1, int(os.environ.get("WIDE_THREADS", "") or "1"))
 EXIT_UNFINISHED = 3
 T0 = time.monotonic()
 
@@ -179,31 +183,50 @@ def fetch_all(jq, store) -> bool:
     if todo:
         log(f"株価と財務を取っています（全部で {len(codes)}銘柄・残り {len(todo)}銘柄・開始から{elapsed():.0f}分）…")
     last = time.monotonic()
-    for i, c in enumerate(todo, 1):
-        if elapsed() >= BUDGET_MIN:
-            store["done"], store["nodata"] = sorted(done), sorted(nodata)
-            save(store, "株価と財務を途中まで保存しました")
-            return False
+    local = threading.local()
+
+    def one(c):
+        """1銘柄の株価と財務。同時に取るときは、取る役ごとに別の接続を使う。"""
+        cli = jq
+        if THREADS > 1:
+            if not hasattr(local, "jq"):
+                local.jq = type(jq)(os.environ.get("J_QUANTS_API_KEY", ""))
+            cli = local.jq
         try:
             time.sleep(yb.API_SLEEP)
-            b = pack_bars(yb.fetch_bars(jq, c, YEARS))
+            b = pack_bars(yb.fetch_bars(cli, c, YEARS))
             time.sleep(yb.API_SLEEP)
-            st = jq.get("/v2/fins/summary", {"code": c})
+            st = cli.get("/v2/fins/summary", {"code": c})
+            return c, b, st, None
         except Exception as e:
-            log(f"  取得に失敗 {c}: {e}")
-            continue
-        if b is None:
-            nodata.add(c)
-        else:
-            bars[c] = b
-            fins[c] = prune_fins(st)
-        done.add(c)
-        if i % 200 == 0:
-            log(f"  {i}/{len(todo)}（開始から{elapsed():.0f}分）")
-        if (time.monotonic() - last) / 60 >= SAVE_EVERY_MIN:
-            store["done"], store["nodata"] = sorted(done), sorted(nodata)
-            save(store, "途中まで保存しました")
-            last = time.monotonic()
+            return c, None, None, e
+    if THREADS > 1:
+        log(f"  同時に {THREADS}銘柄ずつ取ります")
+    i = 0
+    chunk = max(1, THREADS * 10)
+    with ThreadPoolExecutor(max_workers=THREADS) as ex:
+        for k in range(0, len(todo), chunk):
+            if elapsed() >= BUDGET_MIN:
+                store["done"], store["nodata"] = sorted(done), sorted(nodata)
+                save(store, "株価と財務を途中まで保存しました")
+                return False
+            for c, b, st, err in ex.map(one, todo[k:k + chunk]):
+                i += 1
+                if err is not None:
+                    log(f"  取得に失敗 {c}: {err}")
+                    continue
+                if b is None:
+                    nodata.add(c)
+                else:
+                    bars[c] = b
+                    fins[c] = prune_fins(st)
+                done.add(c)
+                if i % 200 == 0:
+                    log(f"  {i}/{len(todo)}（開始から{elapsed():.0f}分）")
+            if (time.monotonic() - last) / 60 >= SAVE_EVERY_MIN:
+                store["done"], store["nodata"] = sorted(done), sorted(nodata)
+                save(store, "途中まで保存しました")
+                last = time.monotonic()
     store["done"], store["nodata"] = sorted(done), sorted(nodata)
     store["complete"] = True
     save(store, "全銘柄のデータがそろいました")
