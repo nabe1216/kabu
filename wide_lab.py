@@ -6,6 +6,7 @@
 使い方（GitHub の Actions → wide-lab → Run workflow）
   mode=fetch … 東証全銘柄のデータ（各月の銘柄一覧・株価・財務の要約）を集める。時間切れなら取った分を保存して止まる（もう一度押すと続きから）
   mode=lab1  … 足りないデータがあれば先に集め、そろっていれば1回目の型をまとめて回す
+  mode=lab2  … 同じく、2回目の型（出来事と暦）をまとめて回す
 """
 import argparse
 import os
@@ -457,7 +458,7 @@ def build(store: dict) -> dict:
         F[k][fin, :] = np.nan
     PXM = np.stack([CF[:, t] for t in me_idx], axis=1).astype(float)
     return {"codes": codes, "names": names, "sector": sector, "dates": me_dates, "me_idx": me_idx, "F": F, "UNI": UNI,
-            "MCAP": MCAP, "LIQ": LIQ, "PXM": PXM, "DIV": DIV, "cal": cal, "tp": tp}
+            "MCAP": MCAP, "LIQ": LIQ, "PXM": PXM, "DIV": DIV, "cal": cal, "tp": tp, "C": C, "CF": CF, "SEG": SEG, "seg_first": seg_first}
 
 
 # ───────────────────────── 実際の運用の形のエンジン ─────────────────────────
@@ -694,9 +695,528 @@ def report(D, res, RND, ST_TX, TXliq, ev, j0):
     print(f"     （TOPIX の清算後の通し {((TXliq / CAP) ** (1 / yrs) - 1) * 100:.1f}％）")
 
 
+# ───────────────────────── 2回目：出来事と暦の型 ─────────────────────────
+# 計画は wide_lab_plan2_2026-11-04（結果を見る前に決めたもの）。比べる期間・前半と後半の分け方・判定の基準は1回目と同じ。
+# 1回目の「売る決まり A・B」の代わりに、型ごとに決めた2通り（持つ日数など）の両方で基準を満たしたときだけ通す。
+REACT_TH = 0.05                         # 決算発表の反応（TOPIX との差）の下限
+DY_TH = 0.03                            # 権利付き最終日の前に買う型：予想の配当利回りの下限（直近の通期の年間配当 ÷ 株価）
+ETF_SLIP = 0.001                        # 暦の型（1306 を売り買い）の値段のずれ（片道）
+EV_MIN_BUYS = 50                        # 前半・後半のどちらかで、実際に買った回数がこれ未満なら保留
+RND_FILL_MIN = 0.8                      # でたらめの比べの買いの回数が、型の買いの回数の8割に満たなければ保留（比べる相手が細すぎる）
+IPO_MIN_N, IPO_MIN_SHARE = 20, 0.9      # 上場直後の株：点数のある銘柄が20以上の月が9割に満たなければ保留
+T2_START = np.datetime64("2019-07-16")  # 受け渡しが2営業日になった日（これより前は、権利付き最終日が権利確定日の3営業日前）
+
+
+def t_cum_of(cal: np.ndarray, t_rec: int) -> int:
+    """権利確定日（その日までの最後の営業日の番号）から、権利付き最終日の番号。"""
+    return t_rec - (2 if cal[t_rec] >= T2_START else 3)
+
+
+def last_td(cal: np.ndarray, d) -> int:
+    """その日までの最後の営業日の番号（なければ −1。データの最後の日より後の日付は、まだ来ていないので −1）。"""
+    dd = np.datetime64(pd.Timestamp(d).date())
+    if len(cal) == 0 or dd > cal[-1]:
+        return -1
+    return int(np.searchsorted(cal, dd, side="right")) - 1
+
+
+def ev_extract(store: dict, D: dict) -> dict:
+    """出来事を取り出す：決算短信の発表・配当を受け取る日（権利付き最終日）・権利付き最終日の前に買う型の候補・株式分割の効力発生日。"""
+    cal, codes = D["cal"], D["codes"]
+    T = len(cal)
+    annc, recs, splits = [], [], []
+    divpay: dict = {}
+    for i, c in enumerate(codes):
+        b = store["bars"][c]
+        fd, ff = b["fd"], b["ff"]
+        for d0, f0 in zip(fd, ff):
+            if f0 < 1.0:
+                t_s = int(np.searchsorted(cal, d0))
+                if t_s < T and cal[t_s] == d0:
+                    splits.append((i, t_s))
+        tl = fin_timeline(store["fins"].get(c))
+        seen_d, seen_fy = set(), set()
+        for r in tl:
+            d = str(r["DiscDate"])[:10]
+            if "FinancialStatements" in str(r.get("DocType") or "") and d not in seen_d:
+                seen_d.add(d)
+                dd = np.datetime64(d)
+                t_prev = int(np.searchsorted(cal, dd, side="left")) - 1
+                t_a = int(np.searchsorted(cal, dd, side="right"))
+                if t_prev >= 0 and t_a < T:
+                    annc.append((i, t_prev, t_a))
+            if not is_fy(r):
+                continue
+            fy_end = str(r.get("CurFYEn") or "")[:10]
+            if len(fy_end) != 10 or fy_end in seen_fy:
+                continue
+            seen_fy.add(fy_end)
+            ann, q2 = num(r.get("DivAnn")), num(r.get("Div2Q"))
+            if not ann or ann <= 0:
+                continue
+            q2 = q2 if (q2 is not None and 0 <= q2 <= ann) else 0.0
+            e = pd.Timestamp(fy_end)
+            # 受け取る配当（実績）：期末の分は期末の月、中間の分は6か月前の月。権利付き最終日の終わりに持っていれば受け取る
+            for amt, rec in ((ann - q2, e), (q2, e - pd.DateOffset(months=6))):
+                if amt > 0:
+                    me = rec + pd.offsets.MonthEnd(0)
+                    t_rec = last_td(cal, me)
+                    if t_rec >= 3:
+                        divpay.setdefault(t_cum_of(cal, t_rec), []).append((i, amt * fac_after(fd, ff, me)))
+            # 権利付き最終日の前に買う型の候補：この決算短信のあとに来る、次の期の中間と期末の権利確定日
+            t_disc = int(np.searchsorted(cal, np.datetime64(d), side="left"))
+            dps = ann * fac_after(fd, ff, d)
+            nxt = e + pd.DateOffset(years=1)
+            for rec, ok in ((nxt - pd.DateOffset(months=6), q2 > 0), (nxt, True)):
+                if ok:
+                    t_rec = last_td(cal, rec + pd.offsets.MonthEnd(0))
+                    if t_rec >= 3:
+                        recs.append((i, t_cum_of(cal, t_rec), dps, t_disc))
+    return {"annc": annc, "recs": recs, "splits": splits, "divpay": divpay}
+
+
+def ev_sim(cands: dict, D: dict, divpay: dict, t0: int, nmax: int = NMAX, cap: float = CAP, slip: float = SLIP, tax: float = TAX):
+    """出来事で買って、決めた日に売る運用。cands … {買う日の番号: [(優先度, 銘柄の番号, 売る日の番号), …]}。
+    毎日、①売る日が来た銘柄を終値で売る ②その日の候補を優先度の高い順に買う（20銘柄まで・そのときの資産の20分の1まで・1株単位）
+    ③権利付き最終日の終わりに持っている銘柄の配当を受け取る（税）。上場をやめた銘柄は最後の値段で売る。月末ごとの評価額を返す。"""
+    CF, C, me_idx = D["CF"], D["C"], D["me_idx"]
+    T = CF.shape[1]
+    me_set = {t: j for j, t in enumerate(me_idx)}
+    cash, loss = float(cap), 0.0
+    pos: dict = {}
+    vals = []
+    st = {"n_buy": 0, "buy_t": [], "tax": 0.0, "held": []}
+
+    def px(i, t):
+        v = CF[i, t]
+        return float(v) if (v == v and v > 0) else 0.0
+    for t in range(t0, T):
+        for i in [k for k, p in pos.items() if p[2] <= t]:
+            sh, cost, _o = pos.pop(i)
+            eff = px(i, t) * (1.0 - slip)
+            cash += sh * eff
+            g = sh * eff - cost
+            if g > 0:
+                tx = max(0.0, g - loss) * tax
+                loss = max(0.0, loss - g)
+                cash -= tx
+                st["tax"] += tx
+            else:
+                loss += -g
+        cl = cands.get(t)
+        if cl:
+            value = cash + sum(p[0] * px(k, t) for k, p in pos.items())
+            tgt = value / nmax
+            for _pr, i, t_out in sorted(cl, key=lambda x: (-x[0], x[1])):
+                if len(pos) >= nmax:
+                    break
+                if i in pos or t_out <= t:
+                    continue
+                v = C[i, t]
+                if not (v == v and v > 0):          # その日に売買がなければ買わない
+                    continue
+                p = float(v) * (1.0 + slip)
+                sh = int(min(tgt, cash) / p)
+                if sh < 1:
+                    continue
+                cash -= sh * p
+                pos[i] = [sh, sh * p, t_out]
+                st["n_buy"] += 1
+                st["buy_t"].append(t)
+        for i, amt in divpay.get(t, ()):
+            if i in pos:
+                g = pos[i][0] * amt
+                cash += g * (1.0 - tax)
+                st["tax"] += g * tax
+        if t in me_set:
+            vals.append(cash + sum(p[0] * px(k, t) for k, p in pos.items()))
+            st["held"].append(len(pos))
+    liq, gain = cash, 0.0
+    for k, p in pos.items():
+        eff = px(k, T - 1) * (1.0 - slip)
+        liq += p[0] * eff
+        gain += p[0] * eff - p[1]
+    liq -= tax * max(0.0, gain - loss)
+    return np.array(vals), liq, st
+
+
+def cal_sim(inmkt: np.ndarray, D: dict, t0: int, slip: float = ETF_SLIP, tax: float = TAX, cap: float = CAP):
+    """1306 を、inmkt[t] が真の日の終わりに持つように終値で売り買いする（暦の型）。分配金は権利付き最終日の終わりに持っていれば受け取る。"""
+    tp, cal, me_idx = D["tp"], D["cal"], D["me_idx"]
+    T = len(cal)
+    me_set = set(me_idx)
+    dist = {}
+    for d, a in yb.ETF_DIST.get("1306", ()):
+        t_rec = last_td(cal, d)
+        if t_rec >= 3:
+            dist[t_cum_of(cal, t_rec)] = a / 100.0
+    cash, units, cost, loss = float(cap), 0, 0.0, 0.0
+    vals = []
+    st = {"n_buy": 0, "buy_t": [], "tax": 0.0}
+    for t in range(t0, T):
+        p = float(tp["c"][t])
+        if inmkt[t] and units == 0:
+            units = int(cash / (p * (1.0 + slip)))
+            cost = units * p * (1.0 + slip)
+            cash -= cost
+            st["n_buy"] += 1
+            st["buy_t"].append(t)
+        elif (not inmkt[t]) and units > 0:
+            pr = units * p * (1.0 - slip)
+            g = pr - cost
+            cash += pr
+            if g > 0:
+                tx = max(0.0, g - loss) * tax
+                loss = max(0.0, loss - g)
+                cash -= tx
+                st["tax"] += tx
+            else:
+                loss += -g
+            units = 0
+        if units > 0 and t in dist:
+            g = units * dist[t]
+            cash += g * (1.0 - tax)
+            st["tax"] += g * tax
+        if t in me_set:
+            vals.append(cash + units * p)
+    pr = units * float(tp["c"][T - 1]) * (1.0 - slip)
+    liq = cash + pr - tax * max(0.0, (pr - cost if units else 0.0) - loss)
+    return np.array(vals), liq, st
+
+
+def month_bounds(cal: np.ndarray) -> list:
+    """月ごとの（最初の営業日の番号, 最後の営業日の番号）。"""
+    ym = cal.astype("datetime64[M]")
+    out, s = [], 0
+    for t in range(1, len(cal) + 1):
+        if t == len(cal) or ym[t] != ym[s]:
+            out.append((s, t - 1))
+            s = t
+    return out
+
+
+def tom_mask(cal: np.ndarray, pre: int) -> np.ndarray:
+    """月末月初：月の最後の営業日の pre 日前の終値で買い、次の月の3日目の終値で売る（その日の終わりに持っている日が真）。"""
+    mb = month_bounds(cal)
+    x = np.zeros(len(cal), dtype=bool)
+    for k in range(len(mb) - 1):
+        s_, e_ = mb[k]
+        s2, e2_ = mb[k + 1]
+        if e_ - s_ < pre or e2_ - s2 < 3:
+            continue
+        x[e_ - pre:s2 + 2] = True
+    return x
+
+
+def may_mask(cal: np.ndarray, last_mon: int) -> np.ndarray:
+    """冬だけ持つ：10月の最後の営業日の終値で買い、次の last_mon 月の最後の営業日の終値で売る。"""
+    mb = month_bounds(cal)
+    mon = (cal.astype("datetime64[M]").astype(int) % 12) + 1
+    x = np.zeros(len(cal), dtype=bool)
+    for _s, e_ in mb:
+        if mon[e_] != 10:
+            continue
+        nxt = [e2_ for (_s2, e2_) in mb if e2_ > e_ and mon[e2_] == last_mon]
+        if nxt:
+            x[e_:nxt[0]] = True
+    return x
+
+
+def lab2(store: dict) -> int:
+    log("2回目の型（出来事と暦）をまとめて回します（指標を作っています）…")
+    D = build(store)
+    dates, UNI, me_idx, cal = D["dates"], D["UNI"], D["me_idx"], D["cal"]
+    M, T = len(dates), len(cal)
+    C, CF = D["C"], D["CF"]
+    TPc = D["tp"]["c"].astype(float)
+    j0 = next((j for j, t in enumerate(me_idx) if t >= 252), None)
+    if j0 is None or M - j0 < 36:
+        print("\n■ 比べる期間が短すぎます。")
+        return 1
+    t0 = me_idx[j0]
+    ev = dates[j0:]
+    yrs = max((ev[-1] - ev[0]).days / 365.25, 0.5)
+    E = ev_extract(store, D)
+    log(f"  出来事 … 決算短信の発表 {len(E['annc']):,}回・配当を受け取る日 {sum(len(v) for v in E['divpay'].values()):,}回・"
+        f"権利確定日の候補 {len(E['recs']):,}回・株式分割 {len(E['splits']):,}回")
+    jm = np.searchsorted(np.array(me_idx), np.arange(T), side="left") - 1      # その日より前の最後の月末の番号
+    TXv, TXliq = topix_taxed(D, j0)
+    ST_TX = half_stats(TXv, ev)
+    elig_cache: dict = {}
+
+    def elig_list(t):
+        if t not in elig_cache:
+            j = jm[t]
+            if j < 0:
+                elig_cache[t] = np.zeros(0, dtype=int)
+            else:
+                v = C[:, t]
+                elig_cache[t] = np.nonzero(UNI[:, j] & np.isfinite(v) & (v > 0))[0]
+        return elig_cache[t]
+
+    def is_elig(i, t):
+        j = jm[t]
+        return j >= 0 and bool(UNI[i, j]) and C[i, t] == C[i, t] and C[i, t] > 0
+
+    def placebo(cands, seed, pool_fn):
+        """同じ日に同じ数だけ、でたらめな銘柄を同じ日数だけ持つ候補（優先度もでたらめ）。"""
+        rng = np.random.default_rng(seed)
+        out = {}
+        for t, cl in cands.items():
+            pool = pool_fn(t)
+            if len(pool) == 0:
+                continue
+            pick = rng.choice(pool, size=min(len(cl), len(pool)), replace=False)
+            out[t] = [(float(rng.random()), int(i), t_out) for i, (_p, _i, t_out) in zip(pick, cl)]
+        return out
+
+    def run(cands, rnd_pool_fn, tag):
+        v, liq, s_ = ev_sim(cands, D, E["divpay"], t0)
+        rnd, rnd_nb = [], []
+        for k in range(N_RAND):
+            pv, _l, ps_ = ev_sim(placebo(cands, 1000 + k, rnd_pool_fn), D, E["divpay"], t0)
+            rnd.append(half_stats(pv, ev))
+            rnd_nb.append(ps_["n_buy"])
+        nb = {"前半": sum(1 for t in s_["buy_t"] if pd.Timestamp(cal[t]) < SPLIT),
+              "後半": sum(1 for t in s_["buy_t"] if pd.Timestamp(cal[t]) >= SPLIT)}
+        return {"st": half_stats(v, ev), "liq": liq, "s": s_, "rnd": rnd, "nb": nb, "held": float(np.mean(s_["held"])) if s_["held"] else 0.0,
+                "fill": float(np.mean(rnd_nb)) / max(1, s_["n_buy"])}
+
+    # でたらめの比べで「同じ出来事が持つ期間に入っている銘柄」を外すための印
+    S = len(D["codes"])
+    ANNP = np.zeros((S, T + 1), dtype=bool)          # 決算短信の発表の前の営業日
+    for i, t_prev, _t_a in E["annc"]:
+        ANNP[i, t_prev] = True
+    RECM = np.zeros((S, T + 1), dtype=bool)          # 権利付き最終日
+    DPSD = np.full((S, T), np.nan, dtype=np.float32)  # その日に分かっている年間配当（分割のあとの基準）
+    for i, t_c, dps, t_disc in sorted(E["recs"], key=lambda x: (x[0], x[3])):
+        if 0 <= t_c < T:
+            RECM[i, t_c] = True
+        if t_disc + 1 < T:
+            DPSD[i, t_disc + 1:] = dps
+    for t_c, lst in E["divpay"].items():
+        for i, _a in lst:
+            if 0 <= t_c < T:
+                RECM[i, t_c] = True
+
+    def pool_e2(L):
+        def f(t):
+            el = elig_list(t)
+            return el[~ANNP[el, t:t + L + 2].any(axis=1)] if len(el) else el
+        return f
+
+    def pool_e3(L):
+        def f(t):
+            el = elig_list(t)
+            if not len(el):
+                return el
+            with np.errstate(invalid="ignore", divide="ignore"):
+                y = DPSD[el, t] / CF[el, t]
+            return el[(y >= DY_TH) & ~RECM[el, t:t + L + 1].any(axis=1)]
+        return f
+
+    ann_pool: dict = {}
+    for i, t_prev, t_a in E["annc"]:
+        if t_a >= t0 and is_elig(i, t_a) and C[i, t_prev] == C[i, t_prev] and C[i, t_prev] > 0:
+            ann_pool.setdefault(t_a, []).append(i)
+
+    def e1(H, good=True):
+        out = {}
+        for i, t_prev, t_a in E["annc"]:
+            if t_a < t0 or not is_elig(i, t_a):
+                continue
+            p0 = C[i, t_prev]
+            if not (p0 == p0 and p0 > 0):
+                continue
+            re = float(C[i, t_a] / p0) - float(TPc[t_a] / TPc[t_prev])
+            if (re >= REACT_TH) if good else (re <= -REACT_TH):
+                out.setdefault(t_a, []).append((re if good else -re, i, t_a + H))
+        return out
+
+    def e2(L):
+        rng = np.random.default_rng(1)
+        out = {}
+        for i, t_prev, _t_a in sorted(E["annc"]):
+            t_in = t_prev - L
+            if t_in < t0 or not is_elig(i, t_in):
+                continue
+            out.setdefault(t_in, []).append((float(rng.random()), i, t_prev))
+        return out
+
+    def e3(L):
+        out = {}
+        for i, t_c, dps, t_disc in E["recs"]:
+            t_in = t_c - L
+            if t_in < t0 or t_in <= t_disc or t_c >= T or not is_elig(i, t_in):
+                continue
+            y = dps / float(CF[i, t_in])
+            if y >= DY_TH:
+                out.setdefault(t_in, []).append((y, i, t_c))
+        return out
+
+    def e7(H):
+        out = {}
+        for i, t_s in E["splits"]:
+            if t_s >= t0 and is_elig(i, t_s):
+                out.setdefault(t_s, []).append((0.0, i, t_s + H))
+        return out
+
+    def ann_pool_fn(t):
+        return np.array(ann_pool.get(t, []), dtype=int)
+
+    # でたらめの比べ：E1＝同じ日に決算を発表した銘柄から（反応は問わない）・E2＝持つ期間に決算の発表がない銘柄から・
+    # E3＝配当利回り3％以上で、持つ期間に権利付き最終日がない銘柄から・E7＝範囲の銘柄から
+    TYPES = (("E1", "決算発表のあとの値動きの続き（反応が TOPIX より +5％以上）",
+              (("A", "20日持つ", lambda: e1(20), ann_pool_fn), ("B", "60日持つ", lambda: e1(60), ann_pool_fn))),
+             ("E2", "決算発表の前に買う", (("A", "10日前に買う", lambda: e2(10), pool_e2(10)), ("B", "5日前に買う", lambda: e2(5), pool_e2(5)))),
+             ("E3", f"権利付き最終日の前に買う（配当利回り{DY_TH * 100:.0f}％以上・権利付き最終日に売る）",
+              (("A", "20日前に買う", lambda: e3(20), pool_e3(20)), ("B", "40日前に買う", lambda: e3(40), pool_e3(40)))),
+             ("E7", "株式分割の効力発生日に買う", (("A", "20日持つ", lambda: e7(20), elig_list), ("B", "60日持つ", lambda: e7(60), elig_list))))
+    res = {}
+    for key, lab, variants in TYPES:
+        r = {"lab": lab, "var": {}}
+        for nm, vlab, mk, pool_fn in variants:
+            cands = mk()
+            r["var"][nm] = dict(run(cands, pool_fn, key + nm), vlab=vlab, n_cand=sum(len(v) for v in cands.values()))
+        r["verdict"], r["detail"] = judge2(r["var"], ST_TX, lambda x: min(x["nb"].values()) < EV_MIN_BUYS or x["fill"] < RND_FILL_MIN)
+        res[key] = r
+        log(f"  {key} … {r['verdict']}")
+    # 参考：決算発表の反応が悪い株を買う（判定には使わない）
+    ref_bad = run(e1(60, good=False), ann_pool_fn, "E1bad")
+    # E4：上場直後の株（毎月の順位で回す。売る決まりは1回目と同じ A・B。比べるでたらめも1回目と同じ）
+    SEG = D["SEG"]
+    sc4 = np.full(UNI.shape, np.nan)
+    for j, t in enumerate(me_idx):
+        s = SEG[:, t]
+        age = t - s
+        ok = (s < T) & (s >= 21) & (age >= 21) & (age <= 252)
+        sc4[ok, j] = -age[ok]
+    nsc = [int((UNI[:, j] & np.isfinite(sc4[:, j])).sum()) for j in range(j0, M)]
+    rk4 = ranks_from(sc4, UNI)
+    r4 = {"lab": "上場直後の株（上場から1か月〜1年。新しい順）", "var": {}, "nsc": nsc}
+    rng = np.random.default_rng(20261104)
+    rnd4 = {nm: [] for nm, _ in KEEPS}
+    for _k in range(N_RAND):
+        sc_r = np.repeat(rng.random(UNI.shape[0])[:, None], M, axis=1)
+        rk_r = ranks_from(sc_r, UNI)
+        for nm, kp in KEEPS:
+            v, _l, _s = sim(rk_r, D["PXM"], D["DIV"], j0, kp)
+            rnd4[nm].append(half_stats(v, ev))
+    for nm, kp in KEEPS:
+        v, liq, s_ = sim(rk4, D["PXM"], D["DIV"], j0, kp)
+        r4["var"][nm] = {"st": half_stats(v, ev), "liq": liq, "s": s_, "rnd": rnd4[nm], "vlab": f"{kp}位より下で売る",
+                         "nb": {}, "held": float("nan"), "n_cand": int(np.isfinite(sc4).sum())}
+    share_ok = float(np.mean([n >= IPO_MIN_N for n in nsc])) if nsc else 0.0
+    r4["verdict"], r4["detail"] = judge2(r4["var"], ST_TX, lambda _x: share_ok < IPO_MIN_SHARE)
+    res["E4"] = r4
+    log(f"  E4 … {r4['verdict']}")
+    # 暦の型（1306 を売り買い）
+    mb = month_bounds(cal)
+    mon = (cal.astype("datetime64[M]").astype(int) % 12) + 1
+
+    def tom(pre):
+        return tom_mask(cal, pre)
+
+    def sim_may(last_mon):
+        return may_mask(cal, last_mon)
+
+    def cal_placebo_tom(n_days, seed):
+        rng_ = np.random.default_rng(seed)
+        x = np.zeros(T, dtype=bool)
+        for s_, e_ in mb:
+            if e_ - s_ + 1 > n_days:
+                st_ = int(rng_.integers(s_, e_ - n_days + 1))
+                x[st_:st_ + n_days] = True
+        return x
+
+    def cal_placebo_may(n_mon, seed):
+        rng_ = np.random.default_rng(seed)
+        x = np.zeros(T, dtype=bool)
+        mends = [e_ for (_s, e_) in mb]
+        oct_k = [k for k, e_ in enumerate(mends) if mon[e_] == 10]
+        for k in oct_k:
+            off = int(rng_.integers(0, 12 - n_mon + 1))
+            a, b_ = k + off, k + off + n_mon
+            if b_ < len(mends):
+                x[mends[a]:mends[b_]] = True
+        return x
+
+    CAL_TYPES = (("E5", "月末月初だけ TOPIX を持つ", (("A", "月末の2日前に買い、3日目に売る（4日）", lambda: tom(1), lambda s: cal_placebo_tom(4, s)),
+                                                ("B", "月末の4日前に買い、3日目に売る（6日）", lambda: tom(3), lambda s: cal_placebo_tom(6, s)))),
+                 ("E6", "冬だけ TOPIX を持つ（10月末に買う）", (("A", "4月末に売る（6か月）", lambda: sim_may(4), lambda s: cal_placebo_may(6, s)),
+                                                      ("B", "5月末に売る（7か月）", lambda: sim_may(5), lambda s: cal_placebo_may(7, s)))))
+    for key, lab, variants in CAL_TYPES:
+        r = {"lab": lab, "var": {}}
+        for nm, vlab, mk, pmk in variants:
+            x = mk()
+            v, liq, s_ = cal_sim(x, D, t0)
+            rnd = [half_stats(cal_sim(pmk(2000 + k), D, t0)[0], ev) for k in range(N_RAND)]
+            nb = {"前半": sum(1 for t in s_["buy_t"] if pd.Timestamp(cal[t]) < SPLIT),
+                  "後半": sum(1 for t in s_["buy_t"] if pd.Timestamp(cal[t]) >= SPLIT)}
+            r["var"][nm] = {"st": half_stats(v, ev), "liq": liq, "s": s_, "rnd": rnd, "vlab": vlab, "nb": nb,
+                            "held": float(x[t0:].mean()), "n_cand": int(x[t0:].sum())}
+        r["verdict"], r["detail"] = judge2(r["var"], ST_TX, lambda _x: False)
+        res[key] = r
+        log(f"  {key} … {r['verdict']}")
+    report2(res, ref_bad, ST_TX, TXliq, ev, yrs, D, j0)
+    return 0
+
+
+def judge2(var: dict, ST_TX: dict, short) -> tuple:
+    """2通りの両方・前半と後半の両方で、①TOPIX（税あり）を +2pt 以上 ②でたらめの平均を +2pt 以上かつ20回のうち18回以上。"""
+    ok_tx, ok_rnd = True, True
+    detail = {}
+    for nm, x in var.items():
+        for h in ("前半", "後半"):
+            a = x["st"][h]["ann"]
+            rnd = [y[h]["ann"] for y in x["rnd"]]
+            d_tx = a - ST_TX[h]["ann"]
+            d_rn = a - float(np.mean(rnd))
+            beat = int(sum(1 for y in rnd if a > y))
+            detail[(nm, h)] = (d_tx, d_rn, beat)
+            ok_tx &= d_tx >= PT_TX
+            ok_rnd &= (d_rn >= PT_RND) and (beat >= BEAT_MIN)
+    if any(short(x) for x in var.values()):
+        return "保留（データ不足）", detail
+    return ("候補" if (ok_tx and ok_rnd) else ("範囲の中では効く" if ok_rnd else "効かない")), detail
+
+
+def report2(res, ref_bad, ST_TX, TXliq, ev, yrs, D, j0):
+    HH = ("前半", "後半")
+    print("\n【日本株の手法の型・2回目（wide_lab）：出来事と暦・東証全銘柄・実際の運用の形】（基準は結果を見る前に決めたもの。計画はプロジェクトの wide_lab_plan2_2026-11-04）")
+    print(f"  期間 … 比べる期間 {ev[0].date()}〜{ev[-1].date()}（{len(ev)}か月。前半 〜{(SPLIT - pd.Timedelta(days=1)).date()}・後半 {SPLIT.date()}〜）")
+    print(f"  決まり … 元本1,000万円・20銘柄まで・1株単位・終値で売り買い・片道{SLIP * 100:.1f}％（暦の型の 1306 は{ETF_SLIP * 100:.1f}％）・税20.315％（繰り越しの損あり）・"
+          "使っていないお金に利息はつけない。買う候補は、その日より前の最後の月末に範囲（1回目と同じ）に入っていた銘柄")
+    print(f"  判定 … 型ごとの2通り（A・B）の両方・前半と後半の両方で、①TOPIX（税あり）を +{PT_TX:.1f}pt 以上 ②でたらめ（同じ日に同じ数だけ、でたらめな銘柄を同じ日数持つ。"
+          f"暦の型は同じ長さのでたらめな期間）の平均を +{PT_RND:.1f}pt 以上かつ20回のうち{BEAT_MIN}回以上上回る → ①②とも「候補」・②だけ「範囲の中では効く」・それ以外「効かない」。"
+          f"出来事の型で、前半・後半のどちらかの買いが{EV_MIN_BUYS}回未満、またはでたらめの買いの回数が型の{RND_FILL_MIN * 100:.0f}％未満なら保留")
+    print(f"\n  比べる相手 … TOPIX（税あり） {ST_TX['前半']['ann']:.1f} ／ {ST_TX['後半']['ann']:.1f}（年率％。「前半 ／ 後半」。通し {ST_TX['通し']['ann']:.1f}・最大下落 {ST_TX['通し']['mdd']:.0f}％）")
+    print("\n  1. 型ごとの成績（年率％。「前半 ／ 後半」。［TOPIX との差 ／ でたらめの平均との差・でたらめを上回った回数］）")
+    for key, r in res.items():
+        print(f"     {key:<4}{r['lab']} … {r['verdict']}")
+        for nm, x in r["var"].items():
+            rn = {h: float(np.mean([y[h]['ann'] for y in x['rnd']])) for h in HH}
+            dd = " ".join(f"{r['detail'][(nm, h)][0]:+.1f}/{r['detail'][(nm, h)][1]:+.1f}・{r['detail'][(nm, h)][2]}回" for h in HH)
+            nb = f"買い 前半 {x['nb'].get('前半', '-')}回・後半 {x['nb'].get('後半', '-')}回・" if x["nb"] else ""
+            hold = f"平均の持ち数 {x['held']:.1f}銘柄・でたらめの買いの回数 {x['fill'] * 100:.0f}％・" if key not in ("E5", "E6", "E4") else (f"持っていた日の割合 {x['held'] * 100:.0f}％・" if key in ("E5", "E6") else "")
+            print(f"         {nm}（{x['vlab']}） {x['st']['前半']['ann']:6.1f} ／ {x['st']['後半']['ann']:6.1f}（最大下落 {x['st']['通し']['mdd']:.0f}％）［{dd}］"
+                  f" でたらめ {rn['前半']:.1f} ／ {rn['後半']:.1f}・{nb}{hold}清算後の通し {((x['liq'] / CAP) ** (1 / yrs) - 1) * 100:.1f}％")
+        if key == "E4":
+            ns = r["nsc"]
+            print(f"         点数のある銘柄の数（範囲の中） 平均 {np.mean(ns):.0f}・最少 {min(ns)}・20以上の月 {np.mean([n >= IPO_MIN_N for n in ns]) * 100:.0f}％")
+    print(f"\n  参考（判定には使わない）：決算発表の反応が TOPIX より −5％以下の株を買って60日持つ … {ref_bad['st']['前半']['ann']:.1f} ／ {ref_bad['st']['後半']['ann']:.1f}"
+          f"（でたらめ {np.mean([y['前半']['ann'] for y in ref_bad['rnd']]):.1f} ／ {np.mean([y['後半']['ann'] for y in ref_bad['rnd']]):.1f}・"
+          f"買い 前半 {ref_bad['nb']['前半']}回・後半 {ref_bad['nb']['後半']}回）")
+    print("\n  2. 判定のまとめ")
+    for v in ("候補", "範囲の中では効く", "効かない", "保留（データ不足）"):
+        ks = [k for k, r in res.items() if r["verdict"] == v]
+        print(f"     {v} … " + ("・".join(ks) if ks else "なし"))
+    print(f"     （TOPIX の清算後の通し {((TXliq / CAP) ** (1 / yrs) - 1) * 100:.1f}％）")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["fetch", "lab1"], default="lab1")
+    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2"], default="lab1")
     args = ap.parse_args()
     store = load()
     if not store.get("complete"):
@@ -717,7 +1237,7 @@ def main() -> int:
     if elapsed() > COMPUTE_LIMIT_MIN:
         print("\n■ まだ終わっていません（データは取り終えましたが、計算の時間が残っていません）。もう一度押してください。")
         return EXIT_UNFINISHED
-    return lab1(store)
+    return lab1(store) if args.mode == "lab1" else lab2(store)
 
 
 if __name__ == "__main__":
