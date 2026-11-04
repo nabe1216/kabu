@@ -42,6 +42,14 @@ on:
         description: "lab3 だけ：1回目で「範囲の中では効く」以上だった型の記号（カンマ区切り。2つ以上で SEL を回す）"
         required: false
         default: ""
+      stage:
+        description: "years=20 のときだけ：explore＝探す段階（9年分と同じ期間だけ使う） ／ confirm＝確かめる段階（見ていない期間も使う。候補が決まってから）"
+        required: true
+        default: "explore"
+        type: choice
+        options:
+          - explore
+          - confirm
       threads:
         description: "データを同時に取る数。スタンダードは1（呼び出しの上限が小さい）。プレミアムなら3〜4で速くなる"
         required: true
@@ -105,6 +113,7 @@ jobs:
           J_QUANTS_API_KEY: ${{ secrets.J_QUANTS_API_KEY }}
           WIDE_YEARS: ${{ inputs.years }}
           WIDE_THREADS: ${{ inputs.threads }}
+          WIDE_STAGE: ${{ inputs.stage }}
           PYTHONUNBUFFERED: "1"
         run: |
           set +e
@@ -113,7 +122,7 @@ jobs:
           python wide_lab.py --mode "${{ inputs.mode }}" --only "${{ inputs.only }}" --combo "${{ inputs.combo }}" 2>&1 | tee run.log
           code=${PIPESTATUS[0]}
           {
-            echo "## wide-lab（${{ inputs.mode }}・${{ inputs.years }}年分${{ inputs.only != '' && format('・{0}', inputs.only) || '' }}）"
+            echo "## wide-lab（${{ inputs.mode }}・${{ inputs.years }}年分${{ inputs.years == '20' && format('・{0}', inputs.stage) || '' }}${{ inputs.only != '' && format('・{0}', inputs.only) || '' }}）"
             echo ""
             if [ $code -eq 3 ]; then echo "**まだ終わっていません。同じ設定のまま、もう一度「Run workflow」を押してください（取った分は保存しました）**"; fi
             if [ $code -ne 0 ] && [ $code -ne 3 ]; then echo "**失敗しました（終了コード $code）**"; fi
