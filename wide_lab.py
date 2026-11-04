@@ -600,6 +600,7 @@ def half_stats(vals: np.ndarray, dates: list) -> dict:
 
 # 1回目の型（wide_lab_plan_2026-11-04 で、結果を見る前に決めたもの）。点数は大きいほど上
 ONLY: set = set()        # 回す型（空なら全部）
+LAB_TITLE, LAB_PLAN = "1回目", "wide_lab_plan_2026-11-04"     # 結果の見出し（3回目・4回目はここを変える）
 
 LAB1 = (("EP", "利益に対する安さ（純利益÷時価総額）"), ("BP", "純資産に対する安さ"), ("SP", "売上に対する安さ"),
         ("CASH", "現金に対する安さ（金融を除く）"), ("FCF", "稼ぐ現金に対する安さ（金融を除く）"), ("DY", "配当利回り（実績）"),
@@ -637,11 +638,17 @@ def combo_score(F: dict, keys: list, uni: np.ndarray) -> np.ndarray:
 VQM = ("BP", "ROE", "MOM12")      # 割安・質・勢いの古典的な組み合わせ（結果を見ずに決めた固定の組み合わせ）
 
 
-def lab1(store: dict, combos: dict | None = None) -> int:
-    log("1回目の型をまとめて回します（指標を作っています）…" if not combos else "3回目（組み合わせ）を回します（指標を作っています）…")
+def lab1(store: dict, combos: dict | None = None, extra: dict | None = None) -> int:
+    log("1回目の型をまとめて回します（指標を作っています）…" if not (combos or extra) else
+        ("3回目（組み合わせ）を回します（指標を作っています）…" if combos else "4回目（売買の内訳）を回します（指標を作っています）…"))
     D = build(store)
     dates, UNI, F, PXM, DIV = D["dates"], D["UNI"], D["F"], D["PXM"], D["DIV"]
     items = LAB1
+    if extra:
+        items = []
+        for nm, (fn, lab) in extra.items():
+            F[nm] = fn(D)
+            items.append((nm, lab))
     if combos:
         items = []
         for nm, (keys, lab) in combos.items():
@@ -735,7 +742,7 @@ def stage_note() -> None:
 def report(D, res, RND, ST_TX, TXliq, ev, j0):
     HH = ("前半", "後半")
     yrs = max((ev[-1] - ev[0]).days / 365.25, 0.5)
-    print("\n【日本株の手法の型・1回目（wide_lab）：東証全銘柄・実際の運用の形】（基準は結果を見る前に決めたもの。計画はプロジェクトの method_map_2026-11-04 と wide_lab_plan_2026-11-04）")
+    print(f"\n【日本株の手法の型・{LAB_TITLE}（wide_lab）：東証全銘柄・実際の運用の形】（基準は結果を見る前に決めたもの。計画はプロジェクトの method_map_2026-11-04 と {LAB_PLAN}）")
     stage_note()
     print(f"  期間 … 比べる期間 {ev[0].date()}〜{ev[-1].date()}（{len(ev)}か月。前半 〜{(SPLIT - pd.Timedelta(days=1)).date()}・後半 {SPLIT.date()}〜）")
     nu = D["UNI"][:, j0:].sum(axis=0)
@@ -1297,14 +1304,117 @@ def report2(res, ref_bad, ST_TX, TXliq, ev, yrs, D, j0):
     print(f"     （TOPIX の清算後の通し {((TXliq / CAP) ** (1 / yrs) - 1) * 100:.1f}％）")
 
 
+# ───────────────────────── 4回目：売買の内訳（プレミアムだけのデータ）─────────────────────────
+# 計画は wide_lab_plan4_2026-11-04（結果を見る前に決めたもの）。毎日の銘柄ごとの売買の内訳（実売り・空売り・信用の新規と返済）を、
+# 「その日のデータが使えるようになる次の営業日」の月に足し上げ、月末ごとの比率を点数にする。比べ方と判定は1回目と同じ。
+# プレミアムのデータなので、スタンダードに戻す前に long-cleanup で消す（キャッシュの名前を yield-backtest-long- で始める）。
+BD_CACHE = OUT / ("wide_bd_long.pkl" if LONG else "wide_bd.pkl")
+BD_KEYS = ("LongSellVa", "ShrtNoMrgnVa", "MrgnSellNewVa", "MrgnSellCloseVa", "LongBuyVa", "MrgnBuyNewVa", "MrgnBuyCloseVa")
+
+
+def bd_load() -> dict:
+    if BD_CACHE.exists():
+        with open(BD_CACHE, "rb") as f:
+            return pickle.load(f)
+    return {}
+
+
+def bd_save(bd: dict, note: str = "") -> None:
+    OUT.mkdir(parents=True, exist_ok=True)
+    tmp = BD_CACHE.with_suffix(".tmp")
+    with open(tmp, "wb") as f:
+        pickle.dump(bd, f, protocol=pickle.HIGHEST_PROTOCOL)
+    os.replace(tmp, BD_CACHE)
+    if note:
+        log(f"  {note}（{BD_CACHE.stat().st_size / 1e6:,.0f}MB・開始から{elapsed():.0f}分）")
+
+
+def fetch_bd(jq, store: dict, bd: dict) -> bool:
+    """営業日ごとに、全銘柄の売買の内訳を取って、月ごとに足し上げる。時間切れなら取った分を保存して False。"""
+    cal = store["etf1306"]["d"]
+    first = pd.Timestamp(min(store["months"]) + "-01") - pd.DateOffset(days=31)
+    ks = [k for k in range(len(cal) - 1) if cal[k] >= np.datetime64(first.date())]
+    done = bd.setdefault("done", set())
+    mm_all = bd.setdefault("m", {})
+    todo = [k for k in ks if str(cal[k]) not in done]
+    if todo:
+        log(f"売買の内訳を取っています（全部で {len(ks)}営業日・残り {len(todo)}営業日）…")
+    last = time.monotonic()
+    shown = bool(bd.get("keys_seen"))
+    for n, k in enumerate(todo, 1):
+        if elapsed() >= BUDGET_MIN:
+            bd_save(bd, "売買の内訳を途中まで保存しました")
+            return False
+        d = str(cal[k])
+        time.sleep(yb.API_SLEEP)
+        try:
+            rows = jq.get("/v2/markets/breakdown", {"date": d})
+        except yb.NotAllowed as e:
+            raise SystemExit(f"■ 売買の内訳が取れません（プレミアムではない可能性があります）：{e}")
+        except Exception as e:
+            log(f"  取得に失敗 {d}: {e}")
+            continue
+        if rows and not shown:
+            bd["keys_seen"] = sorted(rows[0].keys())
+            log("  受け取った項目 … " + "・".join(bd["keys_seen"]))
+            shown = True
+        ym = str(cal[k + 1])[:7]          # この日のデータは次の営業日から使える
+        mm = mm_all.setdefault(ym, {})
+        for r in rows:
+            c = yb.norm_code(r.get("Code", ""))
+            if not c:
+                continue
+            v = np.array([num(r.get(x)) or 0.0 for x in BD_KEYS])
+            mm[c] = mm[c] + v if c in mm else v
+        done.add(d)
+        if n % 200 == 0:
+            log(f"  {n}/{len(todo)}（開始から{elapsed():.0f}分）")
+        if (time.monotonic() - last) / 60 >= SAVE_EVERY_MIN:
+            bd_save(bd, "途中まで保存しました")
+            last = time.monotonic()
+    bd["complete"] = True
+    bd_save(bd, "売買の内訳がそろいました")
+    return True
+
+
+def bd_score(bd: dict, kind: str):
+    """月末ごとの点数。SHORT＝空売りの比率の小ささ・MBUY＝信用の新規買いの比率の小ささ（どちらも、その月に使えるようになった分の合計で）。"""
+    def fn(D):
+        codes, dates = D["codes"], D["dates"]
+        out = np.full((len(codes), len(dates)), np.nan)
+        ci = {c: i for i, c in enumerate(codes)}
+        for j, d in enumerate(dates):
+            mm = bd.get("m", {}).get(d.strftime("%Y-%m"))
+            if not mm:
+                continue
+            for c, v in mm.items():
+                i = ci.get(c)
+                if i is None:
+                    continue
+                if kind == "SHORT":
+                    den = v[0] + v[1] + v[2] + v[3]
+                    if den > 0:
+                        out[i, j] = -(v[1] + v[2]) / den
+                else:
+                    den = v[4] + v[5] + v[6]
+                    if den > 0:
+                        out[i, j] = -v[5] / den
+        return out
+    return fn
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3"], default="lab1")
+    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4"], default="lab1")
     ap.add_argument("--combo", default="", help="3回目：1回目で「範囲の中では効く」以上だった型の記号（カンマ区切り）。2つ以上なら SEL として回す")
     ap.add_argument("--only", default="", help="回す型の記号（カンマ区切り。空欄なら全部）。確かめる段階で候補だけを回すとき")
     args = ap.parse_args()
-    global ONLY
+    global ONLY, LAB_TITLE, LAB_PLAN
     ONLY = {x.strip().upper() for x in args.only.split(",") if x.strip()}
+    if args.mode == "lab3":
+        LAB_TITLE, LAB_PLAN = "3回目（組み合わせ）", "wide_lab_plan3_2026-11-04"
+    elif args.mode == "lab4":
+        LAB_TITLE, LAB_PLAN = "4回目（売買の内訳）", "wide_lab_plan4_2026-11-04"
     if LONG:
         yb.LONG_MODE = True          # 株価を「20年前まで」で取る。取れなければプレミアムではないので止まる
         yb.API_SLEEP = float(os.environ.get("LONG_API_SLEEP", "0.25"))    # プレミアムは呼び出しの上限が大きい
@@ -1328,6 +1438,20 @@ def main() -> int:
     if elapsed() > COMPUTE_LIMIT_MIN:
         print("\n■ まだ終わっていません（データは取り終えましたが、計算の時間が残っていません）。もう一度押してください。")
         return EXIT_UNFINISHED
+    if args.mode == "lab4":
+        bd = bd_load()
+        if not bd.get("complete"):
+            key = os.environ.get("J_QUANTS_API_KEY")
+            if not key:
+                print("J_QUANTS_API_KEY が設定されていません")
+                return 2
+            if not fetch_bd(yb.JQ(key), store, bd):
+                print("\n■ まだ終わっていません（売買の内訳を取っている途中です）。同じ設定のまま、もう一度「Run workflow」を押してください。")
+                return EXIT_UNFINISHED
+        log(f"売買の内訳 … {len(bd.get('done', []))}営業日・{len(bd.get('m', {}))}か月")
+        extra = {"SHORT": (bd_score(bd, "SHORT"), "空売りの少ない株（その月の空売り（信用の新規売りを含む）÷ 売り全体の小さい順）"),
+                 "MBUY": (bd_score(bd, "MBUY"), "信用の新規買いの少ない株（その月の信用の新規買い ÷ 買い全体の小さい順）")}
+        return lab1(store, extra=extra)
     if args.mode == "lab3":
         sel = [x.strip().upper() for x in args.combo.split(",") if x.strip()]
         bad = [k for k in sel if k not in dict(LAB1)]
