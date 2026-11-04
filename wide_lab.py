@@ -1764,49 +1764,75 @@ X_SETS = {"div": ("/v2/fins/dividend", "2013-02-20", "date", "D"),              
           "ssr": ("/v2/markets/short-sale-report", "2013-11-07", "disc_date", "D"),  # 公表日ごと
           "ed": ("/v2/fins/earnings-date", "2013-01-01", "date", "D"),              # 予定日を公表・変更した日ごと（始まりは仕様にない）
           "mi": ("/v2/markets/margin-interest", "2008-05-01", "date", "W"),         # 信用取引の週末残高（週の最後の営業日）
-          "fsd": ("/v2/fins/details", "2008-05-01", "date", "D")}                  # 財務の明細（開示日ごと。プレミアムだけ。12段目）
+          "fsd2": ("/v2/fins/details", "2008-05-01", "date", "D")}                 # 財務の明細（開示日ごと。プレミアムだけ。12段目。項目は名前でしぼって値ごと持つ）
 X_FIELDS = {"div": {"pub": ("PubDate",), "time": ("PubTime",), "code": ("Code",), "stat": ("StatCode",), "if": ("IFCode",),
                     "fr": ("FRCode",), "term": ("IFTerm",), "rate": ("DivRate",), "cs": ("CommSpecCode",), "rec": ("RecDate",)},
             "ssr": {"disc": ("DiscDate",), "calc": ("CalcDate",), "code": ("Code",), "seller": ("SSName",),
                     "dic": ("DICName",), "fund": ("FundName",), "ratio": ("ShrtPosToSO",)},
             "ed": {"pub": ("PubDate",), "sch": ("SchDate",), "fq": ("FQName",), "fye": ("FYE",), "code": ("Code",)},
             "mi": {"date": ("Date",), "code": ("Code",), "long": ("LongVol",), "short": ("ShrtVol",), "iss": ("IssType",)},
-            "fsd": {"disc": ("DiscDate",), "time": ("DiscTime",), "code": ("Code",), "doc": ("DocType",),
-                    "gp": (), "sales": (), "ta": (), "ca": (), "cl": (), "ltd": ()}}      # 明細の項目は fs_pick で取り出す
-X_OPTIONAL = {("ssr", "dic"), ("ssr", "fund"), ("div", "time"), ("ed", "fye"), ("mi", "iss"), ("fsd", "time"), ("fsd", "doc")}
-FSD_PICKED = ("gp", "sales", "ta", "ca", "cl", "ltd")
+            "fsd2": {"disc": ("DiscDate",), "time": ("DiscTime",), "code": ("Code",), "doc": ("DocType",), "fs": ()}}   # fs は項目名 → 値
+X_OPTIONAL = {("ssr", "dic"), ("ssr", "fund"), ("div", "time"), ("ed", "fye"), ("mi", "iss"), ("fsd2", "time"), ("fsd2", "doc")}
+FS_KEEP_WORDS = ("gross", "assets", "liabilities", "loans", "bonds", "borrowings", "debt", "sales", "revenue")
 
 
-def fs_base(k: str) -> str:
-    """明細の項目名から、会計基準の印（(IFRS) など）を外し、小文字にする。"""
+def fs_keep(fs: dict) -> dict:
+    """明細のうち、12段目で使うかもしれない項目（名前に gross・assets・liabilities・loans・bonds・borrowings・debt・sales・revenue を含む）だけを、値（数）にして持つ。"""
+    out = {}
+    for k, v in (fs or {}).items():
+        kl = str(k).lower()
+        if any(w in kl for w in FS_KEEP_WORDS):
+            x = num(v)
+            if x is not None:
+                out[str(k)] = x
+    return out
+
+
+def fs_parse(k: str):
+    """明細の項目名を（名前, 区分）に分ける。会計基準の印（(IFRS) など）と、末尾の区分の記号（-CA・- NCL・-CMD など）を外す。"""
     import re
     k = re.sub(r"\s*\((IFRS|US GAAP|USGAAP|JMIS|Japanese GAAP|J-GAAP|JGAAP)\)\s*$", "", str(k)).strip()
-    return k.lower()
+    sec = None
+    m = re.match(r"^(.*?)\s*-\s*([A-Z][A-Za-z]{1,6})$", k)
+    if m and " " not in m.group(2):
+        k, sec = m.group(1).strip(), m.group(2).upper()
+    k = re.sub(r",\s*DEI$", "", k).strip()
+    return k.lower(), sec
 
 
-FS_NAMES = {"gp": ("gross profit", "gross profit (loss)", "gross profit on sales", "gross profit (loss) on sales"),
-            "sales": ("net sales", "revenue", "revenues", "operating revenue", "operating revenues", "net sales of goods", "sales"),
+FS_NAMES = {"gp": ("gross profit", "gross profit (loss)", "gross profit on sales", "gross profit (loss) on sales",
+                   "operating gross profit", "operating gross profit (loss)", "gross operating profit"),
+            "sales": ("net sales", "revenue", "revenues", "operating revenue", "operating revenues", "net sales of goods", "sales",
+                      "net sales of completed construction contracts", "operating revenue and net sales"),
             "ta": ("assets", "total assets"),
             "ca": ("current assets", "total current assets"),
             "cl": ("current liabilities", "total current liabilities")}
-FS_LTD_TOTAL = ("bonds and borrowings - ncl",)
-FS_LTD_PARTS = ("long-term borrowings - ncl", "long-term loans payable - ncl", "bonds payable - ncl", "bonds - ncl",
-                "long-term debt - ncl", "borrowings - ncl")
+FS_LTD_TOTAL = ("bonds and borrowings", "interest-bearing liabilities", "borrowings")
+FS_LTD_PARTS = ("long-term loans payable", "long-term borrowings", "bonds payable", "bonds", "long-term debt",
+                "convertible bond-type bonds with subscription rights to shares", "convertible bonds")
 
 
 def fs_pick(fs: dict) -> dict:
-    """財務の明細（FS）から、売上総利益・売上・総資産・流動資産・流動負債・長期の借入と社債を取り出す。見つからなければ None。"""
-    base = {}
+    """財務の明細（FS）から、売上総利益・売上・総資産・流動資産・流動負債・長期の借入と社債を取り出す。見つからなければ None。
+    長期の借入は、区分が固定負債（NCL）または区分の記号がない項目だけ（流動負債（CL）の借入は入れない）。"""
+    base0, base1, ncl = {}, {}, {}
     for k, v in (fs or {}).items():
-        b = fs_base(k)
-        if b not in base:
-            base[b] = num(v)
+        nm, sec = fs_parse(k)
+        x = num(v)
+        if x is None:
+            continue
+        if sec is None:
+            base0.setdefault(nm, x)
+        base1.setdefault(nm, x)
+        if sec in (None, "NCL"):
+            ncl.setdefault(nm, x)
     out = {}
     for lk, names in FS_NAMES.items():
-        out[lk] = next((base[n] for n in names if base.get(n) is not None), None)
-    tot = next((base[n] for n in FS_LTD_TOTAL if base.get(n) is not None), None)
+        v = next((base0[n] for n in names if base0.get(n) is not None), None)
+        out[lk] = v if v is not None else next((base1[n] for n in names if base1.get(n) is not None), None)
+    tot = next((ncl[n] for n in FS_LTD_TOTAL if ncl.get(n) is not None), None)
     if tot is None:
-        parts = [base[n] for n in FS_LTD_PARTS if base.get(n) is not None]
+        parts = [ncl[n] for n in FS_LTD_PARTS if ncl.get(n) is not None]
         tot = float(sum(parts)) if parts else (0.0 if out["ta"] is not None else None)   # 借入の項目がなければ0（借入なし）とみなす
     out["ltd"] = tot
     return out
@@ -1836,7 +1862,7 @@ def x_days(store: dict, name: str) -> list:
     if STAGE == "explore":
         start = max(start, EXPLORE_FROM - np.timedelta64(500, "D"))
     days = [d for d in store["etf1306"]["d"] if d >= start]
-    if name == "fsd":
+    if name == "fsd2":
         c0 = store["etf1306"]["d"][0]
         if start < c0:
             pre = [np.datetime64(x.date()) for x in pd.bdate_range(pd.Timestamp(str(start)), pd.Timestamp(str(c0)) - pd.Timedelta(days=1))]
@@ -1914,7 +1940,7 @@ def fetch_x(jq, store: dict, xs: dict, names=None) -> bool:
                     break
                 continue
             fails, ok_once = 0, True
-            if name == "fsd":
+            if name == "fsd2":
                 if rows and st["keys"] is None:
                     st["keys"] = list(rows[0].keys())
                     fs0 = rows[0].get("FS") or {}
@@ -1922,8 +1948,7 @@ def fetch_x(jq, store: dict, xs: dict, names=None) -> bool:
                     log("  受け取った項目 … " + "・".join(st["keys"]) + f"（明細の項目 {len(fs0)}個。例：" +
                         "・".join([k for k in fs0 if any(w in k.lower() for w in ("gross", "current", "borrow", "bond", "total assets", "net sales", "revenue"))][:12]) + "）")
                 for r in rows or []:
-                    pk = fs_pick(r.get("FS") or {})
-                    st["rows"].append((r.get("DiscDate"), r.get("DiscTime"), r.get("Code"), r.get("DocType")) + tuple(pk[k] for k in FSD_PICKED))
+                    st["rows"].append((r.get("DiscDate"), r.get("DiscTime"), r.get("Code"), r.get("DocType"), fs_keep(r.get("FS") or {})))
                 st["done"].add(d)
                 if n % 500 == 0:
                     log(f"  {n}/{len(todo)}（開始から{elapsed():.0f}分）")
@@ -2101,16 +2126,22 @@ def fsd_timeline(store: dict, xs: dict) -> dict:
     """銘柄ごとに、通期の決算（決算短信の要約）に、財務の明細の売上総利益・流動資産・流動負債・長期の借入を合わせた並びを作る。
     明細は、要約の開示日の3日前〜100日後の、通期の明細のうち最初のもの。使えるのは、両方の開示日の遅いほうの翌日から。"""
     det = {}
-    docs = {}
-    for r in x_rows(xs, "fsd"):
+    docs, kc = {}, {}
+    rows_all = x_rows(xs, "fsd2")
+    for r in rows_all:
         docs[str(r.get("doc"))] = docs.get(str(r.get("doc")), 0) + 1
     log("  財務の明細の書類の種類（多い順） … " + "・".join(f"{k} {v:,}" for k, v in sorted(docs.items(), key=lambda x: -x[1])[:6]))
-    for r in x_rows(xs, "fsd"):
+    for r in rows_all:
         c = yb.norm_code(r.get("code") or "")
         d = str(r.get("disc") or "")[:10]
         doc = str(r.get("doc") or "")
         if len(d) == 10 and ("FY" in doc or not doc):
-            det.setdefault(c, []).append((d, r))
+            fs = r.get("fs") or {}
+            for k in fs:
+                kc[k] = kc.get(k, 0) + 1
+            det.setdefault(c, []).append((d, fs_pick(fs)))
+    top = sorted(kc.items(), key=lambda x: -x[1])[:40]
+    log("  通期の明細でよく出る項目（上から40） … " + "・".join(f"{k}（{v:,}）" for k, v in top))
     for c in det:
         det[c].sort(key=lambda x: x[0])
     out, stat = {}, {"fy": 0, "gp": 0, "ca": 0, "cl": 0}
@@ -3218,16 +3249,16 @@ def main() -> int:
         return lab9(store)
     if args.mode == "lab12":
         xs = x_load()
-        if not x_complete(store, xs, ("fsd",)):
+        if not x_complete(store, xs, ("fsd2",)):
             key = os.environ.get("J_QUANTS_API_KEY")
             if not key:
                 print("J_QUANTS_API_KEY が設定されていません")
                 return 2
-            if not fetch_x(yb.JQ(key), store, xs, ("fsd",)):
+            if not fetch_x(yb.JQ(key), store, xs, ("fsd2",)):
                 print("\n■ まだ終わっていません（財務の明細を取っている途中です）。同じ設定のまま、もう一度押してください。")
                 return EXIT_UNFINISHED
-        if xs.get("fsd", {}).get("bad"):
-            print(f"\n■ 財務の明細が取れませんでした（{xs['fsd']['bad']}）。12段目は保留です。")
+        if xs.get("fsd2", {}).get("bad"):
+            print(f"\n■ 財務の明細が取れませんでした（{xs['fsd2']['bad']}）。12段目は保留です。")
             return 2
         log("12段目（財務の明細の型）を回します…")
         return lab1(store, extra=lab12_scores(store, xs))
