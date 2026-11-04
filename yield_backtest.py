@@ -15068,6 +15068,235 @@ def mg_report(R, ST, vtx, sp, d9, dd9, v9, cov, n_low, bad, n_heavy, diag9, MC, 
         print("     20年分（long_mg1）で確かめる候補 … " + ("・".join(go) if go else "なし") + ("（データの確かめに外れがあるので保留）" if bad else ""))
 
 
+# ── 別手法の検証3の続き（long_c8live。2026年11月4日に追加。計画は rev_lab_plan_2026-11-03 の7）──
+#   現金を多く持つ割安株（C8）を、実運用の形（税・1株単位・売る決まり）で回し、本番（同じ税）と比べる。
+#   今までのモードには何も足さない（「比較するルール」が c8live・long_c8live のときだけ動く）。
+C8L_KEEP = (("L60", 60), ("L20", 20))     # この順位より下になったら売る
+
+
+def c8_rank(day: pd.DataFrame) -> list:
+    """範囲（ツールと同じ範囲・金融を除く）を「現金と現金同等物 ÷ 時価総額」の大きい順に並べた銘柄コード（部品箱の C8 と同じ数字）。"""
+    d_ = day[day["in_uni_live"].astype(bool)] if "in_uni_live" in day.columns else day
+    if "sector" in d_.columns:
+        d_ = d_[~d_["sector"].fillna("").astype(str).isin(FIN_SECTORS)]
+    if not {"cash", "sh", "price"} <= set(d_.columns):
+        return []
+    mc = pd.to_numeric(d_["price"], errors="coerce") * pd.to_numeric(d_["sh"], errors="coerce")
+    y = (pd.to_numeric(d_["cash"], errors="coerce") / mc.where(mc > 0)).replace([np.inf, -np.inf], np.nan).dropna()
+    return list(y.sort_values(ascending=False, kind="stable").index)
+
+
+def c8live_sim(dates: list, days: dict, PX: np.ndarray, cidx: dict, cap: float, nmax: int, keep: int,
+               slip: float, tax: float, fee: float = 0.0):
+    """C8 を実運用の形で回す。返す値：月末ごとの評価額（売り買いのあと）、最後に全部売って税を払ったあとの額、診断。
+    税は本番（simulate）と同じ：売って出た益から、それまでの損（繰り越し）を引いた分に tax。配当は受け取るときに tax。"""
+    cash = float(cap)
+    pos: dict = {}                     # 銘柄 -> [株数, 買った額（費用込み）]
+    loss_pool = 0.0
+    vals, held = [], []
+    st = {"n_buy": 0, "n_sell": 0, "tax": 0.0}
+
+    def _p(c, j):
+        v = PX[cidx[c], j] if c in cidx else np.nan
+        return float(v) if (v == v and v > 0) else None
+
+    def _sell(c, j):
+        nonlocal cash, loss_pool
+        sh, cost = pos.pop(c)
+        eff = (_p(c, j) or 0.0) * (1.0 - slip) * (1.0 - fee)
+        cash += sh * eff
+        g = sh * eff - cost
+        if g > 0:
+            taxable = max(0.0, g - loss_pool)
+            loss_pool = max(0.0, loss_pool - g)
+            t = taxable * tax
+            cash -= t
+            st["tax"] += t
+        else:
+            loss_pool += -g
+        st["n_sell"] += 1
+
+    for j, dt in enumerate(dates):
+        day = days[dt]
+        mth = pd.Timestamp(dt).month
+        for c, (sh, _c) in pos.items():
+            if c not in day.index:
+                continue
+            row = day.loc[c]
+            dps = float(row.get("dps", 0) or 0)
+            if not dps > 0:
+                continue
+            fr = row.get("div_int_share")
+            fr = 0.5 if (fr is None or pd.isna(fr)) else float(fr)
+            g = 0.0
+            if int(row.get("fiscal_month", 0) or 0) == mth:
+                g += sh * dps * (1.0 - fr)
+            if int(row.get("interim_month", 0) or 0) == mth:
+                g += sh * dps * fr
+            if g > 0:
+                cash += g * (1.0 - tax)
+                st["tax"] += g * tax
+        rank = c8_rank(day)
+        rpos = {c: k for k, c in enumerate(rank)}
+        for c in list(pos):
+            if c not in rpos or rpos[c] >= keep:
+                _sell(c, j)
+        value = cash + sum(sh * (_p(c, j) or 0.0) for c, (sh, _c) in pos.items())
+        tgt = value / nmax
+        for c in rank[:nmax]:
+            if len(pos) >= nmax:
+                break
+            if c in pos:
+                continue
+            p = _p(c, j)
+            if not p:
+                continue
+            px = p * (1.0 + slip) * (1.0 + fee)
+            sh = int(min(tgt, cash) / px)
+            if sh < 1:
+                continue
+            cash -= sh * px
+            pos[c] = [sh, sh * px]
+            st["n_buy"] += 1
+        vals.append(cash + sum(sh * (_p(c, j) or 0.0) for c, (sh, _c) in pos.items()))
+        held.append(len(pos))
+    j = len(dates) - 1
+    liq, gain = cash, 0.0
+    for c, (sh, cost) in pos.items():
+        eff = (_p(c, j) or 0.0) * (1.0 - slip) * (1.0 - fee)
+        liq += sh * eff
+        gain += sh * eff - cost
+    liq -= tax * max(0.0, gain - loss_pool)
+    st["held"] = held
+    return pd.Series(vals, index=pd.DatetimeIndex(dates), dtype=float), liq, st
+
+
+def c8live_main(store: dict, args, panel: pd.DataFrame) -> int:
+    """C8 を実運用の形で（c8live・long_c8live）。結果を印字して 0 を返す。"""
+    slip = float(args.slip_bps) / 10000.0
+    fee = float(getattr(args, "fee_bps", 0) or 0) / 10000.0
+    tax = float(args.tax) / 100.0
+    cap = float(args.capital)
+    nmax = 20
+    if panel.empty or "in_uni_live" not in panel.columns:
+        print("\n■ C8 を実運用の形で：パネルが空か、ツールと同じ範囲の列がありません。")
+        return 1
+    log.info("C8 を実運用の形で回しています…")
+    panel = rev2_add_cf_cols(store, panel)
+    dates = sorted(pd.to_datetime(panel["date"].unique()))
+    days = {d: g.set_index("code") for d, g in panel.groupby("date")}
+    codes = sorted(panel["code"].unique())
+    cidx = {c: i for i, c in enumerate(codes)}
+    PX = rev2_month_px(store, codes, dates)
+    V, LQ, STT = {}, {}, {}
+    for nm, k in C8L_KEEP:
+        V[nm], LQ[nm], STT[nm] = c8live_sim(dates, days, PX, cidx, cap, nmax, k, slip, tax, fee)
+    V["L60h"], LQ["L60h"], STT["L60h"] = c8live_sim(dates, days, PX, cidx, cap / 2.0, nmax, 60, slip, tax, fee)
+    kw = dict(tier_budget=True, dividends=True, slip_bps=args.slip_bps, fee_bps=args.fee_bps, tax_rate=tax, ramp=0)
+    for key, cp in (("C1", cap), ("C1h", cap / 2.0)):
+        r_ = simulate(panel, VARIANTS["live_small1_pit"], cp, args.max_names, **kw)
+        cv_ = r_["curve"]
+        V[key] = pd.Series(cv_["value"].to_numpy(dtype=float), index=pd.DatetimeIndex(cv_["date"]), dtype=float) \
+            .reindex(pd.DatetimeIndex(dates)).ffill()
+        LQ[key] = float(r_.get("liq_value") or V[key].iloc[-1])
+    V["H"] = V["C1h"] + V["L60h"]
+    LQ["H"] = LQ["C1h"] + LQ["L60h"]
+    # TOPIX（税あり）：最初に1306を買って持ち続ける。分配金は税を引いて買い足す。最後に売るときに益へ税
+    tp = etf_series((store.get("etf_quotes") or {}).get("1306") or [])
+    tm = tp.reindex(pd.DatetimeIndex(dates), method="ffill") if not tp.empty else pd.Series(np.nan, index=pd.DatetimeIndex(dates))
+    dist = [(pd.Timestamp(d_), float(a_) / 100.0) for d_, a_ in ETF_DIST.get("1306", ())]
+    units = cap / (float(tm.iloc[0]) * (1.0 + slip)) if tm.iloc[0] == tm.iloc[0] else 0.0
+    cost_tx = cap
+    tv = [units * float(tm.iloc[0])]
+    for j in range(1, len(dates)):
+        d0, d1 = dates[j - 1], dates[j]
+        dd = sum(a_ for d_, a_ in dist if d0 < d_ <= d1)
+        if dd > 0 and tm.iloc[j] == tm.iloc[j]:
+            add = units * dd * (1.0 - tax)
+            units += add / (float(tm.iloc[j]) * (1.0 + slip))
+            cost_tx += add
+        tv.append(units * float(tm.iloc[j]))
+    V["TX"] = pd.Series(tv, index=pd.DatetimeIndex(dates), dtype=float)
+    fin_tx = units * float(tm.iloc[-1]) * (1.0 - slip)
+    LQ["TX"] = fin_tx - tax * max(0.0, fin_tx - cost_tx)
+    j0 = REV2_HIST
+    if len(dates) <= j0 + 12:
+        print("\n■ C8 を実運用の形で：比べる期間が短すぎます（パネルの月数 %d）。" % len(dates))
+        return 1
+    ev_dates = pd.DatetimeIndex(dates[j0:])
+    R = pd.DataFrame({k: V[k].reindex(ev_dates).pct_change() for k in ("L60", "L20", "C1", "H", "TX")}).iloc[1:]
+    split = pd.Timestamp(REV2_SPLIT_LONG if LONG_MODE else REV2_SPLIT)
+    halves = {"前半": R.index < split, "後半": R.index >= split, "通し": np.ones(len(R), dtype=bool)}
+    ST = {k: {h: rev2_stats(R[k][m_]) for h, m_ in halves.items()} for k in R.columns}
+    HH = ("前半", "後半")
+    dL = [ST["L60"][h]["ann"] - ST["C1"][h]["ann"] for h in HH]
+    ddL = ST["L60"]["通し"]["mdd"] - ST["C1"]["通し"]["mdd"]
+    vL = "本番より良い" if (all(x >= REV2_PT for x in dL) and ddL < REV2_DD) else ("本番より悪い" if all(x <= -REV2_PT for x in dL) else "決められない")
+    dT = [ST["L60"][h]["ann"] - ST["TX"][h]["ann"] for h in HH]
+    vT = "TOPIX より良い" if all(x >= REV2_PT for x in dT) else ("TOPIX より悪い" if all(x <= -REV2_PT for x in dT) else "決められない")
+    dH = [ST["H"][h]["ann"] - ST["C1"][h]["ann"] for h in HH]
+    ddH = [ST["C1"][h]["mdd"] - ST["H"][h]["mdd"] for h in HH]
+    if all(x >= REV2_PT for x in dH) or (all(abs(x) <= REV2_PT for x in dH) and all(x >= REV2_DD for x in ddH)):
+        vH = "分けて持つ方が良い"
+    elif all(x <= -REV2_PT for x in dH):
+        vH = "本番だけの方が良い"
+    else:
+        vH = "決められない"
+    yrs = max((ev_dates[-1] - ev_dates[0]).days / 365.25, 0.5)
+    yrs_all = max((pd.Timestamp(dates[-1]) - pd.Timestamp(dates[0])).days / 365.25, 0.5)
+    c8live_report(R, ST, dates, ev_dates, split, cap, vL, dL, ddL, vT, dT, vH, dH, ddH, LQ, STT, yrs, yrs_all, j0)
+    return 0
+
+
+def c8live_report(R, ST, dates, ev_dates, split, cap, vL, dL, ddL, vT, dT, vH, dH, ddH, LQ, STT, yrs, yrs_all, j0):
+    HH = ("前半", "後半")
+
+    def _h(st, k, fmt="{:.1f}"):
+        return " ／ ".join(fmt.format(st[h][k]) for h in HH)
+    if LONG_MODE:
+        print("\n【現金を多く持つ割安株を実運用の形で・20年分（long_c8live）】（基準は結果を見る前に決めたもの。計画はプロジェクトの rev_lab_plan_2026-11-03 の7）")
+        print("  （表の「前半 ／ 後半」は「見ていない期間 ／ 最近」）")
+    else:
+        print("\n【現金を多く持つ割安株を実運用の形で（c8live）】（基準は結果を見る前に決めたもの。計画はプロジェクトの rev_lab_plan_2026-11-03 の7）")
+    print(f"  期間 … パネル {pd.Timestamp(dates[0]).date()}〜{pd.Timestamp(dates[-1]).date()}（どの形も最初の月末から回す）。"
+          f"比べる期間 {R.index[0].date()}〜{R.index[-1].date()}（{len(R)}か月。前半 〜{split.date()} より前・後半 それ以後）")
+    print(f"  決まり … 元本{cap / 1e4:,.0f}万円・税20.315％（売った益から繰り越した損を引いた分、配当は受け取るときに）・片道0.1％・1株単位・月末の終値で売り買い。"
+          "L60＝60位より下で売る・L20＝20位より下で売る。H＝本番に半分・L60 に半分（あいだで持ち直さない）")
+    print("\n  1. 成績（年率％。月末の評価額から。「前半 ／ 後半」）")
+    print("     " + f"{'形':<22}{'年率':>14}{'最大下落':>14}{'ばらつき':>12}")
+    lab = {"L60": "L60 現金の多い割安株", "L20": "L20（参考）", "C1": "本番（税あり）", "H": "H 半分ずつ", "TX": "TOPIX（税あり）"}
+    for k in ("L60", "L20", "C1", "H", "TX"):
+        print("     " + f"{lab[k]:<22}{_h(ST[k], 'ann'):>14}{_h(ST[k], 'mdd', '{:.0f}％'):>14}{_h(ST[k], 'vol', '{:.0f}'):>12}")
+    print("     通し（評価額） … " + " ・ ".join(f"{k} {ST[k]['通し']['ann']:.1f}％（最大下落 {ST[k]['通し']['mdd']:.0f}％）" for k in ("L60", "L20", "C1", "H", "TX")))
+    print(f"     通し（最初の月末から最後まで・全部売って税を払ったあと。{yrs_all:.1f}年） … " + " ・ ".join(
+        f"{k} {((LQ[k] / cap) ** (1.0 / yrs_all) - 1.0) * 100:.1f}％" for k in ("L60", "L20", "C1", "H", "TX")))
+    print("\n  2. 判定")
+    print("     L60 と本番（税あり） … 差 " + " ／ ".join(f"{x:+.1f}" for x in dL) + f"pt・通しの最大下落の差 {ddL:+.1f}pt … {vL}")
+    print("     L60 と TOPIX（税あり） … 差 " + " ／ ".join(f"{x:+.1f}" for x in dT) + f"pt … {vT}")
+    print("     H 半分ずつと本番（税あり） … 差 " + " ／ ".join(f"{x:+.1f}" for x in dH) + "pt・最大下落の浅くなった幅 "
+          + " ／ ".join(f"{x:+.1f}" for x in ddH) + f"pt … {vH}")
+    print("\n  3. 売り買いと税（参考。パネルの全期間）")
+    for k in ("L60", "L20"):
+        s_ = STT[k]
+        hh = s_["held"][j0:] if len(s_["held"]) > j0 else s_["held"]
+        print(f"     {k} … 買い {s_['n_buy'] / yrs_all:.0f}回／年・売り {s_['n_sell'] / yrs_all:.0f}回／年・持っていた銘柄の平均 {np.mean(hh):.1f}"
+              f"（比べる期間）・払った税の合計 {s_['tax'] / 1e4:,.0f}万円")
+    print("\n  4. 年ごとの成績（％）")
+    yr = {k: (1 + R[k]).groupby(R.index.year).prod() - 1 for k in ("L60", "L20", "C1", "H", "TX")}
+    print("     " + f"{'年':<6}" + "".join(f"{k:>8}" for k in yr))
+    for y in sorted(yr["C1"].index):
+        print("     " + f"{y:<6}" + "".join(f"{yr[k][y] * 100:>8.1f}" for k in yr))
+    SS = {"L60 ＞ 本番": rev2_start_share(R["L60"], R["C1"], split), "H 半分ずつ ＞ 本番": rev2_start_share(R["H"], R["C1"], split)}
+    print(f"\n  5. 始めた月をずらした見方（参考。毎月末から{REV2_START_YEARS}年持ったとき、前者が上回った回の割合）")
+    for lab_, v_ in SS.items():
+        print("     " + f"{lab_:<18} … " + " ／ ".join(
+            (f"{v_[h][0] / v_[h][1] * 100:.0f}％（{v_[h][1]}回）" if v_[h][1] else "—") for h in HH))
+    print("\n  6. 判定のまとめ")
+    print(f"     L60 と本番 … {vL} ・ L60 と TOPIX … {vT} ・ 半分ずつと本番 … {vH}")
+    go = (["L60"] if vL == "本番より良い" else []) + (["H 半分ずつ"] if vH == "分けて持つ方が良い" else [])
+    print("     本番のツールに足す候補 … " + ("・".join(go) if go else "なし"))
+
+
 def main() -> int:
     global LONG_MODE, CACHE, PIT_FROM, COMPUTE_START_LIMIT_MIN
     # 結果（print）と進み具合（log）の順番を、ファイルに書き出したときも崩さない。
@@ -15343,12 +15572,15 @@ def main() -> int:
     # 別手法の検証6（2026年11月4日に追加）：信用の買い残。パネルは部品箱と同じ作り方。long_mg1 は20年分（プレミアムのときだけ）
     args.long_mg1 = (args.only or "").strip() == "long_mg1"
     args.mg_lab1 = (args.only or "").strip() in ("mg_lab1", "long_mg1")
-    args.rev_lab2 = (args.only or "").strip() in ("rev_lab2", "long_rev2", "etf_lab1", "etf_lab2", "mg_lab1", "long_mg1")
+    # 部品箱の続き（2026年11月4日に追加）：C8 を実運用の形で。long_c8live は20年分（プレミアムのときだけ）
+    args.long_c8live = (args.only or "").strip() == "long_c8live"
+    args.c8live = (args.only or "").strip() in ("c8live", "long_c8live")
+    args.rev_lab2 = (args.only or "").strip() in ("rev_lab2", "long_rev2", "etf_lab1", "etf_lab2", "mg_lab1", "long_mg1", "c8live", "long_c8live")
     if args.rev_lab2:
         args.only = "live_small1_pit"
         args.lookback = 12
     # 別手法の検証3（2026年11月3日に追加）：部品箱を20年分（プレミアムのときだけ）。20年分のキャッシュを使い、財務は業績予想の項目つきで取り直す
-    if args.long_rev2 or args.long_mg1:
+    if args.long_rev2 or args.long_mg1 or args.long_c8live:
         args.universe = "prime"
         args.years = 20
         LONG_MODE = True
@@ -15361,7 +15593,7 @@ def main() -> int:
                          or args.long_lab5 or args.long_lab6 or args.long_lab7 or args.long_lab8 or args.long_lab9
                          or args.long_lab10 or args.long_lab11 or args.long_lab12 or args.long_lab13 or args.long_lab14
                          or args.long_lab15 or args.long_lab16 or args.long_lab17 or args.long_lab18 or args.long_lab19 or args.long_lab20 or args.long_lab21 or args.long_lab22 or args.long_lab23 or args.long_lab24 or args.long_lab25
-                         or getattr(args, "long_rev2", False) or getattr(args, "long_mg1", False))
+                         or getattr(args, "long_rev2", False) or getattr(args, "long_mg1", False) or getattr(args, "long_c8live", False))
     args.long_name = ("long_test" if args.long_test else "long_lab" if args.long_lab
                       else "long_lab2" if args.long_lab2 else "long_lab3" if args.long_lab3
                       else "long_lab4" if args.long_lab4 else "long_lab5" if args.long_lab5
@@ -15370,7 +15602,7 @@ def main() -> int:
                       else "long_lab10" if args.long_lab10 else "long_lab11" if args.long_lab11
                       else "long_lab12" if args.long_lab12 else "long_lab13" if args.long_lab13
                       else "long_lab14" if args.long_lab14 else "long_lab15" if args.long_lab15
-                      else "long_lab16" if args.long_lab16 else "long_lab17" if args.long_lab17 else "long_lab18" if args.long_lab18 else "long_lab19" if args.long_lab19 else "long_lab20" if args.long_lab20 else "long_lab21" if args.long_lab21 else "long_lab22" if args.long_lab22 else "long_lab23" if args.long_lab23 else "long_lab24" if args.long_lab24 else "long_lab25" if args.long_lab25 else "long_rev2" if getattr(args, "long_rev2", False) else "long_mg1" if getattr(args, "long_mg1", False) else "")
+                      else "long_lab16" if args.long_lab16 else "long_lab17" if args.long_lab17 else "long_lab18" if args.long_lab18 else "long_lab19" if args.long_lab19 else "long_lab20" if args.long_lab20 else "long_lab21" if args.long_lab21 else "long_lab22" if args.long_lab22 else "long_lab23" if args.long_lab23 else "long_lab24" if args.long_lab24 else "long_lab25" if args.long_lab25 else "long_rev2" if getattr(args, "long_rev2", False) else "long_mg1" if getattr(args, "long_mg1", False) else "long_c8live" if getattr(args, "long_c8live", False) else "")
 
     OUTDIR.mkdir(parents=True, exist_ok=True)
 
@@ -15764,6 +15996,8 @@ def main() -> int:
     if getattr(args, "rev_lab2", False):
         if getattr(args, "mg_lab1", False):
             return mg_lab1_main(store, args, panel)
+        if getattr(args, "c8live", False):
+            return c8live_main(store, args, panel)
         if getattr(args, "etf_lab1", False):
             return etf_lab1_main(store, args, panel)
         return rev_lab2_main(store, args, panel)
