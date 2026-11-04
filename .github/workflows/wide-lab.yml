@@ -40,6 +40,16 @@ on:
         description: "lab3 だけ：1回目で「範囲の中では効く」以上だった型の記号（カンマ区切り。2つ以上で SEL を回す）"
         required: false
         default: ""
+      threads:
+        description: "データを同時に取る数。スタンダードは1（呼び出しの上限が小さい）。プレミアムなら3〜4で速くなる"
+        required: true
+        default: "1"
+        type: choice
+        options:
+          - "1"
+          - "2"
+          - "3"
+          - "4"
 
 permissions:
   contents: read
@@ -80,6 +90,7 @@ jobs:
         env:
           J_QUANTS_API_KEY: ${{ secrets.J_QUANTS_API_KEY }}
           WIDE_YEARS: ${{ inputs.years }}
+          WIDE_THREADS: ${{ inputs.threads }}
           PYTHONUNBUFFERED: "1"
         run: |
           set +e
