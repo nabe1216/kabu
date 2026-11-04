@@ -11,6 +11,7 @@ name: wide-lab
 #   mode=lab4  … 4回目（売買の内訳。プレミアムだけのデータ。wide_lab_plan4_2026-11-04。スタンダードに戻す前に long-cleanup で消す）
 #   mode=lab5  … 5段目（残りの型。配当金情報（プレミアムだけ）・空売り残高の報告・決算発表予定日を営業日ごとに取る。wide_lab_plan5_2026-11-04。
 #                キャッシュの名前を yield-backtest-long- で始めているので、long-cleanup で消える）
+#   mode=lab10 … 10段目（5段目の出来事の型 ＋ 空いている資金は TOPIX。5段目のデータを使う。wide_lab_plan10_2026-11-05）
 #   years=9  … 探す段階（スタンダードで足りる9年分。data/wide_cache.pkl）
 #   years=20 … 確かめる段階（プレミアムの20年分。data/wide_long.pkl。キャッシュの名前を yield-backtest-long- で始めているので、
 #              プレミアムをやめる前に long-cleanup を1回動かせば、yield-backtest の20年分と一緒に消える）
@@ -18,7 +19,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "fetch＝データを集める ／ lab1＝1回目の型（24通り） ／ lab2＝2回目（出来事と暦） ／ lab3＝3回目（組み合わせ） ／ lab4＝4回目（売買の内訳） ／ lab5＝5段目（残りの型） ／ lab6＝6段目（短期売買） ／ lab7＝7段目（組み立て方） ／ lab8＝8段目（空売り） ／ lab9＝9段目（まとめて学ばせる）"
+        description: "fetch＝データを集める ／ lab1＝1回目の型（24通り） ／ lab2＝2回目（出来事と暦） ／ lab3＝3回目（組み合わせ） ／ lab4＝4回目（売買の内訳） ／ lab5＝5段目（残りの型） ／ lab6＝6段目（短期売買） ／ lab7＝7段目（組み立て方） ／ lab8＝8段目（空売り） ／ lab9＝9段目（まとめて学ばせる） ／ lab10＝10段目（出来事＋TOPIX）"
         required: true
         default: "fetch"
         type: choice
@@ -33,6 +34,7 @@ on:
           - lab7
           - lab8
           - lab9
+          - lab10
       years:
         description: "9＝探す段階（9年分） ／ 20＝確かめる段階（プレミアムの20年分）"
         required: true
@@ -123,7 +125,7 @@ jobs:
             ${{ env.BD_PREFIX }}
 
       - name: 5段目のデータのキャッシュを復元
-        if: ${{ inputs.mode == 'lab5' }}
+        if: ${{ inputs.mode == 'lab5' || inputs.mode == 'lab10' }}
         uses: actions/cache/restore@v4
         with:
           path: ${{ env.X_PATH }}
@@ -170,7 +172,7 @@ jobs:
           key: ${{ env.BD_PREFIX }}${{ github.run_id }}
 
       - name: 5段目のデータのキャッシュを保存
-        if: ${{ always() && inputs.mode == 'lab5' && hashFiles(env.X_PATH) != '' }}
+        if: ${{ always() && (inputs.mode == 'lab5' || inputs.mode == 'lab10') && hashFiles(env.X_PATH) != '' }}
         uses: actions/cache/save@v4
         with:
           path: ${{ env.X_PATH }}
@@ -195,7 +197,7 @@ jobs:
                   --jq '.actions_caches[2:][] | .id' || true)
             for id in $ids; do gh api -X DELETE "repos/${GITHUB_REPOSITORY}/actions/caches/${id}" || true; done
           fi
-          if [ "${{ inputs.mode }}" = "lab5" ]; then
+          if [ "${{ inputs.mode }}" = "lab5" ] || [ "${{ inputs.mode }}" = "lab10" ]; then
             ids=$(gh api "repos/${GITHUB_REPOSITORY}/actions/caches?key=${X_PREFIX}&sort=created_at&direction=desc&per_page=100" \
                   --jq '.actions_caches[2:][] | .id' || true)
             for id in $ids; do gh api -X DELETE "repos/${GITHUB_REPOSITORY}/actions/caches/${id}" || true; done
