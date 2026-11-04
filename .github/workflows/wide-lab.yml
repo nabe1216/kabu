@@ -1,12 +1,15 @@
 name: wide-lab
 
 # 東証の全銘柄で、日本株の手法の型をまとめて確かめる（2026年11月4日に追加）。
-# 今までの yield-backtest（配当の手法）とは別物で、データも別のキャッシュ（data/wide_cache.pkl）に持つ。
-# 計画と記録はプロジェクトの method_map_2026-11-04 と wide_lab_plan_2026-11-04。
+# 今までの yield-backtest（配当の手法）とは別物で、データも別のキャッシュに持つ。
+# 計画と記録はプロジェクトの method_map_2026-11-04・wide_lab_plan_2026-11-04・wide_lab_plan2_2026-11-04。
 # Actions タブ → 左の wide-lab → 右の「Run workflow」
-#   mode=fetch … 東証全銘柄のデータを集める（全部で2〜4時間。時間切れなら取った分を保存して止まるので、もう一度押すと続きから）
+#   mode=fetch … 東証全銘柄のデータを集める（時間切れなら取った分を保存して止まるので、もう一度押すと続きから）
 #   mode=lab1  … データがそろっていれば、1回目の型（24通り）をまとめて回す
 #   mode=lab2  … 同じく、2回目の型（出来事と暦の7通り）をまとめて回す
+#   years=9  … 探す段階（スタンダードで足りる9年分。data/wide_cache.pkl）
+#   years=20 … 確かめる段階（プレミアムの20年分。data/wide_long.pkl。キャッシュの名前を yield-backtest-long- で始めているので、
+#              プレミアムをやめる前に long-cleanup を1回動かせば、yield-backtest の20年分と一緒に消える）
 on:
   workflow_dispatch:
     inputs:
@@ -19,14 +22,30 @@ on:
           - fetch
           - lab1
           - lab2
+      years:
+        description: "9＝探す段階（9年分） ／ 20＝確かめる段階（プレミアムの20年分）"
+        required: true
+        default: "9"
+        type: choice
+        options:
+          - "9"
+          - "20"
+      only:
+        description: "回す型の記号（カンマ区切り。空欄なら全部）。確かめる段階で候補だけを回すとき。例: BP,E1"
+        required: false
+        default: ""
 
 permissions:
   contents: read
   actions: write        # キャッシュの古い控えを消すため
 
 concurrency:
-  group: wide-lab       # 2つ同時に走ると、キャッシュを取り合うので1つずつ
+  group: wide-lab-${{ inputs.years }}     # 同じ年数どうしは1つずつ（キャッシュを取り合わないように）
   cancel-in-progress: false
+
+env:
+  CACHE_PATH: ${{ inputs.years == '20' && 'data/wide_long.pkl' || 'data/wide_cache.pkl' }}
+  CACHE_PREFIX: ${{ inputs.years == '20' && 'yield-backtest-long-wide-v1-' || 'wide-lab-cache-v1-' }}
 
 jobs:
   run:
@@ -46,20 +65,24 @@ jobs:
       - name: キャッシュを復元
         uses: actions/cache/restore@v4
         with:
-          path: data/wide_cache.pkl
-          key: wide-lab-cache-v1-
+          path: ${{ env.CACHE_PATH }}
+          key: ${{ env.CACHE_PREFIX }}
           restore-keys: |
-            wide-lab-cache-v1-
+            ${{ env.CACHE_PREFIX }}
 
       - name: 実行
         env:
           J_QUANTS_API_KEY: ${{ secrets.J_QUANTS_API_KEY }}
+          WIDE_YEARS: ${{ inputs.years }}
+          PYTHONUNBUFFERED: "1"
         run: |
           set +e
-          python wide_lab.py --mode "${{ inputs.mode }}" > run.log 2>&1
-          code=$?
+          set -o pipefail
+          # 途中の様子が実行の画面で見えるように、画面とファイルの両方に出す
+          python wide_lab.py --mode "${{ inputs.mode }}" --only "${{ inputs.only }}" 2>&1 | tee run.log
+          code=${PIPESTATUS[0]}
           {
-            echo "## wide-lab（${{ inputs.mode }}）"
+            echo "## wide-lab（${{ inputs.mode }}・${{ inputs.years }}年分${{ inputs.only != '' && format('・{0}', inputs.only) || '' }}）"
             echo ""
             if [ $code -eq 3 ]; then echo "**まだ終わっていません。同じ設定のまま、もう一度「Run workflow」を押してください（取った分は保存しました）**"; fi
             if [ $code -ne 0 ] && [ $code -ne 3 ]; then echo "**失敗しました（終了コード $code）**"; fi
@@ -67,15 +90,14 @@ jobs:
             tail -c 40000 run.log
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-          cat run.log
           exit $code
 
       - name: キャッシュを保存
-        if: ${{ always() && hashFiles('data/wide_cache.pkl') != '' }}
+        if: ${{ always() && hashFiles(env.CACHE_PATH) != '' }}
         uses: actions/cache/save@v4
         with:
-          path: data/wide_cache.pkl
-          key: wide-lab-cache-v1-${{ github.run_id }}
+          path: ${{ env.CACHE_PATH }}
+          key: ${{ env.CACHE_PREFIX }}${{ github.run_id }}
 
       # 1回の保存が大きいので、新しい2つだけ残す（GitHub のキャッシュは全部で10GBまで。
       # 超えると、使われていない古いものから消され、yield-backtest の9年分が消えることがある）
@@ -84,7 +106,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          ids=$(gh api "repos/${GITHUB_REPOSITORY}/actions/caches?key=wide-lab-cache-v1-&sort=created_at&direction=desc&per_page=100" \
+          ids=$(gh api "repos/${GITHUB_REPOSITORY}/actions/caches?key=${CACHE_PREFIX}&sort=created_at&direction=desc&per_page=100" \
                 --jq '.actions_caches[2:][] | .id' || true)
           n=0
           for id in $ids; do
@@ -96,6 +118,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: wide-lab-${{ inputs.mode }}-result
+          # 20年分の結果は long-cleanup で消せる名前にする
+          name: ${{ inputs.years == '20' && 'yield-backtest-long-result' || format('wide-lab-{0}-result', inputs.mode) }}
           path: run.log
           if-no-files-found: ignore
