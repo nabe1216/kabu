@@ -1,7 +1,7 @@
 {
   "started_at": "2026-06-28",
   "initial_cash": 10000000,
-  "cash": 245400.0,
+  "cash": 195558.0,
   "holdings": [
     {
       "code": "8801",
@@ -10,10 +10,12 @@
       "qty": 2700,
       "buy_date": "2026-06-28",
       "buy_price": 1451.5,
-      "current_price": 1635.0,
-      "value": 4414500.0,
-      "unrealized_pl": 495450.0,
-      "unrealized_pl_pct": 12.64
+      "current_price": 1737.5,
+      "value": 4691250.0,
+      "unrealized_pl": 772200.0,
+      "unrealized_pl_pct": 19.7,
+      "ref_d": "2026-11-05",
+      "ref_c": 1737.5
     },
     {
       "code": "6902",
@@ -22,10 +24,12 @@
       "qty": 1000,
       "buy_date": "2026-06-28",
       "buy_price": 1879.5,
-      "current_price": 1837.5,
-      "value": 1837500.0,
-      "unrealized_pl": -42000.0,
-      "unrealized_pl_pct": -2.23
+      "current_price": 1926.0,
+      "value": 1926000.0,
+      "unrealized_pl": 46500.0,
+      "unrealized_pl_pct": 2.47,
+      "ref_d": "2026-11-05",
+      "ref_c": 1926.0
     },
     {
       "code": "8439",
@@ -34,22 +38,26 @@
       "qty": 700,
       "buy_date": "2026-06-28",
       "buy_price": 2519.0,
-      "current_price": 2511.0,
-      "value": 1757700.0,
-      "unrealized_pl": -5600.0,
-      "unrealized_pl_pct": -0.32
+      "current_price": 2565.0,
+      "value": 1795500.0,
+      "unrealized_pl": 32200.0,
+      "unrealized_pl_pct": 1.83,
+      "ref_d": "2026-11-05",
+      "ref_c": 2565.0
     },
     {
       "code": "1925",
       "name": "大和ハウス工業",
       "tier": "A",
-      "qty": 400,
+      "qty": 800,
       "buy_date": "2026-07-08",
-      "buy_price": 4594.0,
-      "current_price": 2303.5,
-      "value": 921400.0,
-      "unrealized_pl": -916200.0,
-      "unrealized_pl_pct": -49.86
+      "buy_price": 2297.0,
+      "current_price": 2391.0,
+      "value": 1912800.0,
+      "unrealized_pl": 75200.0,
+      "unrealized_pl_pct": 4.09,
+      "ref_d": "2026-11-05",
+      "ref_c": 2391.0
     },
     {
       "code": "4540",
@@ -58,10 +66,12 @@
       "qty": 100,
       "buy_date": "2026-08-23",
       "buy_price": 3745.0,
-      "current_price": 3808.0,
-      "value": 380800.0,
-      "unrealized_pl": 6300.0,
-      "unrealized_pl_pct": 1.68
+      "current_price": 3889.0,
+      "value": 388900.0,
+      "unrealized_pl": 14400.0,
+      "unrealized_pl_pct": 3.85,
+      "ref_d": "2026-11-05",
+      "ref_c": 3889.0
     },
     {
       "code": "5970",
@@ -70,16 +80,26 @@
       "qty": 100,
       "buy_date": "2026-09-30",
       "buy_price": 2260.0,
-      "current_price": 2097.0,
-      "value": 209700.0,
-      "unrealized_pl": -16300.0,
-      "unrealized_pl_pct": -7.21
+      "current_price": 2179.0,
+      "value": 217900.0,
+      "unrealized_pl": -8100.0,
+      "unrealized_pl_pct": -3.58,
+      "ref_d": "2026-11-05",
+      "ref_c": 2179.0
     }
   ],
-  "total_value": 9959550.0,
+  "total_value": 11127908.0,
   "total_invested": 11861150.0,
   "realized_pl": 52800.0,
-  "dividend_received": 192550,
-  "last_updated": "2026-11-05",
-  "holdings_value": 9521600.0
+  "dividend_received": 153434,
+  "last_updated": "2026-11-06",
+  "holdings_value": 10932350.0,
+  "tax_paid": 49842,
+  "loss_pool": 0.0,
+  "year_div_taxed": {
+    "2026": 192550.0
+  },
+  "dividend_gross": 192550,
+  "engine_version": 2,
+  "last_topup_month": "2026-11"
 }
