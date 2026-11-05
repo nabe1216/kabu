@@ -55,8 +55,14 @@ MIN_MCAP = 1e10          # 時価総額の下限（円）
 STALE_DAYS = 5           # 最後に売買があった日が、月末からこの営業日より前なら、その月は買えない
 NMAX = 20
 KEEPS = (("A", 20), ("B", 60))     # A＝20位より下で売る・B＝60位より下で売る
-SLIP = 0.002             # 片道0.2％
-TAX = 0.20315
+# 費用と税の前提（14段目で足した。S0＝第1部と同じ・S1＝低い費用・S2＝低い費用で税なし。wide_lab_plan14_2026-11-05）
+COSTS = {"S0": (0.002, 0.001, 0.20315), "S1": (0.001, 0.0005, 0.20315), "S2": (0.001, 0.0005, 0.0)}
+COST = (os.environ.get("WIDE_COST", "") or "S0").strip().upper()[:2]
+if COST not in COSTS:
+    COST = "S0"
+SLIP = COSTS[COST][0]    # 株の値段のずれ（片道）。S0 は0.2％
+TAX = COSTS[COST][2]
+TAX_TXT = f"税{TAX * 100:.3f}％".replace("0％", "％") if TAX > 0 else "税なし"
 CAP = 1e7
 N_RAND = 20
 PT_TX = 2.0              # TOPIX（税あり）を上回る幅（年率pt）
@@ -680,6 +686,7 @@ def half_stats(vals: np.ndarray, dates: list) -> dict:
 
 # 1回目の型（wide_lab_plan_2026-11-04 で、結果を見る前に決めたもの）。点数は大きいほど上
 ONLY: set = set()        # 回す型（空なら全部）
+LAST_LAB1: dict = {}     # 直前の1回目の結果（14段目で3回目の SEL を作るため）
 LAB_TITLE, LAB_PLAN = "1回目", "wide_lab_plan_2026-11-04"     # 結果の見出し（3回目・4回目はここを変える）
 
 LAB1 = (("EP", "利益に対する安さ（純利益÷時価総額）"), ("BP", "純資産に対する安さ"), ("SP", "売上に対する安さ"),
@@ -809,11 +816,16 @@ def lab1(store: dict, combos: dict | None = None, extra: dict | None = None) -> 
         r["verdict"] = "保留（データ不足）" if r["low"] >= 3 else ("候補" if (ok_tx and ok_rnd) else ("範囲の中では効く" if ok_rnd else "効かない"))
         res[key] = r
         log(f"  {key} … {r['verdict']}")
+    global LAST_LAB1
+    LAST_LAB1 = res
     report(D, res, RND, ST_TX, TXliq, ev, j0)
     return 0
 
 
 def stage_note() -> None:
+    if COST != "S0":
+        print(f"  ※ 費用と税の前提 {COST}（14段目）：株 片道{SLIP * 100:.1f}％・1306 片道{ETF_SLIP * 100:.2f}％・{TAX_TXT}"
+              + ("（比べる相手の TOPIX も税なし）" if TAX == 0 else "") + "。それ以外の決まりは第1部と同じ")
     if LONG and STAGE == "explore":
         print("  ※ 探す段階（20年分のデータのうち、9年分のキャッシュと同じ期間だけを使う。見ていない期間（2018年7月まで）は使わない）"
               + (f"。回した型：{'・'.join(sorted(ONLY))}" if ONLY else ""))
@@ -831,7 +843,7 @@ def report(D, res, RND, ST_TX, TXliq, ev, j0):
     nu = D["UNI"][:, j0:].sum(axis=0)
     print(f"  範囲 … 東証の全市場の普通株（配当のない株・上場をやめた銘柄も入れる）。売買代金の中央値5,000万円以上・時価総額100億円以上。"
           f"1か月あたり平均 {nu.mean():.0f}銘柄（最少 {nu.min()}・最多 {nu.max()}）")
-    print(f"  決まり … 元本1,000万円・20銘柄・1株単位・月末の終値・片道{SLIP * 100:.1f}％・税20.315％（繰り越しの損あり・配当は受け取るときに）。"
+    print(f"  決まり … 元本1,000万円・20銘柄・1株単位・月末の終値・片道{SLIP * 100:.1f}％・{TAX_TXT}（繰り越しの損あり・配当は受け取るときに）。"
           "売る決まり A＝20位より下で売る・B＝60位より下で売る")
     print(f"  判定 … 両方の期間で、A・B の両方とも ①TOPIX（税あり）を +{PT_TX:.1f}pt 以上 ②でたらめな20銘柄の平均を +{PT_RND:.1f}pt 以上かつ20回のうち{BEAT_MIN}回以上上回る"
           "→ ①②とも「候補」・②だけ「範囲の中では効く」・それ以外「効かない」。点数がある銘柄が範囲の半分未満の月が3か月以上なら保留")
@@ -865,7 +877,7 @@ def report(D, res, RND, ST_TX, TXliq, ev, j0):
 # 1回目の「売る決まり A・B」の代わりに、型ごとに決めた2通り（持つ日数など）の両方で基準を満たしたときだけ通す。
 REACT_TH = 0.05                         # 決算発表の反応（TOPIX との差）の下限
 DY_TH = 0.03                            # 権利付き最終日の前に買う型：予想の配当利回りの下限（直近の通期の年間配当 ÷ 株価）
-ETF_SLIP = 0.001                        # 暦の型（1306 を売り買い）の値段のずれ（片道）
+ETF_SLIP = COSTS[COST][1]               # 暦の型（1306 を売り買い）の値段のずれ（片道）。S0 は0.1％
 EV_MIN_BUYS = 50                        # 前半・後半のどちらかで、実際に買った回数がこれ未満なら保留
 RND_FILL_MIN = 0.8                      # でたらめの比べの買いの回数が、型の買いの回数の8割に満たなければ保留（比べる相手が細すぎる）
 IPO_MIN_N, IPO_MIN_SHARE = 20, 0.9      # 上場直後の株：点数のある銘柄が20以上の月が9割に満たなければ保留
@@ -1479,7 +1491,7 @@ def report2(res, ref_bad, ST_TX, TXliq, ev, yrs, D, j0):
     print("\n【日本株の手法の型・2回目（wide_lab）：出来事と暦・東証全銘柄・実際の運用の形】（基準は結果を見る前に決めたもの。計画はプロジェクトの wide_lab_plan2_2026-11-04）")
     stage_note()
     print(f"  期間 … 比べる期間 {ev[0].date()}〜{ev[-1].date()}（{len(ev)}か月。前半 〜{(SPLIT - pd.Timedelta(days=1)).date()}・後半 {SPLIT.date()}〜）")
-    print(f"  決まり … 元本1,000万円・20銘柄まで・1株単位・終値で売り買い・片道{SLIP * 100:.1f}％（暦の型の 1306 は{ETF_SLIP * 100:.1f}％）・税20.315％（繰り越しの損あり）・"
+    print(f"  決まり … 元本1,000万円・20銘柄まで・1株単位・終値で売り買い・片道{SLIP * 100:.1f}％（暦の型の 1306 は{ETF_SLIP * 100:.2f}％）・{TAX_TXT}（繰り越しの損あり）・"
           "使っていないお金に利息はつけない。買う候補は、その日より前の最後の月末に範囲（1回目と同じ）に入っていた銘柄")
     print(f"  判定 … 型ごとの2通り（A・B）の両方・前半と後半の両方で、①TOPIX（税あり）を +{PT_TX:.1f}pt 以上 ②でたらめ（同じ日に同じ数だけ、でたらめな銘柄を同じ日数持つ。"
           f"暦の型は同じ長さのでたらめな期間）の平均を +{PT_RND:.1f}pt 以上かつ20回のうち{BEAT_MIN}回以上上回る → ①②とも「候補」・②だけ「範囲の中では効く」・それ以外「効かない」。"
@@ -1729,7 +1741,7 @@ def report6(res, ST_TX, TXliq, ev, yrs, has_lim=False):
     print("\n【日本株の手法・6段目（短期売買・テクニカル）（wide_lab）：東証全銘柄・実際の運用の形】（基準は結果を見る前に決めたもの。計画はプロジェクトの wide_lab_plan6_2026-11-04）")
     stage_note()
     print(f"  期間 … 比べる期間 {ev[0].date()}〜{ev[-1].date()}（{len(ev)}か月。前半 〜{(SPLIT - pd.Timedelta(days=1)).date()}・後半 {SPLIT.date()}〜）")
-    print(f"  決まり … 2回目と同じ（元本1,000万円・20銘柄まで・その日の終値で売り買い・片道{SLIP * 100:.1f}％・税20.315％）。T9 は 1306 を売り買い（片道{ETF_SLIP * 100:.1f}％）")
+    print(f"  決まり … 2回目と同じ（元本1,000万円・20銘柄まで・その日の終値で売り買い・片道{SLIP * 100:.1f}％・{TAX_TXT}）。T9 は 1306 を売り買い（片道{ETF_SLIP * 100:.2f}％）")
     if has_lim:
         print("  ストップ高・ストップ安 … ストップ高で引けた日は終値で買えない（その銘柄は買わない）・ストップ安で引けた日は終値で売れない（次の日に売る）。でたらめの比べも同じ（11月5日に追加）")
     print(f"  判定 … 2通り（A・B）の両方・前半と後半の両方で、TOPIX +{PT_TX:.1f}pt・でたらめ（同じ日に同じ数だけ範囲のでたらめな銘柄を同じ日数持つ。T9 は持つ期間の長さをそのままに順番を入れ替える）"
@@ -2783,7 +2795,7 @@ def lab13(store: dict, xs: dict) -> int:
     stage_note()
     print(f"  期間 … 比べる期間 {ev[0].date()}〜{ev[-1].date()}（{len(ev)}か月。前半 〜{(SPLIT - pd.Timedelta(days=1)).date()}・後半 {SPLIT.date()}〜）")
     print(f"  TOPIX（税あり） … {ST_TX['前半']['ann']:.1f} ／ {ST_TX['後半']['ann']:.1f}")
-    print("  時期を見る型 … 1306 を持つか現金にするか（片道0.1％・税）。でたらめは、持つ期間の長さをそのままに順番を入れ替えたもの。合図は前の営業日までのデータで作る")
+    print(f"  時期を見る型 … 1306 を持つか現金にするか（片道{ETF_SLIP * 100:.2f}％・{TAX_TXT}）。でたらめは、持つ期間の長さをそのままに順番を入れ替えたもの。合図は前の営業日までのデータで作る")
     for res in (res_t, res_e):
         for key, r in res.items():
             print(f"     {key:<7}{r['lab']} … {r['verdict']}")
@@ -3797,26 +3809,546 @@ def bd_score(bd: dict, kind: str):
     return fn
 
 
+# ───────────────────────── 15段目：出来事の型の組み立て方の探索 ─────────────────────────
+# 計画は wide_lab_plan15_2026-11-05（結果を見る前に決めたもの）。出来事9つ × 持つ日数（または買う日）6 × 範囲3 × 持つ数3。
+# どの形も、空いている資金はいつも 1306 で持つ（10段目の道具）。でたらめは、同じ日に同じ数だけ、同じ範囲の中から選ぶ
+EV15_HOLDS = (5, 10, 20, 40, 60, 120)          # 持つ日数（DIVUP・PEADP・PEADN・SPLIT・IPO・MALERT・LVH）
+EV15_LEADS = (2, 3, 5, 10, 15, 20)             # E2C：決算発表予定日の何営業日前に買うか（予定日の前の営業日に売る）
+EV15_RLEADS = (5, 10, 20, 30, 40, 60)          # RECS：権利付き最終日の何営業日前に買うか（権利付き最終日に売る）
+EV15_UNIS = (("ALL", None), ("TOP1000", 1000), ("TOP500", 500))
+EV15_NMAX = (10, 20, 40)
+EV15_PICK = 3                                  # 確かめる段階に持っていく数
+
+
+def judge1(x: dict, ST_TX: dict) -> tuple:
+    """1つの形の判定（A・B の組ではない）。両方の期間で TOPIX +2pt・でたらめ +2pt かつ20回のうち18回 → 候補。"""
+    det = {}
+    ok_tx, ok_rn = True, True
+    for h in ("前半", "後半"):
+        a = x["st"][h]["ann"]
+        rnd = [y[h]["ann"] for y in x["rnd"]]
+        d_tx, d_rn = a - ST_TX[h]["ann"], a - float(np.mean(rnd))
+        beat = int(sum(1 for y in rnd if a > y))
+        det[h] = (d_tx, d_rn, beat)
+        ok_tx &= d_tx >= PT_TX
+        ok_rn &= (d_rn >= PT_RND) and (beat >= BEAT_MIN)
+    if min(x["nb"].values()) < EV_MIN_BUYS or x["fill"] < RND_FILL_MIN:
+        return "保留（データ不足）", det
+    return ("候補" if (ok_tx and ok_rn) else ("範囲の中では効く" if ok_rn else "効かない")), det
+
+
+def lab15(store: dict, xs: dict) -> int:
+    """15段目：出来事の型の組み立て方の探索（約470通り）。確かめる段階では --cfg（例 DIVUP/TOP1000/60/20）で選んだ形だけ。"""
+    log("15段目（出来事の型の組み立て方の探索）を回します（指標を作っています）…")
+    sel = set(x.upper() for x in CFG)
+    if LONG and STAGE == "confirm" and not sel:
+        print("\n■ 確かめる段階では、--cfg で回す形（例 DIVUP/TOP1000/60/20）を指定してください。")
+        return 2
+    D = build(store)
+    dates, UNI0, me_idx, cal = D["dates"], D["UNI"], D["me_idx"], D["cal"]
+    T = len(cal)
+    C, CF = D["C"], D["CF"]
+    TPc = D["tp"]["c"].astype(float)
+    j0 = next((j for j, t in enumerate(me_idx) if t >= 252), None)
+    if LONG and STAGE == "confirm":
+        need_x = any(k.split("/")[0] in ("DIVUP", "E2C") for k in sel)
+        if need_x:
+            j0 = next((j for j, t in enumerate(me_idx) if t >= 252 and dates[j] >= CONFIRM_X_FROM), None)
+    t0 = me_idx[j0]
+    ev = dates[j0:]
+    yrs = max((ev[-1] - ev[0]).days / 365.25, 0.5)
+    E = ev_extract(store, D)
+    jm = np.searchsorted(np.array(me_idx), np.arange(T), side="left") - 1
+    TXv, TXliq = topix_taxed(D, j0)
+    ST_TX = half_stats(TXv, ev)
+    codes = D["codes"]
+    ci = {c: i for i, c in enumerate(codes)}
+    traded = np.isfinite(C) & (C > 0)
+    S = len(codes)
+    # ── 出来事を取り出す（範囲は、あとで形ごとに絞る）
+    evs = {}
+    # DIVUP（5段目と同じ取り出し方）
+    divs = {}
+    for r in x_rows(xs, "div"):
+        c = yb.norm_code(r.get("code") or "")
+        if c in ci:
+            divs.setdefault(c, []).append(r)
+    ev_div = []
+    for c, lst in divs.items():
+        i = ci[c]
+        b = store["bars"][c]
+        lst.sort(key=lambda r: (str(r.get("pub") or ""), str(r.get("time") or "")))
+        known, result = {}, {}
+        for r in lst:
+            if str(r.get("stat")) == "3":
+                continue
+            rate = num(r.get("rate"))
+            rec = str(r.get("rec") or "")[:10]
+            term, ifc, frc = str(r.get("term") or ""), str(r.get("if") or ""), str(r.get("fr") or "")
+            if rate is None or len(rec) != 10 or not term:
+                continue
+            v = rate * fac_after(b["fd"], b["ff"], rec)
+            key = (term, ifc)
+            if frc == "1":
+                result[key] = v
+                known[key] = v
+                continue
+            if str(r.get("cs") or "0") not in ("0", "", "None"):
+                continue
+            prev = known.get(key)
+            if prev is None:
+                try:
+                    py = (pd.Period(term, "M") - 12).strftime("%Y-%m")
+                except Exception:
+                    py = None
+                prev = result.get((py, ifc)) if py else None
+            known[key] = v
+            if prev and prev > 0 and v / prev - 1.0 >= 0.10:
+                t_a = int(np.searchsorted(cal, np.datetime64(str(r.get("pub"))[:10]), side="right"))
+                ev_div.append((i, t_a, v / prev - 1.0))
+    if ev_div:
+        evs["DIVUP"] = ev_div
+    # E2C（5段目と同じ。予定日は、買う日より前に公表され、その日にまだ変わっていないものだけ）
+    hist = {}
+    for r in x_rows(xs, "ed"):
+        c = yb.norm_code(r.get("code") or "")
+        pub, sch = str(r.get("pub") or "")[:10], str(r.get("sch") or "")[:10]
+        if c in ci and len(pub) == 10:
+            hist.setdefault((ci[c], str(r.get("fq") or ""), str(r.get("fye") or "")), []).append((pub, sch))
+    sched_recs = []
+    SCHP = np.zeros((S, T + 1), dtype=bool)
+    for (i, _fq, _fye), lst in hist.items():
+        lst.sort()
+        for k, (pub, sch) in enumerate(lst):
+            if len(sch) != 10 or sch <= pub:
+                continue
+            t_s = int(np.searchsorted(cal, np.datetime64(sch), side="left"))
+            if not (0 < t_s < T):
+                continue
+            nxt = lst[k + 1][0] if k + 1 < len(lst) else "9999-12-31"
+            sched_recs.append((i, pub, t_s, nxt))
+            SCHP[i, t_s - 1] = True
+    # 決算発表の反応（2回目の E1 と同じ）
+    react = []
+    for i, t_prev, t_a in E["annc"]:
+        p0 = C[i, t_prev]
+        if not (p0 == p0 and p0 > 0) or not traded[i, t_a]:
+            continue
+        react.append((i, t_prev, t_a, float(C[i, t_a] / p0) - float(TPc[t_a] / TPc[t_prev])))
+    ANNP = np.zeros((S, T + 1), dtype=bool)
+    for i, t_prev, _t_a in E["annc"]:
+        ANNP[i, t_prev] = True
+    # 権利付き最終日（2回目の E3 と同じ）
+    RECM = np.zeros((S, T + 1), dtype=bool)
+    DPSD = np.full((S, T), np.nan, dtype=np.float32)
+    for i, t_c, dps, t_disc in sorted(E["recs"], key=lambda x: (x[0], x[3])):
+        if 0 <= t_c < T:
+            RECM[i, t_c] = True
+        if t_disc + 1 < T:
+            DPSD[i, t_disc + 1:] = dps
+    for t_c, lst in E["divpay"].items():
+        for i, _a in lst:
+            if 0 <= t_c < T:
+                RECM[i, t_c] = True
+    # 上場直後：上場から21営業日たってから最初の月末（その月末に範囲に入っていれば買う）
+    SEG = D["SEG"]
+    ev_ipo = []
+    seen_ipo = set()
+    for t in me_idx:
+        s_ = SEG[:, t]
+        ok = np.nonzero((s_ < T) & (s_ >= 21) & ((t - s_) >= 21))[0]
+        for i in ok:
+            k = (int(i), int(s_[i]))
+            if k not in seen_ipo:
+                seen_ipo.add(k)
+                ev_ipo.append((int(i), int(t)))
+    # 日々公表の対象に入った最初の日・大量保有（13段目と同じ）
+    calD = cal.astype("datetime64[D]")
+
+    def t_after(dstr):
+        return int(np.searchsorted(calD, np.datetime64(str(dstr)[:10]), side="right"))
+    ev_mal = []
+    mal = x_rows(xs, "mal")
+    if mal:
+        seen = {}
+        for r in mal:
+            c = yb.norm_code(r["code"] or "")
+            if c in ci and len(str(r["pub"] or "")) >= 10:
+                seen.setdefault(ci[c], set()).add(t_after(r["pub"]))
+        for i, ts in seen.items():
+            prev = -10 ** 9
+            for t in sorted(ts):
+                if t - prev > 60:
+                    ev_mal.append((i, t))
+                prev = t
+    ev_lvh = []
+    for r in x_rows(xs, "lvh"):
+        c = yb.norm_code(r["code"] or "")
+        if c in ci and str(r["typ"]) == "1" and str(r["doc"]) == "350" and len(str(r["sub"] or "")) >= 10:
+            ev_lvh.append((ci[c], t_after(r["sub"]), r["ratio"] or 0.0))
+    log(f"  出来事 … 増配の予想 {len(ev_div):,}・決算発表予定日 {len(sched_recs):,}・決算の反応 {len(react):,}・株式分割 {len(E['splits']):,}・"
+        f"権利確定日の候補 {len(E['recs']):,}・上場 {len(ev_ipo):,}・日々公表の対象入り {len(ev_mal):,}・大量保有 {len(ev_lvh):,}")
+    LAB = {"DIVUP": "増配の予想の発表の次の営業日に買う", "E2C": "決算発表予定日の前に買う（予定日の前の営業日に売る）",
+           "PEADP": "決算発表の反応が TOPIX より +5％以上の日に買う", "PEADN": "決算発表の反応が TOPIX より −5％以下の日に買う（逆張り）",
+           "SPLIT": "株式分割の効力発生日に買う", "RECS": f"権利付き最終日の前に買う（配当利回り{DY_TH * 100:.0f}％以上・権利付き最終日に売る）",
+           "IPO": "上場から21営業日たってから最初の月末に買う", "MALERT": "日々公表の対象に入った最初の日の次の営業日に買う",
+           "LVH": "大量保有（新しく5％を超えた報告）の次の営業日に買う"}
+    have = {"DIVUP": bool(ev_div), "E2C": bool(sched_recs), "PEADP": bool(react), "PEADN": bool(react), "SPLIT": bool(E["splits"]),
+            "RECS": bool(E["recs"]), "IPO": bool(ev_ipo), "MALERT": bool(ev_mal), "LVH": bool(ev_lvh)}
+    sim_fn = ev_sim_fill
+    res = {}
+    t_start = time.monotonic()
+    for un, topn in EV15_UNIS:
+        UNI = UNI0 & topn_mask(D, topn) if topn else UNI0
+
+        def elig(i, t):
+            return 0 <= t < T and jm[t] >= 0 and bool(UNI[i, jm[t]]) and bool(traded[i, t])
+
+        def pool_all(t):
+            j = jm[t]
+            return np.nonzero(UNI[:, j] & traded[:, t])[0] if j >= 0 else np.zeros(0, dtype=int)
+        ann_pool = {}
+        for i, t_prev, t_a, _re in react:
+            if t_a >= t0 and elig(i, t_a):
+                ann_pool.setdefault(t_a, []).append(i)
+
+        def pool_ann(t):
+            return np.array(ann_pool.get(t, []), dtype=int)
+
+        def pool_nosched(L):
+            def f(t):
+                el = pool_all(t)
+                return el[~SCHP[el, t:t + L + 2].any(axis=1)] if len(el) else el
+            return f
+
+        def pool_rec(L):
+            def f(t):
+                el = pool_all(t)
+                if not len(el):
+                    return el
+                with np.errstate(invalid="ignore", divide="ignore"):
+                    y = DPSD[el, t] / CF[el, t]
+                return el[(y >= DY_TH) & ~RECM[el, t:t + L + 1].any(axis=1)]
+            return f
+
+        def mk(key, p):
+            out = {}
+            if key == "DIVUP":
+                for i, t_a, chg in ev_div:
+                    if t_a >= t0 and elig(i, t_a):
+                        out.setdefault(t_a, []).append((chg, i, t_a + p))
+                return out, pool_all
+            if key == "E2C":
+                rg = np.random.default_rng(1)
+                seen = set()
+                for i, pub, t_s, nxt in sorted(sched_recs, key=lambda x: (x[2], x[0], x[1])):
+                    t_in = t_s - 1 - p
+                    if t_in < t0 or (i, t_s) in seen or not elig(i, t_in):
+                        continue
+                    day = str(cal[t_in])[:10]
+                    if not (pub < day <= nxt):
+                        continue
+                    seen.add((i, t_s))
+                    out.setdefault(t_in, []).append((float(rg.random()), i, t_s - 1))
+                return out, pool_nosched(p)
+            if key in ("PEADP", "PEADN"):
+                for i, _tp, t_a, re in react:
+                    if t_a >= t0 and elig(i, t_a) and ((re >= REACT_TH) if key == "PEADP" else (re <= -REACT_TH)):
+                        out.setdefault(t_a, []).append((abs(re), i, t_a + p))
+                return out, pool_ann
+            if key == "SPLIT":
+                for i, t_s in E["splits"]:
+                    if t_s >= t0 and elig(i, t_s):
+                        out.setdefault(t_s, []).append((0.0, i, t_s + p))
+                return out, pool_all
+            if key == "RECS":
+                for i, t_c, dps, t_disc in E["recs"]:
+                    t_in = t_c - p
+                    if t_in < t0 or t_in <= t_disc or t_c >= T or not elig(i, t_in):
+                        continue
+                    y = dps / float(CF[i, t_in])
+                    if y >= DY_TH:
+                        out.setdefault(t_in, []).append((y, i, t_c))
+                return out, pool_rec(p)
+            if key == "IPO":
+                for i, t in ev_ipo:
+                    if t >= t0 and elig(i, t):
+                        out.setdefault(t, []).append((0.0, i, t + p))
+                return out, pool_all
+            if key == "MALERT":
+                rg = np.random.default_rng(13)
+                for i, t in ev_mal:
+                    if t >= t0 and elig(i, t):
+                        out.setdefault(t, []).append((float(rg.random()), i, t + p))
+                return out, pool_all
+            if key == "LVH":
+                for i, t, ratio in ev_lvh:
+                    if t >= t0 and elig(i, t):
+                        out.setdefault(t, []).append((ratio, i, t + p))
+                return out, pool_all
+            raise KeyError(key)
+        for key in LAB:
+            if not have[key] or (ONLY and key not in ONLY):
+                continue
+            params = EV15_LEADS if key == "E2C" else (EV15_RLEADS if key == "RECS" else EV15_HOLDS)
+            for p in params:
+                todo_n = [n for n in EV15_NMAX if not sel or f"{key}/{un}/{p}/{n}" in sel]
+                if not todo_n:
+                    continue
+                cands, pool_fn = mk(key, p)
+                # でたらめの候補は、持つ数によらず同じものを使う（同じ日・同じ数・同じ範囲）
+                pls = []
+                for k in range(N_RAND):
+                    rg = np.random.default_rng(15000 + k)
+                    pl = {}
+                    for t, cl in cands.items():
+                        pool = pool_fn(t)
+                        if len(pool) == 0:
+                            continue
+                        pick = rg.choice(pool, size=min(len(cl), len(pool)), replace=False)
+                        pl[t] = [(float(rg.random()), int(i), t_out) for i, (_p, _i, t_out) in zip(pick, cl)]
+                    pls.append(pl)
+                for n in todo_n:
+                    v, liq, s_ = sim_fn(cands, D, E["divpay"], t0, nmax=n)
+                    rnd, rnb = [], []
+                    for pl in pls:
+                        pv, _l, ps_ = sim_fn(pl, D, E["divpay"], t0, nmax=n)
+                        rnd.append(half_stats(pv, ev))
+                        rnb.append(ps_["n_buy"])
+                    nb = {"前半": sum(1 for t in s_["buy_t"] if pd.Timestamp(cal[t]) < SPLIT),
+                          "後半": sum(1 for t in s_["buy_t"] if pd.Timestamp(cal[t]) >= SPLIT)}
+                    x = {"st": half_stats(v, ev), "liq": liq, "rnd": rnd, "nb": nb, "fill": float(np.mean(rnb)) / max(1, s_["n_buy"]),
+                         "held": float(np.mean(s_["held"])) if s_["held"] else 0.0, "n_cand": sum(len(c_) for c_ in cands.values()),
+                         "etf": float(np.mean(s_["etf_share"])) if s_.get("etf_share") else 0.0}
+                    x["verdict"], x["detail"] = judge1(x, ST_TX)
+                    res[f"{key}/{un}/{p}/{n}"] = x
+            log(f"  {key}/{un} … 済（ここまで {len(res)}通り・{(time.monotonic() - t_start) / 60:.0f}分）")
+    # ── 報告
+    HH = ("前半", "後半")
+    print("\n【日本株の手法・15段目（出来事の型の組み立て方の探索）（wide_lab）：東証全銘柄】（基準は結果を見る前に決めたもの。計画はプロジェクトの wide_lab_plan15_2026-11-05）")
+    stage_note()
+    print(f"  期間 … 比べる期間 {ev[0].date()}〜{ev[-1].date()}（{len(ev)}か月。前半 〜{(SPLIT - pd.Timedelta(days=1)).date()}・後半 {SPLIT.date()}〜）")
+    print(f"  形 … 記号は「出来事/範囲/持つ日数（E2C・RECS は何日前に買うか）/持つ数」。1銘柄は資産の（持つ数）分の1。空いている資金はいつも 1306（片道{ETF_SLIP * 100:.2f}％）。"
+          "でたらめは同じ日に同じ数だけ、同じ範囲から（20回）。判定は両方の期間で TOPIX +2pt・でたらめ +2pt かつ18回以上")
+    print(f"  TOPIX（税あり） … {ST_TX['前半']['ann']:.1f} ／ {ST_TX['後半']['ann']:.1f}")
+    for key in LAB:
+        ks = [k for k in res if k.startswith(key + "/")]
+        if not ks:
+            print(f"     {key:<7}{LAB[key]} … データがないので回していません")
+            continue
+        cnt = {}
+        for k in ks:
+            cnt[res[k]["verdict"]] = cnt.get(res[k]["verdict"], 0) + 1
+        print(f"     {key:<7}{LAB[key]} … " + "・".join(f"{v} {n}" for v, n in cnt.items()))
+    print("\n  1. すべての形（年率％「前半 ／ 後半」。［TOPIX との差／でたらめとの差・回数］）")
+    for k, x in res.items():
+        dd = " ".join(f"{x['detail'][h][0]:+.1f}/{x['detail'][h][1]:+.1f}・{x['detail'][h][2]}" for h in HH)
+        rn = {h: float(np.mean([y[h]['ann'] for y in x['rnd']])) for h in HH}
+        print(f"     {k:<24}{x['st']['前半']['ann']:6.1f} ／ {x['st']['後半']['ann']:6.1f}［{dd}］ でたらめ {rn['前半']:.1f} ／ {rn['後半']:.1f}"
+              f"・下落 {x['st']['通し']['mdd']:.0f}％・買い {x['nb']['前半']}/{x['nb']['後半']}・持ち {x['held']:.1f}・1306 {x['etf'] * 100:.0f}％ … {x['verdict']}")
+    cand = [k for k, x in res.items() if x["verdict"] == "候補"]
+    near = [k for k, x in res.items() if x["verdict"] == "範囲の中では効く"]
+    print("\n  2. 判定のまとめ")
+    for v in ("候補", "範囲の中では効く", "効かない", "保留（データ不足）"):
+        print(f"     {v} … {sum(1 for x in res.values() if x['verdict'] == v)}通り")
+
+    def worst(k):
+        d = res[k]["detail"]
+        return min(min(d[h][0] - PT_TX, d[h][1] - PT_RND) for h in HH)
+
+    def tx_min(k):
+        d = res[k]["detail"]
+        return min(d[h][0] for h in HH)
+    if not (LONG and STAGE == "confirm"):
+        ok_conf = [k for k in (cand or near) if k.split("/")[0] != "LVH"]       # 大量保有は2021年7月からで、見ていない期間で確かめられない
+        pick = sorted(ok_conf, key=lambda k: -(worst(k) if cand else tx_min(k)))[:EV15_PICK]
+        print(f"  確かめる段階に持っていく形（{'候補' if cand else '準候補：範囲の中では効く形のうち、TOPIX との差の小さいほうが大きい順'}・{EV15_PICK}つまで） … "
+              + ("・".join(pick) if pick else "なし"))
+    else:
+        print("  ※ 確かめる段階：「前半」＝見ていない期間。前半で候補の基準（TOPIX +2pt・でたらめ +2pt かつ18回以上）を満たせば「確立」")
+    print(f"  （TOPIX の清算後の通し {((TXliq / CAP) ** (1 / yrs) - 1) * 100:.1f}％）")
+    return 0
+
+
+
+def run_mode(mode: str, store: dict, args) -> int:
+    """1つの mode を回す（データはそろっている前提で、足りなければ取る）。14段目の lab14 は、これを続けて呼ぶ。"""
+    global LAB_TITLE, LAB_PLAN
+    LAB_TITLE, LAB_PLAN = "1回目", "wide_lab_plan_2026-11-04"
+    if mode == "lab3":
+        LAB_TITLE, LAB_PLAN = "3回目（組み合わせ）", "wide_lab_plan3_2026-11-04"
+    elif mode == "lab4":
+        LAB_TITLE, LAB_PLAN = "4回目（売買の内訳）", "wide_lab_plan4_2026-11-04"
+    elif mode == "lab5":
+        LAB_TITLE, LAB_PLAN = "5段目（残りの型：毎月の点数）", "wide_lab_plan5_2026-11-04"
+    elif mode == "lab12":
+        LAB_TITLE, LAB_PLAN = "12段目（財務の明細の型）", "wide_lab_plan12_2026-11-05"
+    elif mode == "lab13":
+        LAB_TITLE, LAB_PLAN = "13段目（J-Quants の残りのデータ）", "wide_lab_plan13_2026-11-05"
+    if mode == "lab7":
+        return lab7(store)
+    if mode == "lab6":
+        return lab6(store)
+    if mode == "lab9":
+        return lab9(store)
+    if mode == "lab15":
+        xs = x_load()
+        if not (LONG and STAGE == "confirm") and not x_complete(store, xs, ("div", "ed", "mal", "lvh")):
+            print("\n■ 15段目のデータ（配当金情報・決算発表予定日・日々公表・大量保有）がそろっていません。先に lab5 と lab13 を回してください。")
+            return 2
+        return lab15(store, xs)
+    if mode == "lab13":
+        xs = x_load()
+        if not x_complete(store, xs, X13):
+            key = os.environ.get("J_QUANTS_API_KEY")
+            if not key:
+                print("J_QUANTS_API_KEY が設定されていません")
+                return 2
+            if not fetch_x(yb.JQ(key), store, xs, X13):
+                print("\n■ まだ終わっていません（13段目のデータを取っている途中です）。同じ設定のまま、もう一度押してください。")
+                return EXIT_UNFINISHED
+        for n in X13:
+            st = xs.get(n, {})
+            log(f"  {n} … {len(st.get('rows', [])):,}件・取れた日 {len(st.get('done', ()))}日・取れなかった日 {len(st.get('fail', ()))}日"
+                + (f"・取るのをやめた：{st['bad']}" if st.get("bad") else ""))
+        return lab13(store, xs)
+    if mode == "lab12":
+        xs = x_load()
+        if not x_complete(store, xs, ("fsd2",)):
+            key = os.environ.get("J_QUANTS_API_KEY")
+            if not key:
+                print("J_QUANTS_API_KEY が設定されていません")
+                return 2
+            if not fetch_x(yb.JQ(key), store, xs, ("fsd2",)):
+                print("\n■ まだ終わっていません（財務の明細を取っている途中です）。同じ設定のまま、もう一度押してください。")
+                return EXIT_UNFINISHED
+        if xs.get("fsd2", {}).get("bad"):
+            print(f"\n■ 財務の明細が取れませんでした（{xs['fsd2']['bad']}）。12段目は保留です。")
+            return 2
+        log("12段目（財務の明細の型）を回します…")
+        return lab1(store, extra=lab12_scores(store, xs))
+    if mode in ("lab10", "lab11", "xfetch"):
+        xs = x_load()
+        need = ("div", "ed")              # 10・11段目で使うのは、配当金情報と決算発表予定日の履歴だけ
+        if not x_complete(store, xs, need):
+            if mode == "lab10":
+                print("\n■ 5段目のデータ（配当金情報・決算発表予定日）がそろっていません。先に lab5 か xfetch を回してください。")
+                return 2
+            key = os.environ.get("J_QUANTS_API_KEY")
+            if not key:
+                print("J_QUANTS_API_KEY が設定されていません")
+                return 2
+            if not fetch_x(yb.JQ(key), store, xs, need):
+                print("\n■ まだ終わっていません（配当金情報などを取っている途中です）。同じ設定のまま、もう一度押してください。")
+                return EXIT_UNFINISHED
+        if mode == "xfetch":
+            for n in need:
+                st = xs.get(n, {})
+                d = sorted(st.get("done", ()))
+                print(f"  {n} … {len(st.get('rows', [])):,}件・取れた日 {len(d)}日（{d[0] if d else '-'}〜{d[-1] if d else '-'}）・取れなかった日 {len(st.get('fail', ()))}日" + ("・取るのをやめた：" + str(st['bad']) if st.get('bad') else ""))
+            print("\n■ 配当金情報と決算発表予定日の履歴がそろっています（成績は計算していません）。")
+            return 0
+        if mode == "lab11":
+            return lab11(store, xs)
+        lab5_events(store, xs, fill=True)
+        return 0
+    if mode == "lab5":
+        xs = x_load()
+        if not x_complete(store, xs):
+            key = os.environ.get("J_QUANTS_API_KEY")
+            if not key:
+                print("J_QUANTS_API_KEY が設定されていません")
+                return 2
+            if not fetch_x(yb.JQ(key), store, xs):
+                print("\n■ まだ終わっていません（配当金情報などを取っている途中です）。同じ設定のまま、もう一度押してください。")
+                return EXIT_UNFINISHED
+        if not all(k in store.get("mrgn", {}) for k in store["months"]):
+            key = os.environ.get("J_QUANTS_API_KEY")
+            if not key:
+                print("J_QUANTS_API_KEY が設定されていません")
+                return 2
+            if not fetch_margin(yb.JQ(key), store):
+                print("\n■ まだ終わっていません（貸借銘柄を取っている途中です）。もう一度押してください。")
+                return EXIT_UNFINISHED
+        return lab5(store, xs)
+    if mode == "lab8":
+        if not all(k in store.get("mrgn", {}) for k in store["months"]):
+            key = os.environ.get("J_QUANTS_API_KEY")
+            if not key:
+                print("J_QUANTS_API_KEY が設定されていません")
+                return 2
+            if not fetch_margin(yb.JQ(key), store):
+                print("\n■ まだ終わっていません（貸借銘柄を取っている途中です）。もう一度押してください。")
+                return EXIT_UNFINISHED
+        return lab8(store)
+    if mode == "lab4":
+        bd = bd_load()
+        if not bd.get("complete"):
+            key = os.environ.get("J_QUANTS_API_KEY")
+            if not key:
+                print("J_QUANTS_API_KEY が設定されていません")
+                return 2
+            if not fetch_bd(yb.JQ(key), store, bd):
+                print("\n■ まだ終わっていません（売買の内訳を取っている途中です）。同じ設定のまま、もう一度「Run workflow」を押してください。")
+                return EXIT_UNFINISHED
+        log(f"売買の内訳 … {len(bd.get('done', []))}営業日・{len(bd.get('m', {}))}か月")
+        extra = {"SHORT": (bd_score(bd, "SHORT"), "空売りの少ない株（その月の空売り（信用の新規売りを含む）÷ 売り全体の小さい順）"),
+                 "MBUY": (bd_score(bd, "MBUY"), "信用の新規買いの少ない株（その月の信用の新規買い ÷ 買い全体の小さい順）")}
+        return lab1(store, extra=extra)
+    if mode == "lab3":
+        sel = [x.strip().upper() for x in args.combo.split(",") if x.strip()]
+        bad = [k for k in sel if k not in dict(LAB1)]
+        if bad:
+            print(f"\n■ 組み合わせに使えない記号があります：{'・'.join(bad)}")
+            return 2
+        combos = {"VQM": (VQM, "割安・質・勢い（固定）")}
+        if len(sel) >= 2:
+            combos["SEL"] = (tuple(sel), "1回目で効いた型の組み合わせ")
+        return lab1(store, combos)
+    return lab1(store) if mode == "lab1" else lab2(store)
+
+
+LAB14_MODES = ("lab1", "lab3", "lab2", "lab4", "lab5", "lab8", "lab9", "lab10", "lab11", "lab12", "lab13")
+
+
+def lab14(store: dict, args) -> int:
+    """14段目：費用と税の前提（--cost の S1・S2）で、1〜13段目のうち軽い段をまとめて回す（6段目と7段目は別に回す）。
+    3回目の SEL は、第1部と同じ決まりで、この前提での1回目の結果から作る。計画は wide_lab_plan14_2026-11-05。"""
+    log(f"14段目：費用と税の前提 {COST}（株 片道{SLIP * 100:.1f}％・1306 片道{ETF_SLIP * 100:.2f}％・{TAX_TXT}）で、{'・'.join(LAB14_MODES)} を続けて回します")
+    out = {}
+    for m in LAB14_MODES:
+        if elapsed() > float(os.environ.get("LAB14_LIMIT_MIN", "150")):
+            log(f"  ■ 時間が足りないので {m} 以降は回しません")
+            out[m] = "時間切れ"
+            break
+        if m == "lab3":
+            res1 = LAST_LAB1 or {}
+            sel = [k for k, r in res1.items() if r.get("verdict") in ("候補", "範囲の中では効く") and k in dict(LAB1)]
+            args.combo = ",".join(sel)
+            log(f"  3回目の SEL … {'・'.join(sel) if len(sel) >= 2 else 'なし（範囲の中では効く以上が2つ未満）'}")
+        print(f"\n\n======== 14段目（{COST}）：{m} ========")
+        try:
+            rc = run_mode(m, store, args)
+        except Exception as e:          # 1つの段が落ちても、残りは回す
+            import traceback
+            traceback.print_exc()
+            rc = f"失敗（{type(e).__name__}: {str(e)[:120]}）"
+        out[m] = rc
+        log(f"  {m} … 終わり（{rc}・開始から{elapsed():.0f}分）")
+    print(f"\n【14段目（{COST}）でまとめて回した段】 " + "・".join(f"{k}={v}" for k, v in out.items()))
+    return 0 if all(v in (0, None) for v in out.values()) else 1
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab5", "lab6", "lab7", "lab8", "lab9", "lab10", "lab11", "lab12", "lab13", "xfetch"], default="lab1")
+    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab5", "lab6", "lab7", "lab8", "lab9", "lab10", "lab11", "lab12", "lab13", "lab14", "lab15", "xfetch"], default="lab1")
     ap.add_argument("--combo", default="", help="3回目：1回目で「範囲の中では効く」以上だった型の記号（カンマ区切り）。2つ以上なら SEL として回す")
     ap.add_argument("--only", default="", help="回す型の記号（カンマ区切り。空欄なら全部）。確かめる段階で候補だけを回すとき")
     ap.add_argument("--cfg", default="", help="7段目の確かめる段階で回す組み立て（例: VQM/TOP500/20/Q,NXG/TOP500/20/Q）")
     args = ap.parse_args()
-    global ONLY, LAB_TITLE, LAB_PLAN, CFG
+    global ONLY, CFG
     ONLY = {x.strip().upper() for x in args.only.split(",") if x.strip()}
     CFG = [x.strip() for x in args.cfg.split(",") if x.strip()]
-    if args.mode == "lab3":
-        LAB_TITLE, LAB_PLAN = "3回目（組み合わせ）", "wide_lab_plan3_2026-11-04"
-    elif args.mode == "lab4":
-        LAB_TITLE, LAB_PLAN = "4回目（売買の内訳）", "wide_lab_plan4_2026-11-04"
-    elif args.mode == "lab5":
-        LAB_TITLE, LAB_PLAN = "5段目（残りの型：毎月の点数）", "wide_lab_plan5_2026-11-04"
-    elif args.mode == "lab12":
-        LAB_TITLE, LAB_PLAN = "12段目（財務の明細の型）", "wide_lab_plan12_2026-11-05"
-    elif args.mode == "lab13":
-        LAB_TITLE, LAB_PLAN = "13段目（J-Quants の残りのデータ）", "wide_lab_plan13_2026-11-05"
     if LONG:
         yb.LONG_MODE = True          # 株価を「20年前まで」で取る。取れなければプレミアムではないので止まる
         yb.API_SLEEP = float(os.environ.get("LONG_API_SLEEP", "0.25"))    # プレミアムは呼び出しの上限が大きい
@@ -3841,121 +4373,9 @@ def main() -> int:
     if elapsed() > COMPUTE_LIMIT_MIN:
         print("\n■ まだ終わっていません（データは取り終えましたが、計算の時間が残っていません）。もう一度押してください。")
         return EXIT_UNFINISHED
-    if args.mode == "lab7":
-        return lab7(store)
-    if args.mode == "lab6":
-        return lab6(store)
-    if args.mode == "lab9":
-        return lab9(store)
-    if args.mode == "lab13":
-        xs = x_load()
-        if not x_complete(store, xs, X13):
-            key = os.environ.get("J_QUANTS_API_KEY")
-            if not key:
-                print("J_QUANTS_API_KEY が設定されていません")
-                return 2
-            if not fetch_x(yb.JQ(key), store, xs, X13):
-                print("\n■ まだ終わっていません（13段目のデータを取っている途中です）。同じ設定のまま、もう一度押してください。")
-                return EXIT_UNFINISHED
-        for n in X13:
-            st = xs.get(n, {})
-            log(f"  {n} … {len(st.get('rows', [])):,}件・取れた日 {len(st.get('done', ()))}日・取れなかった日 {len(st.get('fail', ()))}日"
-                + (f"・取るのをやめた：{st['bad']}" if st.get("bad") else ""))
-        return lab13(store, xs)
-    if args.mode == "lab12":
-        xs = x_load()
-        if not x_complete(store, xs, ("fsd2",)):
-            key = os.environ.get("J_QUANTS_API_KEY")
-            if not key:
-                print("J_QUANTS_API_KEY が設定されていません")
-                return 2
-            if not fetch_x(yb.JQ(key), store, xs, ("fsd2",)):
-                print("\n■ まだ終わっていません（財務の明細を取っている途中です）。同じ設定のまま、もう一度押してください。")
-                return EXIT_UNFINISHED
-        if xs.get("fsd2", {}).get("bad"):
-            print(f"\n■ 財務の明細が取れませんでした（{xs['fsd2']['bad']}）。12段目は保留です。")
-            return 2
-        log("12段目（財務の明細の型）を回します…")
-        return lab1(store, extra=lab12_scores(store, xs))
-    if args.mode in ("lab10", "lab11", "xfetch"):
-        xs = x_load()
-        need = ("div", "ed")              # 10・11段目で使うのは、配当金情報と決算発表予定日の履歴だけ
-        if not x_complete(store, xs, need):
-            if args.mode == "lab10":
-                print("\n■ 5段目のデータ（配当金情報・決算発表予定日）がそろっていません。先に lab5 か xfetch を回してください。")
-                return 2
-            key = os.environ.get("J_QUANTS_API_KEY")
-            if not key:
-                print("J_QUANTS_API_KEY が設定されていません")
-                return 2
-            if not fetch_x(yb.JQ(key), store, xs, need):
-                print("\n■ まだ終わっていません（配当金情報などを取っている途中です）。同じ設定のまま、もう一度押してください。")
-                return EXIT_UNFINISHED
-        if args.mode == "xfetch":
-            for n in need:
-                st = xs.get(n, {})
-                d = sorted(st.get("done", ()))
-                print(f"  {n} … {len(st.get('rows', [])):,}件・取れた日 {len(d)}日（{d[0] if d else '-'}〜{d[-1] if d else '-'}）・取れなかった日 {len(st.get('fail', ()))}日" + ("・取るのをやめた：" + str(st['bad']) if st.get('bad') else ""))
-            print("\n■ 配当金情報と決算発表予定日の履歴がそろっています（成績は計算していません）。")
-            return 0
-        if args.mode == "lab11":
-            return lab11(store, xs)
-        lab5_events(store, xs, fill=True)
-        return 0
-    if args.mode == "lab5":
-        xs = x_load()
-        if not x_complete(store, xs):
-            key = os.environ.get("J_QUANTS_API_KEY")
-            if not key:
-                print("J_QUANTS_API_KEY が設定されていません")
-                return 2
-            if not fetch_x(yb.JQ(key), store, xs):
-                print("\n■ まだ終わっていません（配当金情報などを取っている途中です）。同じ設定のまま、もう一度押してください。")
-                return EXIT_UNFINISHED
-        if not all(k in store.get("mrgn", {}) for k in store["months"]):
-            key = os.environ.get("J_QUANTS_API_KEY")
-            if not key:
-                print("J_QUANTS_API_KEY が設定されていません")
-                return 2
-            if not fetch_margin(yb.JQ(key), store):
-                print("\n■ まだ終わっていません（貸借銘柄を取っている途中です）。もう一度押してください。")
-                return EXIT_UNFINISHED
-        return lab5(store, xs)
-    if args.mode == "lab8":
-        if not all(k in store.get("mrgn", {}) for k in store["months"]):
-            key = os.environ.get("J_QUANTS_API_KEY")
-            if not key:
-                print("J_QUANTS_API_KEY が設定されていません")
-                return 2
-            if not fetch_margin(yb.JQ(key), store):
-                print("\n■ まだ終わっていません（貸借銘柄を取っている途中です）。もう一度押してください。")
-                return EXIT_UNFINISHED
-        return lab8(store)
-    if args.mode == "lab4":
-        bd = bd_load()
-        if not bd.get("complete"):
-            key = os.environ.get("J_QUANTS_API_KEY")
-            if not key:
-                print("J_QUANTS_API_KEY が設定されていません")
-                return 2
-            if not fetch_bd(yb.JQ(key), store, bd):
-                print("\n■ まだ終わっていません（売買の内訳を取っている途中です）。同じ設定のまま、もう一度「Run workflow」を押してください。")
-                return EXIT_UNFINISHED
-        log(f"売買の内訳 … {len(bd.get('done', []))}営業日・{len(bd.get('m', {}))}か月")
-        extra = {"SHORT": (bd_score(bd, "SHORT"), "空売りの少ない株（その月の空売り（信用の新規売りを含む）÷ 売り全体の小さい順）"),
-                 "MBUY": (bd_score(bd, "MBUY"), "信用の新規買いの少ない株（その月の信用の新規買い ÷ 買い全体の小さい順）")}
-        return lab1(store, extra=extra)
-    if args.mode == "lab3":
-        sel = [x.strip().upper() for x in args.combo.split(",") if x.strip()]
-        bad = [k for k in sel if k not in dict(LAB1)]
-        if bad:
-            print(f"\n■ 組み合わせに使えない記号があります：{'・'.join(bad)}")
-            return 2
-        combos = {"VQM": (VQM, "割安・質・勢い（固定）")}
-        if len(sel) >= 2:
-            combos["SEL"] = (tuple(sel), "1回目で効いた型の組み合わせ")
-        return lab1(store, combos)
-    return lab1(store) if args.mode == "lab1" else lab2(store)
+    if args.mode == "lab14":
+        return lab14(store, args)
+    return run_mode(args.mode, store, args)
 
 
 if __name__ == "__main__":
