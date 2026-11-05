@@ -578,8 +578,32 @@ def limit_masks(store: dict, codes: list, cal: np.ndarray, C: np.ndarray, CF: np
 
 
 # ───────────────────────── 実際の運用の形のエンジン ─────────────────────────
+W_CAP = 0.15             # 16段目：加重するときの1銘柄の上限（資産の15％）
+
+
+def cap_weights(w: np.ndarray, cap: float) -> np.ndarray:
+    """重みを合計1にし、上限を超えた分を、上限に届いていない銘柄に重みの比で配り直す（16段目）。"""
+    w = np.asarray(w, dtype=float)
+    if w.sum() <= 0:
+        return np.full(len(w), 1.0 / max(1, len(w)))
+    w = w / w.sum()
+    if cap * len(w) < 1.0:
+        return np.full(len(w), 1.0 / len(w))
+    for _ in range(50):
+        over = w > cap + 1e-12
+        if not over.any():
+            break
+        ex = float((w[over] - cap).sum())
+        w[over] = cap
+        under = w < cap - 1e-12
+        if not under.any():
+            break
+        w[under] += ex * w[under] / w[under].sum()
+    return w
+
+
 def sim(ranks: list, PXM: np.ndarray, DIV: np.ndarray, j0: int, keep: int, nmax: int = NMAX, cap: float = CAP,
-        slip: float = SLIP, tax: float = TAX):
+        slip: float = SLIP, tax: float = TAX, W: np.ndarray | None = None):
     """月末ごとに、順位の上から買い、keep 位より下になったら売る。1株単位・税（繰り越しの損あり）・配当は受け取るときに税。
     ranks[j] … その月末の順位（銘柄の番号の並び。範囲の中だけ）。返す値：j0 から最後までの月末の評価額、最後に全部売って税を払った額、診断。"""
     cash = float(cap)
@@ -621,6 +645,11 @@ def sim(ranks: list, PXM: np.ndarray, DIV: np.ndarray, j0: int, keep: int, nmax:
                 st["n_sell"] += 1
         value = cash + sum(sh * p_(i, j) for i, (sh, _c) in pos.items())
         tgt = value / nmax
+        wt = None
+        if W is not None:              # 16段目：上位 nmax 銘柄の重み（時価総額・値動きの小ささ）で、新しく買う銘柄の額を決める
+            top = rk[:nmax]
+            raw = np.array([W[i, j] if (W[i, j] == W[i, j] and W[i, j] > 0) else 0.0 for i in top])
+            wt = dict(zip(top, cap_weights(raw, W_CAP))) if len(top) else {}
         for i in rk[:nmax]:
             if len(pos) >= nmax:
                 break
@@ -630,7 +659,7 @@ def sim(ranks: list, PXM: np.ndarray, DIV: np.ndarray, j0: int, keep: int, nmax:
             if not p:
                 continue
             px = p * (1.0 + slip)
-            sh = int(min(tgt, cash) / px)
+            sh = int(min(tgt if wt is None else value * wt.get(i, 0.0), cash) / px)
             if sh < 1:
                 continue
             cash -= sh * px
@@ -687,6 +716,7 @@ def half_stats(vals: np.ndarray, dates: list) -> dict:
 # 1回目の型（wide_lab_plan_2026-11-04 で、結果を見る前に決めたもの）。点数は大きいほど上
 ONLY: set = set()        # 回す型（空なら全部）
 LAST_LAB1: dict = {}     # 直前の1回目の結果（14段目で3回目の SEL を作るため）
+LAB_NOTE = ""             # 報告の「決まり」の下に書き足す注（16段目の範囲と加重など）
 LAB_TITLE, LAB_PLAN = "1回目", "wide_lab_plan_2026-11-04"     # 結果の見出し（3回目・4回目はここを変える）
 
 LAB1 = (("EP", "利益に対する安さ（純利益÷時価総額）"), ("BP", "純資産に対する安さ"), ("SP", "売上に対する安さ"),
@@ -725,11 +755,14 @@ def combo_score(F: dict, keys: list, uni: np.ndarray) -> np.ndarray:
 VQM = ("BP", "ROE", "MOM12")      # 割安・質・勢いの古典的な組み合わせ（結果を見ずに決めた固定の組み合わせ）
 
 
-def lab1(store: dict, combos: dict | None = None, extra: dict | None = None) -> int:
+def lab1(store: dict, combos: dict | None = None, extra: dict | None = None, uni_fn=None, w_fn=None) -> int:
     log("1回目の型をまとめて回します（指標を作っています）…" if not (combos or extra) else
         ("3回目（組み合わせ）を回します（指標を作っています）…" if combos else "4回目（売買の内訳）を回します（指標を作っています）…"))
     D = build(store)
     dates, UNI, F, PXM, DIV = D["dates"], D["UNI"], D["F"], D["PXM"], D["DIV"]
+    if uni_fn is not None:           # 16段目：範囲を絞る（上位500社など）
+        UNI = UNI & uni_fn(D)
+    WM = w_fn(D) if w_fn is not None else None      # 16段目：加重（なければ同じ額ずつ）
     items = LAB1
     if extra:
         items = []
@@ -761,7 +794,7 @@ def lab1(store: dict, combos: dict | None = None, extra: dict | None = None) -> 
                 sc_r = np.repeat(rng.random(UNI.shape[0])[:, None], M, axis=1)
                 rk_r = ranks_from(sc_r, UNI)
                 for nm, kp in KEEPS:
-                    v, _l, _s = sim(rk_r, PXM, DIV, jx, kp)
+                    v, _l, _s = sim(rk_r, PXM, DIV, jx, kp, W=WM)
                     rnd[nm].append(half_stats(v, evx))
             base[jx] = (evx, half_stats(tv, evx), tl, rnd)
         return base[jx]
@@ -788,16 +821,16 @@ def lab1(store: dict, combos: dict | None = None, extra: dict | None = None) -> 
              "yrs": max((evf[-1] - evf[0]).days / 365.25, 0.5), "tx": tx_f, "txliq": txliq_f}
         rk = ranks_from(sc, UNI)
         for nm, kp in KEEPS:
-            v, liq, s_ = sim(rk, PXM, DIV, jf, kp)
+            v, liq, s_ = sim(rk, PXM, DIV, jf, kp, W=WM)
             r[nm] = half_stats(v, evf)
             r[nm + "_liq"] = liq
             r[nm + "_st"] = s_
         rk_low = ranks_from(-sc, UNI)
-        v, _l, _s = sim(rk_low, PXM, DIV, jf, 20)
+        v, _l, _s = sim(rk_low, PXM, DIV, jf, 20, W=WM)
         r["low20"] = half_stats(v, evf)
         r["bk"] = {}
         for bn, bm in buckets.items():
-            v, _l, _s = sim(ranks_from(sc, UNI & bm), PXM, DIV, jf, 20)
+            v, _l, _s = sim(ranks_from(sc, UNI & bm), PXM, DIV, jf, 20, W=WM)
             r["bk"][bn] = half_stats(v, evf)
         # 判定
         ok_tx, ok_rnd = True, True
@@ -845,6 +878,8 @@ def report(D, res, RND, ST_TX, TXliq, ev, j0):
           f"1か月あたり平均 {nu.mean():.0f}銘柄（最少 {nu.min()}・最多 {nu.max()}）")
     print(f"  決まり … 元本1,000万円・20銘柄・1株単位・月末の終値・片道{SLIP * 100:.1f}％・{TAX_TXT}（繰り越しの損あり・配当は受け取るときに）。"
           "売る決まり A＝20位より下で売る・B＝60位より下で売る")
+    if LAB_NOTE:
+        print(f"  ※ {LAB_NOTE}")
     print(f"  判定 … 両方の期間で、A・B の両方とも ①TOPIX（税あり）を +{PT_TX:.1f}pt 以上 ②でたらめな20銘柄の平均を +{PT_RND:.1f}pt 以上かつ20回のうち{BEAT_MIN}回以上上回る"
           "→ ①②とも「候補」・②だけ「範囲の中では効く」・それ以外「効かない」。点数がある銘柄が範囲の半分未満の月が3か月以上なら保留")
     rA = {h: np.mean([x[h]["ann"] for x in RND["A"]]) for h in HH + ("通し",)}
@@ -1786,7 +1821,10 @@ X_SETS = {"div": ("/v2/fins/dividend", "2013-02-20", "date", "D"),              
           "opt": ("/v2/derivatives/bars/daily/options", "2008-05-07", "date", "D"),        # オプション（プレミアムだけ。商品ごとに集計）
           "msh": ("/v2/edinet/major-shareholders", "2016-06-01", "date", "D"),      # 大株主（提出日ごと）
           "xsh": ("/v2/edinet/cross-shareholdings", "2020-03-31", "date", "D"),     # 政策保有株式（提出日ごと）
-          "lvh": ("/v2/edinet/large-volume-shareholders", "2021-07-01", "date", "D")}      # 大量保有報告書（提出日ごと）
+          "lvh": ("/v2/edinet/large-volume-shareholders", "2021-07-01", "date", "D"),      # 大量保有報告書（提出日ごと）
+          # 18段目：個別株オプション（全オプションから、原資産ごとに集計し直す。月ごとのファイルで取る）
+          "optu": ("/v2/derivatives/bars/daily/options", "2008-05-07", "date", "D")}
+X_EXTRA_SETS = {"optu"}          # 名前を指定したときだけ取る（それまでの段の「そろっているか」の確かめには入れない）
 X_FIELDS = {"div": {"pub": ("PubDate",), "time": ("PubTime",), "code": ("Code",), "stat": ("StatCode",), "if": ("IFCode",),
                     "fr": ("FRCode",), "term": ("IFTerm",), "rate": ("DivRate",), "cs": ("CommSpecCode",), "rec": ("RecDate",)},
             "ssr": {"disc": ("DiscDate",), "calc": ("CalcDate",), "code": ("Code",), "seller": ("SSName",),
@@ -1803,7 +1841,8 @@ X_FIELDS = {"div": {"pub": ("PubDate",), "time": ("PubTime",), "code": ("Code",)
             "opt": {"date": (), "prod": (), "pvo": (), "cvo": ()},
             "msh": {"sub": (), "code": (), "doc": (), "trust": (), "top": ()},
             "xsh": {"sub": (), "code": (), "per": (), "book": (), "dec": (), "inc": (), "iss": ()},
-            "lvh": {"sub": (), "code": (), "doc": (), "typ": (), "ratio": (), "last": ()}}
+            "lvh": {"sub": (), "code": (), "doc": (), "typ": (), "ratio": (), "last": ()},
+            "optu": {"date": (), "und": (), "n": (), "pv": (), "cv": (), "iv": ()}}
 X_OPTIONAL = {("ssr", "dic"), ("ssr", "fund"), ("div", "time"), ("ed", "fye"), ("mi", "iss"), ("fsd2", "time"), ("fsd2", "doc")}
 FS_KEEP_WORDS = ("gross", "assets", "liabilities", "loans", "bonds", "borrowings", "debt", "sales", "revenue")
 
@@ -1951,7 +1990,38 @@ def _red_lvh(rows, d):
              num(r.get("TotalShsRatioLast"))) for r in rows]
 
 
-X_REDUCE = {"inv": _red_inv, "srt": _red_srt, "mal": _red_mal, "o225": _red_o225, "fut": _red_fut, "opt": _red_opt,
+def _red_optu(rows, d):
+    """個別株オプション（商品区分 EQOP）を、原資産ごとに：出来高のある銘柄の数・プットとコールの出来高・いちばん近い限月の IV の中央値。"""
+    g = {}
+    for r in _not_emg(rows):
+        if str(r.get("ProdCat") or "") != "EQOP":
+            continue
+        u = str(r.get("UndSSO") or "")
+        if not u:
+            continue
+        a = g.setdefault(u, {"n": 0, "pv": 0.0, "cv": 0.0, "iv": {}})
+        vo = num(r.get("Vo")) or 0.0
+        if vo > 0:
+            a["n"] += 1
+        pc = _bulk_norm_code(r.get("PCDiv"))
+        if pc == "1":
+            a["pv"] += vo
+        elif pc == "2":
+            a["cv"] += vo
+        iv = num(r.get("IV"))
+        if iv is not None and iv > 0:
+            a["iv"].setdefault(str(r.get("CM") or ""), []).append(iv)
+    out = []
+    for u, a in g.items():
+        ivm = None
+        if a["iv"]:
+            cm = sorted(a["iv"])[0]
+            ivm = float(np.median(a["iv"][cm]))
+        out.append((d, u, a["n"], a["pv"], a["cv"], ivm))
+    return out
+
+
+X_REDUCE = {"optu": _red_optu, "inv": _red_inv, "srt": _red_srt, "mal": _red_mal, "o225": _red_o225, "fut": _red_fut, "opt": _red_opt,
             "msh": _red_msh, "xsh": _red_xsh, "lvh": _red_lvh}
 X13 = ("inv", "srt", "mal", "o225", "fut", "opt", "msh", "xsh", "lvh")
 
@@ -1997,7 +2067,7 @@ def x_days(store: dict, name: str) -> list:
 
 
 def x_complete(store: dict, xs: dict, names=None) -> bool:
-    for n in (names or X_SETS):
+    for n in (names or [k for k in X_SETS if k not in X_EXTRA_SETS]):
         st = xs.get(n, {})
         if st.get("bad"):
             continue
@@ -2008,7 +2078,8 @@ def x_complete(store: dict, xs: dict, names=None) -> bool:
 
 # 日ごとに取ると時間がかかりすぎるデータは、月ごとのファイル（/v2/bulk。中身は API と同じ日ごとの四本値）でまとめて取る。
 # ファイルがない月（いまの月など）や、ファイルの形が思ったものと違うときは、これまでどおり日ごとに取る
-X_BULK = {"opt": ("/derivatives/bars/daily/options", ("Date", "ProdCat", "PCDiv", "Vo", "EmMrgnTrgDiv"))}
+X_BULK = {"opt": ("/derivatives/bars/daily/options", ("Date", "ProdCat", "PCDiv", "Vo", "EmMrgnTrgDiv")),
+          "optu": ("/derivatives/bars/daily/options", ("Date", "ProdCat", "UndSSO", "PCDiv", "Vo", "IV", "CM", "EmMrgnTrgDiv"))}
 
 
 def _bulk_norm_date(s: str) -> str:
@@ -2126,6 +2197,8 @@ def fetch_x(jq, store: dict, xs: dict, names=None) -> bool:
     last = time.monotonic()
     for name, (path, _start, prm, _kind) in X_SETS.items():
         if names and name not in names:
+            continue
+        if not names and name in X_EXTRA_SETS:
             continue
         st = xs.setdefault(name, {"done": set(), "fail": set(), "rows": [], "keys": None})
         st.setdefault("fail", set())
@@ -3182,12 +3255,17 @@ def ml_scores(F: dict, keys: list, UNI: np.ndarray, PXM: np.ndarray, DIV: np.nda
     return ML1, ML2, W1, W2, ic
 
 
-def lab9(store: dict) -> int:
-    log("9段目（多くの型をまとめて学ばせる）を回します（指標を作っています）…")
+def lab9(store: dict, extra: dict | None = None) -> int:
+    log("9段目（多くの型をまとめて学ばせる）を回します（指標を作っています）…" if not extra else "19段目（すべての点数でまとめて学ばせる）を回します（指標を作っています）…")
     D = build(store)
     dates, UNI, F, PXM, DIV = D["dates"], D["UNI"], D["F"], D["PXM"], D["DIV"]
     M = len(dates)
     keys = [k for k, _ in LAB1]
+    for nm, (fn, _lab) in (extra or {}).items():       # 19段目：第1部・第2部の毎月の点数をすべて足す
+        if nm not in F:
+            F[nm] = fn(D)
+        if nm not in keys:
+            keys.append(nm)
     ML1, ML2, W1, W2, ic = ml_scores(F, keys, UNI, PXM, DIV)
     F["ML1"], F["ML2"] = ML1, ML2
     jstart = next((j for j in range(M) if W1[j] is not None), None)
@@ -3242,7 +3320,8 @@ def lab9(store: dict) -> int:
             log(f"  {key}／{un}／{n}銘柄／{fn} … {r['verdict']}")
     # 報告
     HH = ("前半", "後半")
-    print("\n【日本株の手法・9段目（多くの型をまとめて学ばせる）（wide_lab）：東証全銘柄】（基準は結果を見る前に決めたもの。計画はプロジェクトの wide_lab_plan9_2026-11-04）")
+    print("\n【日本株の手法・9段目（多くの型をまとめて学ばせる）（wide_lab）：東証全銘柄】（基準は結果を見る前に決めたもの。計画はプロジェクトの wide_lab_plan9_2026-11-04）" if not extra else
+          f"\n【日本株の手法・19段目（すべての点数でまとめて学ばせる：{len(keys)}の型）（wide_lab）：東証全銘柄】（基準は結果を見る前に決めたもの。計画はプロジェクトの wide_lab_plan19_2026-11-05）")
     stage_note()
     print(f"  期間 … 比べる期間 {ev[0].date()}〜{ev[-1].date()}（{len(ev)}か月。前半 〜{(SPLIT - pd.Timedelta(days=1)).date()}・後半 {SPLIT.date()}〜）。"
           f"重みは、その月末までの{ML_WIN}か月（{ML_MIN}か月未満なら点数なし）だけで決める")
@@ -3837,9 +3916,10 @@ def judge1(x: dict, ST_TX: dict) -> tuple:
     return ("候補" if (ok_tx and ok_rn) else ("範囲の中では効く" if ok_rn else "効かない")), det
 
 
-def lab15(store: dict, xs: dict) -> int:
-    """15段目：出来事の型の組み立て方の探索（約470通り）。確かめる段階では --cfg（例 DIVUP/TOP1000/60/20）で選んだ形だけ。"""
-    log("15段目（出来事の型の組み立て方の探索）を回します（指標を作っています）…")
+def lab15(store: dict, xs: dict, combo: bool = False) -> int:
+    """15段目：出来事の型の組み立て方の探索（約470通り）。確かめる段階では --cfg（例 DIVUP/TOP1000/60/20）で選んだ形だけ。
+    combo=True なら19段目の出来事の組み合わせ（DIVE2C・DIVBP。全銘柄・20銘柄・A と B の組で判定）。"""
+    log("15段目（出来事の型の組み立て方の探索）を回します（指標を作っています）…" if not combo else "19段目（出来事の組み合わせ）を回します（指標を作っています）…")
     sel = set(x.upper() for x in CFG)
     if LONG and STAGE == "confirm" and not sel:
         print("\n■ 確かめる段階では、--cfg で回す形（例 DIVUP/TOP1000/60/20）を指定してください。")
@@ -3995,10 +4075,17 @@ def lab15(store: dict, xs: dict) -> int:
            "LVH": "大量保有（新しく5％を超えた報告）の次の営業日に買う"}
     have = {"DIVUP": bool(ev_div), "E2C": bool(sched_recs), "PEADP": bool(react), "PEADN": bool(react), "SPLIT": bool(E["splits"]),
             "RECS": bool(E["recs"]), "IPO": bool(ev_ipo), "MALERT": bool(ev_mal), "LVH": bool(ev_lvh)}
+    unis, nmaxs = EV15_UNIS, EV15_NMAX
+    if combo:
+        LAB = {"DIVE2C": "増配の予想の発表 ＋ 決算発表予定日の前（両方の合図。同じ日は増配を先に）",
+               "DIVBP": "増配の予想の発表のうち、純資産に対して安い上位半分（前の月末の範囲の中）だけ"}
+        have = {"DIVE2C": bool(ev_div) and bool(sched_recs), "DIVBP": bool(ev_div)}
+        unis, nmaxs = (("ALL", None),), (NMAX,)
+    BPM = D["F"]["BP"]
     sim_fn = ev_sim_fill
     res = {}
     t_start = time.monotonic()
-    for un, topn in EV15_UNIS:
+    for un, topn in unis:
         UNI = UNI0 & topn_mask(D, topn) if topn else UNI0
 
         def elig(i, t):
@@ -4086,13 +4173,41 @@ def lab15(store: dict, xs: dict) -> int:
                     if t >= t0 and elig(i, t):
                         out.setdefault(t, []).append((ratio, i, t + p))
                 return out, pool_all
+            if key == "DIVE2C":                     # p＝"A"（増配 60日・決算予定日の10日前）／"B"（20日・5日前）
+                hd, ld = (60, 10) if p == "A" else (20, 5)
+                c1, _pf = mk("DIVUP", hd)
+                c2, _pf = mk("E2C", ld)
+                for t, cl in c1.items():
+                    out.setdefault(t, []).extend((1.0 + pr, i, to) for pr, i, to in cl)
+                for t, cl in c2.items():
+                    out.setdefault(t, []).extend(cl)
+                return out, pool_all
+            if key == "DIVBP":                      # p＝"A"（60日持つ）／"B"（20日持つ）
+                hd = 60 if p == "A" else 20
+                cheap = {}
+
+                def is_cheap(i, t):
+                    j = jm[t]
+                    if j not in cheap:
+                        ok = UNI[:, j] & np.isfinite(BPM[:, j])
+                        thr = float(np.median(BPM[ok, j])) if ok.sum() >= 30 else np.inf
+                        cheap[j] = ok & (BPM[:, j] >= thr)
+                    return bool(cheap[j][i])
+                for i, t_a, chg in ev_div:
+                    if t_a >= t0 and elig(i, t_a) and is_cheap(i, t_a):
+                        out.setdefault(t_a, []).append((chg, i, t_a + hd))
+
+                def pool_cheap(t):
+                    el = pool_all(t)
+                    return np.array([i for i in el if is_cheap(int(i), t)], dtype=int)
+                return out, pool_cheap
             raise KeyError(key)
         for key in LAB:
             if not have[key] or (ONLY and key not in ONLY):
                 continue
-            params = EV15_LEADS if key == "E2C" else (EV15_RLEADS if key == "RECS" else EV15_HOLDS)
+            params = ("A", "B") if combo else (EV15_LEADS if key == "E2C" else (EV15_RLEADS if key == "RECS" else EV15_HOLDS))
             for p in params:
-                todo_n = [n for n in EV15_NMAX if not sel or f"{key}/{un}/{p}/{n}" in sel]
+                todo_n = [n for n in nmaxs if not sel or f"{key}/{un}/{p}/{n}" in sel]
                 if not todo_n:
                     continue
                 cands, pool_fn = mk(key, p)
@@ -4123,6 +4238,32 @@ def lab15(store: dict, xs: dict) -> int:
                     x["verdict"], x["detail"] = judge1(x, ST_TX)
                     res[f"{key}/{un}/{p}/{n}"] = x
             log(f"  {key}/{un} … 済（ここまで {len(res)}通り・{(time.monotonic() - t_start) / 60:.0f}分）")
+    if combo:
+        HH = ("前半", "後半")
+        print("\n【日本株の手法・19段目（出来事の組み合わせ）（wide_lab）：東証全銘柄】（基準は結果を見る前に決めたもの。計画はプロジェクトの wide_lab_plan19_2026-11-05）")
+        stage_note()
+        print(f"  期間 … 比べる期間 {ev[0].date()}〜{ev[-1].date()}（{len(ev)}か月）。形は15段目と同じ（20銘柄・空いている資金は 1306）。A と B の両方で基準を満たせば候補")
+        print(f"  TOPIX（税あり） … {ST_TX['前半']['ann']:.1f} ／ {ST_TX['後半']['ann']:.1f}")
+        out_v = {}
+        for key in LAB:
+            xa, xb = res.get(f"{key}/ALL/A/{NMAX}"), res.get(f"{key}/ALL/B/{NMAX}")
+            if not xa or not xb:
+                continue
+            hold = any(x["verdict"].startswith("保留") for x in (xa, xb))
+            ok_tx = all(x["detail"][h][0] >= PT_TX for x in (xa, xb) for h in HH)
+            ok_rn = all(x["detail"][h][1] >= PT_RND and x["detail"][h][2] >= BEAT_MIN for x in (xa, xb) for h in HH)
+            v = "保留（データ不足）" if hold else ("候補" if (ok_tx and ok_rn) else ("範囲の中では効く" if ok_rn else "効かない"))
+            out_v[key] = v
+            print(f"     {key:<7}{LAB[key]} … {v}")
+            for nm, x in (("A", xa), ("B", xb)):
+                dd = " ".join(f"{x['detail'][h][0]:+.1f}/{x['detail'][h][1]:+.1f}・{x['detail'][h][2]}回" for h in HH)
+                rn = {h: float(np.mean([y[h]['ann'] for y in x['rnd']])) for h in HH}
+                print(f"         {nm} {x['st']['前半']['ann']:6.1f} ／ {x['st']['後半']['ann']:6.1f}（最大下落 {x['st']['通し']['mdd']:.0f}％）［{dd}］ でたらめ {rn['前半']:.1f} ／ {rn['後半']:.1f}"
+                      f"・合図 {x['n_cand']:,}回・買い {x['nb']['前半']}/{x['nb']['後半']}・持ち {x['held']:.1f}・1306 {x['etf'] * 100:.0f}％")
+        for v in ("候補", "範囲の中では効く", "効かない", "保留（データ不足）"):
+            ks = [k for k, vv in out_v.items() if vv == v]
+            print(f"     {v} … " + ("・".join(ks) if ks else "なし"))
+        return 0
     # ── 報告
     HH = ("前半", "後半")
     print("\n【日本株の手法・15段目（出来事の型の組み立て方の探索）（wide_lab）：東証全銘柄】（基準は結果を見る前に決めたもの。計画はプロジェクトの wide_lab_plan15_2026-11-05）")
@@ -4171,6 +4312,556 @@ def lab15(store: dict, xs: dict) -> int:
 
 
 
+# ───────────────────────── 16〜19段目（第2部。計画は wide_program2_2026-11-05 と各段の plan） ─────────────────────────
+def msh_score(xs: dict):
+    """13段目の MSH と同じ（大株主の信託口の比率の合計が、前の報告より増えた幅）。"""
+    by = {}
+    for r in x_rows(xs, "msh"):
+        c = yb.norm_code(r["code"] or "")
+        if len(str(r["sub"] or "")) >= 10:
+            by.setdefault(c, []).append((str(r["sub"])[:10], r["trust"]))
+    for c in by:
+        by[c].sort()
+
+    def fn(DD):
+        out = np.full((len(DD["codes"]), len(DD["dates"])), np.nan)
+        me = [d.strftime("%Y-%m-%d") for d in DD["dates"]]
+        for i, c in enumerate(DD["codes"]):
+            lst = by.get(c)
+            if not lst or len(lst) < 2:
+                continue
+            subs = [x[0] for x in lst]
+            for j, m in enumerate(me):
+                k = int(np.searchsorted(subs, m, side="left")) - 1
+                if k >= 1:
+                    out[i, j] = lst[k][1] - lst[k - 1][1]
+        return out + np.random.default_rng(1305).random(len(DD["codes"]))[:, None] * 1e-9
+    return fn
+
+
+def xsh_score(xs: dict):
+    """13段目の XSH と同じ（持ち合い株を減らして売った額 ÷ 時価総額。比べ始めるのは2021年7月末から）。"""
+    byx = {}
+    for r in x_rows(xs, "xsh"):
+        c = yb.norm_code(r["code"] or "")
+        if len(str(r["sub"] or "")) >= 10:
+            byx.setdefault(c, []).append((str(r["sub"])[:10], r))
+    for c in byx:
+        byx[c].sort(key=lambda x: x[0])
+
+    def fn(DD):
+        out = np.full((len(DD["codes"]), len(DD["dates"])), np.nan)
+        me = [d.strftime("%Y-%m-%d") for d in DD["dates"]]
+        MC = DD["MCAP"]
+        for i, c in enumerate(DD["codes"]):
+            lst = byx.get(c)
+            if not lst:
+                continue
+            subs = [x[0] for x in lst]
+            for j, m in enumerate(me):
+                k = int(np.searchsorted(subs, m, side="left")) - 1
+                if k < 0 or not (MC[i, j] > 0):
+                    continue
+                if (pd.Timestamp(m) - pd.Timestamp(subs[k])).days > 450:
+                    continue
+                r = lst[k][1]
+                dec = r["dec"] if r["dec"] is not None else 0.0
+                out[i, j] = dec / MC[i, j]
+        START_T["XSH"] = int(np.searchsorted(DD["cal"].astype("datetime64[D]"), np.datetime64("2021-07-30"), side="left"))
+        return out + np.random.default_rng(1306).random(len(DD["codes"]))[:, None] * 1e-12
+    return fn
+
+
+def monthly_extra_all(store: dict, xs: dict, bd: dict | None) -> dict:
+    """第1部の毎月の点数の型をすべて（1回目24・VQM・4回目2・5段目5・12段目3・13段目2）。16段目と19段目で使う。"""
+    ex = {}
+    for k, lab in LAB1:
+        ex[k] = ((lambda D, k=k: D["F"][k]), lab)
+    ex["VQM"] = ((lambda D: combo_score(D["F"], list(VQM), D["UNI"])), "割安・質・勢い（BP・ROE・MOM12 の順位の平均）")
+    if bd and bd.get("complete"):
+        ex["SHORT"] = (bd_score(bd, "SHORT"), "空売りの少ない株")
+        ex["MBUY"] = (bd_score(bd, "MBUY"), "信用の新規買いの少ない株")
+    ex["ACCR"] = (accr_score(store), "利益の質")
+    ex["SECT"] = (sect_score, "業種の勢い")
+    if not xs.get("ssr", {}).get("bad"):
+        ex["SSR"] = (ssr_score(xs), "大口の空売りの報告がない株")
+    if not xs.get("mi", {}).get("bad"):
+        ex["MLONG"] = (mi_score(store, xs, "MLONG"), "信用買い残の軽さ")
+        ex["MBAL"] = (mi_score(store, xs, "MBAL"), "信用の売り残の多さ")
+    if x_rows(xs, "fsd2"):
+        ex.update(lab12_scores(store, xs))
+    if x_rows(xs, "msh"):
+        ex["MSH"] = (msh_score(xs), "信託口の比率が増えた幅")
+    if x_rows(xs, "xsh"):
+        ex["XSH"] = (xsh_score(xs), "持ち合い株を売った額 ÷ 時価総額")
+    return ex
+
+
+W16 = (("CAP", "時価総額で加重"), ("VOL", "値動きの小ささで加重（過去1年の日々の値動きの逆数）"))
+U16 = (("ALL", None, "全銘柄"), ("TOP500", 500, "時価総額の上位500社"))
+
+
+def w16(kind: str):
+    def fn(D):
+        if kind == "CAP":
+            return D["MCAP"].astype(float)
+        lv = D["F"]["LOWVOL"]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            return np.where(np.isfinite(lv) & (lv < 0), 1.0 / (-lv), np.nan)
+    return fn
+
+
+def lab16(store: dict, xs: dict, bd: dict | None) -> int:
+    """16段目：加重の仕方（計画は wide_lab_plan16_2026-11-05）。毎月の点数の型37 × 加重2 × 範囲2。"""
+    global LAB_TITLE, LAB_PLAN, LAB_NOTE
+    ex = monthly_extra_all(store, xs, bd)
+    log(f"16段目（加重の仕方）を回します：型 {len(ex)}つ（{'・'.join(ex)}）")
+    sel = {x.upper() for x in CFG}
+    allres = {}
+    for un, n, ulab in U16:
+        for wk, wlab in W16:
+            if sel and not any(c.startswith(f"{wk}/{un}") for c in sel):
+                continue
+            LAB_TITLE, LAB_PLAN = f"16段目（{wlab}・{ulab}）", "wide_lab_plan16_2026-11-05"
+            LAB_NOTE = f"16段目：新しく買う銘柄の額を、上位20銘柄の中の重み（{wlab}。1銘柄は資産の{W_CAP * 100:.0f}％まで）で決める。範囲は{ulab}。でたらめも同じ加重・同じ範囲"
+            exs = ex
+            if sel:
+                ks = {c.split("/")[2] for c in sel if c.startswith(f"{wk}/{un}/")}
+                exs = {k: v for k, v in ex.items() if k in ks}
+            lab1(store, extra=exs, uni_fn=(None if n is None else (lambda D, n=n: topn_mask(D, n))), w_fn=w16(wk))
+            for k, r in (LAST_LAB1 or {}).items():
+                allres[f"{wk}/{un}/{k}"] = r
+    LAB_NOTE = ""
+    print("\n【16段目のまとめ】（記号は「加重/範囲/型」）")
+    for v in ("候補", "範囲の中では効く", "効かない", "保留（データ不足）"):
+        ks = [k for k, r in allres.items() if r["verdict"] == v]
+        print(f"     {v} … {len(ks)}通り" + (f"：{'・'.join(ks)}" if ks and v in ("候補", "範囲の中では効く") else ""))
+
+    def worst(r):
+        return min(min(r["detail"][(nm, h)][0] - PT_TX, r["detail"][(nm, h)][1] - PT_RND) for nm, _ in KEEPS for h in ("前半", "後半"))
+
+    def tx_min(r):
+        return min(r["detail"][(nm, h)][0] for nm, _ in KEEPS for h in ("前半", "後半"))
+    cand = [k for k, r in allres.items() if r["verdict"] == "候補" and k.split("/")[2] != "XSH"]
+    near = [k for k, r in allres.items() if r["verdict"] == "範囲の中では効く" and k.split("/")[2] != "XSH"]
+    if not (LONG and STAGE == "confirm"):
+        pick = sorted(cand or near, key=lambda k: -(worst(allres[k]) if cand else tx_min(allres[k])))[:3]
+        print("  確かめる段階に持っていく形（" + ("候補" if cand else "準候補：範囲の中では効く形のうち、TOPIX との差のいちばん小さいものが大きい順") + "・3つまで。XSH は見ていない期間のデータがないので除く） … "
+              + ("・".join(pick) if pick else "なし"))
+    return 0
+
+
+# ── 18段目：毎月の点数の残り
+def lab18_scores(store: dict, xs: dict) -> dict:
+    """18段目の型（計画は wide_lab_plan18_2026-11-05）。どれも、その月末より前に開示された値だけを使う。"""
+    tl12 = None
+    if x_rows(xs, "fsd2"):
+        tl12, _st = fsd_timeline(store, xs)
+    cache = {}
+
+    def mats(D):
+        if "m" in cache:
+            return cache["m"]
+        codes, dates = D["codes"], D["dates"]
+        S_, M_ = len(codes), len(dates)
+        out = {k: np.full((S_, M_), np.nan) for k in ("DROE", "OPM", "PAYOUT", "DIVG", "GPM", "DGPM", "LEV")}
+        me = [d.strftime("%Y-%m-%d") for d in dates]
+        for i, c in enumerate(codes):
+            fin = D["sector"].get(c, "") in yb.FIN_SECTORS
+            b = store["bars"].get(c)
+            if b is None:
+                continue
+            tl = fin_timeline(store["fins"].get(c))
+            dd = [str(r["DiscDate"])[:10] for r in tl]
+            for j, m in enumerate(me):
+                k = int(np.searchsorted(dd, m, side="left")) - 1
+                if k < 0:
+                    continue
+                fyd = {}
+                for r in tl[:k + 1]:
+                    if is_fy(r):
+                        fyd[str(r.get("CurFYEn") or "")[:10]] = r
+                fy = [fyd[e] for e in sorted(fyd) if e]
+                if not fy:
+                    continue
+                r = fy[-1]
+                npv, eq, sales, op = num(r.get("NP")), num(r.get("Eq")), num(r.get("Sales")), num(r.get("OP"))
+                if len(fy) >= 2:
+                    p = fy[-2]
+                    np0, eq0 = num(p.get("NP")), num(p.get("Eq"))
+                    if npv is not None and eq and eq > 0 and np0 is not None and eq0 and eq0 > 0:
+                        out["DROE"][i, j] = npv / eq - np0 / eq0
+                if not fin and op is not None and sales and sales > 0:
+                    out["OPM"][i, j] = op / sales
+                ann, eps = num(r.get("DivAnn")), num(r.get("EPS"))
+                if eps is None and npv is not None and num(r.get("ShOutFY")):          # 1株利益がなければ、純利益 ÷ 株数（自己株を除く）
+                    shn = num(r.get("ShOutFY")) - (num(r.get("TrShFY")) or 0.0)
+                    eps = npv / shn if shn > 0 else None
+                if ann is not None and eps and eps > 0:
+                    out["PAYOUT"][i, j] = -(ann / eps)
+                # 増配の続いた年数（分割のあとの基準にそろえて、前の年より増えた年が続いた数）
+                dps = []
+                for q in fy:
+                    a = num(q.get("DivAnn"))
+                    dps.append(None if a is None else a * fac_after(b["fd"], b["ff"], str(q["DiscDate"])[:10]))
+                if dps[-1] is not None:
+                    n_up = 0
+                    for x0, x1 in zip(reversed(dps[:-1]), reversed(dps[1:])):
+                        if x0 is None or x1 is None or not (x1 > x0 * 1.0001):
+                            break
+                        n_up += 1
+                    out["DIVG"][i, j] = n_up
+            if tl12 is not None and not fin and c in tl12:
+                rows = tl12[c]
+                av = [x["avail"] for x in rows]
+                for j, m in enumerate(me):
+                    k = int(np.searchsorted(av, m, side="left")) - 1
+                    if k < 0:
+                        continue
+                    r = rows[k]
+                    if r["gp"] is not None and r["sales"] and r["sales"] > 0:
+                        out["GPM"][i, j] = r["gp"] / r["sales"]
+                        if k >= 1:
+                            q = rows[k - 1]
+                            if q["gp"] is not None and q["sales"] and q["sales"] > 0:
+                                out["DGPM"][i, j] = r["gp"] / r["sales"] - q["gp"] / q["sales"]
+                    ta = r["ta"] if r["ta"] else r.get("ta_d")
+                    if r["ltd"] is not None and ta and ta > 0:
+                        out["LEV"][i, j] = -(r["ltd"] / ta)
+        cache["m"] = out
+        return out
+    noise_c = {}
+
+    def noise(D, seed):
+        if seed not in noise_c:
+            noise_c[seed] = np.random.default_rng(seed).random(len(D["codes"]))[:, None] * 1e-6
+        return noise_c[seed]
+
+    def mk(k, seed=None):
+        return lambda D: mats(D)[k] + (noise(D, seed) if seed else 0.0)
+
+    def lowpx(D):
+        C = D["C"]
+        return np.stack([-C[:, t].astype(float) for t in D["me_idx"]], axis=1)
+
+    def shy(D):
+        F = D["F"]
+        return F["DY"] + np.nan_to_num(F["SHR"], nan=0.0)
+
+    def ind(key):
+        def fn(D):
+            X, UNI = D["F"][key], D["UNI"]
+            sec = np.array([D["sector"].get(c, "") for c in D["codes"]])
+            out = np.full(X.shape, np.nan)
+            for j in range(X.shape[1]):
+                ok = UNI[:, j] & np.isfinite(X[:, j])
+                for sname in set(sec[ok]):
+                    m = ok & (sec == sname)
+                    if m.sum() < 5:
+                        continue
+                    out[m, j] = pd.Series(X[m, j]).rank(pct=True).to_numpy()
+            return out + noise(D, 1801)
+        return fn
+
+    def seas(D):
+        PXM, DIV, dates, me_idx = D["PXM"], D["DIV"], D["dates"], D["me_idx"]
+        M_ = len(dates)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            R = np.full(PXM.shape, np.nan)
+            R[:, :-1] = (PXM[:, 1:] + DIV[:, 1:]) / PXM[:, :-1] - 1.0     # 月末 j から次の月末までの成績
+        out = np.full(PXM.shape, np.nan)
+        for j in range(M_):
+            past = [j + 1 - 12 * k - 1 for k in range(1, 6) if j + 1 - 12 * k - 1 >= 0]   # 次の月と同じ月の、過去の年の成績（月末 j−12k から）
+            if len(past) < 3:
+                continue
+            with np.errstate(invalid="ignore"):
+                Z = R[:, past]
+                cnt = np.isfinite(Z).sum(axis=1)
+                mval = np.nanmean(np.where(np.isfinite(Z), Z, np.nan), axis=1)
+            out[:, j] = np.where(cnt >= 3, mval, np.nan)
+        j_ok = next((j for j in range(M_) if np.isfinite(out[:, j]).any()), M_ - 1)
+        START_T["SEAS"] = int(me_idx[j_ok])
+        return out
+    optu = x_rows(xs, "optu")
+
+    def ivlow(D):
+        cal, me_idx, codes = D["cal"], D["me_idx"], D["codes"]
+        calS = [str(x)[:10] for x in cal.astype("datetime64[D]")]
+        ti = {d: k for k, d in enumerate(calS)}
+        ci = {c: i for i, c in enumerate(codes)}
+        IV = np.full((len(codes), len(cal)), np.nan)
+        for r in optu:
+            c = yb.norm_code(str(r["und"] or ""))
+            k = ti.get(str(r["date"])[:10])
+            if c in ci and k is not None and r["iv"] is not None:
+                IV[ci[c], k] = r["iv"]
+        out = np.full((len(codes), len(me_idx)), np.nan)
+        for j, t in enumerate(me_idx):
+            w = IV[:, max(0, t - 19):t + 1]
+            cnt = np.isfinite(w).sum(axis=1)
+            with np.errstate(invalid="ignore"):
+                m = np.nanmean(w, axis=1)
+            out[:, j] = np.where(cnt >= 15, -m, np.nan)
+        n_ok = [int((np.isfinite(out[:, j]) & D["UNI"][:, j]).sum()) for j in range(len(me_idx))]
+        log(f"  個別株オプション … 値動きの予想（IV）がある銘柄（範囲の中） 月の中央値 {int(np.median(n_ok)) if n_ok else 0}社（多い月 {max(n_ok) if n_ok else 0}社）")
+        return out
+    extra_iv = {"IVLOW": (ivlow, "個別株オプションの値動きの予想（IV。いちばん近い限月の中央値の20日平均）の低さ")} if optu else {}
+    return {**extra_iv, "SEAS": (seas, "同じ月の過去の成績（過去3〜5年の、次の月と同じ月の成績の平均）"),
+            "LOWPX": (lowpx, "株価の低さ（月末の株価の安い順）"),
+            "DROE": (mk("DROE", 1802), "ROE の改善（直近の通期 − 前の通期）"),
+            "OPM": (mk("OPM"), "営業利益率の高さ（金融を除く）"),
+            "PAYOUT": (mk("PAYOUT", 1803), "配当性向の低さ（年間配当 ÷ 1株利益。赤字は除く）"),
+            "DIVG": (mk("DIVG", 1804), "増配の続いた年数（多い順）"),
+            "GPM": (mk("GPM"), "粗利益率の高さ（売上総利益 ÷ 売上。金融を除く）"),
+            "DGPM": (mk("DGPM", 1805), "粗利益率の改善（金融を除く）"),
+            "LEV": (mk("LEV", 1806), "長期の借入の少なさ（長期の借入と社債 ÷ 総資産。金融を除く）"),
+            "SHY": (shy, "株主還元利回り（配当利回り ＋ 1年の株数の減り）"),
+            "BPIND": (ind("BP"), "業種の中での純資産に対する安さ（業種の中の順位）"),
+            "EPIND": (ind("EP"), "業種の中での利益に対する安さ（業種の中の順位）")}
+
+
+# ── 17段目：暦と短期の残り
+def lab17(store: dict) -> int:
+    """17段目（計画は wide_lab_plan17_2026-11-05）。TOPIX を持つ時期の型5つと、個別株の短期の型2つ。夜だけ・昼だけは参考（費用の前の値も出す）。"""
+    log("17段目（暦と短期の残り）を回します（指標を作っています）…")
+    D = build(store)
+    dates, UNI, me_idx, cal = D["dates"], D["UNI"], D["me_idx"], D["cal"]
+    T = len(cal)
+    C, CF = D["C"], D["CF"]
+    j0 = next((j for j, t in enumerate(me_idx) if t >= 252), None)
+    t0 = me_idx[j0]
+    ev = dates[j0:]
+    yrs = max((ev[-1] - ev[0]).days / 365.25, 0.5)
+    TXv, TXliq = topix_taxed(D, j0)
+    ST_TX = half_stats(TXv, ev)
+    E = ev_extract(store, D)
+    calD = cal.astype("datetime64[D]")
+    wd = (calD.astype("datetime64[D]").view("int64") - 4) % 7          # 0＝月曜 … 4＝金曜
+    gap = np.r_[np.diff(calD).astype(int), 1]                          # 次の営業日までの日数
+    wk = (calD.view("int64") - 4) // 7                                 # 週の番号（月曜はじまり）
+    last_of_week = np.r_[wk[1:] != wk[:-1], True]
+    res_t = {}
+
+    def run_timing(key, lab, variants):
+        if ONLY and key not in ONLY:
+            return
+        r = {"lab": lab, "var": {}}
+        for nm, vlab, x in variants:
+            x = np.asarray(x, dtype=bool)
+            v, liq, s_ = cal_sim(x, D, t0)
+            rnd = [half_stats(cal_sim(spells_placebo(x, t0, 17000 + k), D, t0)[0], ev) for k in range(N_RAND)]
+            nb = {"前半": sum(1 for t in s_["buy_t"] if pd.Timestamp(cal[t]) < SPLIT),
+                  "後半": sum(1 for t in s_["buy_t"] if pd.Timestamp(cal[t]) >= SPLIT)}
+            r["var"][nm] = {"st": half_stats(v, ev), "liq": liq, "s": s_, "rnd": rnd, "vlab": vlab, "nb": nb,
+                            "held": float(x[t0:].mean()), "n_cand": int(x[t0:].sum()), "fill": 1.0}
+        r["verdict"], r["detail"] = judge2(r["var"], ST_TX, lambda xx: xx["held"] <= 0.0)
+        res_t[key] = r
+        log(f"  {key} … {r['verdict']}")
+    # WD：週末をまたがない ／ 週末だけ持つ
+    run_timing("WD", "週末（土日）をまたいで持つかどうか",
+               (("A", "週末をまたがない（週の最後の日の終値で売り、次の週の最初の日の終値で買う）", ~last_of_week),
+                ("B", "週末だけ持つ（週の最後の日の終値で買い、次の営業日の終値で売る）", last_of_week)))
+    # HOL：連休の前
+    hol3 = (gap >= 3) & ~((wd == 4) & (gap == 3))
+    hol4 = gap >= 4
+    run_timing("HOL", "連休の前の日の終値で買い、連休明けの終値で売る",
+               (("A", "週末だけの休みを除く3日以上の休みの前", hol3), ("B", "4日以上の休みの前（大型連休・年末年始など）", hol4)))
+    # SQ：第2金曜を含む週
+    ym = calD.astype("datetime64[M]")
+    sqday = np.zeros(T, dtype=bool)
+    for m_ in np.unique(ym):
+        idx = np.nonzero(ym == m_)[0]
+        d0 = np.datetime64(str(m_) + "-01")
+        first_fri = d0 + ((4 - ((d0.view("int64") - 4) % 7)) % 7)
+        sq = first_fri + 7
+        k = int(np.searchsorted(calD, sq, side="right")) - 1           # 第2金曜（休みなら、その前の営業日）
+        if k >= 0 and k in set(idx):
+            sqday[k] = True
+    sqweek = np.zeros(T, dtype=bool)
+    for k in np.nonzero(sqday)[0]:
+        w = wk[k]
+        sqweek[(wk == w) & (np.arange(T) <= k)] = True
+    hold_out = np.zeros(T, dtype=bool)                                   # SQ の週の値動き（前の週の最後の終値 → SQ の日の終値）を持たない
+    for k in np.nonzero(sqday)[0]:
+        ws = np.nonzero(wk == wk[k])[0][0]
+        hold_out[max(0, ws - 1):k] = True
+    run_timing("SQ", "SQ（第2金曜）の週",
+               (("A", "SQ の週は持たない", ~hold_out), ("B", "SQ の週だけ持つ", hold_out)))
+    # YE：年末年始
+    mb = month_bounds(cal)
+    mon = (cal.astype("datetime64[M]").astype(int) % 12) + 1
+
+    def ye(pre, post):
+        x = np.zeros(T, dtype=bool)
+        for k in range(len(mb) - 1):
+            s_, e_ = mb[k]
+            if mon[e_] != 12:
+                continue
+            s2, e2 = mb[k + 1]
+            x[max(s_, e_ - pre):min(e2, s2 + post - 1)] = True
+        return x
+    run_timing("YE", "年末年始だけ TOPIX を持つ",
+               (("A", "12月の最後の日の10営業日前に買い、1月の5営業日目に売る", ye(10, 5)), ("B", "5営業日前に買い、1月の3営業日目に売る", ye(5, 3))))
+    # DIVM：3月・9月の権利付き最終日の前
+    def divm(L):
+        x = np.zeros(T, dtype=bool)
+        for _s, e_ in mb:
+            if mon[e_] in (3, 9) and e_ >= 3:
+                t_c = t_cum_of(cal, e_)
+                x[max(0, t_c - L):t_c] = True
+        return x
+    run_timing("DIVM", "3月・9月の権利付き最終日の前に TOPIX を持つ（権利付き最終日に売る）",
+               (("A", "20営業日前に買う", divm(20)), ("B", "10営業日前に買う", divm(10))))
+    # ── 個別株の短期（出来事の道具。20銘柄まで）
+    jm = np.searchsorted(np.array(me_idx), np.arange(T), side="left") - 1
+    traded = np.isfinite(C) & (C > 0)
+    codes = D["codes"]
+    sec = np.array([D["sector"].get(c, "") for c in codes])
+    secs = sorted(set(sec) - {""})
+    MC = D["MCAP"]
+
+    def uni_t(t):
+        j = jm[t]
+        return (UNI[:, j] & traded[:, t]) if j >= 0 else np.zeros(len(codes), dtype=bool)
+    R5 = np.full(CF.shape, np.nan, dtype=np.float32)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        R5[:, 5:] = CF[:, 5:] / CF[:, :-5] - 1.0
+    srev_ev, smom_ev = {}, {}
+    for t in range(max(t0, 5), T):
+        u = uni_t(t) & np.isfinite(R5[:, t])
+        if u.sum() < 50:
+            continue
+        rel = np.full(len(codes), np.nan)
+        sm = {}
+        for sname in secs:
+            m = u & (sec == sname)
+            if m.sum() >= 5:
+                med = float(np.median(R5[m, t]))
+                rel[m] = R5[m, t] - med
+                sm[sname] = med
+        lo = np.nonzero(np.isfinite(rel) & (rel <= -0.10))[0]
+        if len(lo):
+            srev_ev[t] = [(float(-rel[i]), int(i)) for i in lo]
+        if last_of_week[t] and len(sm) >= 10:
+            top = sorted(sm, key=lambda k: -sm[k])[:3]
+            m = u & np.isin(sec, top)
+            idx = np.nonzero(m)[0]
+            jj = jm[t]
+            smom_ev[t] = [(float(MC[i, jj]) if MC[i, jj] == MC[i, jj] else 0.0, int(i)) for i in idx]
+    res_e = {}
+
+    def pool_all(t):
+        return np.nonzero(uni_t(t))[0]
+
+    def run_ev(key, lab, variants):
+        if ONLY and key not in ONLY:
+            return
+        r = {"lab": lab, "var": {}}
+        for nm, vlab, evs, H in variants:
+            cands = {t: [(p, i, t + H) for p, i in lst] for t, lst in evs.items()}
+            v, liq, s_ = ev_sim(cands, D, E["divpay"], t0)
+            rnd, rnb = [], []
+            for k in range(N_RAND):
+                rg = np.random.default_rng(17500 + k)
+                pl = {}
+                for t, cl in cands.items():
+                    pool = pool_all(t)
+                    if len(pool) == 0:
+                        continue
+                    pick = rg.choice(pool, size=min(len(cl), len(pool), NMAX * 3), replace=False)
+                    pl[t] = [(float(rg.random()), int(i), t_out) for i, (_p, _i, t_out) in zip(pick, cl)]
+                pv, _l, ps_ = ev_sim(pl, D, E["divpay"], t0)
+                rnd.append(half_stats(pv, ev))
+                rnb.append(ps_["n_buy"])
+            nb = {"前半": sum(1 for t in s_["buy_t"] if pd.Timestamp(cal[t]) < SPLIT),
+                  "後半": sum(1 for t in s_["buy_t"] if pd.Timestamp(cal[t]) >= SPLIT)}
+            r["var"][nm] = {"st": half_stats(v, ev), "liq": liq, "s": s_, "rnd": rnd, "vlab": vlab, "nb": nb,
+                            "held": float(np.mean(s_["held"])) if s_["held"] else 0.0, "n_cand": sum(len(x) for x in cands.values()),
+                            "fill": float(np.mean(rnb)) / max(1, s_["n_buy"])}
+        r["verdict"], r["detail"] = judge2(r["var"], ST_TX, lambda x: min(x["nb"].values()) < EV_MIN_BUYS or x["fill"] < RND_FILL_MIN)
+        res_e[key] = r
+        log(f"  {key} … {r['verdict']}")
+    run_ev("SREV", "業種の中での数日の戻り（5営業日の値動きが、同じ業種の中央値より10％以上悪い株を、その日の終値で買う）",
+           (("A", "5日持つ", srev_ev, 5), ("B", "10日持つ", srev_ev, 10)))
+    run_ev("SMOM", "業種の1週間の勢い（週の最後の日に、5営業日の上げが上位3業種の株を時価総額の大きい順に買う）",
+           (("A", "5日持つ（1週間）", smom_ev, 5), ("B", "10日持つ（2週間）", smom_ev, 10)))
+    # ── 参考：夜だけ持つ・昼だけ持つ（1306。始値があるときだけ）
+    tp = D["tp"]
+    ref = None
+    if "o" in tp and np.isfinite(np.asarray(tp["o"], dtype=float)[t0:]).mean() > 0.9:
+        o = np.asarray(tp["o"], dtype=float)
+        c_ = np.asarray(tp["c"], dtype=float)
+        on = o[t0 + 1:] / c_[t0:-1]
+        idr = c_[t0 + 1:] / o[t0 + 1:]
+        ok = np.isfinite(on) & np.isfinite(idr) & (on > 0) & (idr > 0)
+        n_ = int(ok.sum())
+        ann_on = (np.prod(on[ok]) ** (252 / n_) - 1) * 100 if n_ else float("nan")
+        ann_id = (np.prod(idr[ok]) ** (252 / n_) - 1) * 100 if n_ else float("nan")
+        ref = (ann_on, ann_id, n_)
+    # ── 報告
+    HH = ("前半", "後半")
+    print("\n【日本株の手法・17段目（暦と短期の残り）（wide_lab）：東証全銘柄】（基準は結果を見る前に決めたもの。計画はプロジェクトの wide_lab_plan17_2026-11-05）")
+    stage_note()
+    print(f"  期間 … 比べる期間 {ev[0].date()}〜{ev[-1].date()}（{len(ev)}か月。前半 〜{(SPLIT - pd.Timedelta(days=1)).date()}・後半 {SPLIT.date()}〜）")
+    print(f"  TOPIX（税あり） … {ST_TX['前半']['ann']:.1f} ／ {ST_TX['後半']['ann']:.1f}")
+    print(f"  時期を見る型 … 1306 を持つか現金にするか（片道{ETF_SLIP * 100:.2f}％・{TAX_TXT}）。でたらめは、持つ期間の長さをそのままに順番を入れ替えたもの")
+    print(f"  個別株の短期 … 2回目と同じ道具（20銘柄まで・1銘柄は資産の20分の1・片道{SLIP * 100:.1f}％）。でたらめは同じ日に同じ数だけ範囲から")
+    for res in (res_t, res_e):
+        for key, r in res.items():
+            print(f"     {key:<6}{r['lab']} … {r['verdict']}")
+            for nm, x in r["var"].items():
+                rn = {h: float(np.mean([y[h]['ann'] for y in x['rnd']])) for h in HH}
+                dd = " ".join(f"{r['detail'][(nm, h)][0]:+.1f}/{r['detail'][(nm, h)][1]:+.1f}・{r['detail'][(nm, h)][2]}回" for h in HH)
+                extra = (f"持っていた日の割合 {x['held'] * 100:.0f}％" if res is res_t else
+                         f"合図 {x['n_cand']:,}回・買い 前半 {x['nb']['前半']}回・後半 {x['nb']['後半']}回・平均の持ち数 {x['held']:.1f}・でたらめの買いの回数 {x['fill'] * 100:.0f}％")
+                print(f"         {nm}（{x['vlab']}） {x['st']['前半']['ann']:6.1f} ／ {x['st']['後半']['ann']:6.1f}（最大下落 {x['st']['通し']['mdd']:.0f}％）［{dd}］"
+                      f" でたらめ {rn['前半']:.1f} ／ {rn['後半']:.1f}・{extra}・清算後の通し {((x['liq'] / CAP) ** (1 / yrs) - 1) * 100:.1f}％")
+    if ref:
+        rt = 252 * 2 * ETF_SLIP * 100
+        print(f"  参考（判定には入れない）：1306 を夜だけ持つ（終値で買い、次の日の始値で売る）と、費用の前で年 {ref[0]:+.1f}％・昼だけ持つ（始値で買い、終値で売る）と年 {ref[1]:+.1f}％"
+              f"（{ref[2]}日）。どちらも毎日売り買いするので、費用だけで年 約{rt:.0f}％かかる")
+    else:
+        print("  参考：1306 の始値がないので、夜だけ・昼だけは計算していない（20年分のデータで回すと出る）")
+    print("\n  判定のまとめ")
+    allr = {**res_t, **res_e}
+    for v in ("候補", "範囲の中では効く", "効かない", "保留（データ不足）"):
+        ks = [k for k, r in allr.items() if r["verdict"] == v]
+        print(f"     {v} … " + ("・".join(ks) if ks else "なし"))
+    print(f"  （TOPIX の清算後の通し {((TXliq / CAP) ** (1 / yrs) - 1) * 100:.1f}％）")
+    return 0
+
+
+# ── 19段目：組み合わせと空売り側
+def mals_score(xs: dict):
+    """日々公表の対象に入ってから20営業日以内の株を −1、それ以外を0（8段目の道具で、−1 の株を売る）。"""
+    rows = x_rows(xs, "mal")
+
+    def fn(D):
+        cal, me_idx, codes = D["cal"], D["me_idx"], D["codes"]
+        calD = cal.astype("datetime64[D]")
+        ci = {c: i for i, c in enumerate(codes)}
+        seen = {}
+        for r in rows:
+            c = yb.norm_code(r["code"] or "")
+            if c in ci and len(str(r["pub"] or "")) >= 10:
+                seen.setdefault(ci[c], set()).add(int(np.searchsorted(calD, np.datetime64(str(r["pub"])[:10]), side="right")))
+        first = []
+        for i, ts in seen.items():
+            prev = -10 ** 9
+            for t in sorted(ts):
+                if t - prev > 60:
+                    first.append((i, t))
+                prev = t
+        out = np.zeros((len(codes), len(me_idx)))
+        me = np.array(me_idx)
+        for i, t in first:
+            j = int(np.searchsorted(me, t, side="left"))         # 対象に入った日（以降の最初の月末）
+            if j < len(me) and me[j] - t <= 20:
+                out[i, j] = -1.0
+        return out + np.random.default_rng(1901).random(len(codes))[:, None] * 1e-6
+    return fn
+
+
 def run_mode(mode: str, store: dict, args) -> int:
     """1つの mode を回す（データはそろっている前提で、足りなければ取る）。14段目の lab14 は、これを続けて呼ぶ。"""
     global LAB_TITLE, LAB_PLAN
@@ -4191,6 +4882,40 @@ def run_mode(mode: str, store: dict, args) -> int:
         return lab6(store)
     if mode == "lab9":
         return lab9(store)
+    if mode in ("lab16", "lab18", "lab19"):
+        xs = x_load()
+        bd = bd_load()
+        if not (LONG and STAGE == "confirm") and not x_complete(store, xs, ("div", "ed", "ssr", "mi", "fsd2", "mal", "msh", "xsh")):
+            print("\n■ 第1部のデータ（5・12・13段目）がそろっていません。先に lab5・lab12・lab13 を回してください。")
+            return 2
+        if mode == "lab16":
+            return lab16(store, xs, bd)
+        if mode == "lab18":
+            if not (LONG and STAGE == "confirm") and not x_complete(store, xs, ("optu",)):
+                key = os.environ.get("J_QUANTS_API_KEY")
+                if not key:
+                    print("J_QUANTS_API_KEY が設定されていません")
+                    return 2
+                if not fetch_x(yb.JQ(key), store, xs, ("optu",)):
+                    print("\n■ まだ終わっていません（個別株オプションを取っている途中です）。同じ設定のまま、もう一度押してください。")
+                    return EXIT_UNFINISHED
+            log(f"  個別株オプション … {len(xs.get('optu', {}).get('rows', [])):,}件" + (f"・取るのをやめた：{xs['optu']['bad']}" if xs.get("optu", {}).get("bad") else ""))
+            LAB_TITLE, LAB_PLAN = "18段目（毎月の点数の残り）", "wide_lab_plan18_2026-11-05"
+            log("18段目（毎月の点数の残り）を回します…")
+            return lab1(store, extra=lab18_scores(store, xs))
+        # 19段目：①すべての毎月の点数でまとめて学ばせる ②出来事の組み合わせ ③日々公表の対象入りを売る形
+        ex = monthly_extra_all(store, xs, bd)
+        ex.update(lab18_scores(store, xs))
+        log(f"19段目：まとめて学ばせる型 {len(ex)}つ")
+        lab9(store, extra={k: v for k, v in ex.items() if k not in dict(LAB1)})
+        lab15(store, xs, combo=True)
+        if not (ONLY and "MALS" not in ONLY):
+            lab8(store, extra={"MALS": (mals_score(xs), "日々公表の対象に入ってから20営業日以内の株")},
+                 head="【日本株の手法・19段目（日々公表の対象入りを売る形）（wide_lab）：東証全銘柄】（基準は結果を見る前に決めたもの。計画はプロジェクトの wide_lab_plan19_2026-11-05。"
+                      "売る側は、その月末までの20営業日に日々公表の対象に入った株）")
+        return 0
+    if mode == "lab17":
+        return lab17(store)
     if mode == "lab15":
         xs = x_load()
         if not (LONG and STAGE == "confirm") and not x_complete(store, xs, ("div", "ed", "mal", "lvh")):
@@ -4341,7 +5066,7 @@ def lab14(store: dict, args) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab5", "lab6", "lab7", "lab8", "lab9", "lab10", "lab11", "lab12", "lab13", "lab14", "lab15", "xfetch"], default="lab1")
+    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab5", "lab6", "lab7", "lab8", "lab9", "lab10", "lab11", "lab12", "lab13", "lab14", "lab15", "lab16", "lab17", "lab18", "lab19", "xfetch"], default="lab1")
     ap.add_argument("--combo", default="", help="3回目：1回目で「範囲の中では効く」以上だった型の記号（カンマ区切り）。2つ以上なら SEL として回す")
     ap.add_argument("--only", default="", help="回す型の記号（カンマ区切り。空欄なら全部）。確かめる段階で候補だけを回すとき")
     ap.add_argument("--cfg", default="", help="7段目の確かめる段階で回す組み立て（例: VQM/TOP500/20/Q,NXG/TOP500/20/Q）")
