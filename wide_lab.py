@@ -3938,7 +3938,7 @@ def lab15(store: dict, xs: dict, combo: bool = False) -> int:
     TPc = D["tp"]["c"].astype(float)
     j0 = next((j for j, t in enumerate(me_idx) if t >= 252), None)
     if LONG and STAGE == "confirm":
-        need_x = any(k.split("/")[0] in ("DIVUP", "E2C") for k in sel)
+        need_x = any(k.split("/")[0] in ("DIVUP", "E2C", "DIVE2C", "DIVBP") for k in sel)
         if need_x:
             j0 = next((j for j, t in enumerate(me_idx) if t >= 252 and dates[j] >= CONFIRM_X_FROM), None)
     t0 = me_idx[j0]
@@ -4264,6 +4264,8 @@ def lab15(store: dict, xs: dict, combo: bool = False) -> int:
         stage_note()
         print(f"  期間 … 比べる期間 {ev[0].date()}〜{ev[-1].date()}（{len(ev)}か月）。形は15段目と同じ（20銘柄・空いている資金は 1306）。A と B の両方で基準を満たせば候補")
         print(f"  TOPIX（税あり） … {ST_TX['前半']['ann']:.1f} ／ {ST_TX['後半']['ann']:.1f}")
+        if D.get("LIMU") is not None:
+            print("  ストップ高・ストップ安 … ストップ高で引けた日は終値で買えない・ストップ安で引けた日は売れない（次の日に売る）。でたらめも同じ（15段目の6と同じ決まり）")
         out_v = {}
         for key in LAB:
             xa, xb = res.get(f"{key}/ALL/A/{NMAX}"), res.get(f"{key}/ALL/B/{NMAX}")
@@ -4279,7 +4281,13 @@ def lab15(store: dict, xs: dict, combo: bool = False) -> int:
                 dd = " ".join(f"{x['detail'][h][0]:+.1f}/{x['detail'][h][1]:+.1f}・{x['detail'][h][2]}回" for h in HH)
                 rn = {h: float(np.mean([y[h]['ann'] for y in x['rnd']])) for h in HH}
                 print(f"         {nm} {x['st']['前半']['ann']:6.1f} ／ {x['st']['後半']['ann']:6.1f}（最大下落 {x['st']['通し']['mdd']:.0f}％）［{dd}］ でたらめ {rn['前半']:.1f} ／ {rn['後半']:.1f}"
-                      f"・合図 {x['n_cand']:,}回・買い {x['nb']['前半']}/{x['nb']['後半']}・持ち {x['held']:.1f}・1306 {x['etf'] * 100:.0f}％")
+                      f"・合図 {x['n_cand']:,}回・買い {x['nb']['前半']}/{x['nb']['後半']}・持ち {x['held']:.1f}・1306 {x['etf'] * 100:.0f}％"
+                      + (f"・ストップ高で買えず {x['skip']}" if D.get("LIMU") is not None else ""))
+                if x.get("paths"):
+                    anns, txc, dc = x["paths"]
+                    a_ = np.array(anns)
+                    print(f"           経路のばらつき（判定には使わない）{dc.date()}〜 … 最小 {a_.min():.1f}・中央 {np.median(a_):.1f}・最大 {a_.max():.1f}"
+                          f"（TOPIX {txc:.1f}。上回った {int((a_ > txc).sum())}/{len(a_)}・+2pt 以上 {int((a_ >= txc + PT_TX).sum())}/{len(a_)}）")
         for v in ("候補", "範囲の中では効く", "効かない", "保留（データ不足）"):
             ks = [k for k, vv in out_v.items() if vv == v]
             print(f"     {v} … " + ("・".join(ks) if ks else "なし"))
@@ -4912,6 +4920,13 @@ def run_mode(mode: str, store: dict, args) -> int:
         return lab6(store)
     if mode == "lab9":
         return lab9(store)
+    if mode == "lab19" and LONG:
+        # plan19 の5：20年分では出来事の組み合わせ（DIVE2C・DIVBP）だけを回す（まとめて学ばせる型と MALS は9年分で準候補なし・20年分のデータもない）
+        xs = x_load()
+        if STAGE != "confirm" and not x_complete(store, xs, ("div", "ed")):
+            print("\n■ 20年分の配当金情報・決算発表予定日がそろっていません。先に years=20 で lab15 か xfetch を回してください。")
+            return 2
+        return lab15(store, xs, combo=True)
     if mode in ("lab16", "lab18", "lab19"):
         xs = x_load()
         bd = bd_load()
