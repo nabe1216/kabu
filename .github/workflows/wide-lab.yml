@@ -19,6 +19,7 @@ name: wide-lab
 #   mode=lab14 … 14段目（費用と税の前提を変えて、1〜5・8〜13段目をまとめて回し直す。cost で前提を選ぶ。wide_lab_plan14_2026-11-05）
 #   mode=lab15 … 15段目（出来事の型の組み立て方の探索。確かめる段階は cfg に形（例 DIVUP/TOP1000/60/20）。wide_lab_plan15_2026-11-05）
 #   mode=lab16 … 16段目（加重の仕方） ／ lab17 … 17段目（暦と短期の残り。years=20・explore で回す） ／ lab18 … 18段目（毎月の点数の残り。個別株オプションを取る） ／ lab19 … 19段目（組み合わせと空売り側）
+#   mode=lab20 … 20段目（市況〈日経平均・原油・金利・為替・VIX〉で切り替える。FRED と財務省の公開データを取る。years=20。wide_lab_plan20_2026-11-05）
 #   cost=S0 … 第1部と同じ（株 片道0.2％・1306 片道0.1％・税20.315％） ／ S1 … 低い費用（0.1％・0.05％・税あり） ／ S2 … 低い費用・税なし
 #   years=9  … 探す段階（スタンダードで足りる9年分。data/wide_cache.pkl）
 #   years=20 … 確かめる段階（プレミアムの20年分。data/wide_long.pkl。キャッシュの名前を yield-backtest-long- で始めているので、
@@ -27,7 +28,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "fetch＝データを集める ／ lab1＝1回目の型（24通り） ／ lab2＝2回目（出来事と暦） ／ lab3＝3回目（組み合わせ） ／ lab4＝4回目（売買の内訳） ／ lab5＝5段目（残りの型） ／ lab6＝6段目（短期売買） ／ lab7＝7段目（組み立て方） ／ lab8＝8段目（空売り） ／ lab9＝9段目（まとめて学ばせる） ／ lab10＝10段目（出来事＋TOPIX） ／ lab11＝11段目（出来事・大型株） ／ lab12＝12段目（財務の明細） ／ lab13＝13段目（残りのデータ） ／ lab14＝14段目（費用と税の前提で、1〜5・8〜13段目をまとめて回し直す） ／ lab15＝15段目（出来事の組み立て方） ／ lab16＝16段目（加重） ／ lab17＝17段目（暦と短期。years=20） ／ lab18＝18段目（点数の残り） ／ lab19＝19段目（組み合わせ・空売り側） ／ xfetch＝配当金情報などを取るだけ"
+        description: "fetch＝データを集める ／ lab1＝1回目の型（24通り） ／ lab2＝2回目（出来事と暦） ／ lab3＝3回目（組み合わせ） ／ lab4＝4回目（売買の内訳） ／ lab5＝5段目（残りの型） ／ lab6＝6段目（短期売買） ／ lab7＝7段目（組み立て方） ／ lab8＝8段目（空売り） ／ lab9＝9段目（まとめて学ばせる） ／ lab10＝10段目（出来事＋TOPIX） ／ lab11＝11段目（出来事・大型株） ／ lab12＝12段目（財務の明細） ／ lab13＝13段目（残りのデータ） ／ lab14＝14段目（費用と税の前提で、1〜5・8〜13段目をまとめて回し直す） ／ lab15＝15段目（出来事の組み立て方） ／ lab16＝16段目（加重） ／ lab17＝17段目（暦と短期。years=20） ／ lab18＝18段目（点数の残り） ／ lab19＝19段目（組み合わせ・空売り側） ／ lab20＝20段目（市況で切り替える。years=20） ／ xfetch＝配当金情報などを取るだけ"
         required: true
         default: "fetch"
         type: choice
@@ -52,6 +53,7 @@ on:
           - lab17
           - lab18
           - lab19
+          - lab20
           - xfetch
       years:
         description: "9＝探す段階（9年分） ／ 20＝確かめる段階（プレミアムの20年分）"
@@ -152,7 +154,7 @@ jobs:
             ${{ env.BD_PREFIX }}
 
       - name: 5段目のデータのキャッシュを復元
-        if: ${{ inputs.mode == 'lab5' || inputs.mode == 'lab10' || inputs.mode == 'lab11' || inputs.mode == 'lab12' || inputs.mode == 'lab13' || inputs.mode == 'lab14' || inputs.mode == 'lab15' || inputs.mode == 'lab16' || inputs.mode == 'lab18' || inputs.mode == 'lab19' || inputs.mode == 'xfetch' }}
+        if: ${{ inputs.mode == 'lab5' || inputs.mode == 'lab10' || inputs.mode == 'lab11' || inputs.mode == 'lab12' || inputs.mode == 'lab13' || inputs.mode == 'lab14' || inputs.mode == 'lab15' || inputs.mode == 'lab16' || inputs.mode == 'lab18' || inputs.mode == 'lab19' || inputs.mode == 'lab20' || inputs.mode == 'xfetch' }}
         uses: actions/cache/restore@v4
         with:
           path: ${{ env.X_PATH }}
@@ -201,7 +203,7 @@ jobs:
           key: ${{ env.BD_PREFIX }}${{ github.run_id }}
 
       - name: 5段目のデータのキャッシュを保存
-        if: ${{ always() && (inputs.mode == 'lab5' || inputs.mode == 'lab10' || inputs.mode == 'lab11' || inputs.mode == 'lab12' || inputs.mode == 'lab13' || inputs.mode == 'lab18' || inputs.mode == 'xfetch') && hashFiles(env.X_PATH) != '' }}
+        if: ${{ always() && (inputs.mode == 'lab5' || inputs.mode == 'lab10' || inputs.mode == 'lab11' || inputs.mode == 'lab12' || inputs.mode == 'lab13' || inputs.mode == 'lab18' || inputs.mode == 'lab20' || inputs.mode == 'xfetch') && hashFiles(env.X_PATH) != '' }}
         uses: actions/cache/save@v4
         with:
           path: ${{ env.X_PATH }}
@@ -226,7 +228,7 @@ jobs:
                   --jq '.actions_caches[2:][] | .id' || true)
             for id in $ids; do gh api -X DELETE "repos/${GITHUB_REPOSITORY}/actions/caches/${id}" || true; done
           fi
-          if [ "${{ inputs.mode }}" = "lab5" ] || [ "${{ inputs.mode }}" = "lab10" ] || [ "${{ inputs.mode }}" = "lab11" ] || [ "${{ inputs.mode }}" = "lab12" ] || [ "${{ inputs.mode }}" = "lab13" ] || [ "${{ inputs.mode }}" = "lab18" ] || [ "${{ inputs.mode }}" = "xfetch" ]; then
+          if [ "${{ inputs.mode }}" = "lab5" ] || [ "${{ inputs.mode }}" = "lab10" ] || [ "${{ inputs.mode }}" = "lab11" ] || [ "${{ inputs.mode }}" = "lab12" ] || [ "${{ inputs.mode }}" = "lab13" ] || [ "${{ inputs.mode }}" = "lab18" ] || [ "${{ inputs.mode }}" = "lab20" ] || [ "${{ inputs.mode }}" = "xfetch" ]; then
             ids=$(gh api "repos/${GITHUB_REPOSITORY}/actions/caches?key=${X_PREFIX}&sort=created_at&direction=desc&per_page=100" \
                   --jq '.actions_caches[2:][] | .id' || true)
             for id in $ids; do gh api -X DELETE "repos/${GITHUB_REPOSITORY}/actions/caches/${id}" || true; done
