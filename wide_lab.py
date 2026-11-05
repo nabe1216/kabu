@@ -584,6 +584,7 @@ W_CAP = 0.15             # 16段目：加重するときの1銘柄の上限（�
 def cap_weights(w: np.ndarray, cap: float) -> np.ndarray:
     """重みを合計1にし、上限を超えた分を、上限に届いていない銘柄に重みの比で配り直す（16段目）。"""
     w = np.asarray(w, dtype=float)
+    w = np.where(np.isfinite(w) & (w > 0), w, 0.0)
     if w.sum() <= 0:
         return np.full(len(w), 1.0 / max(1, len(w)))
     w = w / w.sum()
@@ -598,7 +599,11 @@ def cap_weights(w: np.ndarray, cap: float) -> np.ndarray:
         under = w < cap - 1e-12
         if not under.any():
             break
-        w[under] += ex * w[under] / w[under].sum()
+        su = float(w[under].sum())
+        if su > 0:
+            w[under] += ex * w[under] / su
+        else:                      # 重みのない銘柄しか残っていなければ、等しく配る
+            w[under] += ex / int(under.sum())
     return w
 
 
@@ -649,6 +654,8 @@ def sim(ranks: list, PXM: np.ndarray, DIV: np.ndarray, j0: int, keep: int, nmax:
         if W is not None:              # 16段目：上位 nmax 銘柄の重み（時価総額・値動きの小ささ）で、新しく買う銘柄の額を決める
             top = rk[:nmax]
             raw = np.array([W[i, j] if (W[i, j] == W[i, j] and W[i, j] > 0) else 0.0 for i in top])
+            if (raw > 0).any():           # 重みが分からない銘柄（上場して1年たっていないなど）は、ほかの銘柄の重みの中央値にする
+                raw = np.where(raw > 0, raw, float(np.median(raw[raw > 0])))
             wt = dict(zip(top, cap_weights(raw, W_CAP))) if len(top) else {}
         for i in rk[:nmax]:
             if len(pos) >= nmax:
