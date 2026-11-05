@@ -1764,14 +1764,34 @@ X_SETS = {"div": ("/v2/fins/dividend", "2013-02-20", "date", "D"),              
           "ssr": ("/v2/markets/short-sale-report", "2013-11-07", "disc_date", "D"),  # 公表日ごと
           "ed": ("/v2/fins/earnings-date", "2013-01-01", "date", "D"),              # 予定日を公表・変更した日ごと（始まりは仕様にない）
           "mi": ("/v2/markets/margin-interest", "2008-05-01", "date", "W"),         # 信用取引の週末残高（週の最後の営業日）
-          "fsd2": ("/v2/fins/details", "2008-05-01", "date", "D")}                 # 財務の明細（開示日ごと。プレミアムだけ。12段目。項目は名前でしぼって値ごと持つ）
+          "fsd2": ("/v2/fins/details", "2008-05-01", "date", "D"),                 # 財務の明細（開示日ごと。プレミアムだけ。12段目。項目は名前でしぼって値ごと持つ）
+          # 13段目（J-Quants の残りのデータ）
+          "inv": ("/v2/equities/investor-types", "2008-01-16", None, "R"),          # 投資部門別売買状況（週ごと。期間でまとめて取る）
+          "srt": ("/v2/markets/short-ratio", "2008-11-05", "date", "D"),            # 業種別空売り比率（日ごと。全業種を足す）
+          "mal": ("/v2/markets/margin-alert", "2008-05-08", "date", "D"),           # 日々公表信用取引残高
+          "o225": ("/v2/derivatives/bars/daily/options/225", "2008-05-07", "date", "D"),   # 日経225オプション（日ごとに集計して持つ）
+          "fut": ("/v2/derivatives/bars/daily/futures", "2008-05-07", "date", "D"),        # 先物（プレミアムだけ。商品ごとに集計）
+          "opt": ("/v2/derivatives/bars/daily/options", "2008-05-07", "date", "D"),        # オプション（プレミアムだけ。商品ごとに集計）
+          "msh": ("/v2/edinet/major-shareholders", "2016-06-01", "date", "D"),      # 大株主（提出日ごと）
+          "xsh": ("/v2/edinet/cross-shareholdings", "2020-03-31", "date", "D"),     # 政策保有株式（提出日ごと）
+          "lvh": ("/v2/edinet/large-volume-shareholders", "2021-07-01", "date", "D")}      # 大量保有報告書（提出日ごと）
 X_FIELDS = {"div": {"pub": ("PubDate",), "time": ("PubTime",), "code": ("Code",), "stat": ("StatCode",), "if": ("IFCode",),
                     "fr": ("FRCode",), "term": ("IFTerm",), "rate": ("DivRate",), "cs": ("CommSpecCode",), "rec": ("RecDate",)},
             "ssr": {"disc": ("DiscDate",), "calc": ("CalcDate",), "code": ("Code",), "seller": ("SSName",),
                     "dic": ("DICName",), "fund": ("FundName",), "ratio": ("ShrtPosToSO",)},
             "ed": {"pub": ("PubDate",), "sch": ("SchDate",), "fq": ("FQName",), "fye": ("FYE",), "code": ("Code",)},
             "mi": {"date": ("Date",), "code": ("Code",), "long": ("LongVol",), "short": ("ShrtVol",), "iss": ("IssType",)},
-            "fsd2": {"disc": ("DiscDate",), "time": ("DiscTime",), "code": ("Code",), "doc": ("DocType",), "fs": ()}}   # fs は項目名 → 値
+            "fsd2": {"disc": ("DiscDate",), "time": ("DiscTime",), "code": ("Code",), "doc": ("DocType",), "fs": ()},   # fs は項目名 → 値
+            # 13段目：取り出し方は X_REDUCE（ここは持つ形の名前だけ）
+            "inv": {"pub": (), "st": (), "en": (), "sec": (), "fbuy": (), "fsell": (), "ibuy": (), "isell": ()},
+            "srt": {"date": (), "sell": (), "s1": (), "s2": ()},
+            "mal": {"pub": (), "app": (), "code": ()},
+            "o225": {"date": (), "pvo": (), "cvo": (), "bv": ()},
+            "fut": {"date": (), "prod": (), "oi": (), "vo": ()},
+            "opt": {"date": (), "prod": (), "pvo": (), "cvo": ()},
+            "msh": {"sub": (), "code": (), "doc": (), "trust": (), "top": ()},
+            "xsh": {"sub": (), "code": (), "per": (), "book": (), "dec": (), "inc": (), "iss": ()},
+            "lvh": {"sub": (), "code": (), "doc": (), "typ": (), "ratio": (), "last": ()}}
 X_OPTIONAL = {("ssr", "dic"), ("ssr", "fund"), ("div", "time"), ("ed", "fye"), ("mi", "iss"), ("fsd2", "time"), ("fsd2", "doc")}
 FS_KEEP_WORDS = ("gross", "assets", "liabilities", "loans", "bonds", "borrowings", "debt", "sales", "revenue")
 
@@ -1838,6 +1858,87 @@ def fs_pick(fs: dict) -> dict:
     return out
 
 
+def _red_inv(rows, d):
+    return [(r.get("PubDate"), r.get("StDate"), r.get("EnDate"), r.get("Section"), num(r.get("FrgnBuy")), num(r.get("FrgnSell")),
+             num(r.get("IndBuy")), num(r.get("IndSell"))) for r in rows]
+
+
+def _red_srt(rows, d):
+    if not rows:
+        return []
+    f = lambda k: float(sum(num(r.get(k)) or 0.0 for r in rows))
+    return [(d, f("SellExShortVa"), f("ShrtWithResVa"), f("ShrtNoResVa"))]
+
+
+def _red_mal(rows, d):
+    return [(r.get("PubDate"), r.get("AppDate"), r.get("Code")) for r in rows]
+
+
+def _red_o225(rows, d):
+    rows = [r for r in rows if str(r.get("EmMrgnTrgDiv") or "002") != "001"]
+    if not rows:
+        return []
+    pv = float(sum(num(r.get("Vo")) or 0.0 for r in rows if str(r.get("PCDiv")) == "1"))
+    cv = float(sum(num(r.get("Vo")) or 0.0 for r in rows if str(r.get("PCDiv")) == "2"))
+    cms = sorted({str(r.get("CM")) for r in rows if num(r.get("BaseVol")) is not None})
+    bv = None
+    if cms:
+        vals = [num(r.get("BaseVol")) for r in rows if str(r.get("CM")) == cms[0] and num(r.get("BaseVol")) is not None]
+        bv = float(np.median(vals)) if vals else None
+    return [(d, pv, cv, bv)]
+
+
+def _red_fut(rows, d):
+    g = {}
+    for r in rows:
+        k = str(r.get("ProdCat") or "")
+        a = g.setdefault(k, [0.0, 0.0])
+        a[0] += num(r.get("OI")) or 0.0
+        a[1] += num(r.get("Vo")) or 0.0
+    return [(d, k, v[0], v[1]) for k, v in g.items()]
+
+
+def _red_opt(rows, d):
+    g = {}
+    for r in rows:
+        k = str(r.get("ProdCat") or "")
+        a = g.setdefault(k, [0.0, 0.0])
+        if str(r.get("PCDiv")) == "1":
+            a[0] += num(r.get("Vo")) or 0.0
+        elif str(r.get("PCDiv")) == "2":
+            a[1] += num(r.get("Vo")) or 0.0
+    return [(d, k, v[0], v[1]) for k, v in g.items()]
+
+
+def _red_msh(rows, d):
+    out = []
+    for r in rows:
+        hs = r.get("Hldrs") or []
+        trust = float(sum(num(h.get("ShsRatio")) or 0.0 for h in hs if "信託口" in str(h.get("HldrName") or "")))
+        top = float(sum(num(h.get("ShsRatio")) or 0.0 for h in hs))
+        out.append((r.get("SubDate"), r.get("Code"), r.get("DocTypeCode"), trust, top))
+    return out
+
+
+def _red_xsh(rows, d):
+    out = []
+    for r in rows:
+        rp = r.get("Report") or {}
+        out.append((r.get("SubDate"), r.get("Code"), r.get("PerEn"), num(rp.get("ListedBookVal")), num(rp.get("ListedDecSaleAmt")),
+                    num(rp.get("ListedIncAcqCost")), num(rp.get("ListedIss"))))
+    return out
+
+
+def _red_lvh(rows, d):
+    return [(r.get("SubDate"), r.get("Code"), r.get("DocTypeCode"), r.get("LargeHldgTypeCode"), num(r.get("TotalShsRatio")),
+             num(r.get("TotalShsRatioLast"))) for r in rows]
+
+
+X_REDUCE = {"inv": _red_inv, "srt": _red_srt, "mal": _red_mal, "o225": _red_o225, "fut": _red_fut, "opt": _red_opt,
+            "msh": _red_msh, "xsh": _red_xsh, "lvh": _red_lvh}
+X13 = ("inv", "srt", "mal", "o225", "fut", "opt", "msh", "xsh", "lvh")
+
+
 def x_load() -> dict:
     if X_CACHE.exists():
         with open(X_CACHE, "rb") as f:
@@ -1858,6 +1959,8 @@ def x_save(xs: dict, note: str = "") -> None:
 def x_days(store: dict, name: str) -> list:
     """その種類で取る日。探す段階では、探す期間の始まりの500日前から（それより前は使わないので取らない）。"""
     _p, st_, _k, kind = X_SETS[name]
+    if kind == "R":
+        return ["ALL"]
     start = np.datetime64(st_)
     if STAGE == "explore":
         start = max(start, EXPLORE_FROM - np.timedelta64(500, "D"))
@@ -1907,6 +2010,25 @@ def fetch_x(jq, store: dict, xs: dict, names=None) -> bool:
         def bad(why):
             st["bad"] = why
             log(f"  ■ {name} は取るのをやめます（{why}）。この種類の型は「保留」になります")
+        if name in X_REDUCE and X_SETS[name][3] == "R":          # 期間でまとめて取る（投資部門別売買状況）
+            try:
+                st_ = X_SETS[name][1]
+                if STAGE == "explore":
+                    st_ = max(np.datetime64(st_), EXPLORE_FROM - np.timedelta64(500, "D")).astype(str)
+                rows = jq.get(path, {"from": str(st_), "to": str(date.today())})
+            except yb.NotAllowed as e:
+                bad(f"プランに含まれていない可能性があります：{e}")
+                continue
+            except Exception as e:
+                bad(f"取れません：{e}")
+                continue
+            if rows:
+                st["keys"] = list(rows[0].keys())
+                log("  受け取った項目 … " + "・".join(st["keys"][:20]) + ("…" if len(st["keys"]) > 20 else ""))
+            st["rows"] = X_REDUCE[name](rows or [], "ALL")
+            st["done"].add("ALL")
+            x_save(xs, f"{name} を取り終えました（{len(st['rows']):,}件）")
+            continue
         # 最初に、最近の日で取れるか確かめる（取れなければ、この種類は保留）
         if not st["done"]:
             probe = days[-3] if len(days) >= 3 else days[-1]
@@ -1940,6 +2062,18 @@ def fetch_x(jq, store: dict, xs: dict, names=None) -> bool:
                     break
                 continue
             fails, ok_once = 0, True
+            if name in X_REDUCE:
+                if rows and st["keys"] is None:
+                    st["keys"] = list(rows[0].keys())
+                    log("  受け取った項目 … " + "・".join(st["keys"][:24]) + ("…" if len(st["keys"]) > 24 else ""))
+                st["rows"].extend(X_REDUCE[name](rows or [], d))
+                st["done"].add(d)
+                if n % 500 == 0:
+                    log(f"  {n}/{len(todo)}（開始から{elapsed():.0f}分）")
+                if (time.monotonic() - last) / 60 >= SAVE_EVERY_MIN:
+                    x_save(xs, "途中まで保存しました")
+                    last = time.monotonic()
+                continue
             if name == "fsd2":
                 if rows and st["keys"] is None:
                     st["keys"] = list(rows[0].keys())
@@ -2263,6 +2397,341 @@ def lab12_scores(store: dict, xs: dict):
     return {"GPA": (gpa, "粗利益の大きさ（売上総利益 ÷ 総資産。金融を除く）"),
             "FSCORE": (fscore, "Fスコア（9項目の合計。金融を除く）"),
             "FSV": (fsv, "割安株の中のFスコア（純資産に対して安い上位30％の中で、Fスコアの大きい順）")}
+
+
+def lab13(store: dict, xs: dict) -> int:
+    """13段目：J-Quants の残りのデータの型（計画は wide_lab_plan13_2026-11-05）。"""
+    log("13段目（J-Quants の残りのデータの型）を回します（指標を作っています）…")
+    D = build(store)
+    dates, UNI, me_idx, cal = D["dates"], D["UNI"], D["me_idx"], D["cal"]
+    T = len(cal)
+    C = D["C"]
+    j0 = next((j for j, t in enumerate(me_idx) if t >= 252), None)
+    t0 = me_idx[j0]
+    ev = dates[j0:]
+    yrs = max((ev[-1] - ev[0]).days / 365.25, 0.5)
+    E = ev_extract(store, D)
+    jm = np.searchsorted(np.array(me_idx), np.arange(T), side="left") - 1
+    TXv, TXliq = topix_taxed(D, j0)
+    ST_TX = half_stats(TXv, ev)
+    codes = D["codes"]
+    ci = {c: i for i, c in enumerate(codes)}
+    calD = cal.astype("datetime64[D]")
+    cal_s = [str(x)[:10] for x in calD]
+
+    def t_after(dstr):           # その日より後の最初の営業日の番号（その日に公表されたものは、次の営業日から使える）
+        return int(np.searchsorted(calD, np.datetime64(str(dstr)[:10]), side="right"))
+
+    def t_on(dstr):              # その日（営業日でなければ次の営業日）の番号
+        return int(np.searchsorted(calD, np.datetime64(str(dstr)[:10]), side="left"))
+
+    def daily(name, fn):         # 日ごとの値（その日のデータ）を暦にそろえる。ない日は NaN
+        out = np.full(T, np.nan)
+        for r in x_rows(xs, name):
+            k = t_on(r["date"])
+            if k < T and cal_s[k] == str(r["date"])[:10]:
+                v = fn(r)
+                if v is not None:
+                    out[k] = v
+        return out
+
+    def lag1(x):                 # 前の営業日までのデータで決める（その日の終値で売り買い）
+        return np.r_[False, x[:-1]]
+
+    def roll_q(x, w, q):
+        return pd.Series(x).rolling(w, min_periods=int(w * 0.8)).quantile(q).to_numpy()
+
+    res_t = {}
+
+    def run_timing(key, lab, variants):
+        if (ONLY and key not in ONLY):
+            return
+        r = {"lab": lab, "var": {}}
+        for nm, vlab, x in variants:
+            x = np.asarray(x, dtype=bool)
+            if x[t0:].sum() == 0:
+                log(f"  {key}{nm} … 一度も持たない（データがない）")
+            v, liq, s_ = cal_sim(x, D, t0)
+            rnd = [half_stats(cal_sim(spells_placebo(x, t0, 7000 + k), D, t0)[0], ev) for k in range(N_RAND)]
+            nb = {"前半": sum(1 for t in s_["buy_t"] if pd.Timestamp(cal[t]) < SPLIT),
+                  "後半": sum(1 for t in s_["buy_t"] if pd.Timestamp(cal[t]) >= SPLIT)}
+            r["var"][nm] = {"st": half_stats(v, ev), "liq": liq, "s": s_, "rnd": rnd, "vlab": vlab, "nb": nb,
+                            "held": float(x[t0:].mean()), "n_cand": int(x[t0:].sum()), "fill": 1.0}
+        r["verdict"], r["detail"] = judge2(r["var"], ST_TX, lambda xx: xx["held"] <= 0.0)
+        res_t[key] = r
+        log(f"  {key} … {r['verdict']}")
+    # ── 投資部門別売買状況（東証一部、2022年4月からはプライム）
+    inv = x_rows(xs, "inv")
+    if inv:
+        secs = {}
+        for r in inv:
+            secs[str(r["sec"])] = secs.get(str(r["sec"]), 0) + 1
+        log("  投資部門別の市場区分（件数） … " + "・".join(f"{k} {v}" for k, v in sorted(secs.items(), key=lambda x: -x[1])[:10]))
+        first = {}
+        for r in inv:
+            if str(r["sec"]) not in ("TSE1st", "TSEPrime"):
+                continue
+            k = (str(r["sec"]), str(r["st"]), str(r["en"]))
+            if k not in first or str(r["pub"]) < str(first[k]["pub"]):
+                first[k] = r                       # 訂正のあとの値は使わない（その時点で分かっていた値）
+        wk = sorted(first.values(), key=lambda r: str(r["en"]))
+        fnet = np.zeros(T)
+        inet = np.zeros(T)
+        cntw = np.zeros(T)
+        for r in wk:
+            pub = str(r["pub"] or "")[:10]
+            if len(pub) != 10:
+                pub = (pd.Timestamp(str(r["en"])[:10]) + pd.Timedelta(days=7)).strftime("%Y-%m-%d")
+            k = t_after(pub)
+            if k >= T:
+                continue
+            fnet[k] += (r["fbuy"] or 0.0) - (r["fsell"] or 0.0)
+            inet[k] += (r["isell"] or 0.0) - (r["ibuy"] or 0.0)
+            cntw[k] += 1
+        idx = np.nonzero(cntw)[0]
+
+        def lastn(netv, n):
+            out = np.zeros(T, dtype=bool)
+            if len(idx) == 0:
+                return out
+            cs = np.cumsum(netv[idx])
+            for m, k in enumerate(idx):
+                lo = cs[m - n] if m - n >= 0 else 0.0
+                val = cs[m] - lo
+                nxt = idx[m + 1] if m + 1 < len(idx) else T
+                out[k:nxt] = (m + 1 >= n) and (val > 0)
+            return out
+        run_timing("INVF", "海外投資家の買い越し（東証一部・プライム）が直近 n 週の合計でプラスのとき持つ",
+                   (("A", "4週", lastn(fnet, 4)), ("B", "13週", lastn(fnet, 13))))
+        run_timing("INDV", "個人の売り越しが直近 n 週の合計でプラスのとき持つ（逆張り）",
+                   (("A", "4週", lastn(inet, 4)), ("B", "13週", lastn(inet, 13))))
+    # ── 業種別空売り比率（全業種の合計）
+    if x_rows(xs, "srt"):
+        ratio = daily("srt", lambda r: (r["s1"] + r["s2"]) / (r["sell"] + r["s1"] + r["s2"]) if (r["sell"] + r["s1"] + r["s2"]) > 0 else None)
+        m20 = pd.Series(ratio).rolling(20, min_periods=15).mean().to_numpy()
+        run_timing("SRAT", "全業種の空売りの比率（20日平均）が過去250日の中で高いとき持つ（逆張り）",
+                   (("A", "中央値より上", lag1(np.nan_to_num(m20 > roll_q(m20, 250, 0.5)))),
+                    ("B", "上から30％", lag1(np.nan_to_num(m20 > roll_q(m20, 250, 0.7))))))
+    # ── 日経225オプション
+    if x_rows(xs, "o225"):
+        bv = daily("o225", lambda r: r["bv"])
+        bvf = pd.Series(bv).ffill().to_numpy()
+        run_timing("VOL225", "日経225オプションの基準ボラティリティ（いちばん近い限月）が過去250日の中で低いとき持つ",
+                   (("A", "中央値より下", lag1(np.nan_to_num(bvf < roll_q(bvf, 250, 0.5)))),
+                    ("B", "下から70％", lag1(np.nan_to_num(bvf < roll_q(bvf, 250, 0.7))))))
+        pcr = daily("o225", lambda r: r["pvo"] / r["cvo"] if r["cvo"] else None)
+        p20 = pd.Series(pcr).rolling(20, min_periods=15).mean().to_numpy()
+        run_timing("PCR", "日経225オプションのプット ÷ コールの出来高（20日平均）が過去250日の中で高いとき持つ（逆張り）",
+                   (("A", "中央値より上", lag1(np.nan_to_num(p20 > roll_q(p20, 250, 0.5)))),
+                    ("B", "上から30％", lag1(np.nan_to_num(p20 > roll_q(p20, 250, 0.7))))))
+    # ── オプション（全商品）
+    opt = x_rows(xs, "opt")
+    if opt:
+        pv, cv = np.zeros(T), np.zeros(T)
+        have = np.zeros(T, dtype=bool)
+        prods = {}
+        for r in opt:
+            prods[r["prod"]] = prods.get(r["prod"], 0.0) + (r["pvo"] or 0.0) + (r["cvo"] or 0.0)
+            k = t_on(r["date"])
+            if k < T and cal_s[k] == str(r["date"])[:10]:
+                pv[k] += r["pvo"] or 0.0
+                cv[k] += r["cvo"] or 0.0
+                have[k] = True
+        log("  オプションの商品（出来高の多い順） … " + "・".join(f"{k} {v:,.0f}" for k, v in sorted(prods.items(), key=lambda x: -x[1])[:8]))
+        pa = np.where(have & (cv > 0), pv / np.where(cv > 0, cv, 1.0), np.nan)
+        a20 = pd.Series(pa).rolling(20, min_periods=15).mean().to_numpy()
+        run_timing("PCRA", "オプション全商品のプット ÷ コールの出来高（20日平均）が過去250日の中で高いとき持つ（逆張り）",
+                   (("A", "中央値より上", lag1(np.nan_to_num(a20 > roll_q(a20, 250, 0.5)))),
+                    ("B", "上から30％", lag1(np.nan_to_num(a20 > roll_q(a20, 250, 0.7))))))
+    # ── 先物（日経225・TOPIX の先物の建玉の合計）
+    fut = x_rows(xs, "fut")
+    if fut:
+        tot = {}
+        for r in fut:
+            tot[r["prod"]] = tot.get(r["prod"], 0.0) + (r["oi"] or 0.0)
+        log("  先物の商品（建玉の多い順） … " + "・".join(f"{k} {v:,.0f}" for k, v in sorted(tot.items(), key=lambda x: -x[1])[:10]))
+        use = {k for k in tot if any(w in k.upper() for w in ("225", "TOPIX", "TPX"))} or set(tot)
+        log("  建玉を足す商品 … " + "・".join(sorted(use)))
+        oi = np.full(T, np.nan)
+        for r in fut:
+            if r["prod"] not in use:
+                continue
+            k = t_on(r["date"])
+            if k < T and cal_s[k] == str(r["date"])[:10]:
+                oi[k] = (0.0 if np.isnan(oi[k]) else oi[k]) + (r["oi"] or 0.0)
+        oif = pd.Series(oi).ffill().to_numpy()
+
+        def grew(n):
+            prev = np.r_[np.full(n, np.nan), oif[:-n]]
+            return lag1(np.nan_to_num(oif > prev))
+        run_timing("FOI", "日経225・TOPIX の先物の建玉の合計が n 日前より多いとき持つ",
+                   (("A", "20日", grew(20)), ("B", "60日", grew(60))))
+    # ── 出来事の型（MALERT・LVH）
+    traded = np.isfinite(C) & (C > 0)
+
+    def elig(i, t):
+        return 0 <= t < T and jm[t] >= 0 and bool(UNI[i, jm[t]]) and bool(traded[i, t])
+
+    def pool_all(t):
+        j = jm[t]
+        return np.nonzero(UNI[:, j] & traded[:, t])[0] if j >= 0 else np.zeros(0, dtype=int)
+
+    def placebo_run(cands, pool_fn, seed0):
+        v, liq, s_ = ev_sim(cands, D, E["divpay"], t0)
+        rnd, rnb = [], []
+        for k in range(N_RAND):
+            rg = np.random.default_rng(seed0 + k)
+            pl = {}
+            for t, cl in cands.items():
+                pool = pool_fn(t)
+                if len(pool) == 0:
+                    continue
+                pick = rg.choice(pool, size=min(len(cl), len(pool)), replace=False)
+                pl[t] = [(float(rg.random()), int(i), t_out) for i, (_p, _i, t_out) in zip(pick, cl)]
+            pv_, _l, ps_ = ev_sim(pl, D, E["divpay"], t0)
+            rnd.append(half_stats(pv_, ev))
+            rnb.append(ps_["n_buy"])
+        nb = {"前半": sum(1 for t in s_["buy_t"] if pd.Timestamp(cal[t]) < SPLIT),
+              "後半": sum(1 for t in s_["buy_t"] if pd.Timestamp(cal[t]) >= SPLIT)}
+        return {"st": half_stats(v, ev), "liq": liq, "s": s_, "rnd": rnd, "nb": nb, "held": float(np.mean(s_["held"])) if s_["held"] else 0.0,
+                "fill": float(np.mean(rnb)) / max(1, s_["n_buy"]), "n_cand": sum(len(x) for x in cands.values())}
+    res_e = {}
+
+    def run_event(key, lab, variants, seed0):
+        if ONLY and key not in ONLY:
+            return
+        r = {"lab": lab, "var": {}}
+        for nm, vlab, cands in variants:
+            r["var"][nm] = dict(placebo_run(cands, pool_all, seed0), vlab=vlab)
+        r["verdict"], r["detail"] = judge2(r["var"], ST_TX, lambda x: min(x["nb"].values()) < EV_MIN_BUYS or x["fill"] < RND_FILL_MIN)
+        res_e[key] = r
+        log(f"  {key} … {r['verdict']}")
+    mal = x_rows(xs, "mal")
+    if mal:
+        seen = {}
+        for r in mal:
+            c = yb.norm_code(r["code"] or "")
+            if c in ci and len(str(r["pub"] or "")) >= 10:
+                seen.setdefault(ci[c], set()).add(t_after(r["pub"]))
+        evs = []
+        for i, ts in seen.items():
+            prev = -10 ** 9
+            for t in sorted(ts):
+                if t - prev > 60:
+                    evs.append((i, t))
+                prev = t
+        log(f"  日々公表の対象に入った最初の日 … {len(evs):,}回")
+        rg = np.random.default_rng(13)
+
+        def mk_mal(H):
+            out = {}
+            for i, t in evs:
+                if t >= t0 and elig(i, t):
+                    out.setdefault(t, []).append((float(rg.random()), i, t + H))
+            return out
+        run_event("MALERT", "日々公表信用取引残高の対象に入った最初の日の次の営業日に買う",
+                  (("A", "20日持つ", mk_mal(20)), ("B", "5日持つ", mk_mal(5))), 13000)
+    lvh = x_rows(xs, "lvh")
+    if lvh:
+        evs = []
+        for r in lvh:
+            c = yb.norm_code(r["code"] or "")
+            if c in ci and str(r["typ"]) == "1" and str(r["doc"]) == "350" and len(str(r["sub"] or "")) >= 10:
+                evs.append((ci[c], t_after(r["sub"]), r["ratio"] or 0.0))
+        log(f"  新しく5％を超えた報告 … {len(evs):,}回")
+
+        def mk_lvh(H):
+            out = {}
+            for i, t, ratio in evs:
+                if t >= t0 and elig(i, t):
+                    out.setdefault(t, []).append((ratio, i, t + H))
+            return out
+        run_event("LVH", "大量保有報告書（新しく5％を超えた報告）の次の営業日に買う",
+                  (("A", "60日持つ", mk_lvh(60)), ("B", "20日持つ", mk_lvh(20))), 14000)
+    # ── 報告（時期を見る型・出来事の型）
+    HH = ("前半", "後半")
+    print("\n【日本株の手法・13段目（J-Quants の残りのデータの型）（wide_lab）：東証全銘柄】（基準は結果を見る前に決めたもの。計画はプロジェクトの wide_lab_plan13_2026-11-05）")
+    stage_note()
+    print(f"  期間 … 比べる期間 {ev[0].date()}〜{ev[-1].date()}（{len(ev)}か月。前半 〜{(SPLIT - pd.Timedelta(days=1)).date()}・後半 {SPLIT.date()}〜）")
+    print(f"  TOPIX（税あり） … {ST_TX['前半']['ann']:.1f} ／ {ST_TX['後半']['ann']:.1f}")
+    print("  時期を見る型 … 1306 を持つか現金にするか（片道0.1％・税）。でたらめは、持つ期間の長さをそのままに順番を入れ替えたもの。合図は前の営業日までのデータで作る")
+    for res in (res_t, res_e):
+        for key, r in res.items():
+            print(f"     {key:<7}{r['lab']} … {r['verdict']}")
+            for nm, x in r["var"].items():
+                rn = {h: float(np.mean([y[h]['ann'] for y in x['rnd']])) for h in HH}
+                dd = " ".join(f"{r['detail'][(nm, h)][0]:+.1f}/{r['detail'][(nm, h)][1]:+.1f}・{r['detail'][(nm, h)][2]}回" for h in HH)
+                extra = (f"持っていた日の割合 {x['held'] * 100:.0f}％" if res is res_t else
+                         f"合図 {x['n_cand']:,}回・買い 前半 {x['nb']['前半']}回・後半 {x['nb']['後半']}回・平均の持ち数 {x['held']:.1f}・でたらめの買いの回数 {x['fill'] * 100:.0f}％")
+                print(f"         {nm}（{x['vlab']}） {x['st']['前半']['ann']:6.1f} ／ {x['st']['後半']['ann']:6.1f}（最大下落 {x['st']['通し']['mdd']:.0f}％）［{dd}］"
+                      f" でたらめ {rn['前半']:.1f} ／ {rn['後半']:.1f}・{extra}・清算後の通し {((x['liq'] / CAP) ** (1 / yrs) - 1) * 100:.1f}％")
+    print("\n  判定のまとめ（時期を見る型・出来事の型）")
+    allr = {**res_t, **res_e}
+    for v in ("候補", "範囲の中では効く", "効かない", "保留（データ不足）"):
+        ks = [k for k, r in allr.items() if r["verdict"] == v]
+        print(f"     {v} … " + ("・".join(ks) if ks else "なし"))
+    # ── 毎月の点数の型（MSH・XSH）は1回目と同じ道具で
+    extra = {}
+    msh = x_rows(xs, "msh")
+    if msh:
+        by = {}
+        for r in msh:
+            c = yb.norm_code(r["code"] or "")
+            if len(str(r["sub"] or "")) >= 10:
+                by.setdefault(c, []).append((str(r["sub"])[:10], r["trust"]))
+        for c in by:
+            by[c].sort()
+
+        def msh_fn(DD):
+            out = np.full((len(DD["codes"]), len(DD["dates"])), np.nan)
+            me = [d.strftime("%Y-%m-%d") for d in DD["dates"]]
+            for i, c in enumerate(DD["codes"]):
+                lst = by.get(c)
+                if not lst or len(lst) < 2:
+                    continue
+                subs = [x[0] for x in lst]
+                for j, m in enumerate(me):
+                    k = int(np.searchsorted(subs, m, side="left")) - 1
+                    if k >= 1:
+                        out[i, j] = lst[k][1] - lst[k - 1][1]
+            return out + np.random.default_rng(1305).random(len(DD["codes"]))[:, None] * 1e-9
+        extra["MSH"] = (msh_fn, "大株主の「信託口」の比率の合計が、前の報告より増えた幅")
+    xsh = x_rows(xs, "xsh")
+    if xsh:
+        byx = {}
+        for r in xsh:
+            c = yb.norm_code(r["code"] or "")
+            if len(str(r["sub"] or "")) >= 10:
+                byx.setdefault(c, []).append((str(r["sub"])[:10], r))
+        for c in byx:
+            byx[c].sort(key=lambda x: x[0])
+
+        def xsh_fn(DD):
+            out = np.full((len(DD["codes"]), len(DD["dates"])), np.nan)
+            me = [d.strftime("%Y-%m-%d") for d in DD["dates"]]
+            MC = DD["MCAP"]
+            for i, c in enumerate(DD["codes"]):
+                lst = byx.get(c)
+                if not lst:
+                    continue
+                subs = [x[0] for x in lst]
+                for j, m in enumerate(me):
+                    k = int(np.searchsorted(subs, m, side="left")) - 1
+                    if k < 0 or not (MC[i, j] > 0):
+                        continue
+                    if (pd.Timestamp(m) - pd.Timestamp(subs[k])).days > 450:
+                        continue
+                    r = lst[k][1]
+                    dec = r["dec"] if r["dec"] is not None else 0.0          # 有価証券報告書があって、売った額の記載がなければ0（持ち合いがない・減らしていない）
+                    out[i, j] = dec / MC[i, j]
+            return out + np.random.default_rng(1306).random(len(DD["codes"]))[:, None] * 1e-12
+        extra["XSH"] = (xsh_fn, "持ち合い株を減らして売った額 ÷ 時価総額（直近の有価証券報告書）")
+        START_T["XSH"] = int(np.searchsorted(calD, np.datetime64("2021-07-30"), side="left"))
+    if extra:
+        global LAB_TITLE
+        LAB_TITLE = "13段目（J-Quants の残りのデータ：毎月の点数）"
+        lab1(store, extra=extra)
+    return 0
 
 
 def lab5(store: dict, xs: dict) -> int:
@@ -3201,7 +3670,7 @@ def bd_score(bd: dict, kind: str):
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab5", "lab6", "lab7", "lab8", "lab9", "lab10", "lab11", "lab12", "xfetch"], default="lab1")
+    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab5", "lab6", "lab7", "lab8", "lab9", "lab10", "lab11", "lab12", "lab13", "xfetch"], default="lab1")
     ap.add_argument("--combo", default="", help="3回目：1回目で「範囲の中では効く」以上だった型の記号（カンマ区切り）。2つ以上なら SEL として回す")
     ap.add_argument("--only", default="", help="回す型の記号（カンマ区切り。空欄なら全部）。確かめる段階で候補だけを回すとき")
     ap.add_argument("--cfg", default="", help="7段目の確かめる段階で回す組み立て（例: VQM/TOP500/20/Q,NXG/TOP500/20/Q）")
@@ -3217,6 +3686,8 @@ def main() -> int:
         LAB_TITLE, LAB_PLAN = "5段目（残りの型：毎月の点数）", "wide_lab_plan5_2026-11-04"
     elif args.mode == "lab12":
         LAB_TITLE, LAB_PLAN = "12段目（財務の明細の型）", "wide_lab_plan12_2026-11-05"
+    elif args.mode == "lab13":
+        LAB_TITLE, LAB_PLAN = "13段目（J-Quants の残りのデータ）", "wide_lab_plan13_2026-11-05"
     if LONG:
         yb.LONG_MODE = True          # 株価を「20年前まで」で取る。取れなければプレミアムではないので止まる
         yb.API_SLEEP = float(os.environ.get("LONG_API_SLEEP", "0.25"))    # プレミアムは呼び出しの上限が大きい
@@ -3247,6 +3718,21 @@ def main() -> int:
         return lab6(store)
     if args.mode == "lab9":
         return lab9(store)
+    if args.mode == "lab13":
+        xs = x_load()
+        if not x_complete(store, xs, X13):
+            key = os.environ.get("J_QUANTS_API_KEY")
+            if not key:
+                print("J_QUANTS_API_KEY が設定されていません")
+                return 2
+            if not fetch_x(yb.JQ(key), store, xs, X13):
+                print("\n■ まだ終わっていません（13段目のデータを取っている途中です）。同じ設定のまま、もう一度押してください。")
+                return EXIT_UNFINISHED
+        for n in X13:
+            st = xs.get(n, {})
+            log(f"  {n} … {len(st.get('rows', [])):,}件・取れた日 {len(st.get('done', ()))}日・取れなかった日 {len(st.get('fail', ()))}日"
+                + (f"・取るのをやめた：{st['bad']}" if st.get("bad") else ""))
+        return lab13(store, xs)
     if args.mode == "lab12":
         xs = x_load()
         if not x_complete(store, xs, ("fsd2",)):
