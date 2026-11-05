@@ -5297,7 +5297,7 @@ def lab20(store: dict, xs: dict) -> int:
     print("  でたらめ … 局面の続いた長さをそのままに、順番を入れ替えたもの（20回）。判定は A・B の両方・前半と後半の両方で TOPIX +2pt・でたらめ +2pt かつ18回以上")
     print(f"  TOPIX（税あり） … {ST_TX['前半']['ann']:.1f} ／ {ST_TX['後半']['ann']:.1f}（通し {ST_TX['通し']['ann']:.1f}・最大下落 {ST_TX['通し']['mdd']:.0f}％・清算後の通し {((TXliq / CAP) ** (1 / yrs) - 1) * 100:.1f}％）")
     for k, (ds, vs) in ext["series"].items():
-        print(f"  データ {EXT_LAB.get(k, k)} … {str(ds[0])}〜{str(ds[-1])}（{len(ds):,}日・{(ext.get('src') or {}).get(k, 'FRED')}）")
+        print(f"  データ {EXT_LAB.get(k, k)} … {str(ds[0])}〜{str(ds[-1])}（{len(ds):,}日・{(ext.get('src') or {}).get(k, '財務省' if k == 'JP10' else 'FRED')}）")
     if ext.get("bad"):
         print(f"  取れなかったデータ … {ext['bad']}")
     print("\n  1. 型ごとの成績（年率％。「前半 ／ 後半」。［TOPIX との差／でたらめとの差・でたらめを上回った回数］）")
@@ -5315,7 +5315,7 @@ def lab20(store: dict, xs: dict) -> int:
         print("\n  参考（判定には使わない）：業種の大型株をずっと持った成績（前半 ／ 後半・清算後の通し）")
         for g, (sx, liq) in ref.items():
             print(f"     {names[g]} … {sx['前半']['ann']:.1f} ／ {sx['後半']['ann']:.1f}（最大下落 {sx['通し']['mdd']:.0f}％・清算後の通し {((liq / CAP) ** (1 / yrs) - 1) * 100:.1f}％）")
-    print("\n  2. 判定のまとめ")
+    print("\n  2. 判定のまとめ" + ("（見ていない期間。plan20 の9：探す段階で効かなかったので参考。確立とは呼ばない）" if (LONG and STAGE == "confirm") else ""))
     for v in ("候補", "範囲の中では効く", "効かない", "保留（データ不足）"):
         ks = [k for k, r in res.items() if r["verdict"] == v]
         print(f"     {v} … " + ("・".join(ks) if ks else "なし"))
