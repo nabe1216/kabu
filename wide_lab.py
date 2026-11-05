@@ -4900,6 +4900,393 @@ def mals_score(xs: dict):
     return fn
 
 
+# ── 20段目：市況（日経平均・原油・金利・為替・VIX）で切り替える（計画は wide_lab_plan20_2026-11-05）
+EXT_FRED = {"NK": "NIKKEI225", "OIL": "DCOILWTICO", "US10": "DGS10", "YEN": "DEXJPUS", "VIX": "VIXCLS"}
+EXT_MOF = ("https://www.mof.go.jp/jgbs/reference/interest_rate/data/jgbcm_all.csv",
+           "https://www.mof.go.jp/jgbs/reference/interest_rate/jgbcm.csv")
+EXT_LAB = {"NK": "日経平均", "OIL": "原油（WTI）", "US10": "米国の10年金利", "JP10": "日本の10年金利", "YEN": "ドル円", "VIX": "VIX"}
+EXT_LAG_DAYS = 7          # 月末より7日以上前の値だけを使う（公表の遅れのため）
+EXT_A_LAG, EXT_B_WIN = 63, 250
+
+
+def _mof_date(s: str):
+    """財務省の基準日（例 R6.4.1・H30.12.28・S49.9.24）を日付にする。"""
+    s = str(s).strip()
+    if not s or s[0] not in "SHR":
+        try:
+            return np.datetime64(pd.Timestamp(s).date())
+        except Exception:
+            return None
+    base = {"S": 1925, "H": 1988, "R": 2018}[s[0]]
+    try:
+        y, m, d = (int(x) for x in s[1:].split("."))
+        return np.datetime64(f"{base + y:04d}-{m:02d}-{d:02d}")
+    except Exception:
+        return None
+
+
+def fetch_ext() -> dict:
+    """市況のデータ（FRED と財務省）を取る。1つでも取れなければ、取れたものだけ返す（取れなかったものは bad に書く）。"""
+    import io
+    import requests
+    out, bad = {}, {}
+    for k, sid in EXT_FRED.items():
+        try:
+            r = requests.get("https://fred.stlouisfed.org/graph/fredgraph.csv", params={"id": sid}, timeout=60,
+                             headers={"User-Agent": "Mozilla/5.0 (research script)"})
+            r.raise_for_status()
+            df = pd.read_csv(io.BytesIO(r.content))
+            dcol = df.columns[0]
+            v = pd.to_numeric(df[df.columns[-1]], errors="coerce")
+            d = pd.to_datetime(df[dcol], errors="coerce")
+            ok = d.notna() & v.notna()
+            out[k] = (d[ok].to_numpy(dtype="datetime64[D]"), v[ok].to_numpy(dtype=float))
+            log(f"  {EXT_LAB[k]}（FRED {sid}） … {int(ok.sum()):,}日（{str(out[k][0][0])}〜{str(out[k][0][-1])}）")
+        except Exception as e:
+            bad[k] = f"{type(e).__name__}: {str(e)[:80]}"
+            log(f"  {EXT_LAB[k]}（FRED {sid}） … 取れませんでした（{bad[k]}）")
+    rows = {}
+    for url in EXT_MOF:
+        try:
+            r = requests.get(url, timeout=60, headers={"User-Agent": "Mozilla/5.0 (research script)"})
+            r.raise_for_status()
+            txt = r.content.decode("cp932", errors="replace")
+            df = pd.read_csv(io.StringIO(txt), skiprows=1)
+            col = next((c for c in df.columns if str(c).strip() == "10年"), None)
+            if col is None:
+                raise KeyError("10年の列がない")
+            for s, v in zip(df[df.columns[0]], pd.to_numeric(df[col], errors="coerce")):
+                d = _mof_date(s)
+                if d is not None and v == v:
+                    rows[d] = float(v)
+        except Exception as e:
+            bad.setdefault("JP10", "")
+            bad["JP10"] += f"{url.rsplit('/', 1)[1]}: {type(e).__name__}: {str(e)[:60]} "
+    if rows:
+        ds = np.array(sorted(rows), dtype="datetime64[D]")
+        out["JP10"] = (ds, np.array([rows[d] for d in ds], dtype=float))
+        log(f"  {EXT_LAB['JP10']}（財務省） … {len(ds):,}日（{str(ds[0])}〜{str(ds[-1])}）")
+        if "JP10" in bad and len(rows) > 1000:
+            log(f"  （一部取れず：{bad['JP10']}）")
+            bad.pop("JP10")
+    return {"series": out, "bad": bad, "at": str(date.today())}
+
+
+def ext_flags(ext: dict, dates) -> dict:
+    """月末ごとの「上昇局面」（A＝63営業日前より高い・B＝250営業日の平均より高い）。値は 1.0／0.0、決められない月は空。"""
+    out = {}
+    for k, (ds, vs) in ext.get("series", {}).items():
+        fa = np.full(len(dates), np.nan)
+        fb = np.full(len(dates), np.nan)
+        for j, d in enumerate(dates):
+            cut = np.datetime64(pd.Timestamp(d).date()) - np.timedelta64(EXT_LAG_DAYS, "D")
+            i = int(np.searchsorted(ds, cut, side="right")) - 1
+            if i >= EXT_A_LAG:
+                fa[j] = 1.0 if vs[i] > vs[i - EXT_A_LAG] else 0.0
+            if i >= EXT_B_WIN - 1:
+                fb[j] = 1.0 if vs[i] > float(np.mean(vs[i - EXT_B_WIN + 1:i + 1])) else 0.0
+        out[k] = {"A": fa, "B": fb}
+    return out
+
+
+def mp_sim(on: np.ndarray, D: dict, j0: int, pick_on, pick_off=None):
+    """月末ごとに切り替える運用（20段目）。on[j] が真の月は pick_on(j) の株（なければ 1306）、偽の月は pick_off(j)（なければ 1306）。
+    局面が続くあいだは同じ株を持ち、配当と現金は月末に今の持ち株へ比率どおりに足す（資産の1％を超えるとき）。"""
+    PXM, DIV, cal, me_idx, tp = D["PXM"], D["DIV"], D["cal"], D["me_idx"], D["tp"]
+    M = len(me_idx)
+    px_e = np.array([float(tp["c"][t]) for t in me_idx])
+    dist = [(np.datetime64(pd.Timestamp(d).date()), a / 100.0) for d, a in yb.ETF_DIST.get("1306", ())]
+    cash, loss = float(CAP), 0.0
+    pos = {}                    # 資産（株の番号か "E"）→ [口数, 取得の額]
+    leg = None
+    vals, st = [], {"switch": 0, "on_m": 0, "tax": 0.0, "n_hold": []}
+
+    def price(a, j):
+        return px_e[j] if a == "E" else float(PXM[a, j])
+
+    def sell(a, j, frac=1.0):
+        nonlocal cash, loss
+        u, b = pos[a]
+        p = price(a, j)
+        slip = ETF_SLIP if a == "E" else SLIP
+        pr = u * frac * p * (1.0 - slip)
+        g = pr - b * frac
+        cash += pr
+        if g > 0:
+            tx = max(0.0, g - loss) * TAX
+            loss = max(0.0, loss - g)
+            cash -= tx
+            st["tax"] += tx
+        else:
+            loss += -g
+        if frac >= 1.0:
+            del pos[a]
+        else:
+            pos[a] = [u * (1 - frac), b * (1 - frac)]
+
+    def buy(a, j, amt):
+        nonlocal cash
+        p = price(a, j)
+        if not (p == p and p > 0) or amt <= 0:
+            return
+        slip = ETF_SLIP if a == "E" else SLIP
+        u = amt / (p * (1.0 + slip))
+        cash -= amt
+        if a in pos:
+            pos[a][0] += u
+            pos[a][1] += amt
+        else:
+            pos[a] = [u, amt]
+    for j in range(j0, M):
+        if j > j0:
+            d0, d1 = cal[me_idx[j - 1]], cal[me_idx[j]]
+            for a in list(pos):
+                if a == "E":
+                    dd = sum(x for d, x in dist if d0 < d <= d1)
+                    if dd > 0:
+                        g = pos[a][0] * dd
+                        cash += g * (1.0 - TAX)
+                        st["tax"] += g * TAX
+                    continue
+                p = float(PXM[a, j])
+                dv = float(DIV[a, j]) if DIV[a, j] == DIV[a, j] else 0.0
+                if dv > 0:
+                    g = pos[a][0] * dv
+                    cash += g * (1.0 - TAX)
+                    st["tax"] += g * TAX
+                if not (p == p and p > 0):          # 上場をやめた：前の月末の値で現金にする
+                    u, b = pos.pop(a)
+                    pr = u * float(PXM[a, j - 1]) * (1.0 - SLIP)
+                    cash += pr
+                    if pr - b > 0:
+                        tx = max(0.0, pr - b - loss) * TAX
+                        loss = max(0.0, loss - (pr - b))
+                        cash -= tx
+                    else:
+                        loss += b - pr
+        if j == M - 1:
+            vals.append(cash + sum(u * price(a, j) for a, (u, _b) in pos.items()))
+            break
+        want = bool(on[j])
+        if leg is not None and leg != "E" and (leg == "ON") == want:
+            sel = "keep"                            # 同じ局面が続く：同じ株を持ち続ける
+        else:
+            sel = (pick_on(j) if want else (pick_off(j) if pick_off else None))
+        new_leg = leg if sel == "keep" else ("E" if sel is None else ("ON" if want else "OFF"))
+        if leg is None or new_leg != leg:
+            for a in list(pos):
+                sell(a, j)
+            if leg is not None:
+                st["switch"] += 1
+            tot = cash
+            if sel is None:
+                buy("E", j, tot)
+            else:
+                for i, w in zip(*sel):
+                    buy(int(i), j, tot * float(w))
+            leg = new_leg
+        else:
+            tot = cash + sum(u * price(a, j) for a, (u, _b) in pos.items())
+            if pos and cash > 0.01 * tot:
+                hv = {a: u * price(a, j) for a, (u, _b) in pos.items()}
+                sv = sum(hv.values())
+                c0 = cash
+                for a, v in hv.items():
+                    buy(a, j, c0 * v / sv)
+        if leg == "ON":
+            st["on_m"] += 1
+        st["n_hold"].append(len(pos))
+        vals.append(cash + sum(u * price(a, j) for a, (u, _b) in pos.items()))
+    jl = M - 1
+    liq = cash
+    for a, (u, b) in pos.items():
+        slip = ETF_SLIP if a == "E" else SLIP
+        pr = u * price(a, jl) * (1.0 - slip)
+        liq += pr - TAX * max(0.0, pr - b - loss)
+    return np.array(vals), liq, st
+
+
+def lab20(store: dict, xs: dict) -> int:
+    """20段目（計画は wide_lab_plan20_2026-11-05）。T1〜T7：市況で 1306 を持つか現金か。R1〜R5：市況で業種の大型株か 1306 か。"""
+    log("20段目（市況で切り替える）を回します（指標を作っています）…")
+    ext = xs.get("ext") or {}
+    if not ext.get("series"):
+        print("\n■ 市況のデータがありません")
+        return 2
+    D = build(store)
+    dates, UNI, me_idx, cal = D["dates"], D["UNI"], D["me_idx"], D["cal"]
+    T = len(cal)
+    M = len(me_idx)
+    j0 = next((j for j, t in enumerate(me_idx) if t >= 252), None)
+    t0 = me_idx[j0]
+    ev = dates[j0:]
+    yrs = max((ev[-1] - ev[0]).days / 365.25, 0.5)
+    TXv, TXliq = topix_taxed(D, j0)
+    ST_TX = half_stats(TXv, ev)
+    FL = ext_flags(ext, dates)
+    for k in EXT_LAB:
+        if k not in FL:
+            log(f"  {EXT_LAB[k]} … データがないので、この指標を使う型は回しません")
+        else:
+            for v in ("A", "B"):
+                f = FL[k][v][j0:]
+                log(f"  {EXT_LAB[k]}（{v}） … 上昇局面 {int(np.nansum(f))}か月 ／ 決められない {int(np.isnan(f).sum())}か月（比べる期間 {len(f)}か月）")
+
+    def daily(mf: np.ndarray) -> np.ndarray:
+        x = np.zeros(T, dtype=bool)
+        for j in range(M):
+            e_ = me_idx[j + 1] if j + 1 < M else T
+            x[me_idx[j]:e_] = bool(mf[j])
+        return x
+
+    def mplac(mf: np.ndarray, seed: int) -> np.ndarray:
+        return spells_placebo(np.asarray(mf, dtype=bool), j0, seed)
+    res = {}
+    # ── T：1306 を持つか現金か（月末に決める）
+    hold_rule = {"T1": ("NK", True), "T2": ("OIL", False), "T3": ("US10", False), "T4": ("JP10", False), "T5": ("YEN", True), "T6": ("VIX", False)}
+    tlab = {"T1": "日経平均が上昇局面なら TOPIX、下落局面なら現金", "T2": "原油が上昇局面なら現金", "T3": "米国の金利が上昇局面なら現金",
+            "T4": "日本の金利が上昇局面なら現金", "T5": "円高局面（ドル円が下落局面）なら現金", "T6": "VIX が上昇局面なら現金",
+            "T7": "T1〜T6 のうち4つ以上が「現金」なら現金（多数決）"}
+    holds = {}
+    for key, (s, up_hold) in hold_rule.items():
+        if s not in FL:
+            continue
+        holds[key] = {}
+        for v in ("A", "B"):
+            f = FL[s][v]
+            holds[key][v] = np.where(np.isnan(f), 1.0, (f if up_hold else 1.0 - f)) > 0.5      # 決められない月は TOPIX を持つ
+    if len(holds) == 6:
+        holds["T7"] = {v: (sum((~holds[k][v]).astype(int) for k in hold_rule) < 4) for v in ("A", "B")}
+    for key, hv in holds.items():
+        if ONLY and key not in ONLY:
+            continue
+        r = {"lab": tlab[key], "var": {}, "kind": "T"}
+        for v in ("A", "B"):
+            mf = hv[v]
+            vv, liq, s_ = cal_sim(daily(mf), D, t0)
+            rnd = [half_stats(cal_sim(daily(mplac(mf, 20000 + k)), D, t0)[0], ev) for k in range(N_RAND)]
+            sw = int(np.sum(mf[j0 + 1:] != mf[j0:-1]))
+            r["var"][v] = {"st": half_stats(vv, ev), "liq": liq, "rnd": rnd, "vlab": "3か月前と比べる" if v == "A" else "1年の平均と比べる",
+                           "held": float(mf[j0:].mean()), "sw": sw}
+        r["verdict"], r["detail"] = judge2(r["var"], ST_TX, lambda xx: xx["sw"] == 0)
+        res[key] = r
+        log(f"  {key} … {r['verdict']}")
+    # ── R：業種の大型株か 1306 か
+    codes = D["codes"]
+    sec = np.array([D["sector"].get(c, "") for c in codes])
+    MC, BPM, PXM = D["MCAP"], D["F"]["BP"], D["PXM"]
+    G = {"FIN": {"銀行業", "保険業", "証券、商品先物取引業", "その他金融業"}, "RES": {"鉱業", "石油・石炭製品", "卸売業"},
+         "EXP": {"輸送用機器", "電気機器", "機械", "精密機器"}, "DOM": {"食料品", "医薬品", "電気・ガス業", "陸運業", "小売業", "情報・通信業"},
+         "DEF": {"食料品", "医薬品", "電気・ガス業", "陸運業"}}
+    pick_cache = {}
+
+    def pick(grp):
+        def f(j):
+            ck = (grp, j)
+            if ck in pick_cache:
+                return pick_cache[ck]
+            ok = UNI[:, j] & np.isfinite(PXM[:, j]) & (PXM[:, j] > 0) & np.isfinite(MC[:, j]) & (MC[:, j] > 0)
+            if grp == "VAL":
+                idx = np.nonzero(ok)[0]
+                top = idx[np.argsort(-MC[idx, j])][:500]
+                b = BPM[top, j]
+                fin = np.isfinite(b)
+                m = np.zeros(len(codes), dtype=bool)
+                if fin.sum() >= 30:
+                    m[top[fin & (b >= np.median(b[fin]))]] = True
+                ok = ok & m
+            else:
+                ok = ok & np.isin(sec, list(G[grp]))
+            idx = np.nonzero(ok)[0]
+            if len(idx) < 5:
+                pick_cache[ck] = None
+                return None
+            sel = idx[np.argsort(-MC[idx, j])][:NMAX]
+            out = (sel, cap_weights(MC[sel, j], W_CAP))
+            pick_cache[ck] = out
+            return out
+        return f
+    rot = {"R1": ("JP10", "FIN", None, "日本の金利の上昇局面は金融の大型株、それ以外は TOPIX"),
+           "R2": ("US10", "VAL", None, "米国の金利の上昇局面は割安株（上位500社のうち純資産に対して安い上位半分）、それ以外は TOPIX"),
+           "R3": ("OIL", "RES", None, "原油の上昇局面は資源と商社の大型株、それ以外は TOPIX"),
+           "R4": ("YEN", "EXP", "DOM", "円安局面は輸出の大型株、円高局面は内需の大型株"),
+           "R5": ("VIX", "DEF", None, "VIX の上昇局面は守りの業種の大型株、それ以外は TOPIX")}
+    ref = {}
+    for key, (s, g_on, g_off, lab) in rot.items():
+        if (ONLY and key not in ONLY) or s not in FL:
+            continue
+        p_on, p_off = pick(g_on), (pick(g_off) if g_off else None)
+        r = {"lab": lab, "var": {}, "kind": "R"}
+        for v in ("A", "B"):
+            mf = np.nan_to_num(FL[s][v], nan=0.0) > 0.5
+            vv, liq, s_ = mp_sim(mf, D, j0, p_on, p_off)
+            rnd = [half_stats(mp_sim(mplac(mf, 21000 + k), D, j0, p_on, p_off)[0], ev) for k in range(N_RAND)]
+            sw = int(np.sum(mf[j0 + 1:] != mf[j0:-1]))
+            r["var"][v] = {"st": half_stats(vv, ev), "liq": liq, "rnd": rnd, "vlab": "3か月前と比べる" if v == "A" else "1年の平均と比べる",
+                           "held": float(mf[j0:].mean()), "sw": sw, "tax": s_["tax"], "nh": float(np.mean(s_["n_hold"])) if s_["n_hold"] else 0.0,
+                           "on_m": s_["on_m"] / max(1, len(s_["n_hold"]))}
+        r["verdict"], r["detail"] = judge2(r["var"], ST_TX, lambda xx: xx["sw"] == 0 or xx["on_m"] <= 0)
+        res[key] = r
+        # 参考：業種の株をずっと持つ（R4 は輸出と内需の両方）
+        for g in ((g_on,) + ((g_off,) if g_off else ())):
+            if g not in ref:
+                vv, liq, _s = mp_sim(np.ones(M, dtype=bool), D, j0, pick(g))
+                ref[g] = (half_stats(vv, ev), liq)
+        log(f"  {key} … {r['verdict']}")
+    # ── 報告
+    HH = ("前半", "後半")
+    print("\n【日本株の手法・20段目（市況で切り替える）（wide_lab）：東証全銘柄】（基準は結果を見る前に決めたもの。計画はプロジェクトの wide_lab_plan20_2026-11-05）")
+    stage_note()
+    print(f"  期間 … 比べる期間 {ev[0].date()}〜{ev[-1].date()}（{len(ev)}か月。前半 〜{(SPLIT - pd.Timedelta(days=1)).date()}・後半 {SPLIT.date()}〜）")
+    print(f"  局面 … 毎月末に、その日より{EXT_LAG_DAYS}日以上前の最後の値で決める。A＝{EXT_A_LAG}営業日前より高ければ上昇局面・B＝{EXT_B_WIN}営業日の平均より高ければ上昇局面")
+    print(f"  T … 1306 を持つか現金か（片道{ETF_SLIP * 100:.2f}％・{TAX_TXT}）。R … 局面に合う業種の時価総額の大きい{NMAX}銘柄（時価総額で加重・1銘柄{W_CAP * 100:.0f}％まで。局面のあいだは同じ株）か 1306（株 片道{SLIP * 100:.1f}％）")
+    print("  でたらめ … 局面の続いた長さをそのままに、順番を入れ替えたもの（20回）。判定は A・B の両方・前半と後半の両方で TOPIX +2pt・でたらめ +2pt かつ18回以上")
+    print(f"  TOPIX（税あり） … {ST_TX['前半']['ann']:.1f} ／ {ST_TX['後半']['ann']:.1f}（通し {ST_TX['通し']['ann']:.1f}・最大下落 {ST_TX['通し']['mdd']:.0f}％・清算後の通し {((TXliq / CAP) ** (1 / yrs) - 1) * 100:.1f}％）")
+    for k, (ds, vs) in ext["series"].items():
+        print(f"  データ {EXT_LAB.get(k, k)} … {str(ds[0])}〜{str(ds[-1])}（{len(ds):,}日）")
+    if ext.get("bad"):
+        print(f"  取れなかったデータ … {ext['bad']}")
+    print("\n  1. 型ごとの成績（年率％。「前半 ／ 後半」。［TOPIX との差／でたらめとの差・でたらめを上回った回数］）")
+    for key, r in res.items():
+        print(f"     {key:<4}{r['lab']} … {r['verdict']}")
+        for nm, x in r["var"].items():
+            rn = {h: float(np.mean([y[h]['ann'] for y in x['rnd']])) for h in HH}
+            dd = " ".join(f"{r['detail'][(nm, h)][0]:+.1f}/{r['detail'][(nm, h)][1]:+.1f}・{r['detail'][(nm, h)][2]}回" for h in HH)
+            extra = (f"TOPIX を持った月 {x['held'] * 100:.0f}％" if r["kind"] == "T" else
+                     f"上昇局面の月 {x['held'] * 100:.0f}％・業種の株を持った月 {x['on_m'] * 100:.0f}％・平均の持ち数 {x['nh']:.1f}")
+            print(f"         {nm}（{x['vlab']}） {x['st']['前半']['ann']:6.1f} ／ {x['st']['後半']['ann']:6.1f}（最大下落 {x['st']['通し']['mdd']:.0f}％）［{dd}］"
+                  f" でたらめ {rn['前半']:.1f} ／ {rn['後半']:.1f}・{extra}・切り替え {x['sw']}回・清算後の通し {((x['liq'] / CAP) ** (1 / yrs) - 1) * 100:.1f}％")
+    if ref:
+        names = {"FIN": "金融", "VAL": "割安株", "RES": "資源と商社", "EXP": "輸出", "DOM": "内需", "DEF": "守りの業種"}
+        print("\n  参考（判定には使わない）：業種の大型株をずっと持った成績（前半 ／ 後半・清算後の通し）")
+        for g, (sx, liq) in ref.items():
+            print(f"     {names[g]} … {sx['前半']['ann']:.1f} ／ {sx['後半']['ann']:.1f}（最大下落 {sx['通し']['mdd']:.0f}％・清算後の通し {((liq / CAP) ** (1 / yrs) - 1) * 100:.1f}％）")
+    print("\n  2. 判定のまとめ")
+    for v in ("候補", "範囲の中では効く", "効かない", "保留（データ不足）"):
+        ks = [k for k, r in res.items() if r["verdict"] == v]
+        print(f"     {v} … " + ("・".join(ks) if ks else "なし"))
+
+    def worst(k):
+        d = res[k]["detail"]
+        return min(min(d[(nm, h)][0] - PT_TX, d[(nm, h)][1] - PT_RND) for nm in res[k]["var"] for h in HH)
+
+    def worst_tx(k):
+        d = res[k]["detail"]
+        return min(d[(nm, h)][0] for nm in res[k]["var"] for h in HH)
+    cand = sorted([k for k, r in res.items() if r["verdict"] == "候補"], key=lambda k: -worst(k))[:3]
+    near = sorted([k for k, r in res.items() if r["verdict"] == "範囲の中では効く"], key=lambda k: -worst_tx(k))[:3]
+    if LONG and STAGE == "confirm":
+        return 0
+    print("\n  3. 確かめる段階に持っていくもの（3つまで）")
+    if cand:
+        print("     候補 … " + "・".join(cand))
+    elif near:
+        print("     準候補（候補がないので、範囲の中では効く形を TOPIX との差の小さいほうが大きい順） … " + "・".join(near))
+    else:
+        print("     なし")
+    return 0
+
+
 def run_mode(mode: str, store: dict, args) -> int:
     """1つの mode を回す（データはそろっている前提で、足りなければ取る）。14段目の lab14 は、これを続けて呼ぶ。"""
     global LAB_TITLE, LAB_PLAN, LAB_NOTE
@@ -4920,6 +5307,15 @@ def run_mode(mode: str, store: dict, args) -> int:
         return lab6(store)
     if mode == "lab9":
         return lab9(store)
+    if mode == "lab20":
+        xs = x_load()
+        if not (xs.get("ext") or {}).get("series") or len(xs["ext"]["series"]) < len(EXT_LAB):
+            log("市況のデータ（FRED・財務省）を取ります…")
+            ext = fetch_ext()
+            if ext["series"]:
+                xs["ext"] = ext
+                x_save(xs, f"市況のデータ {len(ext['series'])}種類を保存しました")
+        return lab20(store, xs)
     if mode == "lab19" and LONG:
         # plan19 の5：20年分では出来事の組み合わせ（DIVE2C・DIVBP）だけを回す（まとめて学ばせる型と MALS は9年分で準候補なし・20年分のデータもない）
         xs = x_load()
@@ -5145,7 +5541,7 @@ def lab14(store: dict, args) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab5", "lab6", "lab7", "lab8", "lab9", "lab10", "lab11", "lab12", "lab13", "lab14", "lab15", "lab16", "lab17", "lab18", "lab19", "xfetch"], default="lab1")
+    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab5", "lab6", "lab7", "lab8", "lab9", "lab10", "lab11", "lab12", "lab13", "lab14", "lab15", "lab16", "lab17", "lab18", "lab19", "lab20", "xfetch"], default="lab1")
     ap.add_argument("--combo", default="", help="3回目：1回目で「範囲の中では効く」以上だった型の記号（カンマ区切り）。2つ以上なら SEL として回す")
     ap.add_argument("--only", default="", help="回す型の記号（カンマ区切り。空欄なら全部）。確かめる段階で候補だけを回すとき")
     ap.add_argument("--cfg", default="", help="7段目の確かめる段階で回す組み立て（例: VQM/TOP500/20/Q,NXG/TOP500/20/Q）")
