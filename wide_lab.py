@@ -4902,7 +4902,7 @@ def mals_score(xs: dict):
 
 def run_mode(mode: str, store: dict, args) -> int:
     """1つの mode を回す（データはそろっている前提で、足りなければ取る）。14段目の lab14 は、これを続けて呼ぶ。"""
-    global LAB_TITLE, LAB_PLAN
+    global LAB_TITLE, LAB_PLAN, LAB_NOTE
     LAB_TITLE, LAB_PLAN = "1回目", "wide_lab_plan_2026-11-04"
     if mode == "lab3":
         LAB_TITLE, LAB_PLAN = "3回目（組み合わせ）", "wide_lab_plan3_2026-11-04"
@@ -4946,10 +4946,27 @@ def run_mode(mode: str, store: dict, args) -> int:
                     return EXIT_UNFINISHED
             log(f"  個別株オプション … {len(xs.get('optu', {}).get('rows', [])):,}件" + (f"・取るのをやめた：{xs['optu']['bad']}" if xs.get("optu", {}).get("bad") else ""))
             LAB_TITLE, LAB_PLAN = "18段目（毎月の点数の残り）", "wide_lab_plan18_2026-11-05"
+            if "M36" in [c.upper() for c in CFG]:
+                # plan18 の5：第2部の計画（wide_program2）にあった「3年の勢い」を足す（直近1か月を除く36か月の成績の大きい順）
+                LAB_TITLE = "18段目の追記（3年の勢い）"
+                LAB_NOTE = "18段目の追記：第2部の計画にあった「3年の勢い」（MOM36）。3年分の株価がたまってから比べ始める（前半が短い）"
+
+                def mom36(D):
+                    PXM, me_idx = D["PXM"], D["me_idx"]
+                    out = np.full(PXM.shape, np.nan)
+                    with np.errstate(divide="ignore", invalid="ignore"):
+                        for j in range(36, PXM.shape[1]):
+                            out[:, j] = PXM[:, j - 1] / PXM[:, j - 36] - 1.0
+                    out[~np.isfinite(out)] = np.nan
+                    j_ok = next((j for j in range(PXM.shape[1]) if np.isfinite(out[:, j]).sum() >= 100), PXM.shape[1] - 1)
+                    START_T["MOM36"] = int(me_idx[j_ok])
+                    return out
+                rc = lab1(store, extra={"MOM36": (mom36, "3年の勢い（直近1か月を除く36か月の成績の大きい順）")})
+                LAB_NOTE = ""
+                return rc
             ex18 = lab18_scores(store, xs)
             if "IVU" in [c.upper() for c in CFG] and "IVLOW" in ex18:
                 # plan18 の4：IVLOW を、IV がある銘柄だけを範囲にして回す（でたらめも同じ範囲）
-                global LAB_NOTE
                 LAB_TITLE = "18段目の追記（IVLOW を個別株オプションのある銘柄だけで）"
                 LAB_NOTE = "18段目の追記：範囲を、その月末に IV（いちばん近い限月の中央値の20日平均）がある銘柄だけに絞った。でたらめも同じ範囲"
                 ivc = {}
@@ -5152,6 +5169,18 @@ def main() -> int:
             print("\n■ まだ終わっていません（東証全銘柄のデータを取っている途中です）")
             print(f"　 取った分は保存しました（開始から{elapsed():.0f}分）。同じ設定のまま、もう一度「Run workflow」を押してください。")
             return EXIT_UNFINISHED
+    if KEEP_OHLC and store.get("etf1306") and "o" not in store["etf1306"]:
+        # 17段目の参考（夜だけ・昼だけ）のため：11月4日夜より前に取った 1306 には始値がないので、1306 だけ取り直す（1回の呼び出し）
+        key = os.environ.get("J_QUANTS_API_KEY")
+        if key:
+            try:
+                b = pack_bars(yb.fetch_bars(yb.JQ(key), "1306", YEARS))
+                if b and "o" in b and len(b["d"]) >= len(store["etf1306"]["d"]) * 0.95:
+                    store["etf1306"] = b
+                    save(store)
+                    log(f"  1306 を始値つきで取り直しました（{len(b['d'])}日）")
+            except Exception as e:          # 取れなくても、ほかの計算は続ける
+                log(f"  1306 の取り直しに失敗しました（{type(e).__name__}）")
     n = len(store.get("bars", {}))
     log(f"データ … 銘柄一覧 {len(store.get('months', {}))}か月・株価 {n}銘柄・株価が取れなかった {len(store.get('nodata', []))}銘柄")
     if args.mode == "fetch":
