@@ -289,14 +289,14 @@ td.al-name{white-space:normal;min-width:250px}
         </div>
 
         <div class="lg-sec"><h5>買う前提（8条件・すべて満たす）</h5>
-          <div class="lg-row"><span class="lg-k">減配</span><span class="lg-v">過去10期で減配していない ※</span></div>
+          <div class="lg-row"><span class="lg-k">減配</span><span class="lg-v">過去10期で減配していない（株式分割・併合は減配と数えない） ※</span></div>
           <div class="lg-row"><span class="lg-k">売上</span><span class="lg-v">過去5期で、前期比−10%超の減少が2期続いていない</span></div>
           <div class="lg-row"><span class="lg-k">営業利益</span><span class="lg-v">同上</span></div>
           <div class="lg-row"><span class="lg-k">純利益</span><span class="lg-v">同上</span></div>
           <div class="lg-row"><span class="lg-k">配当性向</span><span class="lg-v">50%以下</span></div>
           <div class="lg-row"><span class="lg-k">自己資本</span><span class="lg-v">比率50%以上（建設・海運・卸売は33%、金融・不動産は対象外）</span></div>
           <div class="lg-row"><span class="lg-k">割安</span><span class="lg-v">PER×PBR <b id="lgGraham">40</b> 以下</span></div>
-          <div class="lg-row"><span class="lg-k">利回り</span><span class="lg-v"><b id="lgMinY">4</b>%以上 ※</span></div>
+          <div class="lg-row"><span class="lg-k">利回り</span><span class="lg-v"><b id="lgMinY">3</b>%以上 ※</span></div>
           <div class="lg-note">※ 累進配当・DOE の会社は、減配と利回りの条件が免除されます。</div>
         </div>
 
@@ -304,7 +304,7 @@ td.al-name{white-space:normal;min-width:250px}
           <div class="lg-row"><span class="tag p-buy">BUY</span><span class="lg-v" id="lgBuy">いまの利回りが、過去3年の月次利回りの上位25%（Q75）以上</span></div>
           <div class="lg-row" id="lgSellRow"><span class="tag p-sell">SELL</span><span class="lg-v">下位25%（Q25）以下。<b>表示のみで、売却には使いません</b></span></div>
           <div class="lg-row"><span class="tag p-neu">中立</span><span class="lg-v">その間</span></div>
-          <div class="lg-row"><span class="tag p-box">BOX</span><span class="lg-v">横ばい相場（過去60日の値幅8〜20%・ADX 22未満）。参考表示</span></div>
+          <div class="lg-row"><span class="tag p-box">BOX</span><span class="lg-v">横ばい相場（過去60日の値幅8〜20%・ADX 22未満）。参考表示。<b>検証では、ボックスの上下で売り買いしても成績は上がりませんでした</b></span></div>
           <div class="lg-row"><span class="tag p-cheap">割安</span><span class="lg-v">PER・PBR が過去の中央値より低い。参考表示</span></div>
         </div>
 
@@ -320,14 +320,25 @@ td.al-name{white-space:normal;min-width:250px}
           <div class="lg-row"><span class="lg-k">条件</span><span class="lg-v">8条件を満たし、BUY が出ている</span></div>
           <div class="lg-row"><span class="lg-k">順番</span><span class="lg-v lg-buyorder">S → A → B。同じ区分なら利回りの高い順</span></div>
           <div class="lg-row"><span class="lg-k">金額</span><span class="lg-v">総資産 ÷ 15銘柄 × 重み（S 2.0 ／ A 1.5 ／ B 1.0）</span></div>
-          <div class="lg-row"><span class="lg-k">上限</span><span class="lg-v">同時に20銘柄まで。買い増しはしない。100株単位</span></div>
-          <div class="lg-note">配分案のタブでは、利回り<span class="lgMinY2">4</span>%未満の銘柄を除いています（検証と同じ条件にするため）。</div>
+          <div class="lg-row"><span class="lg-k">上限</span><span class="lg-v">同時に20銘柄まで。100株単位</span></div>
+          <div class="lg-row"><span class="lg-k">買い増し</span><span class="lg-v">月に1回、配当などで残ったお金で、<b>目標の金額をいちばん下回っている持ち株</b>を100株ずつ目標まで買い増す（8条件を通り、減配・業績急変でない銘柄だけ）</span></div>
+          <div class="lg-row"><span class="lg-k">12月</span><span class="lg-v">取得単価より2%以上下がっている持ち株を、<b>12月15日以降に売って同じ株数をすぐ買い戻す</b>（損出し。損が確定し、その年の配当にかかった税が戻る。特定口座のとき）</span></div>
+          <div class="lg-note">配分案のタブでは、利回り<span class="lgMinY2">3</span>%未満の銘柄を除いています（検証と同じ条件にするため）。</div>
         </div>
 
         <div class="lg-sec"><h5>売り方</h5>
-          <div class="lg-row"><span class="tag p-warn">緊急</span><span class="lg-v">減配（予想配当が前年比−10%超）、または営業利益が前年比−20%以下</span></div>
+          <div class="lg-row"><span class="tag p-warn">緊急</span><span class="lg-v">減配（年間配当の実績が前の期より10%超減った。株式分割・併合は除く）、または営業利益が前年比−20%以下</span></div>
           <div class="lg-row"><span class="lg-k">それ以外</span><span class="lg-v"><b>売りません。</b>値上がりしても、SELL が出ても持ち続けます</span></div>
-          <div class="lg-note">検証では、利確・入れ替え・相場を見た売買のいずれも成績を下げました。</div>
+          <div class="lg-note">20年分の検証では、利確・損切り・入れ替え・相場や市況（日経平均・金利・原油・為替）を見た売買のどれも、成績を上げませんでした。</div>
+        </div>
+
+        <div class="lg-sec"><h5>検証でわかったこと（2009〜2026年の20年分）</h5>
+          <div class="lg-row"><span class="lg-k">成績</span><span class="lg-v">17年で年13.9%（TOPIX 9.8%）。ただし<b>差は偶然と区別できず</b>、2012年10月〜2023年10月の11年は TOPIX に負けていました。TOPIX に勝つ手法とは言えません</span></div>
+          <div class="lg-row"><span class="lg-k">配当</span><span class="lg-v">減りにくい。1,000万円で配当を再投資すると、受け取る配当（税引き後）は2010年17万円 → 2025年172万円で、16年間すべて前の年より増えました</span></div>
+          <div class="lg-row"><span class="lg-k">8条件</span><span class="lg-v">減配する銘柄を半分にします（利回り3%以上で翌年に減配した割合 約12% → 約6%）。成績を上げる役ではなく、配当を守る保険です</span></div>
+          <div class="lg-row"><span class="lg-k">下げ相場</span><span class="lg-v">買い続けます。止めて現金で待つと、成績が下がり、下げも浅くなりませんでした。暴落では TOPIX と同じだけ（2〜3割）下がります</span></div>
+          <div class="lg-row"><span class="lg-k">売買</span><span class="lg-v">成績を削らずに売買を増やせるのは、<b>配当で買い増す</b>と<b>12月の損出し</b>だけでした（始めた月をずらした161通りで、両方を合わせると85〜98%、買い増しだけでも81〜94%の回で、しない形を上回る）</span></div>
+          <div class="lg-note">過去のデータからの数字で、将来の成績を約束するものではありません。</div>
         </div>
 
         <div class="lg-sec"><h5>データの更新</h5>
@@ -367,16 +378,16 @@ td.al-name{white-space:normal;min-width:250px}
 
   <!-- ===== 検証運用 ===== -->
   <section id="view-fwd" style="display:none">
-    <div class="page-head"><h1>検証運用</h1><div class="meta">自動売買シミュレーション（フォワードテスト）· 開始 <b id="fxStart">—</b></div></div>
+    <div class="page-head"><h1>検証運用</h1><div class="meta">自動売買シミュレーション（フォワードテスト）· 開始 <b id="fxStart">—</b> · 税 20.315%（損は配当と相殺）· 配当で買い増し · 12月の損出し</div></div>
     <div class="fx-grid">
       <div class="card kpi"><div class="k-lbl">元本</div><div class="k-val" id="fxInit">—</div></div>
       <div class="card kpi"><div class="k-lbl">評価総額</div><div class="k-val" id="fxTotal">—</div></div>
       <div class="card kpi"><div class="k-lbl">損益</div><div class="k-val" id="fxRet">—</div></div>
-      <div class="card kpi"><div class="k-lbl">配当累計</div><div class="k-val" id="fxDiv">—</div></div>
+      <div class="card kpi"><div class="k-lbl">配当累計（税引き後）</div><div class="k-val" id="fxDiv">—</div></div>
       <div class="card kpi"><div class="k-lbl">現金</div><div class="k-val" id="fxCash">—</div></div>
       <div class="card kpi"><div class="k-lbl">保有数</div><div class="k-val" id="fxCount">—</div></div>
     </div>
-    <div class="card sec"><h4>評価額推移</h4><div id="fxCurve"></div></div>
+    <div class="card sec"><h4>評価額推移</h4><div id="fxCurve"></div><div id="fxNotes"></div></div>
     <div class="card sec"><h4>現在の保有 <small id="fxHoldMeta"></small></h4><div class="tbl-wrap"><table>
       <thead><tr><th>Tier</th><th>銘柄</th><th class="t-right">数量</th><th class="t-right">取得単価</th><th class="t-right">評価額</th><th class="t-right">損益</th></tr></thead>
       <tbody id="fxHoldings"></tbody></table><div id="fxHoldEmpty" class="empty" style="display:none">保有銘柄なし</div></div>
@@ -900,6 +911,9 @@ function renderFwd(){
       hovertemplate:'%{x}<br>¥%{y:,.0f}<extra></extra>'}],
       {...plyLayout(),height:260,shapes:[{type:'line',xref:'paper',x0:0,x1:1,y0:st.initial_cash,y1:st.initial_cash,line:{color:'#9AA1AD',width:1,dash:'dot'}}]},plyCfg());
   }
+  const nts=(hi?.notes||[]).slice(-5).reverse();
+  const ne=$('fxNotes');
+  if(ne)ne.innerHTML=nts.length?`<div class="al-note" style="margin-top:10px">${nts.map(n=>`・${esc(n.date)} ${n.name?`<b>${esc(n.name)}</b> `:''}${esc(n.note)}`).join('<br>')}</div>`:'';
   // holdings
   const hs=[...st.holdings].sort((a,b)=>(b.value||0)-(a.value||0));
   $('fxHoldMeta').textContent=`${hs.length} 銘柄`;
@@ -1280,13 +1294,13 @@ function renderAlloc(){
   if(plan.length<5){
     const tp=Math.max(...plan.map(x=>x._cost))/used*100;
     h+=`<div class="card sec al-note warn"><h4>${plan.length}銘柄しか買えていません</h4>
-      <div class="al-note">1銘柄に最大${tp.toFixed(0)}％が集中します。検証では、集中が大きいほど下落が深くなりました（3銘柄だけ持っていたときの最大下落は17.3％）。</div>
+      <div class="al-note">1銘柄に最大${tp.toFixed(0)}％が集中します。20年分の検証では、銘柄が少ないほど配当の落ち込みが大きくなりました（いちばん悪い年に、5銘柄だと16％減、8銘柄以上なら11％減まで）。目安は8銘柄以上です。</div>
       <div class="al-note" style="margin-top:8px">全額を今日入れる必要はありません。数日から数週間に分けて、候補が増えたときに買い足すほうが分散が効きます。</div>
-      <div class="al-note" style="margin-top:8px">ただし何か月も待つのは逆効果です。2年かけて分割すると、検証では優位が消えました。数週間のうちに入れ終えるのが目安です。</div></div>`;
+      <div class="al-note" style="margin-top:8px">ただし何か月も待つのは逆効果です。2年かけて分割すると、9年分の検証では優位が消えました。数週間のうちに入れ終えるのが目安です。</div></div>`;
   }else if(left>amt*0.05){
     h+=`<div class="card sec"><h4>残った ${fmt.yen(left)} について</h4>
       <div class="al-note">${plan.length>=AL_MAX?`上限の${AL_MAX}銘柄に達しました。`:c.length<=plan.length?'条件を満たす銘柄が、いまはこれだけでした。':'予算の枠に対して株価が高く、端数が残りました。'}</div>
-      <div class="al-note" style="margin-top:8px">検証では、まとまった資金は早めに入れたほうが成績が良いと出ています（初日に全額 +5.3pt ／ 2年かけて分割 −0.6pt）。意図的に温存する理由はありません。</div></div>`;
+      <div class="al-note" style="margin-top:8px">9年分の検証では、まとまった資金は早めに入れたほうが成績が良いと出ています（初日に全額 +5.3pt ／ 2年かけて分割 −0.6pt）。20年分の検証でも、下げ相場で買うのを止めて待つと成績が下がりました。意図的に温存する理由はありません。</div></div>`;
   }
 
   h+=`<div class="card sec"><h4>発注する前に</h4>
@@ -1327,36 +1341,25 @@ function pfAdd(){
 function pfDel(i){PF.splice(i,1);pfSave();renderPf();}
 function pfClear(){if(confirm('入力した保有をすべて消しますか？')){PF=[];pfSave();renderPf();}}
 
-/* 入れ替えの候補を探す。検証で効いた条件をすべて満たすものだけ。 */
-function pfSwapCandidates(rows, cash){
-  const ORD={S:0,A:1,B:2};
+/* 配当で買い増す候補（20年分の検証の X8）。
+   目標の金額（評価総額＋追加資金 ÷ 15銘柄 × Tierの重み ÷ 1.5）をいちばん下回っている持ち株から、100株単位で目標まで。
+   8条件を通り、減配・業績急変でない銘柄だけ。 */
+function pfTopupCandidates(rows, total, cash){
+  const avgW=(PF_W.S+PF_W.A+PF_W.B)/3, base=(total+cash)/15;
   const out=[];
-  // 買える候補（配分案と同じ絞り込み）
-  const [cands]=alPick();
-  const held=new Set(rows.map(r=>r.code));
-  const better=cands.filter(c=>!held.has(c.code));
-  if(!better.length)return out;
-
   for(const r of rows){
-    if(!r.s)continue;
-    const gain=r.cost>0?(r.s.price/r.cost-1):0;
-    // 条件1：含み益が20％以上（少額の利確は避ける）
-    if(gain<0.20)continue;
-    // 条件2：利回りが下がってQ25以下（割高側に入った）
-    const q25=+r.s.yield_q25||0, cy=+r.s.current_yield||0;
-    if(!(q25>0&&cy<=q25))continue;
-    // 条件3：権利確定月まで3か月以内なら見送る（配当を逃すため）
-    const m=new Date().getMonth()+1;
-    const ms=[r.s.fiscal_month,r.s.interim_month].filter(Boolean)
-      .map(x=>((x-m)%12+12)%12);
-    const near=ms.length?Math.min(...ms):99;
-    if(near<=3)continue;
-    // 条件4：いまより質の高い買い候補があること
-    const up=better.filter(c=>(ORD[c.tier]??9)<(ORD[r.s.tier]??9));
-    if(!up.length)continue;
-    out.push({row:r,gain,to:up.slice(0,3),near});
+    const s=r.s; if(!s||!s.price||!s.screening_pass||s.emergency_exit)continue;
+    const tgt=base*((PF_W[s.tier]||1)/avgW), room=tgt-r.val, lot=s.price*100;
+    if(room<lot)continue;
+    out.push({row:r,tgt,room,lots:Math.floor(room/lot),ratio:tgt>0?r.val/tgt:9});
   }
-  return out;
+  return out.sort((a,b)=>a.ratio-b.ratio);
+}
+/* 12月の損出しの候補（20年分の検証の R6）。取得単価より2%以上下がっている持ち株。 */
+function pfHarvestCandidates(rows){
+  return rows.filter(r=>r.s&&r.s.price&&r.cost>0&&r.s.price<r.cost*0.98)
+    .map(r=>({row:r,loss:(r.s.price-r.cost)*r.shares,pct:(r.s.price/r.cost-1)*100}))
+    .sort((a,b)=>a.loss-b.loss);
 }
 
 function renderPf(){
@@ -1437,12 +1440,11 @@ function renderPf(){
   if(unknown.length){
     h+=`<div class="card sec al-note"><h4>対象外の銘柄について</h4>
       <div class="al-note">${unknown.map(r=>esc(r.code)).join('、')} は、
-        このツールの対象（東証プライムのうち TOPIX Core30／Large70／Mid400 の489社）
+        このツールの対象（東証プライムのうち TOPIX Core30・Large70・Mid400・Small 1。約970社）
         に入っていないため、現在値も判定も取得できません。
         <b>上の集計からは除いています。</b></div>
-      <div class="al-note" style="margin-top:8px">対象をプライム全銘柄（約1,557社）に広げることはできます。
-        検証では、広げたほうが基準を上回る幅がむしろ大きくなりました（+8.9pt→+11.2pt）。
-        ただし毎日のデータ取得が35〜40分から70〜90分に延びます。</div></div>`;
+      <div class="al-note" style="margin-top:8px">対象をプライム全銘柄（約1,557社）に広げることはできますが、
+        毎日のデータ取得がさらに延びます。広げると成績が上がるかは、20年分の検証では確かめていません。</div></div>`;
   }
 
   // Tierの偏り
@@ -1502,8 +1504,8 @@ function renderPf(){
     h+=`<div class="card sec al-note warn"><h4>1銘柄への集中</h4>
       <div class="al-note"><b>${esc(nm.s?.name||nm.code)}</b> が全体の
         ${(mx/total*100).toFixed(0)}% を占めています。</div>
-      <div class="al-note" style="margin-top:8px">検証では、集中が大きいほど下落が深くなりました
-        （3銘柄だけ持っていたときの最大下落は17.3%）。
+      <div class="al-note" style="margin-top:8px">20年分の検証では、銘柄が少ないほど配当の落ち込みが大きくなりました
+        （いちばん悪い年に、5銘柄だと16%減、8銘柄以上なら11%減まで）。
         次に買うときは、この銘柄以外に回すほうが分散が効きます。</div></div>`;
   }
 
@@ -1514,9 +1516,8 @@ function renderPf(){
     for(const r of emg)h+=`<div class="al-note">・<b>${esc(r.s.name)}</b>
       ${esc((r.s.emergency_reasons||[]).join(' / ')||'緊急撤退の判定')}</div>`;
     h+=`<div class="al-note" style="margin-top:8px">このルールで<b>唯一、売ると決めている場面</b>です。
-      検証では、減配・業績急変で撤退するほうが、持ち続けるより良い結果でした
-      （75%の条件で上回る）。株価は3年で77%が回復しましたが、
-      その間に資金が拘束され、戻らなかった1〜2割が全体を押し下げます。</div></div>`;
+      20年分の検証では、減配した銘柄は、しなかった銘柄より翌1年の成績が9pt ほど悪くなりました。
+      株式分割・併合は減配と数えません（2026年11月に、分割を減配と読む誤りを直しました）。</div></div>`;
   }
 
   // 追加資金があるなら
@@ -1529,25 +1530,43 @@ function renderPf(){
 
   const cash=+($('pfCash')?.value||'').replace(/[^\d]/g,'')||0;
 
-  // 入れ替えの候補
-  const sw=pfSwapCandidates(rows,cash);
-  h+=`<div class="card sec"><h4>入れ替えの候補</h4>`;
-  if(!sw.length){
-    h+=`<div class="al-note">条件を満たす銘柄はありません。<b>いまは入れ替えを考える場面ではありません。</b></div>`;
+  // 配当で買い増す候補（X8）
+  const tu=pfTopupCandidates(known,total,cash);
+  h+=`<div class="card sec"><h4>配当で買い増す候補 <small>月に1回</small></h4>`;
+  if(!tu.length){
+    h+=`<div class="al-note">目標の金額を100株以上下回っている持ち株はありません。${cash>0?'追加資金は、下の「足すなら」の新しい銘柄に回してください。':''}</div>`;
   }else{
-    for(const x of sw){
-      h+=`<div class="al-note" style="margin-bottom:10px">
-        <b>${esc(x.row.s.name)}</b>（含み益 ${(x.gain*100).toFixed(0)}%、
-        利回りがQ25以下）→ ${x.to.map(t=>`<span class="tier tier-${t.tier}" style="width:20px;height:20px;font-size:10px">${t.tier}</span> ${esc(t.name)}`).join(' / ')}</div>`;
+    h+=`<div class="tbl-wrap"><table><thead><tr><th>Tier</th><th>銘柄</th><th class="t-right">いまの評価額</th>
+      <th class="t-right">目標</th><th class="t-right">目標まで</th></tr></thead><tbody>`;
+    for(const x of tu.slice(0,8)){
+      const s_=x.row.s;
+      h+=`<tr onclick="openDetail('${s_.code}')"><td>${tierChip(s_)}</td>
+        <td><span class="t-code">${s_.code}</span><span class="t-name" style="margin-left:6px">${esc(s_.name)}</span></td>
+        <td class="t-right mono">${fmt.yen(x.row.val)}</td><td class="t-right mono">${fmt.yen(x.tgt)}</td>
+        <td class="t-right mono">あと${(x.lots*100).toLocaleString()}株まで</td></tr>`;
     }
+    h+=`</tbody></table></div>`;
   }
-  h+=`<div class="al-note" style="margin-top:12px;color:var(--text-2)">
-    <b>ただし、入れ替えは推奨しません。</b>64条件の検証で、入れ替えありは59%対41%で上回りましたが、
-    85%には届かず「決められない」範囲でした。最大下落はむしろ深くなります（13.7%→17.7%）。</div>
-    <div class="al-note" style="margin-top:6px">
-    はっきりしたのは<b>「新規で買えるうちは入れ替えない」</b>という点だけです（98%の条件で有利）。
-    ${cash>0?'<b>いま追加資金があるので、入れ替えではなく買い増しで質を上げてください。</b>'
-      :'追加資金があるなら、まずそちらで買うほうが有利です。'}</div></div>`;
+  h+=`<div class="al-note" style="margin-top:12px">配当などで手元に残ったお金は、<b>目標の金額をいちばん下回っている持ち株から</b>、
+    100株ずつ目標まで買い増します（8条件を通り、減配・業績急変でない銘柄だけ）。
+    20年分の検証では、始めた月をずらした161通りの81〜94%の回で、買い増さない形を上回りました。
+    目標は「評価総額${cash>0?'＋追加資金':''} ÷ 15銘柄 × Tierの重み」です。</div></div>`;
+
+  // 12月の損出しの候補（R6）
+  const hv=pfHarvestCandidates(known);
+  const isDec=(new Date().getMonth()+1)===12;
+  h+=`<div class="card sec${isDec&&hv.length?' al-note warn':''}"><h4>12月の損出しの候補 <small>${isDec?'いまが実行の時期です':'12月に行います'}</small></h4>`;
+  if(!hv.length){
+    h+=`<div class="al-note">取得単価より2%以上下がっている持ち株はありません。</div>`;
+  }else{
+    for(const x of hv.slice(0,10))
+      h+=`<div class="al-note">・<b>${esc(x.row.s.name)}</b> … ${x.pct.toFixed(1)}%（${fmt.yen(x.loss)}）</div>`;
+  }
+  h+=`<div class="al-note" style="margin-top:12px">12月15日以降、年内の受け渡しに間に合ううちに、<b>売って同じ株数をすぐ買い戻します</b>
+    （売りを先に約定させる）。持ち株は変わらず、損が確定して、その年の配当にかかった税が戻ります。
+    特定口座で配当を口座で受け取っている場合の話で、NISA では意味がありません。
+    20年分の検証では、配当で買い増すのと合わせて、始めた月をずらした161通りの85〜98%の回で、しない形を上回りました。</div>
+    <div class="al-note" style="margin-top:6px">ほかの入れ替え（含み益の大きい株を質の高い株へ、Tier B を S へなど）は、20年分の検証で成績を上げませんでした。</div></div>`;
 
   // 追加資金の使い道
   if(cash>0){
@@ -1604,13 +1623,13 @@ function renderPf(){
    記録ファイルの形が少しずつ違っても表示できるよう、項目は緩く読む。 */
 const TRK=[
   {key:'main', name:'本番', color:'#3B5BFD',
-   desc:'利回り4%以上・8条件を通った銘柄を、Tier順・利回りの高い順に買って持ち続ける（いまの本番）'},
+   desc:'いまの本番（検証運用）。8条件を通り利回り3%以上の銘柄から、PBRの安い側20%を、Tier順・PBRの低い順に買って持ち続ける。2026年11月から、配当で買い増し・12月の損出し・税（20.315%）あり'},
   {key:'rot', name:'入れ替え', color:'#D97706',
-   desc:'より質の高い銘柄が出たら入れ替える（検証では本番とほぼ互角）'},
+   desc:'より質の高い銘柄が出たら入れ替える（20年分の検証では、本番より良くならなかった）'},
   {key:'val', name:'低PBR順', color:'#7C3AED',
-   desc:'利回り4%以上・8条件を通った銘柄から、PBRの安い側20%を、Tier順・PBRの低い順に買って持ち続ける（本番の候補）'},
+   desc:'低PBR順の並走記録（本番に採る前から付けている記録。買い方は本番と同じで、配当で買い増し・12月の損出しはしない）'},
   {key:'swing', name:'レンジ売買', color:'#10B981',
-   desc:'横ばいの銘柄を下限で買い上限で売る（検証では効かなかった。横ばい相場で確かめる）'},
+   desc:'横ばいの銘柄を下限で買い上限で売る（20年分の検証では、でたらめな日に売り買いするのと変わらなかった）'},
 ];
 let CMP_SEL='main';
 
