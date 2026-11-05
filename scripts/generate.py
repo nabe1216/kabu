@@ -478,20 +478,23 @@ def extract_annual_dividends(
 
     決算期種別 'FY' / '4Q' の DivAnn を採用し、古い順に並べる。
     """
-    annual = []
+    # 2026年11月6日：分割・併合の基準は「期末の7日前」で直す（actual_dps_adjusted。V3）。
+    # 同じ期の開示が2つ以上あるとき（訂正など）は、あとで開示した方を使う（同じ期を2回数えない）。
+    events = split_events(quotes_sorted)
+    by_period: dict[date, tuple[date, float]] = {}
     for s in statements:
         if s.get('CurPerType') not in ('FY', '4Q'):
             continue
-        div = safe_float(s.get('DivAnn'))
         period = parse_date(s.get('CurPerEn'))
-        if div is None or period is None:
+        if period is None:
             continue
-        # 分割調整
-        disc_date = parse_date(s.get('DiscDate')) or period
-        adj = cumulative_adj_factor_after(quotes_sorted, disc_date) if quotes_sorted else 1.0
-        annual.append((period, div * adj))
-    annual.sort(key=lambda x: x[0])
-    return [d for _, d in annual]
+        v = actual_dps_adjusted(s, events)
+        if v is None:
+            continue
+        disc = parse_date(s.get('DiscDate')) or period
+        if period not in by_period or disc >= by_period[period][0]:
+            by_period[period] = (disc, v)
+    return [by_period[p][1] for p in sorted(by_period)]
 
 
 def check_dividend_history(div_history: list[float], code: str) -> tuple[bool | None, int]:
@@ -1124,6 +1127,8 @@ def build_financials_history(
         dps_raw = safe_float(s.get('DivAnn'))
         eps_val = eps_raw * adj if eps_raw is not None else None
         dps_val = dps_raw * adj if dps_raw is not None else None
+        if dps_raw is not None and s.get('CurPerType') in ('FY', '4Q') and quotes_sorted:
+            dps_val = actual_dps_adjusted(s, split_events(quotes_sorted))   # 2026年11月6日：V3
         roe_val = None
         if np_val is not None and eq_val is not None and eq_val > 0:
             roe_val = (np_val / eq_val) * 100.0
@@ -1201,6 +1206,111 @@ def cumulative_adj_factor_after(
     return factor
 
 
+# ── 分割・併合の基準のずれを直す（2026年11月6日。20年分の検証 long_lab16 で採った「直した計算 V3」と同じ考え方）──
+# 1) 実績の年間配当は、開示日ではなく「期末の7日前」より後の分割・併合で、いまの株数の基準に直す。
+#    期末が基準日の株式分割では、決算短信の年間配当は分割前の株数で払った額のまま載るので、
+#    開示日より後の分割だけで直すと、翌期と比べて「減配」に見えていた（KDDI・野村不動産HD・第一ライフなど）。
+# 2) 中間の基準日（期末の6か月前）の7日前から、期末の7日前までに分割・併合した期は、
+#    年間配当に分割前と分割後の基準が混ざるので、減配の比べには使わない。
+# 3) 予想配当は、開示から DIV_EV_DAYS 日以内に DIV_EV_MIN 倍以上（または 1/DIV_EV_MIN 以下）の分割・併合があれば、
+#    「分割前の基準で出した」「すでに分割後の基準で出した」の2通りに読み、直前の開示の予想に近い方を採る。
+# 20年分の検証では、この直し方が配当金情報（実際に決まった配当）と2014〜2025年の12年すべてで±5％以内に合った。
+DIV_REC_DAYS = 7
+DIV_EV_DAYS = 270
+DIV_EV_MIN = 1.25
+
+
+def split_events(quotes: list[dict[str, Any]] | None) -> list[tuple[date, float]]:
+    """株価の記録から、分割・併合の日と係数（1でない日だけ）を日付順に返す。"""
+    out: list[tuple[date, float]] = []
+    for q in quotes or []:
+        d = parse_date(q.get('Date'))
+        adj = safe_float(q.get('AdjustmentFactor'))
+        if d is not None and adj is not None and adj > 0 and abs(adj - 1.0) > 1e-6:
+            out.append((d, adj))
+    out.sort(key=lambda x: x[0])
+    return out
+
+
+def _factor_on_or_after(events: list[tuple[date, float]], since: date) -> float:
+    f = 1.0
+    for d, a in events:
+        if d >= since:
+            f *= a
+    return f
+
+
+def _factor_after(events: list[tuple[date, float]], since: date) -> float:
+    f = 1.0
+    for d, a in events:
+        if d > since:
+            f *= a
+    return f
+
+
+def _fy_end_of(s: dict[str, Any]) -> date | None:
+    return parse_date(s.get('CurFYEn')) or parse_date(s.get('CurPerEn'))
+
+
+def _months_before(d: date, months: int) -> date:
+    y, m = d.year, d.month - months
+    while m <= 0:
+        m += 12
+        y -= 1
+    import calendar
+    return date(y, m, min(d.day, calendar.monthrange(y, m)[1]))
+
+
+def actual_dps_adjusted(s: dict[str, Any], events: list[tuple[date, float]]) -> float | None:
+    """実績の年間配当（DivAnn）を、いまの株数の基準に直す（V3）。期の途中で分割・併合した期は None。"""
+    v = safe_float(s.get('DivAnn'))
+    fe = _fy_end_of(s)
+    if v is None or fe is None:
+        return None
+    if events:
+        a_ = _months_before(fe, 6) - timedelta(days=DIV_REC_DAYS)
+        b_ = fe - timedelta(days=DIV_REC_DAYS)
+        if any(a_ <= d < b_ for d, _f in events):
+            return None
+    return v * _factor_on_or_after(events, fe - timedelta(days=DIV_REC_DAYS))
+
+
+def forecast_dps_timeline(
+    statements: list[dict[str, Any]], events: list[tuple[date, float]],
+) -> dict[int, float]:
+    """開示ごとの予想配当（なければ実績）を、いまの株数の基準に直した値（V3）。キーは statements の位置。"""
+    order = sorted(
+        range(len(statements)),
+        key=lambda i: ((parse_date(statements[i].get('DiscDate')) or parse_date(statements[i].get('CurPerEn')) or date.min), i),
+    )
+    out: dict[int, float] = {}
+    prev = None
+    for i in order:
+        s = statements[i]
+        d = parse_date(s.get('DiscDate')) or parse_date(s.get('CurPerEn'))
+        if d is None:
+            continue
+        per = s.get('CurPerType', '')
+        v = safe_float(s.get('NxFDivAnn')) if per in ('FY', '4Q') else safe_float(s.get('FDivAnn'))
+        if v is None or v <= 0:
+            for key in ('FDivAnn', 'NxFDivAnn'):
+                v = safe_float(s.get(key))
+                if v is not None and v > 0:
+                    break
+        if v is None or v <= 0:
+            continue
+        val = v * _factor_after(events, d)
+        nxt = next(((ed, ef) for ed, ef in events if ed > d), None)
+        if (prev is not None and prev > 0 and nxt is not None and (nxt[0] - d).days <= DIV_EV_DAYS
+                and (nxt[1] >= DIV_EV_MIN or nxt[1] <= 1.0 / DIV_EV_MIN)):
+            alt = val / nxt[1]          # すでに分割・併合のあとの基準で出していた、と読んだ値
+            if abs(math.log(alt / prev)) < abs(math.log(val / prev)):
+                val = alt
+        out[i] = val
+        prev = val
+    return out
+
+
 def get_latest_full_year_metric(statements: list[dict[str, Any]], key: str) -> float | None:
     """
     直近 FY 系 disclosure から指定指標を取得する (分割調整なし)。
@@ -1266,6 +1376,30 @@ def get_forecast_dps_with_date(
     # Pass 3: 直近FYの実績 + その日付
     fb_v, fb_d = get_latest_full_year_metric_with_date(statements, 'DivAnn')
     return fb_v, fb_d
+
+
+def forecast_dps_v3(statements: list[dict[str, Any]], events: list[tuple[date, float]]) -> float | None:
+    """いまの予想配当を、分割・併合の基準の取り違えを直して返す（2026年11月6日。V3）。
+    どの開示の値を使うかは get_forecast_dps_with_date と同じ（新しい期の予想 → なければ何でも → なければ直近の実績）。"""
+    tl = forecast_dps_timeline(statements, events)
+    order = sorted(
+        range(len(statements)),
+        key=lambda i: (parse_date(statements[i].get('CurPerEn')) or parse_date(statements[i].get('DiscDate')) or date.min),
+        reverse=True,
+    )
+    for i in order:                      # Pass 1：種類に応じて NxFDivAnn / FDivAnn
+        s = statements[i]
+        f = safe_float(s.get('NxFDivAnn')) if s.get('CurPerType', '') in ('FY', '4Q') else safe_float(s.get('FDivAnn'))
+        if f is not None and f > 0:
+            return tl.get(i)
+    for i in order:                      # Pass 2：FDivAnn / NxFDivAnn のどちらか
+        s = statements[i]
+        if any((safe_float(s.get(k)) or 0) > 0 for k in ('FDivAnn', 'NxFDivAnn')):
+            return tl.get(i)
+    for s in _sorted_fy_statements(statements):   # Pass 3：直近の実績
+        if safe_float(s.get('DivAnn')) is not None:
+            return actual_dps_adjusted(s, events)
+    return None
 
 
 def get_forecast_dps(statements: list[dict[str, Any]]) -> float | None:
@@ -1424,9 +1558,13 @@ def process_stock(
     np_history = extract_annual_metric(statements, 'NP')          # 総額: 調整不要
 
     # --- DPS forecast: 分割調整 ---
+    # 2026年11月6日：分割・併合の基準の取り違えを直す（forecast_dps_v3。V3）
+    split_ev = split_events(quotes_sorted)
     forecast_dps_raw, forecast_dps_date = get_forecast_dps_with_date(statements)
-    forecast_dps_adj = cumulative_adj_factor_after(quotes_sorted, forecast_dps_date)
-    forecast_dps = (forecast_dps_raw * forecast_dps_adj) if forecast_dps_raw is not None else None
+    forecast_dps = forecast_dps_v3(statements, split_ev)
+    if forecast_dps is None and forecast_dps_raw is not None:
+        forecast_dps = forecast_dps_raw * cumulative_adj_factor_after(quotes_sorted, forecast_dps_date)
+    forecast_dps_adj = (forecast_dps / forecast_dps_raw) if (forecast_dps is not None and forecast_dps_raw) else 1.0
     current_yield = (forecast_dps / price * 100.0) if (forecast_dps and forecast_dps > 0) else None
 
     # 異常検知ログ
@@ -1457,10 +1595,17 @@ def process_stock(
         # → 直接 raw 値で計算 OK
         # ただし div_actual_raw と eps_raw が異なる FY から来ている場合に備えて、
         # それぞれ調整してから割り算する
-        div_adj = cumulative_adj_factor_after(quotes_sorted, div_actual_date)
-        div_for_payout = div_actual_raw * div_adj
+        # 2026年11月6日：配当は「期末の7日前」の基準で直す（V3）。EPS は決算短信で分割後の基準に
+        # 直して載ることが多いので、開示日の基準のまま（これまでどおり）
+        div_for_payout = None
+        for _s in _sorted_fy_statements(statements):
+            if safe_float(_s.get('DivAnn')) is not None:
+                div_for_payout = actual_dps_adjusted(_s, split_ev)
+                break
+        if div_for_payout is None:
+            div_for_payout = div_actual_raw * cumulative_adj_factor_after(quotes_sorted, div_actual_date)
         eps_for_payout = eps  # already adjusted
-        payout = (div_for_payout / eps_for_payout) * 100.0 if eps_for_payout > 0 else None
+        payout = (div_for_payout / eps_for_payout) * 100.0 if (eps_for_payout and eps_for_payout > 0) else None
     else:
         payout = None
 
@@ -1487,16 +1632,20 @@ def process_stock(
     # --- シグナル（利回り分布）---
     # --- ヒストリカル DPS: 分割調整して連続性を保つ ---
     # 古い disclosure の DPS は分割係数で割引 (1:5分割があれば × 0.2 で現在の規模に揃える)
+    # 2026年11月6日：実績の年間配当は「期末の7日前」の基準で直す（V3）。期の途中で分割・併合した期は使わない
     div_history_by_year: dict[int, float] = {}
+    _dh_disc: dict[int, date] = {}
     for s in statements:
         if s.get('CurPerType') not in ('FY', '4Q'):
             continue
         d = parse_date(s.get('CurPerEn'))
-        v = safe_float(s.get('DivAnn'))
+        if d is None:
+            continue
+        v = actual_dps_adjusted(s, split_ev)
         disc_d = parse_date(s.get('DiscDate')) or d
-        if d and v is not None:
-            adj = cumulative_adj_factor_after(quotes_sorted, disc_d)
-            div_history_by_year[d.year] = v * adj
+        if v is not None and (d.year not in _dh_disc or disc_d >= _dh_disc[d.year]):
+            div_history_by_year[d.year] = v
+            _dh_disc[d.year] = disc_d
 
     yield_dist = calculate_yield_distribution(quotes, div_history_by_year)
     signal = determine_signal(current_yield, yield_dist)

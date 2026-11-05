@@ -12,7 +12,17 @@ generate.py の実行後に呼び出される。
 - 最大保有: 20銘柄
 - Tier別予算: S=400万、A=200万、B=100万
 - 配当: 権利月該当銘柄に DPS × 保有株数 × 0.5（中間・期末の半額ずつ）
-- 利益計算: 含み損益 + 実現損益 + 配当（全部合計）
+- 評価総額: 現金 + 持ち株の評価額（配当は現金に入るので、別には足さない）
+
+2026年11月6日の変更（20年分の検証に合わせる。計画はプロジェクトの tool_update_2026-11-06）:
+- 税: 売却益と配当に 20.315％。売却の損は、その年の配当（源泉された税を戻す）と、のちの売却益・配当と相殺する
+  （特定口座で配当を口座で受け取る前提。検証と同じ）
+- 配当で買い増し（検証の X8）: 月に1回、新しい買いのあとに残った現金で、目標の大きさ（新しく買うときの予算）を
+  いちばん下回っている持ち株を、100株ずつ目標まで買い増す。8条件を通り、減配・業績急変でない銘柄だけ
+- 12月の損出し（検証の R6）: 12月15日以降の最初の実行日に、取得単価より2％以上下がっている持ち株を売り、
+  同じ株数をすぐ買い戻す（持ち株は変わらず、損が確定して税が戻る）
+- 株式分割を反映する（これまでは分割のあと株数が増えず、損に見えていた）
+- 配当の二重計上を直す（これまでは評価総額に配当を2回足していた）
 """
 
 from __future__ import annotations
@@ -60,6 +70,15 @@ TARGET_HOLDINGS = 15
 
 # Tierごとの重み。質が高いほど厚く持つ。
 TIER_WEIGHT = {'S': 2.0, 'A': 1.5, 'B': 1.0}
+
+# 2026年11月6日：20年分の検証に合わせた売買の決まり（tool_update_2026-11-06）
+ENGINE_VERSION = 2
+TAX_RATE = 0.20315          # 売却益と配当の税（特定口座）
+TOPUP = True                # 配当で比率の下がった持ち株を買い増す（検証の X8。「おおむね効く」）
+HARVEST = True              # 12月の損出し（検証の R6。161通りで「いつ始めても効く」）
+HARVEST_MIN_LOSS = 0.02     # 取得単価より2％以上下がっている持ち株だけ（検証と同じ）
+HARVEST_FROM_DAY = 15       # 12月15日以降の最初の実行日（年内に受け渡しが終わるように）
+SPLIT_TOL = 0.03            # 株価の記録が3％以上ずれたら、株式分割・併合とみなす
 
 
 def tier_budget(state: dict, tier: str) -> int:
@@ -174,7 +193,7 @@ def build_trade_notification(
     lines.append(f"損益: {sign}¥{int(ret):,}")
     lines.append(f"保有: {len(state.get('holdings', []))} / {MAX_HOLDINGS} 銘柄")
     lines.append(f"現金: ¥{int(state.get('cash', 0)):,}")
-    lines.append(f"配当累計: ¥{int(state.get('dividend_received', 0)):,}")
+    lines.append(f"配当累計（税引き後）: ¥{int(state.get('dividend_received', 0)):,}")
 
     return '\n'.join(lines)
 
@@ -210,6 +229,11 @@ def init_state() -> dict[str, Any]:
         'total_invested': 0,
         'realized_pl': 0,
         'dividend_received': 0,
+        'dividend_gross': 0,
+        'tax_paid': 0,
+        'loss_pool': 0,
+        'year_div_taxed': {},
+        'engine_version': ENGINE_VERSION,
         'last_updated': '',  # 空文字 → 初回起動時に必ず処理が走る
     }
 
@@ -254,7 +278,8 @@ def update_valuations(state: dict[str, Any], stocks_by_code: dict[str, dict]) ->
             holdings_value += holding.get('value', holding['buy_price'] * holding['qty'])
 
     state['holdings_value'] = holdings_value
-    state['total_value'] = state['cash'] + holdings_value + state['dividend_received']
+    # 配当は受け取ったときに現金へ入れているので、ここで足すと2回数えることになる（2026年11月6日に直した）
+    state['total_value'] = state['cash'] + holdings_value
 
 
 def process_dividends(
@@ -296,9 +321,12 @@ def process_dividends(
             if key in received_codes:
                 continue
 
-            amount = round(half_dps * holding['qty'])
+            gross = round(half_dps * holding['qty'])
+            tax = dividend_tax(state, gross, today)
+            amount = gross - tax
             state['cash'] += amount
             state['dividend_received'] += amount
+            state['dividend_gross'] = state.get('dividend_gross', 0) + gross
             received_codes.add(key)
             total_received += amount
             received_count += 1
@@ -311,6 +339,8 @@ def process_dividends(
                 'dps': half_dps,
                 'shares': holding['qty'],
                 'amount': amount,
+                'gross': gross,
+                'tax': tax,
             })
 
     return received_count
@@ -328,8 +358,9 @@ def sell_holding(
     qty = holding['qty']
     amount = sell_price * qty
     realized_pl = (sell_price - holding['buy_price']) * qty
+    tax = gain_tax(state, realized_pl, today)
 
-    state['cash'] += amount
+    state['cash'] += amount - tax
     state['realized_pl'] += realized_pl
 
     holding_days = (today - date.fromisoformat(holding['buy_date'])).days
@@ -348,6 +379,7 @@ def sell_holding(
         'holding_days': holding_days,
         'realized_pl': realized_pl,
         'realized_pl_pct': round((sell_price - holding['buy_price']) / holding['buy_price'] * 100, 2),
+        'tax': tax,
         'reason': reason,
     })
 
@@ -397,6 +429,7 @@ def buy_stock(
         'unrealized_pl': 0,
         'unrealized_pl_pct': 0,
     }
+    set_split_ref(holding, stock)
     state['holdings'].append(holding)
 
     history['trades'].append({
@@ -414,6 +447,266 @@ def buy_stock(
     return True
 
 
+# ============================================================
+# 2026年11月6日：税・株式分割・配当で買い増し・12月の損出し（tool_update_2026-11-06）
+# ============================================================
+
+def _year_taxed(state: dict[str, Any], today: date) -> dict[str, float]:
+    yt = state.setdefault('year_div_taxed', {})
+    yt.setdefault(str(today.year), 0)
+    return yt
+
+
+def dividend_tax(state: dict[str, Any], gross: float, today: date) -> int:
+    """配当の税。たまっている売却の損があれば先に相殺する。戻り値は源泉する税（円）。"""
+    if gross <= 0:
+        return 0
+    pool = float(state.get('loss_pool', 0) or 0)
+    use = min(pool, gross)
+    state['loss_pool'] = pool - use
+    taxable = gross - use
+    yt = _year_taxed(state, today)
+    yt[str(today.year)] = yt[str(today.year)] + taxable
+    tax = round(taxable * TAX_RATE)
+    state['tax_paid'] = state.get('tax_paid', 0) + tax
+    return tax
+
+
+def gain_tax(state: dict[str, Any], pl: float, today: date) -> int:
+    """売却の税。益なら、たまった損を引いた残りに税（正の値）。損なら、その年に税を払った配当の分の税を戻し
+    （負の値）、残りは次の益・配当と相殺するために持っておく。"""
+    pool = float(state.get('loss_pool', 0) or 0)
+    if pl >= 0:
+        use = min(pool, pl)
+        state['loss_pool'] = pool - use
+        tax = round((pl - use) * TAX_RATE)
+        state['tax_paid'] = state.get('tax_paid', 0) + tax
+        return tax
+    loss = -pl
+    yt = _year_taxed(state, today)
+    back = min(loss, yt[str(today.year)])
+    yt[str(today.year)] -= back
+    state['loss_pool'] = pool + (loss - back)
+    refund = round(back * TAX_RATE)
+    state['tax_paid'] = state.get('tax_paid', 0) - refund
+    return -refund
+
+
+def set_split_ref(holding: dict[str, Any], stock: dict[str, Any]) -> None:
+    """株式分割を見つけるための目印（株価の記録の最後の日と、その日の終値）を持っておく。"""
+    ph = stock.get('price_history') or []
+    if ph and ph[-1].get('c'):
+        holding['ref_d'] = ph[-1]['d']
+        holding['ref_c'] = ph[-1]['c']
+
+
+def apply_splits(state: dict[str, Any], history: dict[str, Any], stocks_by_code: dict[str, dict], today: date) -> int:
+    """株価の記録は分割のあと過去の値も直して届くので、目印の日の終値がずれていれば分割・併合とみなす。
+    株数を増やし（減らし）、取得単価を同じ割合で直す（取得の総額は変えない）。"""
+    n = 0
+    for h in state['holdings']:
+        stock = stocks_by_code.get(h['code'])
+        if not stock:
+            continue
+        ph = stock.get('price_history') or []
+        if h.get('ref_d') and h.get('ref_c'):
+            now_c = next((p.get('c') for p in ph if p.get('d') == h['ref_d']), None)
+            if now_c and now_c > 0:
+                f = now_c / float(h['ref_c'])
+                if abs(f - 1.0) > SPLIT_TOL:
+                    old_qty = h['qty']
+                    h['qty'] = int(round(old_qty / f))
+                    h['buy_price'] = h['buy_price'] * old_qty / h['qty']
+                    history.setdefault('notes', []).append({
+                        'date': today.isoformat(), 'code': h['code'], 'name': h.get('name', ''),
+                        'note': f'株式分割・併合を反映（{old_qty:,}株 → {h["qty"]:,}株）'})
+                    log.info('SPLIT %s %s: %d -> %d', h['code'], h.get('name', ''), old_qty, h['qty'])
+                    n += 1
+        set_split_ref(h, stock)
+    return n
+
+
+def _target_value(state: dict[str, Any], tier: str) -> float:
+    return float(tier_budget(state, tier))
+
+
+def topup_holdings(state: dict[str, Any], history: dict[str, Any], stocks_by_code: dict[str, dict], today: date) -> list:
+    """配当で比率の下がった持ち株を買い増す（検証の X8）。目標の大きさをいちばん下回っている持ち株から、
+    100株ずつ目標を超えない範囲で。買えるのは、8条件を通り、減配・業績急変でない銘柄だけ。"""
+    done = []
+    while True:
+        best = None
+        for h in state['holdings']:
+            st = stocks_by_code.get(h['code'])
+            if not st or not st.get('screening_pass') or st.get('emergency_exit'):
+                continue
+            px = get_today_open_price(st)
+            if not px or px <= 0:
+                continue
+            tgt = _target_value(state, st.get('tier') or h.get('tier', 'B'))
+            val = h['qty'] * (st.get('price') or px)
+            if tgt - val < 100 * px or state['cash'] < 100 * px:
+                continue
+            ratio = val / tgt if tgt > 0 else 9.9
+            if best is None or ratio < best[0]:
+                best = (ratio, h, st, px, tgt - val)
+        if best is None:
+            break
+        _r, h, st, px, room = best
+        lots = int(min(room // (100 * px), state['cash'] // (100 * px)))
+        if lots <= 0:
+            break
+        qty = lots * 100
+        amount = qty * px
+        state['cash'] -= amount
+        state['total_invested'] += amount
+        h['buy_price'] = (h['buy_price'] * h['qty'] + amount) / (h['qty'] + qty)   # 取得単価は平均でまとめる
+        h['qty'] += qty
+        rec = {'date': today.isoformat(), 'action': 'BUY', 'code': h['code'], 'name': h.get('name', ''),
+               'tier': h.get('tier', 'B'), 'qty': qty, 'price': px, 'amount': amount,
+               'reason': '配当で買い増し（目標の大きさまで）'}
+        history['trades'].append(rec)
+        done.append(rec)
+        log.info('TOPUP %s (%s) %d shares', h['code'], h.get('name', ''), qty)
+    return done
+
+
+def harvest_losses(state: dict[str, Any], history: dict[str, Any], stocks_by_code: dict[str, dict], today: date) -> list:
+    """12月の損出し（検証の R6）。取得単価より2％以上下がっている持ち株を売って損を確定させ、同じ株数をすぐ買い戻す。"""
+    done = []
+    for h in state['holdings']:
+        st = stocks_by_code.get(h['code'])
+        if not st:
+            continue
+        px = get_today_open_price(st)
+        if not px or px <= 0 or px >= h['buy_price'] * (1 - HARVEST_MIN_LOSS):
+            continue
+        qty = h['qty']
+        pl = (px - h['buy_price']) * qty
+        tax = gain_tax(state, pl, today)            # 損なので、税が戻る（負の値）
+        state['cash'] += px * qty - tax
+        state['realized_pl'] += pl
+        state['cash'] -= px * qty                    # 同じ株数をすぐ買い戻す
+        sell = {'date': today.isoformat(), 'action': 'SELL', 'code': h['code'], 'name': h.get('name', ''),
+                'tier': h.get('tier', 'B'), 'qty': qty, 'price': px, 'amount': px * qty,
+                'buy_price': h['buy_price'], 'buy_date': h['buy_date'],
+                'holding_days': (today - date.fromisoformat(h['buy_date'])).days,
+                'realized_pl': pl, 'realized_pl_pct': round((px - h['buy_price']) / h['buy_price'] * 100, 2),
+                'tax': tax, 'reason': '12月の損出し（売り。同じ株数をすぐ買い戻す）'}
+        buy = {'date': today.isoformat(), 'action': 'BUY', 'code': h['code'], 'name': h.get('name', ''),
+               'tier': h.get('tier', 'B'), 'qty': qty, 'price': px, 'amount': px * qty,
+               'reason': '12月の損出し（買い戻し）'}
+        history['trades'] += [sell, buy]
+        done += [sell, buy]
+        h['buy_price'] = px
+        h['buy_date'] = today.isoformat()
+        log.info('HARVEST %s (%s) loss=%s tax_back=%s', h['code'], h.get('name', ''), round(pl), -tax)
+    return done
+
+
+def _close_on(stock: dict[str, Any] | None, d: str, key: str = 'c') -> float | None:
+    """株価の記録（分割を直した値）から、d 以前でいちばん新しい日の値。"""
+    if not stock:
+        return None
+    best = None
+    for p in stock.get('price_history') or []:
+        if p.get('d') and p['d'] <= d and p.get(key):
+            best = p[key]
+    return best
+
+
+def migrate_v2(state: dict[str, Any], history: dict[str, Any], stocks_by_code: dict[str, dict]) -> None:
+    """2026年11月6日：これまでの記録を、直した決まりで数え直す（1回だけ）。
+    ① 持ち株の株式分割（買った日の始値と、いまの株価の記録の同じ日の始値の比で見つける）
+    ② 配当と売却益の税（検証と同じ条件。その年の損と配当は相殺）
+    ③ 毎日の評価総額（配当の二重計上をやめ、分割と税を入れて、売買の履歴と株価の記録から数え直す）"""
+    if state.get('engine_version', 1) >= ENGINE_VERSION:
+        return
+    notes = history.setdefault('notes', [])
+    trades = history.get('trades', [])
+    # ① 分割：買った日の始値の比（いまの記録 ÷ 買ったときの値）
+    fac = {}
+    for t in trades:
+        if t.get('action') != 'BUY':
+            continue
+        st = stocks_by_code.get(t['code'])
+        o = None
+        if st:
+            o = next((p.get('o') for p in st.get('price_history') or [] if p.get('d') == t['date']), None) \
+                or _close_on(st, t['date'], 'o')
+        f = (o / t['price']) if (o and t.get('price')) else 1.0
+        fac[(t['code'], t['date'])] = f if abs(f - 1.0) > SPLIT_TOL else 1.0
+    for h in state['holdings']:
+        f = fac.get((h['code'], h['buy_date']), 1.0)
+        if f != 1.0:
+            old_qty = h['qty']
+            h['qty'] = int(round(old_qty / f))
+            h['buy_price'] = h['buy_price'] * old_qty / h['qty']
+            notes.append({'date': datetime.now(timezone(timedelta(hours=9))).date().isoformat(), 'code': h['code'],
+                          'name': h.get('name', ''), 'note': f'株式分割を反映（{old_qty:,}株 → {h["qty"]:,}株。記録を数え直した）'})
+        st = stocks_by_code.get(h['code'])
+        if st:
+            set_split_ref(h, st)
+    # ② 税：日付の順に、配当と売却益にかける
+    events = [(d['date'], 0, d) for d in history.get('dividends', [])] + \
+             [(t['date'], 1, t) for t in trades if t.get('action') == 'SELL']
+    events.sort(key=lambda x: (x[0], x[1]))
+    tmp = {'loss_pool': 0, 'tax_paid': 0, 'year_div_taxed': {}}
+    tax_by_date = []
+    for d, kind, rec in events:
+        dd = date.fromisoformat(d[:10])
+        if kind == 0:
+            g = rec.get('gross', rec.get('amount', 0))
+            tx = dividend_tax(tmp, g, dd)
+            rec['gross'] = g
+            rec['tax'] = tx
+            rec['amount'] = g - tx
+        else:
+            tx = gain_tax(tmp, rec.get('realized_pl', 0), dd)
+            rec['tax'] = tx
+        tax_by_date.append((d[:10], tx))
+    total_tax = sum(x for _d, x in tax_by_date)
+    gross_div = sum(d.get('gross', 0) for d in history.get('dividends', []))
+    state['cash'] = state['cash'] - total_tax
+    state['tax_paid'] = tmp['tax_paid']
+    state['loss_pool'] = tmp['loss_pool']
+    state['year_div_taxed'] = tmp['year_div_taxed']
+    state['dividend_gross'] = gross_div
+    state['dividend_received'] = gross_div - sum(d.get('tax', 0) for d in history.get('dividends', []))
+    # ③ 毎日の評価総額を数え直す
+    for snap in history.get('daily_snapshots', []):
+        d = snap['date']
+        held = {}
+        for t in trades:
+            if t['date'] > d:
+                continue
+            f = fac.get((t['code'], t['date']), 1.0) if t.get('action') == 'BUY' else None
+            q = held.setdefault(t['code'], 0.0)
+            if t.get('action') == 'BUY':
+                held[t['code']] = q + t['qty'] / f
+            else:
+                held[t['code']] = 0.0
+        hv, ok = 0.0, True
+        for code, q in held.items():
+            if q <= 0:
+                continue
+            c = _close_on(stocks_by_code.get(code), d)
+            if c is None:
+                ok = False
+                break
+            hv += q * c
+        tx = sum(x for dd, x in tax_by_date if dd <= d)
+        if ok:
+            snap['holdings_value'] = round(hv, 1)
+        snap['cash'] = snap['cash'] - tx
+        snap['total_value'] = round(snap['cash'] + snap['holdings_value'], 1)
+        snap['dividend_total'] = sum(x.get('amount', 0) for x in history.get('dividends', []) if x['date'][:10] <= d)
+    notes.append({'date': datetime.now(timezone(timedelta(hours=9))).date().isoformat(), 'code': '', 'name': '',
+                  'note': '記録を数え直した（配当の二重計上をやめた・株式分割を反映した・税 20.315％をかけた）'})
+    state['engine_version'] = ENGINE_VERSION
+    log.info('Migrated portfolio to engine v%d (tax=%s)', ENGINE_VERSION, total_tax)
+
+
 def update_portfolio(stocks: list[dict[str, Any]]) -> dict[str, Any]:
     """メイン処理: 毎日のポートフォリオ更新"""
     today_jst = datetime.now(timezone(timedelta(hours=9))).date()
@@ -426,12 +719,21 @@ def update_portfolio(stocks: list[dict[str, Any]]) -> dict[str, Any]:
     if state.get('last_updated') == today_jst.isoformat():
         # スナップショットだけ更新
         stocks_by_code = {s['code']: s for s in stocks}
+        migrate_v2(state, history, stocks_by_code)
+        apply_splits(state, history, stocks_by_code, today_jst)
         update_valuations(state, stocks_by_code)
+        save_json(HISTORY_PATH, history)
         log.info('Already processed today (%s), updated valuations only', today_jst)
         save_json(STATE_PATH, state)
         return state
 
     stocks_by_code = {s['code']: s for s in stocks}
+
+    # ステップ0: これまでの記録を直した決まりで数え直す（1回だけ）・株式分割を反映する
+    migrate_v2(state, history, stocks_by_code)
+    split_n = apply_splits(state, history, stocks_by_code, today_jst)
+    if split_n:
+        log.info('Applied splits: %d holdings', split_n)
 
     # ステップ1: 配当受領処理
     div_count = process_dividends(state, history, today_jst, stocks_by_code)
@@ -505,6 +807,20 @@ def update_portfolio(stocks: list[dict[str, Any]]) -> dict[str, Any]:
                 new_buys.append(history['trades'][-1])
             log.info('BUY %s (%s)', stock['code'], stock.get('name', ''))
 
+    # ステップ4b: 配当で比率の下がった持ち株を買い増す（月に1回。検証の X8）
+    ym = today_jst.strftime('%Y-%m')
+    if TOPUP and state.get('last_topup_month') != ym:
+        update_valuations(state, stocks_by_code)
+        new_buys += topup_holdings(state, history, stocks_by_code, today_jst)
+        state['last_topup_month'] = ym
+
+    # ステップ4c: 12月の損出し（12月15日以降の最初の実行日に1回。検証の R6）
+    if HARVEST and today_jst.month == 12 and today_jst.day >= HARVEST_FROM_DAY \
+            and state.get('last_harvest_year') != today_jst.year:
+        hv = harvest_losses(state, history, stocks_by_code, today_jst)
+        new_sells += [t for t in hv if t['action'] == 'SELL']
+        state['last_harvest_year'] = today_jst.year
+
     # 再度評価額更新（購入分を反映）
     update_valuations(state, stocks_by_code)
 
@@ -517,6 +833,7 @@ def update_portfolio(stocks: list[dict[str, Any]]) -> dict[str, Any]:
         'unrealized_pl': sum(h.get('unrealized_pl', 0) for h in state['holdings']),
         'realized_pl': state['realized_pl'],
         'dividend_total': state['dividend_received'],
+        'tax_paid': state.get('tax_paid', 0),
         'holdings_count': len(state['holdings']),
     }
     # 同日のスナップショットがあれば置き換え
