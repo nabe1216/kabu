@@ -1994,6 +1994,91 @@ def x_complete(store: dict, xs: dict, names=None) -> bool:
     return True
 
 
+# 日ごとに取ると時間がかかりすぎるデータは、月ごとのファイル（/v2/bulk。中身は API と同じ日ごとの四本値）でまとめて取る。
+# ファイルがない月（いまの月など）や、ファイルの形が思ったものと違うときは、これまでどおり日ごとに取る
+X_BULK = {"opt": ("/derivatives/bars/daily/options", ("Date", "ProdCat", "PCDiv", "Vo", "EmMrgnTrgDiv"))}
+
+
+def _bulk_norm_date(s: str) -> str:
+    s = str(s).strip()[:10]
+    return f"{s[:4]}-{s[4:6]}-{s[6:8]}" if len(s) == 8 and s.isdigit() else s
+
+
+def _bulk_norm_code(s) -> str:
+    """'1'・'1.0'・'001' を同じに扱う（CSV で数字の形が変わっても、区分を取り違えないため）。"""
+    s = str(s).strip()
+    if s.endswith(".0"):
+        s = s[:-2]
+    return s.lstrip("0") or "0"
+
+
+def fetch_x_bulk(jq, name: str, st: dict, todo: list) -> None:
+    """月ごとのファイルで取れる日を取り、st["done"] に入れる。取れなかった日は残す（呼び出し側が日ごとに取る）。"""
+    import gzip
+    import io
+    import re
+    import requests
+    ep, need = X_BULK[name]
+    key = os.environ.get("J_QUANTS_API_KEY", "")
+    want = set(todo)
+    months = sorted({d[:7] for d in todo})
+    try:
+        items = jq.get("/v2/bulk/list", {"endpoint": ep, "from": months[0], "to": months[-1]})
+    except Exception as e:
+        log(f"  {name}：月ごとのファイルの一覧が取れません（{str(e)[:120]}）。日ごとに取ります")
+        return
+    files = []
+    for it in items or []:
+        k = str(it.get("Key") or "")
+        m = re.search(r"_(\d{6}|\d{8})\.csv\.gz$", k)
+        if not m:
+            continue
+        tag = m.group(1)
+        ds = {d for d in want if d.replace("-", "").startswith(tag)}
+        if ds:
+            files.append((tag, k, it.get("Size")))
+    files.sort()
+    log(f"  {name}：月ごとのファイル {len(files)}個で取ります（一覧 {len(items or [])}個。例：{files[0][1] if files else 'なし'}）")
+    shown = False
+    for i, (tag, k, size) in enumerate(files, 1):
+        if elapsed() >= BUDGET_MIN:
+            return
+        try:
+            time.sleep(yb.API_SLEEP)
+            r = requests.get(f"{yb.JQUANTS_BASE}/v2/bulk/get", params={"key": k}, headers={"x-api-key": key}, timeout=60)
+            r.raise_for_status()
+            url = r.json().get("url")
+            g = requests.get(url, timeout=600)
+            g.raise_for_status()
+            raw = gzip.decompress(g.content)
+            head = raw[:4000].decode("utf-8-sig", errors="replace").splitlines()[0]
+            cols = [c.strip().strip('"') for c in head.split(",")]
+            if not shown:
+                log("  ファイルの項目 … " + "・".join(cols[:40]))
+                shown = True
+            miss = [c for c in need if c not in cols]
+            if miss:
+                log(f"  ■ {name}：ファイルに {'・'.join(miss)} がありません。日ごとに取ります")
+                return
+            df = pd.read_csv(io.BytesIO(raw), dtype=str, keep_default_na=False, usecols=list(need), encoding="utf-8-sig")
+        except Exception as e:
+            log(f"  {name}：ファイル {k} が取れません（{str(e)[:120]}）。この月は日ごとに取ります")
+            continue
+        df["Date"] = df["Date"].map(_bulk_norm_date)
+        df["PCDiv"] = df["PCDiv"].map(_bulk_norm_code)
+        df["EmMrgnTrgDiv"] = df["EmMrgnTrgDiv"].map(lambda v: "001" if _bulk_norm_code(v) == "1" else "002")
+        n_day = 0
+        for d, grp in df.groupby("Date", sort=True):
+            if d not in want or d in st["done"]:
+                continue
+            st["rows"].extend(X_REDUCE[name](grp.to_dict("records"), d))
+            st["done"].add(d)
+            st["fail"].discard(d)
+            n_day += 1
+        if i % 12 == 0 or i == len(files):
+            log(f"  {i}/{len(files)}ファイル（{tag}：{n_day}日・{len(df):,}行・開始から{elapsed():.0f}分）")
+
+
 def _x_iter(jq, path, prm, todo, par):
     """日ごとに取った結果を、(番号, 日, 行, 例外) の形で順に返す。par のときは THREADS 個の接続で同時に取る（返す順は日の順のまま）。"""
     if not par:
@@ -2044,6 +2129,15 @@ def fetch_x(jq, store: dict, xs: dict, names=None) -> bool:
         def bad(why):
             st["bad"] = why
             log(f"  ■ {name} は取るのをやめます（{why}）。この種類の型は「保留」になります")
+        if name in X_BULK and os.environ.get("WIDE_BULK", "1") == "1":
+            fetch_x_bulk(jq, name, st, todo)
+            todo = [d for d in days if d not in st["done"] and d not in st["fail"]]
+            x_save(xs, f"{name}：月ごとのファイルのあと、取れた日 {len(days) - len(todo)}日・残り {len(todo)}日")
+            if elapsed() >= BUDGET_MIN:
+                return False
+            if not todo:
+                x_save(xs, f"{name} を取り終えました（{len(st['rows']):,}件）")
+                continue
         if name in X_REDUCE and X_SETS[name][3] == "R":          # 期間でまとめて取る（投資部門別売買状況）
             try:
                 st_ = X_SETS[name][1]
