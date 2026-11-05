@@ -4244,6 +4244,19 @@ def lab15(store: dict, xs: dict, combo: bool = False) -> int:
                          "etf": float(np.mean(s_["etf_share"])) if s_.get("etf_share") else 0.0, "skip": s_.get("skip_up", 0)}
                     x["verdict"], x["detail"] = judge1(x, ST_TX)
                     res[f"{key}/{un}/{p}/{n}"] = x
+                    if sel and os.environ.get("WIDE_PATHS") == "1" and j0 + 12 < len(me_idx):
+                        # 経路のばらつきの確かめ（plan15 の7）：始める月を1か月ずつずらした12通りで、同じ期間（12か月目の月末から最後まで）の年率を比べる
+                        jc = j0 + 11
+                        yc = max((dates[-1] - dates[jc]).days / 365.25, 0.5)
+                        anns = []
+                        for k in range(12):
+                            t0k = me_idx[j0 + k]
+                            ck = {t: cl for t, cl in cands.items() if t >= t0k}
+                            vk, _l, _s = sim_fn(ck, D, E["divpay"], t0k, nmax=n)
+                            if len(vk) > jc - (j0 + k):
+                                anns.append(((vk[-1] / vk[jc - (j0 + k)]) ** (1 / yc) - 1) * 100)
+                        txc = ((TXv[-1] / TXv[jc - j0]) ** (1 / yc) - 1) * 100
+                        x["paths"] = (anns, txc, dates[jc])
             log(f"  {key}/{un} … 済（ここまで {len(res)}通り・{(time.monotonic() - t_start) / 60:.0f}分）")
     if combo:
         HH = ("前半", "後半")
@@ -4297,6 +4310,13 @@ def lab15(store: dict, xs: dict, combo: bool = False) -> int:
         print(f"     {k:<24}{x['st']['前半']['ann']:6.1f} ／ {x['st']['後半']['ann']:6.1f}［{dd}］ でたらめ {rn['前半']:.1f} ／ {rn['後半']:.1f}"
               f"・下落 {x['st']['通し']['mdd']:.0f}％・買い {x['nb']['前半']}/{x['nb']['後半']}・持ち {x['held']:.1f}・1306 {x['etf'] * 100:.0f}％"
               + (f"・ストップ高で買えず {x['skip']}" if D.get("LIMU") is not None else "") + f" … {x['verdict']}")
+    pth = {k: x["paths"] for k, x in res.items() if x.get("paths")}
+    if pth:
+        print("\n  経路のばらつき（plan15 の7。判定には使わない）：始める月を1か月ずつずらした12通りの、同じ期間の年率％")
+        for k, (anns, txc, dc) in pth.items():
+            a_ = np.array(anns)
+            print(f"     {k:<24}{dc.date()}〜 … 最小 {a_.min():.1f}・中央 {np.median(a_):.1f}・最大 {a_.max():.1f}（TOPIX {txc:.1f}。TOPIX を上回った {int((a_ > txc).sum())}/{len(a_)}・+2pt 以上 {int((a_ >= txc + PT_TX).sum())}/{len(a_)}）"
+                  f" ／ 12通り：{'・'.join(f'{v:.1f}' for v in anns)}")
     cand = [k for k, x in res.items() if x["verdict"] == "候補"]
     near = [k for k, x in res.items() if x["verdict"] == "範囲の中では効く"]
     print("\n  2. 判定のまとめ")
