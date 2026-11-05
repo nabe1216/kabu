@@ -4234,7 +4234,7 @@ def lab15(store: dict, xs: dict, combo: bool = False) -> int:
                           "後半": sum(1 for t in s_["buy_t"] if pd.Timestamp(cal[t]) >= SPLIT)}
                     x = {"st": half_stats(v, ev), "liq": liq, "rnd": rnd, "nb": nb, "fill": float(np.mean(rnb)) / max(1, s_["n_buy"]),
                          "held": float(np.mean(s_["held"])) if s_["held"] else 0.0, "n_cand": sum(len(c_) for c_ in cands.values()),
-                         "etf": float(np.mean(s_["etf_share"])) if s_.get("etf_share") else 0.0}
+                         "etf": float(np.mean(s_["etf_share"])) if s_.get("etf_share") else 0.0, "skip": s_.get("skip_up", 0)}
                     x["verdict"], x["detail"] = judge1(x, ST_TX)
                     res[f"{key}/{un}/{p}/{n}"] = x
             log(f"  {key}/{un} … 済（ここまで {len(res)}通り・{(time.monotonic() - t_start) / 60:.0f}分）")
@@ -4272,6 +4272,8 @@ def lab15(store: dict, xs: dict, combo: bool = False) -> int:
     print(f"  形 … 記号は「出来事/範囲/持つ日数（E2C・RECS は何日前に買うか）/持つ数」。1銘柄は資産の（持つ数）分の1。空いている資金はいつも 1306（片道{ETF_SLIP * 100:.2f}％）。"
           "でたらめは同じ日に同じ数だけ、同じ範囲から（20回）。判定は両方の期間で TOPIX +2pt・でたらめ +2pt かつ18回以上")
     print(f"  TOPIX（税あり） … {ST_TX['前半']['ann']:.1f} ／ {ST_TX['後半']['ann']:.1f}")
+    if D.get("LIMU") is not None:
+        print("  ストップ高・ストップ安 … ストップ高で引けた日は終値で買えない・ストップ安で引けた日は売れない（次の日に売る）。でたらめも同じ（6段目と同じ決まり）")
     for key in LAB:
         ks = [k for k in res if k.startswith(key + "/")]
         if not ks:
@@ -4286,7 +4288,8 @@ def lab15(store: dict, xs: dict, combo: bool = False) -> int:
         dd = " ".join(f"{x['detail'][h][0]:+.1f}/{x['detail'][h][1]:+.1f}・{x['detail'][h][2]}" for h in HH)
         rn = {h: float(np.mean([y[h]['ann'] for y in x['rnd']])) for h in HH}
         print(f"     {k:<24}{x['st']['前半']['ann']:6.1f} ／ {x['st']['後半']['ann']:6.1f}［{dd}］ でたらめ {rn['前半']:.1f} ／ {rn['後半']:.1f}"
-              f"・下落 {x['st']['通し']['mdd']:.0f}％・買い {x['nb']['前半']}/{x['nb']['後半']}・持ち {x['held']:.1f}・1306 {x['etf'] * 100:.0f}％ … {x['verdict']}")
+              f"・下落 {x['st']['通し']['mdd']:.0f}％・買い {x['nb']['前半']}/{x['nb']['後半']}・持ち {x['held']:.1f}・1306 {x['etf'] * 100:.0f}％"
+              + (f"・ストップ高で買えず {x['skip']}" if D.get("LIMU") is not None else "") + f" … {x['verdict']}")
     cand = [k for k, x in res.items() if x["verdict"] == "候補"]
     near = [k for k, x in res.items() if x["verdict"] == "範囲の中では効く"]
     print("\n  2. 判定のまとめ")
@@ -4918,7 +4921,8 @@ def run_mode(mode: str, store: dict, args) -> int:
         return lab17(store)
     if mode == "lab15":
         xs = x_load()
-        if not (LONG and STAGE == "confirm") and not x_complete(store, xs, ("div", "ed", "mal", "lvh")):
+        need15 = ("div", "ed") if LONG else ("div", "ed", "mal", "lvh")     # 20年分では、日々公表と大量保有は取っていない（その2つは回さない）
+        if not (LONG and STAGE == "confirm") and not x_complete(store, xs, need15):
             print("\n■ 15段目のデータ（配当金情報・決算発表予定日・日々公表・大量保有）がそろっていません。先に lab5 と lab13 を回してください。")
             return 2
         return lab15(store, xs)
