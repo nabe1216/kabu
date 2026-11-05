@@ -1989,6 +1989,35 @@ def x_complete(store: dict, xs: dict, names=None) -> bool:
     return True
 
 
+def _x_iter(jq, path, prm, todo, par):
+    """日ごとに取った結果を、(番号, 日, 行, 例外) の形で順に返す。par のときは THREADS 個の接続で同時に取る（返す順は日の順のまま）。"""
+    if not par:
+        for n, d in enumerate(todo, 1):
+            time.sleep(yb.API_SLEEP)
+            try:
+                yield n, d, jq.get(path, {prm: d}), None
+            except Exception as e:
+                yield n, d, None, e
+        return
+    local = threading.local()
+
+    def one(d):
+        if not hasattr(local, "jq"):
+            local.jq = type(jq)(os.environ.get("J_QUANTS_API_KEY", ""))
+        time.sleep(yb.API_SLEEP)
+        try:
+            return d, local.jq.get(path, {prm: d}), None
+        except Exception as e:
+            return d, None, e
+    chunk = THREADS * 10
+    n = 0
+    with ThreadPoolExecutor(max_workers=THREADS) as ex:
+        for k in range(0, len(todo), chunk):      # 時間切れは呼び出し側が見て、保存して止まる（ここでは止めない）
+            for d, rows, err in ex.map(one, todo[k:k + chunk]):
+                n += 1
+                yield n, d, rows, err
+
+
 def fetch_x(jq, store: dict, xs: dict, names=None) -> bool:
     """配当金情報・空売り残高の報告・決算発表予定日・信用取引の週末残高を、日ごとに取る。時間切れなら取った分を保存して False。
     取れない種類（プランにない・項目が違う・最近の日でも取れない）は、その種類だけ「保留」にして先へ進む。"""
@@ -2041,17 +2070,18 @@ def fetch_x(jq, store: dict, xs: dict, names=None) -> bool:
                 bad(f"最近の日（{probe}）でも取れません：{e}")
                 continue
         fails, ok_once, shown = 0, bool(st["done"]), 0
-        for n, d in enumerate(todo, 1):
+        par = THREADS > 1 and name in X_REDUCE     # 13段目のデータは、同時に何日か取れる（プレミアムの上限は1分に500回）
+        if par:
+            log(f"  同時に {THREADS}日ずつ取ります")
+        for n, d, rows, err in _x_iter(jq, path, prm, todo, par):
             if elapsed() >= BUDGET_MIN:
                 x_save(xs, f"{name} を途中まで保存しました")
                 return False
-            time.sleep(yb.API_SLEEP)
-            try:
-                rows = jq.get(path, {prm: d})
-            except yb.NotAllowed as e:
-                bad(f"プランに含まれていない可能性があります：{e}")
+            if isinstance(err, yb.NotAllowed):
+                bad(f"プランに含まれていない可能性があります：{err}")
                 break
-            except Exception as e:
+            if err is not None:
+                e = err
                 st["fail"].add(d)
                 fails += 1
                 if shown < 3 or fails % 100 == 0:
@@ -2065,7 +2095,7 @@ def fetch_x(jq, store: dict, xs: dict, names=None) -> bool:
             if name in X_REDUCE:
                 if rows and st["keys"] is None:
                     st["keys"] = list(rows[0].keys())
-                    log("  受け取った項目 … " + "・".join(st["keys"][:24]) + ("…" if len(st["keys"]) > 24 else ""))
+                    log("  受け取った項目 … " + "・".join(st["keys"][:40]) + ("…" if len(st["keys"]) > 40 else ""))
                 st["rows"].extend(X_REDUCE[name](rows or [], d))
                 st["done"].add(d)
                 if n % 500 == 0:
