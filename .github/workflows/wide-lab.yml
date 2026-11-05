@@ -167,6 +167,7 @@ jobs:
           WIDE_THREADS: ${{ inputs.threads }}
           WIDE_STAGE: ${{ inputs.stage }}
           WIDE_COST: ${{ inputs.cost }}
+          WIDE_PATHS: "1"        # 15段目：cfg で形を選んだとき、始める月をずらした12通りのばらつきも出す（判定には使わない）
           PYTHONUNBUFFERED: "1"
         run: |
           set +e
