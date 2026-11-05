@@ -6,6 +6,8 @@ name: long-cleanup
 # 消すことになっている。プレミアムからスタンダードに戻す前に、これを1回動かす。
 #   消すもの … 20年分のキャッシュ（yield-backtest-long-v1-…）と、20年分の実行の結果ファイル（yield-backtest-long-result）
 #   消さないもの … いまの9年分のキャッシュ（スタンダードで取ったもの）と、ふだんの実行の結果
+#   選べるもの（11月5日に追加） … wide-lab の9年分のキャッシュ（wide-lab-cache-v1-…）。中身はスタンダードでも取れる期間だが、
+#     2回目のプレミアムの期間中（11月4日）に取ったもの。消すかどうかはワタナベさんが決める（2つめの欄に「消す」と入れたときだけ消す）
 # 動かし方 … Actions → long-cleanup → Run workflow → 確認の欄に「消す」と入れて実行
 on:
   workflow_dispatch:
@@ -13,6 +15,10 @@ on:
       confirm:
         description: "本当に消すなら「消す」と入力（20年分のキャッシュと、20年分の実行の結果ファイルを消します）"
         required: true
+        default: ""
+      wide9:
+        description: "wide-lab の9年分のキャッシュ（プレミアムの期間中に取ったもの）も消すなら「消す」と入力（空欄なら消さない）"
+        required: false
         default: ""
 
 permissions:
@@ -44,6 +50,21 @@ jobs:
           done
           echo "20年分のキャッシュを ${n} 個消しました。"
 
+      - name: wide-lab の9年分のキャッシュを消す（2つめの欄に「消す」と入れたときだけ）
+        if: ${{ github.event.inputs.wide9 == '消す' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          n=0
+          for round in 1 2 3; do
+            ids=$(gh api "repos/${GITHUB_REPOSITORY}/actions/caches?key=wide-lab-cache-v1-&per_page=100" --jq '.actions_caches[].id')
+            [ -z "$ids" ] && break
+            for id in $ids; do
+              gh api -X DELETE "repos/${GITHUB_REPOSITORY}/actions/caches/${id}" && n=$((n+1))
+            done
+          done
+          echo "wide-lab の9年分のキャッシュを ${n} 個消しました。"
+
       - name: 20年分の実行の結果ファイルを消す
         env:
           GH_TOKEN: ${{ github.token }}
@@ -61,16 +82,27 @@ jobs:
       - name: 残っていないか確かめる
         env:
           GH_TOKEN: ${{ github.token }}
+          WIDE9: ${{ github.event.inputs.wide9 }}
         run: |
           c=$(gh api "repos/${GITHUB_REPOSITORY}/actions/caches?key=yield-backtest-long-&per_page=100" --jq '.total_count')
           a=$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=yield-backtest-long-result&per_page=100" --jq '.total_count')
-          echo "残っている20年分のキャッシュ: ${c} 個 ／ 結果ファイル: ${a} 個"
+          w=$(gh api "repos/${GITHUB_REPOSITORY}/actions/caches?key=wide-lab-cache-v1-&per_page=100" --jq '.total_count')
+          echo "残っている20年分のキャッシュ: ${c} 個 ／ 結果ファイル: ${a} 個 ／ wide-lab の9年分のキャッシュ: ${w} 個"
+          ok=1
+          [ "$c" = "0" ] || ok=0
+          [ "$a" = "0" ] || ok=0
+          if [ "$WIDE9" = "消す" ] && [ "$w" != "0" ]; then ok=0; fi
           {
             echo "## 20年分の消去"
             echo ""
             echo "- 残っている20年分のキャッシュ: ${c} 個"
             echo "- 残っている20年分の実行の結果ファイル: ${a} 個"
-            if [ "$c" = "0" ] && [ "$a" = "0" ]; then
+            if [ "$WIDE9" = "消す" ]; then
+              echo "- 残っている wide-lab の9年分のキャッシュ: ${w} 個（消す指定あり）"
+            else
+              echo "- wide-lab の9年分のキャッシュ: ${w} 個（消す指定なし・残しています）"
+            fi
+            if [ "$ok" = "1" ]; then
               echo ""
               echo "すべて消えました。J-Quants をスタンダードに戻して構いません。"
             else
@@ -78,4 +110,4 @@ jobs:
               echo "**まだ残っています。もう一度実行してください。**"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
-          if [ "$c" != "0" ] || [ "$a" != "0" ]; then exit 1; fi
+          if [ "$ok" != "1" ]; then exit 1; fi
