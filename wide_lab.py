@@ -4925,51 +4925,105 @@ def _mof_date(s: str):
         return None
 
 
-def fetch_ext() -> dict:
-    """市況のデータ（FRED と財務省）を取る。1つでも取れなければ、取れたものだけ返す（取れなかったものは bad に書く）。"""
+EXT_ALT = {     # FRED が取れないときの代わり（順に試す）。どれも日々の終値。値の大きさの単位は局面の決め方（上がったか・平均より上か）に効かない
+    "NK": (("yahoo", "^N225"), ("stooq", "^nkx")),
+    "OIL": (("yahoo", "CL=F"), ("stooq", "cl.f")),
+    "US10": (("yahoo", "^TNX"), ("stooq", "10usy.b")),
+    "YEN": (("yahoo", "JPY=X"), ("stooq", "usdjpy")),
+    "VIX": (("cboe", "VIX"), ("yahoo", "^VIX")),
+}
+_UA = {"User-Agent": "Mozilla/5.0 (research script)"}
+
+
+def _ext_get(src: str, sid: str):
+    """1つの出どころから日々の値を取る。戻り値は（日付の並び, 値の並び）。"""
     import io
     import requests
-    out, bad = {}, {}
+    if src == "fred":
+        r = requests.get("https://fred.stlouisfed.org/graph/fredgraph.csv", params={"id": sid}, timeout=25, headers=_UA)
+        r.raise_for_status()
+        df = pd.read_csv(io.BytesIO(r.content))
+        d, v = pd.to_datetime(df[df.columns[0]], errors="coerce"), pd.to_numeric(df[df.columns[-1]], errors="coerce")
+    elif src == "yahoo":
+        from urllib.parse import quote
+        r = requests.get(f"https://query1.finance.yahoo.com/v8/finance/chart/{quote(sid, safe='')}",
+                         params={"period1": 1104537600, "period2": int(time.time()), "interval": "1d"}, timeout=25, headers=_UA)
+        r.raise_for_status()
+        res = r.json()["chart"]["result"][0]
+        off = int(res.get("meta", {}).get("gmtoffset") or 0)
+        d = pd.to_datetime(np.asarray(res["timestamp"], dtype="int64") + off, unit="s").normalize()
+        v = pd.Series(res["indicators"]["quote"][0]["close"], dtype="float64")
+        d = pd.Series(d)
+    elif src == "stooq":
+        r = requests.get("https://stooq.com/q/d/l/", params={"s": sid, "i": "d"}, timeout=25, headers=_UA)
+        r.raise_for_status()
+        df = pd.read_csv(io.BytesIO(r.content))
+        d, v = pd.to_datetime(df["Date"], errors="coerce"), pd.to_numeric(df["Close"], errors="coerce")
+    elif src == "cboe":
+        r = requests.get(f"https://cdn.cboe.com/api/global/us_indices/daily_prices/{sid}_History.csv", timeout=25, headers=_UA)
+        r.raise_for_status()
+        df = pd.read_csv(io.BytesIO(r.content))
+        df.columns = [str(c).strip().upper() for c in df.columns]
+        d, v = pd.to_datetime(df["DATE"], errors="coerce", format="%m/%d/%Y"), pd.to_numeric(df["CLOSE"], errors="coerce")
+    else:
+        raise KeyError(src)
+    d, v = pd.Series(d).reset_index(drop=True), pd.Series(v).reset_index(drop=True)
+    ok = d.notna() & v.notna()
+    s_ = pd.Series(v[ok].to_numpy(dtype=float), index=pd.DatetimeIndex(d[ok])).groupby(level=0).last().sort_index()
+    if len(s_) < 1000 or s_.index[0] > pd.Timestamp("2007-06-30"):
+        raise ValueError(f"短すぎる（{len(s_)}日・{s_.index[0].date() if len(s_) else '-'}から）")
+    return s_.index.to_numpy(dtype="datetime64[D]"), s_.to_numpy(dtype=float)
+
+
+def fetch_ext(have: dict | None = None) -> dict:
+    """市況のデータを取る（plan20 の1と5の追記）。まだ持っていない系列だけを、FRED → 代わりの出どころの順に試す。日本の10年金利は財務省。"""
+    import io
+    import requests
+    out = dict((have or {}).get("series") or {})
+    src_used = dict((have or {}).get("src") or {})
+    bad = {}
     for k, sid in EXT_FRED.items():
-        try:
-            r = requests.get("https://fred.stlouisfed.org/graph/fredgraph.csv", params={"id": sid}, timeout=60,
-                             headers={"User-Agent": "Mozilla/5.0 (research script)"})
-            r.raise_for_status()
-            df = pd.read_csv(io.BytesIO(r.content))
-            dcol = df.columns[0]
-            v = pd.to_numeric(df[df.columns[-1]], errors="coerce")
-            d = pd.to_datetime(df[dcol], errors="coerce")
-            ok = d.notna() & v.notna()
-            out[k] = (d[ok].to_numpy(dtype="datetime64[D]"), v[ok].to_numpy(dtype=float))
-            log(f"  {EXT_LAB[k]}（FRED {sid}） … {int(ok.sum()):,}日（{str(out[k][0][0])}〜{str(out[k][0][-1])}）")
-        except Exception as e:
-            bad[k] = f"{type(e).__name__}: {str(e)[:80]}"
-            log(f"  {EXT_LAB[k]}（FRED {sid}） … 取れませんでした（{bad[k]}）")
-    rows = {}
-    for url in EXT_MOF:
-        try:
-            r = requests.get(url, timeout=60, headers={"User-Agent": "Mozilla/5.0 (research script)"})
-            r.raise_for_status()
-            txt = r.content.decode("cp932", errors="replace")
-            df = pd.read_csv(io.StringIO(txt), skiprows=1)
-            col = next((c for c in df.columns if str(c).strip() == "10年"), None)
-            if col is None:
-                raise KeyError("10年の列がない")
-            for s, v in zip(df[df.columns[0]], pd.to_numeric(df[col], errors="coerce")):
-                d = _mof_date(s)
-                if d is not None and v == v:
-                    rows[d] = float(v)
-        except Exception as e:
-            bad.setdefault("JP10", "")
-            bad["JP10"] += f"{url.rsplit('/', 1)[1]}: {type(e).__name__}: {str(e)[:60]} "
-    if rows:
-        ds = np.array(sorted(rows), dtype="datetime64[D]")
-        out["JP10"] = (ds, np.array([rows[d] for d in ds], dtype=float))
-        log(f"  {EXT_LAB['JP10']}（財務省） … {len(ds):,}日（{str(ds[0])}〜{str(ds[-1])}）")
-        if "JP10" in bad and len(rows) > 1000:
-            log(f"  （一部取れず：{bad['JP10']}）")
-            bad.pop("JP10")
-    return {"series": out, "bad": bad, "at": str(date.today())}
+        if k in out:
+            continue
+        errs = []
+        for src, s_id in (("fred", sid),) + EXT_ALT.get(k, ()):
+            try:
+                out[k] = _ext_get(src, s_id)
+                src_used[k] = f"{src}:{s_id}"
+                log(f"  {EXT_LAB[k]}（{src} {s_id}） … {len(out[k][0]):,}日（{str(out[k][0][0])}〜{str(out[k][0][-1])}）")
+                break
+            except Exception as e:
+                errs.append(f"{src} {s_id}: {type(e).__name__}: {str(e)[:70]}")
+                log(f"  {EXT_LAB[k]}（{src} {s_id}） … 取れませんでした（{type(e).__name__}）")
+        if k not in out:
+            bad[k] = " ／ ".join(errs)
+    if "JP10" not in out:
+        rows = {}
+        errs = []
+        for url in EXT_MOF:
+            try:
+                r = requests.get(url, timeout=60, headers=_UA)
+                r.raise_for_status()
+                txt = r.content.decode("cp932", errors="replace")
+                df = pd.read_csv(io.StringIO(txt), skiprows=1)
+                col = next((c for c in df.columns if str(c).strip() == "10年"), None)
+                if col is None:
+                    raise KeyError("10年の列がない")
+                for s0, v in zip(df[df.columns[0]], pd.to_numeric(df[col], errors="coerce")):
+                    d = _mof_date(s0)
+                    if d is not None and v == v:
+                        rows[d] = float(v)
+            except Exception as e:
+                errs.append(f"{url.rsplit('/', 1)[1]}: {type(e).__name__}: {str(e)[:60]}")
+        if len(rows) > 1000:
+            ds = np.array(sorted(rows), dtype="datetime64[D]")
+            out["JP10"] = (ds, np.array([rows[d] for d in ds], dtype=float))
+            src_used["JP10"] = "mof"
+            log(f"  {EXT_LAB['JP10']}（財務省） … {len(ds):,}日（{str(ds[0])}〜{str(ds[-1])}）" + (f"（一部取れず：{' ／ '.join(errs)}）" if errs else ""))
+        else:
+            bad["JP10"] = " ／ ".join(errs) or "行が少なすぎる"
+            log(f"  {EXT_LAB['JP10']}（財務省） … 取れませんでした（{bad['JP10'][:120]}）")
+    return {"series": out, "bad": bad, "src": src_used, "at": str(date.today())}
 
 
 def ext_flags(ext: dict, dates) -> dict:
@@ -5243,7 +5297,7 @@ def lab20(store: dict, xs: dict) -> int:
     print("  でたらめ … 局面の続いた長さをそのままに、順番を入れ替えたもの（20回）。判定は A・B の両方・前半と後半の両方で TOPIX +2pt・でたらめ +2pt かつ18回以上")
     print(f"  TOPIX（税あり） … {ST_TX['前半']['ann']:.1f} ／ {ST_TX['後半']['ann']:.1f}（通し {ST_TX['通し']['ann']:.1f}・最大下落 {ST_TX['通し']['mdd']:.0f}％・清算後の通し {((TXliq / CAP) ** (1 / yrs) - 1) * 100:.1f}％）")
     for k, (ds, vs) in ext["series"].items():
-        print(f"  データ {EXT_LAB.get(k, k)} … {str(ds[0])}〜{str(ds[-1])}（{len(ds):,}日）")
+        print(f"  データ {EXT_LAB.get(k, k)} … {str(ds[0])}〜{str(ds[-1])}（{len(ds):,}日・{(ext.get('src') or {}).get(k, 'FRED')}）")
     if ext.get("bad"):
         print(f"  取れなかったデータ … {ext['bad']}")
     print("\n  1. 型ごとの成績（年率％。「前半 ／ 後半」。［TOPIX との差／でたらめとの差・でたらめを上回った回数］）")
@@ -5310,8 +5364,8 @@ def run_mode(mode: str, store: dict, args) -> int:
     if mode == "lab20":
         xs = x_load()
         if not (xs.get("ext") or {}).get("series") or len(xs["ext"]["series"]) < len(EXT_LAB):
-            log("市況のデータ（FRED・財務省）を取ります…")
-            ext = fetch_ext()
+            log("市況のデータ（FRED・財務省。取れなければ代わりの出どころ）を取ります…")
+            ext = fetch_ext(xs.get("ext"))
             if ext["series"]:
                 xs["ext"] = ext
                 x_save(xs, f"市況のデータ {len(ext['series'])}種類を保存しました")
