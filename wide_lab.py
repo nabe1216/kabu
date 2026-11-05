@@ -1875,7 +1875,7 @@ def _red_mal(rows, d):
 
 
 def _red_o225(rows, d):
-    rows = [r for r in rows if str(r.get("EmMrgnTrgDiv") or "002") != "001"]
+    rows = _not_emg(rows)
     if not rows:
         return []
     pv = float(sum(num(r.get("Vo")) or 0.0 for r in rows if str(r.get("PCDiv")) == "1"))
@@ -1888,9 +1888,14 @@ def _red_o225(rows, d):
     return [(d, pv, cv, bv)]
 
 
+def _not_emg(rows):
+    """緊急取引証拠金が発動された日は、発動のときの値（001）と、ふだんの清算のときの値（002）の2つが来る。002 だけを使う（二重に数えない）。"""
+    return [r for r in rows if str(r.get("EmMrgnTrgDiv") or "002") != "001"]
+
+
 def _red_fut(rows, d):
     g = {}
-    for r in rows:
+    for r in _not_emg(rows):
         k = str(r.get("ProdCat") or "")
         a = g.setdefault(k, [0.0, 0.0])
         a[0] += num(r.get("OI")) or 0.0
@@ -1900,7 +1905,7 @@ def _red_fut(rows, d):
 
 def _red_opt(rows, d):
     g = {}
-    for r in rows:
+    for r in _not_emg(rows):
         k = str(r.get("ProdCat") or "")
         a = g.setdefault(k, [0.0, 0.0])
         if str(r.get("PCDiv")) == "1":
