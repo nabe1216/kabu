@@ -4931,8 +4931,24 @@ def run_mode(mode: str, store: dict, args) -> int:
                     return EXIT_UNFINISHED
             log(f"  個別株オプション … {len(xs.get('optu', {}).get('rows', [])):,}件" + (f"・取るのをやめた：{xs['optu']['bad']}" if xs.get("optu", {}).get("bad") else ""))
             LAB_TITLE, LAB_PLAN = "18段目（毎月の点数の残り）", "wide_lab_plan18_2026-11-05"
+            ex18 = lab18_scores(store, xs)
+            if "IVU" in [c.upper() for c in CFG] and "IVLOW" in ex18:
+                # plan18 の4：IVLOW を、IV がある銘柄だけを範囲にして回す（でたらめも同じ範囲）
+                global LAB_NOTE
+                LAB_TITLE = "18段目の追記（IVLOW を個別株オプションのある銘柄だけで）"
+                LAB_NOTE = "18段目の追記：範囲を、その月末に IV（いちばん近い限月の中央値の20日平均）がある銘柄だけに絞った。でたらめも同じ範囲"
+                ivc = {}
+                fn_iv = ex18["IVLOW"][0]
+
+                def iv_mat(D):
+                    if "m" not in ivc:
+                        ivc["m"] = fn_iv(D)
+                    return ivc["m"]
+                rc = lab1(store, extra={"IVLOW": ((lambda D: iv_mat(D)), ex18["IVLOW"][1])}, uni_fn=lambda D: np.isfinite(iv_mat(D)))
+                LAB_NOTE = ""
+                return rc
             log("18段目（毎月の点数の残り）を回します…")
-            return lab1(store, extra=lab18_scores(store, xs))
+            return lab1(store, extra=ex18)
         # 19段目：①すべての毎月の点数でまとめて学ばせる ②出来事の組み合わせ ③日々公表の対象入りを売る形
         ex = monthly_extra_all(store, xs, bd)
         ex.update(lab18_scores(store, xs))
