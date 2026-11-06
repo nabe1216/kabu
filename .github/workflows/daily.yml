@@ -16,8 +16,10 @@ permissions:
 jobs:
   generate:
     runs-on: ubuntu-latest
-    # 対象を small1 に広げて約72分。上限まで18分の余裕がある。
-    timeout-minutes: 90
+    # 対象を small1 に広げて約72分（遅い日は76分）。
+    # 2026年11月6日：分割を読むため株価を10年前から取るようにして、1銘柄あたりの取得が少し増えた。
+    # 遅い日に90分を超えて止まらないよう、上限を120分にする（公開リポジトリなので実行時間の費用はかからない）。
+    timeout-minutes: 120
 
     steps:
       - name: Checkout
