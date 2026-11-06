@@ -681,7 +681,7 @@
       "cash": 292986.0,
       "holdings_value": 10225850.0,
       "total_value": 10518836.0,
-      "unrealized_pl": 341200.0,
+      "unrealized_pl": 451900.0,
       "realized_pl": 52800.0,
       "dividend_total": 24862,
       "holdings_count": 5
@@ -711,7 +711,7 @@
       "cash": 292986.0,
       "holdings_value": 10182450.0,
       "total_value": 10475436.0,
-      "unrealized_pl": 451900.0,
+      "unrealized_pl": 408500.0,
       "realized_pl": 52800.0,
       "dividend_total": 24862,
       "holdings_count": 5
@@ -721,7 +721,7 @@
       "cash": 421558.0,
       "holdings_value": 10387000.0,
       "total_value": 10808558.0,
-      "unrealized_pl": 408500.0,
+      "unrealized_pl": 613050.0,
       "realized_pl": 52800.0,
       "dividend_total": 153434,
       "holdings_count": 5
@@ -731,7 +731,7 @@
       "cash": 421558.0,
       "holdings_value": 10185400.0,
       "total_value": 10606958.0,
-      "unrealized_pl": 613050.0,
+      "unrealized_pl": 411450.0,
       "realized_pl": 52800.0,
       "dividend_total": 153434,
       "holdings_count": 5
@@ -741,7 +741,7 @@
       "cash": 421558.0,
       "holdings_value": 10237500.0,
       "total_value": 10659058.0,
-      "unrealized_pl": 411450.0,
+      "unrealized_pl": 463550.0,
       "realized_pl": 52800.0,
       "dividend_total": 153434,
       "holdings_count": 5
@@ -751,7 +751,7 @@
       "cash": 421558.0,
       "holdings_value": 10126000.0,
       "total_value": 10547558.0,
-      "unrealized_pl": 463550.0,
+      "unrealized_pl": 352050.0,
       "realized_pl": 52800.0,
       "dividend_total": 153434,
       "holdings_count": 5
@@ -781,7 +781,7 @@
       "cash": 421558.0,
       "holdings_value": 10034750.0,
       "total_value": 10456308.0,
-      "unrealized_pl": 303000.0,
+      "unrealized_pl": 260800.0,
       "realized_pl": 52800.0,
       "dividend_total": 153434,
       "holdings_count": 5
@@ -791,7 +791,7 @@
       "cash": 421558.0,
       "holdings_value": 10015450.0,
       "total_value": 10437008.0,
-      "unrealized_pl": 260800.0,
+      "unrealized_pl": 241500.0,
       "realized_pl": 52800.0,
       "dividend_total": 153434,
       "holdings_count": 5
@@ -801,7 +801,7 @@
       "cash": 421558.0,
       "holdings_value": 9950350.0,
       "total_value": 10371908.0,
-      "unrealized_pl": 241500.0,
+      "unrealized_pl": 176400.0,
       "realized_pl": 52800.0,
       "dividend_total": 153434,
       "holdings_count": 5
@@ -811,7 +811,7 @@
       "cash": 421558.0,
       "holdings_value": 10018200.0,
       "total_value": 10439758.0,
-      "unrealized_pl": 176400.0,
+      "unrealized_pl": 244250.0,
       "realized_pl": 52800.0,
       "dividend_total": 153434,
       "holdings_count": 5
@@ -831,7 +831,7 @@
       "cash": 421558.0,
       "holdings_value": 9953800.0,
       "total_value": 10375358.0,
-      "unrealized_pl": 289100.0,
+      "unrealized_pl": 179850.0,
       "realized_pl": 52800.0,
       "dividend_total": 153434,
       "holdings_count": 5
@@ -881,7 +881,7 @@
       "cash": 421558.0,
       "holdings_value": 10028950.0,
       "total_value": 10450508.0,
-      "unrealized_pl": 227900.0,
+      "unrealized_pl": 255000.0,
       "realized_pl": 52800.0,
       "dividend_total": 153434,
       "holdings_count": 5
@@ -891,7 +891,7 @@
       "cash": 421558.0,
       "holdings_value": 10120800.0,
       "total_value": 10542358.0,
-      "unrealized_pl": 255000.0,
+      "unrealized_pl": 346850.0,
       "realized_pl": 52800.0,
       "dividend_total": 153434,
       "holdings_count": 5
@@ -911,7 +911,7 @@
       "cash": 421558.0,
       "holdings_value": 9712800.0,
       "total_value": 10134358.0,
-      "unrealized_pl": 266900.0,
+      "unrealized_pl": -61150.0,
       "realized_pl": 52800.0,
       "dividend_total": 153434,
       "holdings_count": 5
@@ -921,7 +921,7 @@
       "cash": 195558.0,
       "holdings_value": 10040750.0,
       "total_value": 10236308.0,
-      "unrealized_pl": -935050.0,
+      "unrealized_pl": 40800.0,
       "realized_pl": 52800.0,
       "dividend_total": 153434,
       "holdings_count": 6
@@ -931,7 +931,7 @@
       "cash": 195558.0,
       "holdings_value": 9998000.0,
       "total_value": 10193558.0,
-      "unrealized_pl": -837600.0,
+      "unrealized_pl": -1950.0,
       "realized_pl": 52800.0,
       "dividend_total": 153434,
       "holdings_count": 6
@@ -941,7 +941,7 @@
       "cash": 195558.0,
       "holdings_value": 9772050.0,
       "total_value": 9967608.0,
-      "unrealized_pl": -872150.0,
+      "unrealized_pl": -227900.0,
       "realized_pl": 52800.0,
       "dividend_total": 153434,
       "holdings_count": 6
@@ -951,7 +951,7 @@
       "cash": 195558.0,
       "holdings_value": 9772050.0,
       "total_value": 9967608.0,
-      "unrealized_pl": -1085700.0,
+      "unrealized_pl": -227900.0,
       "realized_pl": 52800.0,
       "dividend_total": 153434,
       "holdings_count": 6
@@ -961,7 +961,7 @@
       "cash": 195558.0,
       "holdings_value": 9795150.0,
       "total_value": 9990708.0,
-      "unrealized_pl": -1007900.0,
+      "unrealized_pl": -204800.0,
       "realized_pl": 52800.0,
       "dividend_total": 153434,
       "holdings_count": 6
@@ -971,7 +971,7 @@
       "cash": 195558.0,
       "holdings_value": 9782400.0,
       "total_value": 9977958.0,
-      "unrealized_pl": -1066000.0,
+      "unrealized_pl": -217550.0,
       "realized_pl": 52800.0,
       "dividend_total": 153434,
       "holdings_count": 6
@@ -981,7 +981,7 @@
       "cash": 195558.0,
       "holdings_value": 9841950.0,
       "total_value": 10037508.0,
-      "unrealized_pl": -1083950.0,
+      "unrealized_pl": -158000.0,
       "realized_pl": 52800.0,
       "dividend_total": 153434,
       "holdings_count": 6
@@ -991,7 +991,7 @@
       "cash": 195558.0,
       "holdings_value": 9841950.0,
       "total_value": 10037508.0,
-      "unrealized_pl": -1021200.0,
+      "unrealized_pl": -158000.0,
       "realized_pl": 52800.0,
       "dividend_total": 153434,
       "holdings_count": 6
@@ -1001,7 +1001,7 @@
       "cash": 195558.0,
       "holdings_value": 9946650.0,
       "total_value": 10142208.0,
-      "unrealized_pl": -1021200.0,
+      "unrealized_pl": -53300.0,
       "realized_pl": 52800.0,
       "dividend_total": 153434,
       "holdings_count": 6
@@ -1011,7 +1011,7 @@
       "cash": 195558.0,
       "holdings_value": 9864700.0,
       "total_value": 10060258.0,
-      "unrealized_pl": -929700.0,
+      "unrealized_pl": -135250.0,
       "realized_pl": 52800.0,
       "dividend_total": 153434,
       "holdings_count": 6
@@ -1021,7 +1021,7 @@
       "cash": 195558.0,
       "holdings_value": 9987400.0,
       "total_value": 10182958.0,
-      "unrealized_pl": -1009450.0,
+      "unrealized_pl": -12550.0,
       "realized_pl": 52800.0,
       "dividend_total": 153434,
       "holdings_count": 6
@@ -1031,7 +1031,7 @@
       "cash": 195558.0,
       "holdings_value": 10136600.0,
       "total_value": 10332158.0,
-      "unrealized_pl": -893750.0,
+      "unrealized_pl": 136650.0,
       "realized_pl": 52800.0,
       "dividend_total": 153434,
       "holdings_count": 6
@@ -1041,7 +1041,7 @@
       "cash": 195558.0,
       "holdings_value": 10136600.0,
       "total_value": 10332158.0,
-      "unrealized_pl": -751350.0,
+      "unrealized_pl": 136650.0,
       "realized_pl": 52800.0,
       "dividend_total": 153434,
       "holdings_count": 6
@@ -1051,7 +1051,7 @@
       "cash": 195558.0,
       "holdings_value": 10194150.0,
       "total_value": 10389708.0,
-      "unrealized_pl": -693850.0,
+      "unrealized_pl": 194200.0,
       "realized_pl": 52800.0,
       "dividend_total": 153434,
       "holdings_count": 6
@@ -1061,7 +1061,7 @@
       "cash": 195558.0,
       "holdings_value": 10219000.0,
       "total_value": 10414558.0,
-      "unrealized_pl": -718000.0,
+      "unrealized_pl": 219050.0,
       "realized_pl": 52800.0,
       "dividend_total": 153434,
       "holdings_count": 6
@@ -1071,7 +1071,7 @@
       "cash": 195558.0,
       "holdings_value": 10216750.0,
       "total_value": 10412308.0,
-      "unrealized_pl": -687950.0,
+      "unrealized_pl": 216800.0,
       "realized_pl": 52800.0,
       "dividend_total": 153434,
       "holdings_count": 6
@@ -1081,7 +1081,7 @@
       "cash": 195558.0,
       "holdings_value": 10293550.0,
       "total_value": 10489108.0,
-      "unrealized_pl": -695000.0,
+      "unrealized_pl": 293600.0,
       "realized_pl": 52800.0,
       "dividend_total": 153434,
       "holdings_count": 6
@@ -1091,7 +1091,7 @@
       "cash": 195558.0,
       "holdings_value": 10293550.0,
       "total_value": 10489108.0,
-      "unrealized_pl": -627400.0,
+      "unrealized_pl": 293600.0,
       "realized_pl": 52800.0,
       "dividend_total": 153434,
       "holdings_count": 6
@@ -1101,7 +1101,7 @@
       "cash": 195558.0,
       "holdings_value": 10269600.0,
       "total_value": 10465158.0,
-      "unrealized_pl": -448450.0,
+      "unrealized_pl": 269650.0,
       "realized_pl": 52800.0,
       "dividend_total": 153434,
       "holdings_count": 6
@@ -1111,7 +1111,7 @@
       "cash": 195558.0,
       "holdings_value": 10136150.0,
       "total_value": 10331708.0,
-      "unrealized_pl": -650150.0,
+      "unrealized_pl": 136200.0,
       "realized_pl": 52800.0,
       "dividend_total": 153434,
       "holdings_count": 6
@@ -1121,7 +1121,7 @@
       "cash": 195558.0,
       "holdings_value": 10236100.0,
       "total_value": 10431658.0,
-      "unrealized_pl": -761200.0,
+      "unrealized_pl": 236150.0,
       "realized_pl": 52800.0,
       "dividend_total": 153434,
       "holdings_count": 6
@@ -1131,7 +1131,7 @@
       "cash": 195558.0,
       "holdings_value": 10330800.0,
       "total_value": 10526358.0,
-      "unrealized_pl": -655250.0,
+      "unrealized_pl": 330850.0,
       "realized_pl": 52800.0,
       "dividend_total": 153434,
       "holdings_count": 6
@@ -1141,7 +1141,7 @@
       "cash": 195558.0,
       "holdings_value": 10330800.0,
       "total_value": 10526358.0,
-      "unrealized_pl": -582150.0,
+      "unrealized_pl": 330850.0,
       "realized_pl": 52800.0,
       "dividend_total": 153434,
       "holdings_count": 6
@@ -1151,7 +1151,7 @@
       "cash": 195558.0,
       "holdings_value": 10344250.0,
       "total_value": 10539808.0,
-      "unrealized_pl": -575500.0,
+      "unrealized_pl": 344300.0,
       "realized_pl": 52800.0,
       "dividend_total": 153434,
       "holdings_count": 6
@@ -1161,7 +1161,7 @@
       "cash": 195558.0,
       "holdings_value": 10443000.0,
       "total_value": 10638558.0,
-      "unrealized_pl": -575500.0,
+      "unrealized_pl": 443050.0,
       "realized_pl": 52800.0,
       "dividend_total": 153434,
       "holdings_count": 6
@@ -1171,7 +1171,7 @@
       "cash": 195558.0,
       "holdings_value": 10932350.0,
       "total_value": 11127908.0,
-      "unrealized_pl": -478350.0,
+      "unrealized_pl": 932400.0,
       "realized_pl": 52800.0,
       "dividend_total": 153434,
       "holdings_count": 6

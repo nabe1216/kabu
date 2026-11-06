@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-11-06T04:11:45.060143+09:00",
+  "generated_at": "2026-11-06T11:33:57.700817+09:00",
   "universe_count": 970,
   "processed_count": 970,
   "failure_count": 0,
@@ -207538,7 +207538,7 @@
         "min_yield": false
       },
       "screening_meta": {
-        "dividend_periods_used": 9
+        "dividend_periods_used": 8
       },
       "box": {
         "is_box": true,
@@ -369731,7 +369731,7 @@
         "min_yield": false
       },
       "screening_meta": {
-        "dividend_periods_used": 9
+        "dividend_periods_used": 8
       },
       "box": {
         "is_box": true,
@@ -422906,7 +422906,7 @@
         "min_yield": false
       },
       "screening_meta": {
-        "dividend_periods_used": 10
+        "dividend_periods_used": 9
       },
       "box": {
         "is_box": false,
@@ -439430,7 +439430,7 @@
         "min_yield": false
       },
       "screening_meta": {
-        "dividend_periods_used": 10
+        "dividend_periods_used": 9
       },
       "box": {
         "is_box": true,
@@ -455333,27 +455333,27 @@
       "yield_history": [
         {
           "date": "2017-09-29",
-          "yield": 2.175,
+          "yield": 1.087,
           "price": 2023.0,
-          "dps": 44.0
+          "dps": 22.0
         },
         {
           "date": "2017-10-31",
-          "yield": 2.212,
+          "yield": 1.106,
           "price": 1989.0,
-          "dps": 44.0
+          "dps": 22.0
         },
         {
           "date": "2017-11-30",
-          "yield": 2.047,
+          "yield": 1.023,
           "price": 2150.0,
-          "dps": 44.0
+          "dps": 22.0
         },
         {
           "date": "2017-12-29",
-          "yield": 1.856,
+          "yield": 0.928,
           "price": 2371.0,
-          "dps": 44.0
+          "dps": 22.0
         },
         {
           "date": "2018-01-31",
@@ -456002,7 +456002,7 @@
       "pbr": 1.11,
       "per_pbr": 17.52,
       "per_median": 15.45,
-      "pbr_median": 0.78,
+      "pbr_median": 0.8,
       "per_cheap": false,
       "pbr_cheap": false,
       "payout_ratio": 46.63,
@@ -456012,7 +456012,7 @@
       "latest_op_oku": 97,
       "latest_np_oku": 56,
       "screening": {
-        "dividend": false,
+        "dividend": true,
         "revenue": true,
         "op_profit": false,
         "net_profit": false,
@@ -456119,15 +456119,15 @@
       "valuation_history": [
         {
           "date": "2017-09-29",
-          "per": 18.17,
-          "pbr": 0.75,
-          "graham": 13.54
+          "per": 36.35,
+          "pbr": 1.49,
+          "graham": 54.17
         },
         {
           "date": "2017-10-31",
-          "per": 17.87,
-          "pbr": 0.73,
-          "graham": 13.09
+          "per": 35.74,
+          "pbr": 1.47,
+          "graham": 52.36
         },
         {
           "date": "2017-11-30",
@@ -459448,7 +459448,7 @@
         "min_yield": false
       },
       "screening_meta": {
-        "dividend_periods_used": 10
+        "dividend_periods_used": 9
       },
       "box": {
         "is_box": false,
@@ -462808,7 +462808,7 @@
         "min_yield": false
       },
       "screening_meta": {
-        "dividend_periods_used": 10
+        "dividend_periods_used": 9
       },
       "box": {
         "is_box": false,
@@ -466168,7 +466168,7 @@
         "min_yield": false
       },
       "screening_meta": {
-        "dividend_periods_used": 10
+        "dividend_periods_used": 9
       },
       "box": {
         "is_box": true,
@@ -556552,7 +556552,7 @@
         "min_yield": false
       },
       "screening_meta": {
-        "dividend_periods_used": 10
+        "dividend_periods_used": 9
       },
       "box": {
         "is_box": true,
@@ -613872,30 +613872,6 @@
       "yield_sample_n": 36,
       "yield_history": [
         {
-          "date": "2017-09-29",
-          "yield": 0.118,
-          "price": 2122.5,
-          "dps": 2.5
-        },
-        {
-          "date": "2017-10-31",
-          "yield": 0.119,
-          "price": 2097.5,
-          "dps": 2.5
-        },
-        {
-          "date": "2017-11-30",
-          "yield": 0.126,
-          "price": 1982.5,
-          "dps": 2.5
-        },
-        {
-          "date": "2017-12-29",
-          "yield": 0.084,
-          "price": 2990.0,
-          "dps": 2.5
-        },
-        {
           "date": "2018-01-31",
           "yield": 0.139,
           "price": 3605.0,
@@ -614475,8 +614451,8 @@
       "per": 11.91,
       "pbr": 1.39,
       "per_pbr": 16.51,
-      "per_median": 26.66,
-      "pbr_median": 1.28,
+      "per_median": 25.77,
+      "pbr_median": 1.22,
       "per_cheap": true,
       "pbr_cheap": false,
       "payout_ratio": 12.81,
@@ -614496,7 +614472,7 @@
         "min_yield": false
       },
       "screening_meta": {
-        "dividend_periods_used": 10
+        "dividend_periods_used": 9
       },
       "box": {
         "is_box": false,
@@ -614591,30 +614567,6 @@
         }
       ],
       "valuation_history": [
-        {
-          "date": "2017-09-29",
-          "per": 43.82,
-          "pbr": 10.19,
-          "graham": 446.37
-        },
-        {
-          "date": "2017-10-31",
-          "per": 43.3,
-          "pbr": 10.07,
-          "graham": 435.92
-        },
-        {
-          "date": "2017-11-30",
-          "per": 29.24,
-          "pbr": 8.71,
-          "graham": 254.51
-        },
-        {
-          "date": "2017-12-29",
-          "per": 44.09,
-          "pbr": 13.13,
-          "graham": 578.92
-        },
         {
           "date": "2018-01-31",
           "per": 53.16,
@@ -617232,30 +617184,6 @@
       "yield_sample_n": 36,
       "yield_history": [
         {
-          "date": "2017-09-29",
-          "yield": 3.056,
-          "price": 1047.0,
-          "dps": 32.0
-        },
-        {
-          "date": "2017-10-31",
-          "yield": 2.683,
-          "price": 1192.5,
-          "dps": 32.0
-        },
-        {
-          "date": "2017-11-30",
-          "yield": 2.385,
-          "price": 1341.5,
-          "dps": 32.0
-        },
-        {
-          "date": "2017-12-29",
-          "yield": 2.068,
-          "price": 1547.5,
-          "dps": 32.0
-        },
-        {
           "date": "2018-01-31",
           "yield": 2.316,
           "price": 1532.5,
@@ -617901,10 +617829,10 @@
       "per": 6.84,
       "pbr": 1.44,
       "per_pbr": 9.82,
-      "per_median": 14.04,
-      "pbr_median": 1.44,
+      "per_median": 12.9,
+      "pbr_median": 1.38,
       "per_cheap": true,
-      "pbr_cheap": true,
+      "pbr_cheap": false,
       "payout_ratio": 23.73,
       "equity_ratio": 0.207,
       "roe": 18.5,
@@ -617922,7 +617850,7 @@
         "min_yield": true
       },
       "screening_meta": {
-        "dividend_periods_used": 10
+        "dividend_periods_used": 9
       },
       "box": {
         "is_box": false,
@@ -618017,30 +617945,6 @@
         }
       ],
       "valuation_history": [
-        {
-          "date": "2017-09-29",
-          "per": 68.66,
-          "pbr": 2.64,
-          "graham": 181.34
-        },
-        {
-          "date": "2017-10-31",
-          "per": 78.2,
-          "pbr": 3.01,
-          "graham": 235.24
-        },
-        {
-          "date": "2017-11-30",
-          "per": 27.11,
-          "pbr": 3.12,
-          "graham": 84.62
-        },
-        {
-          "date": "2017-12-29",
-          "per": 31.28,
-          "pbr": 3.6,
-          "graham": 112.61
-        },
         {
           "date": "2018-01-31",
           "per": 30.98,
@@ -651266,7 +651170,7 @@
         "min_yield": true
       },
       "screening_meta": {
-        "dividend_periods_used": 10
+        "dividend_periods_used": 9
       },
       "box": {
         "is_box": false,
@@ -663638,7 +663542,7 @@
         "min_yield": false
       },
       "screening_meta": {
-        "dividend_periods_used": 10
+        "dividend_periods_used": 9
       },
       "box": {
         "is_box": false,
@@ -666397,7 +666301,7 @@
         "min_yield": false
       },
       "screening_meta": {
-        "dividend_periods_used": 10
+        "dividend_periods_used": 9
       },
       "box": {
         "is_box": false,
@@ -668532,30 +668436,6 @@
       "yield_sample_n": 36,
       "yield_history": [
         {
-          "date": "2017-09-29",
-          "yield": 0.944,
-          "price": 794.5,
-          "dps": 7.5
-        },
-        {
-          "date": "2017-10-31",
-          "yield": 0.883,
-          "price": 849.5,
-          "dps": 7.5
-        },
-        {
-          "date": "2017-11-30",
-          "yield": 0.861,
-          "price": 871.5,
-          "dps": 7.5
-        },
-        {
-          "date": "2017-12-29",
-          "yield": 0.757,
-          "price": 991.0,
-          "dps": 7.5
-        },
-        {
           "date": "2018-01-31",
           "yield": 0.964,
           "price": 1037.5,
@@ -669201,8 +669081,8 @@
       "per": 24.98,
       "pbr": 4.91,
       "per_pbr": 122.8,
-      "per_median": 49.18,
-      "pbr_median": 3.29,
+      "per_median": 45.5,
+      "pbr_median": 3.26,
       "per_cheap": true,
       "pbr_cheap": false,
       "payout_ratio": 40.35,
@@ -669222,7 +669102,7 @@
         "min_yield": false
       },
       "screening_meta": {
-        "dividend_periods_used": 10
+        "dividend_periods_used": 9
       },
       "box": {
         "is_box": false,
@@ -669317,30 +669197,6 @@
         }
       ],
       "valuation_history": [
-        {
-          "date": "2017-09-29",
-          "per": 186.5,
-          "pbr": 5.79,
-          "graham": 1079.9
-        },
-        {
-          "date": "2017-10-31",
-          "per": 65.9,
-          "pbr": 5.79,
-          "graham": 381.65
-        },
-        {
-          "date": "2017-11-30",
-          "per": 67.61,
-          "pbr": 5.94,
-          "graham": 401.67
-        },
-        {
-          "date": "2017-12-29",
-          "per": 76.88,
-          "pbr": 6.76,
-          "graham": 519.38
-        },
         {
           "date": "2018-01-31",
           "per": 52.73,
@@ -675864,7 +675720,7 @@
         "min_yield": false
       },
       "screening_meta": {
-        "dividend_periods_used": 10
+        "dividend_periods_used": 9
       },
       "box": {
         "is_box": false,
@@ -709272,7 +709128,7 @@
         "min_yield": false
       },
       "screening_meta": {
-        "dividend_periods_used": 8
+        "dividend_periods_used": 7
       },
       "box": {
         "is_box": false,
@@ -1020010,7 +1019866,7 @@
         "min_yield": true
       },
       "screening_meta": {
-        "dividend_periods_used": 10
+        "dividend_periods_used": 9
       },
       "box": {
         "is_box": true,
@@ -1060716,7 +1060572,7 @@
       "latest_op_oku": 717,
       "latest_np_oku": 317,
       "screening": {
-        "dividend": false,
+        "dividend": true,
         "revenue": true,
         "op_profit": true,
         "net_profit": true,
@@ -1060726,7 +1060582,7 @@
         "min_yield": false
       },
       "screening_meta": {
-        "dividend_periods_used": 9
+        "dividend_periods_used": 8
       },
       "box": {
         "is_box": false,
@@ -1116957,7 +1116813,7 @@
         "min_yield": true
       },
       "screening_meta": {
-        "dividend_periods_used": 10
+        "dividend_periods_used": 9
       },
       "box": {
         "is_box": true,
@@ -1120317,7 +1120173,7 @@
         "min_yield": false
       },
       "screening_meta": {
-        "dividend_periods_used": 10
+        "dividend_periods_used": 9
       },
       "box": {
         "is_box": true,
@@ -1129756,9 +1129612,9 @@
       "sector33_code": "3200",
       "market_cap_oku": 1324,
       "price": 5050.0,
-      "bucket": "対象外",
+      "bucket": "スイング",
       "core_type": null,
-      "screening_pass": false,
+      "screening_pass": true,
       "signal": "NEUTRAL",
       "is_box": false,
       "emergency_exit": false,
@@ -1129776,27 +1129632,27 @@
       "yield_history": [
         {
           "date": "2017-09-29",
-          "yield": 2.59,
+          "yield": 1.295,
           "price": 2510.0,
-          "dps": 65.0
+          "dps": 32.5
         },
         {
           "date": "2017-10-31",
-          "yield": 2.653,
+          "yield": 1.327,
           "price": 2450.0,
-          "dps": 65.0
+          "dps": 32.5
         },
         {
           "date": "2017-11-30",
-          "yield": 2.273,
+          "yield": 1.136,
           "price": 2860.0,
-          "dps": 65.0
+          "dps": 32.5
         },
         {
           "date": "2017-12-29",
-          "yield": 2.368,
+          "yield": 1.184,
           "price": 2745.0,
-          "dps": 65.0
+          "dps": 32.5
         },
         {
           "date": "2018-01-31",
@@ -1130383,7 +1130239,7 @@
       "latest_op_oku": 122,
       "latest_np_oku": 91,
       "screening": {
-        "dividend": false,
+        "dividend": true,
         "revenue": true,
         "op_profit": true,
         "net_profit": true,
@@ -1140457,7 +1140313,7 @@
         "min_yield": true
       },
       "screening_meta": {
-        "dividend_periods_used": 10
+        "dividend_periods_used": 9
       },
       "box": {
         "is_box": false,
@@ -1204885,30 +1204741,6 @@
       "yield_sample_n": 36,
       "yield_history": [
         {
-          "date": "2017-09-29",
-          "yield": 1.138,
-          "price": 4395.0,
-          "dps": 50.0
-        },
-        {
-          "date": "2017-10-31",
-          "yield": 1.011,
-          "price": 4945.0,
-          "dps": 50.0
-        },
-        {
-          "date": "2017-11-30",
-          "yield": 1.14,
-          "price": 4385.0,
-          "dps": 50.0
-        },
-        {
-          "date": "2017-12-29",
-          "yield": 0.986,
-          "price": 5070.0,
-          "dps": 50.0
-        },
-        {
           "date": "2018-01-31",
           "yield": 1.908,
           "price": 5240.0,
@@ -1205488,7 +1205320,7 @@
       "per": 10.92,
       "pbr": 0.97,
       "per_pbr": 10.59,
-      "per_median": 22.42,
+      "per_median": 21.46,
       "pbr_median": 0.89,
       "per_cheap": true,
       "pbr_cheap": false,
@@ -1205509,7 +1205341,7 @@
         "min_yield": true
       },
       "screening_meta": {
-        "dividend_periods_used": 10
+        "dividend_periods_used": 9
       },
       "box": {
         "is_box": true,
@@ -1205604,30 +1205436,6 @@
         }
       ],
       "valuation_history": [
-        {
-          "date": "2017-09-29",
-          "per": 139.83,
-          "pbr": 1.6,
-          "graham": 223.99
-        },
-        {
-          "date": "2017-10-31",
-          "per": 55.0,
-          "pbr": 1.75,
-          "graham": 96.19
-        },
-        {
-          "date": "2017-11-30",
-          "per": 48.77,
-          "pbr": 1.55,
-          "graham": 75.64
-        },
-        {
-          "date": "2017-12-29",
-          "per": 56.39,
-          "pbr": 1.79,
-          "graham": 101.12
-        },
         {
           "date": "2018-01-31",
           "per": 58.28,
@@ -1399966,27 +1399774,27 @@
       "yield_history": [
         {
           "date": "2017-09-29",
-          "yield": 1.416,
+          "yield": 0.708,
           "price": 335.5,
-          "dps": 4.75
+          "dps": 2.38
         },
         {
           "date": "2017-10-31",
-          "yield": 1.396,
+          "yield": 0.698,
           "price": 340.3,
-          "dps": 4.75
+          "dps": 2.38
         },
         {
           "date": "2017-11-30",
-          "yield": 1.569,
+          "yield": 0.784,
           "price": 302.8,
-          "dps": 4.75
+          "dps": 2.38
         },
         {
           "date": "2017-12-29",
-          "yield": 1.306,
+          "yield": 0.653,
           "price": 363.8,
-          "dps": 4.75
+          "dps": 2.38
         },
         {
           "date": "2018-01-31",
@@ -1403457,30 +1403265,6 @@
       "yield_sample_n": 36,
       "yield_history": [
         {
-          "date": "2017-09-29",
-          "yield": 0.708,
-          "price": 988.7,
-          "dps": 7.0
-        },
-        {
-          "date": "2017-10-31",
-          "yield": 0.64,
-          "price": 1093.3,
-          "dps": 7.0
-        },
-        {
-          "date": "2017-11-30",
-          "yield": 0.631,
-          "price": 1110.0,
-          "dps": 7.0
-        },
-        {
-          "date": "2017-12-29",
-          "yield": 0.513,
-          "price": 1363.3,
-          "dps": 7.0
-        },
-        {
           "date": "2019-01-31",
           "yield": 1.039,
           "price": 1251.0,
@@ -1404054,8 +1403838,8 @@
       "per": 17.11,
       "pbr": 2.89,
       "per_pbr": 49.53,
-      "per_median": 48.62,
-      "pbr_median": 5.09,
+      "per_median": 43.54,
+      "pbr_median": 5.08,
       "per_cheap": true,
       "pbr_cheap": true,
       "payout_ratio": 31.05,
@@ -1404075,7 +1403859,7 @@
         "min_yield": false
       },
       "screening_meta": {
-        "dividend_periods_used": 9
+        "dividend_periods_used": 8
       },
       "box": {
         "is_box": false,
@@ -1404170,30 +1403954,6 @@
         }
       ],
       "valuation_history": [
-        {
-          "date": "2017-09-29",
-          "per": 112.22,
-          "pbr": 6.54,
-          "graham": 734.5
-        },
-        {
-          "date": "2017-10-31",
-          "per": 124.1,
-          "pbr": 7.24,
-          "graham": 898.13
-        },
-        {
-          "date": "2017-11-30",
-          "per": 62.87,
-          "pbr": 6.94,
-          "graham": 436.18
-        },
-        {
-          "date": "2017-12-29",
-          "per": 77.21,
-          "pbr": 8.52,
-          "graham": 657.97
-        },
         {
           "date": "2019-01-31",
           "per": 43.54,
@@ -1407045,7 +1406805,7 @@
         "min_yield": false
       },
       "screening_meta": {
-        "dividend_periods_used": 10
+        "dividend_periods_used": 9
       },
       "box": {
         "is_box": true,
@@ -1409398,27 +1409158,27 @@
       "yield_history": [
         {
           "date": "2017-09-29",
-          "yield": 2.667,
+          "yield": 0.889,
           "price": 2437.0,
-          "dps": 65.0
+          "dps": 21.67
         },
         {
           "date": "2017-10-31",
-          "yield": 2.341,
+          "yield": 0.78,
           "price": 2776.0,
-          "dps": 65.0
+          "dps": 21.67
         },
         {
           "date": "2017-11-30",
-          "yield": 2.456,
+          "yield": 0.819,
           "price": 2647.0,
-          "dps": 65.0
+          "dps": 21.67
         },
         {
           "date": "2017-12-29",
-          "yield": 2.321,
+          "yield": 0.774,
           "price": 2800.0,
-          "dps": 65.0
+          "dps": 21.67
         },
         {
           "date": "2018-01-31",
@@ -1457859,7 +1457619,7 @@
       "latest_op_oku": 63,
       "latest_np_oku": 47,
       "screening": {
-        "dividend": false,
+        "dividend": true,
         "revenue": true,
         "op_profit": true,
         "net_profit": true,
@@ -1457869,7 +1457629,7 @@
         "min_yield": true
       },
       "screening_meta": {
-        "dividend_periods_used": 9
+        "dividend_periods_used": 8
       },
       "box": {
         "is_box": false,
@@ -1461013,7 +1460773,7 @@
         "min_yield": true
       },
       "screening_meta": {
-        "dividend_periods_used": 8
+        "dividend_periods_used": 7
       },
       "box": {
         "is_box": true,
@@ -1490503,7 +1490263,7 @@
         "min_yield": false
       },
       "screening_meta": {
-        "dividend_periods_used": 9
+        "dividend_periods_used": 8
       },
       "box": {
         "is_box": false,
@@ -1500691,7 +1500451,7 @@
         "min_yield": true
       },
       "screening_meta": {
-        "dividend_periods_used": 10
+        "dividend_periods_used": 9
       },
       "box": {
         "is_box": false,
@@ -1689844,27 +1689604,27 @@
       "yield_history": [
         {
           "date": "2017-09-29",
-          "yield": 2.205,
+          "yield": 1.103,
           "price": 4535.0,
-          "dps": 100.0
+          "dps": 50.0
         },
         {
           "date": "2017-10-31",
-          "yield": 2.105,
+          "yield": 1.053,
           "price": 4750.0,
-          "dps": 100.0
+          "dps": 50.0
         },
         {
           "date": "2017-11-30",
-          "yield": 2.155,
+          "yield": 1.078,
           "price": 4640.0,
-          "dps": 100.0
+          "dps": 50.0
         },
         {
           "date": "2017-12-29",
-          "yield": 2.112,
+          "yield": 1.056,
           "price": 4735.0,
-          "dps": 100.0
+          "dps": 50.0
         },
         {
           "date": "2018-01-31",
@@ -1824569,30 +1824329,6 @@
       "yield_sample_n": 36,
       "yield_history": [
         {
-          "date": "2017-09-29",
-          "yield": 0.126,
-          "price": 29875.0,
-          "dps": 37.5
-        },
-        {
-          "date": "2017-10-31",
-          "yield": 0.119,
-          "price": 31415.0,
-          "dps": 37.5
-        },
-        {
-          "date": "2017-11-30",
-          "yield": 0.116,
-          "price": 32455.0,
-          "dps": 37.5
-        },
-        {
-          "date": "2017-12-29",
-          "yield": 0.119,
-          "price": 31560.0,
-          "dps": 37.5
-        },
-        {
           "date": "2018-01-31",
           "yield": 0.151,
           "price": 33215.0,
@@ -1825166,8 +1824902,8 @@
       "per": 39.44,
       "pbr": 5.06,
       "per_pbr": 199.44,
-      "per_median": 75.75,
-      "pbr_median": 5.68,
+      "per_median": 69.58,
+      "pbr_median": 5.6,
       "per_cheap": true,
       "pbr_cheap": true,
       "payout_ratio": 29.96,
@@ -1825187,7 +1824923,7 @@
         "min_yield": false
       },
       "screening_meta": {
-        "dividend_periods_used": 9
+        "dividend_periods_used": 8
       },
       "box": {
         "is_box": false,
@@ -1825282,30 +1825018,6 @@
         }
       ],
       "valuation_history": [
-        {
-          "date": "2017-09-29",
-          "per": 152.69,
-          "pbr": 5.92,
-          "graham": 904.61
-        },
-        {
-          "date": "2017-10-31",
-          "per": 75.75,
-          "pbr": 5.96,
-          "graham": 451.8
-        },
-        {
-          "date": "2017-11-30",
-          "per": 78.26,
-          "pbr": 6.16,
-          "graham": 482.21
-        },
-        {
-          "date": "2017-12-29",
-          "per": 76.1,
-          "pbr": 5.99,
-          "graham": 455.98
-        },
         {
           "date": "2018-01-31",
           "per": 80.09,
@@ -1835395,7 +1835107,7 @@
         "min_yield": false
       },
       "screening_meta": {
-        "dividend_periods_used": 10
+        "dividend_periods_used": 9
       },
       "box": {
         "is_box": false,
@@ -1844974,27 +1844686,27 @@
       "yield_history": [
         {
           "date": "2017-09-29",
-          "yield": 1.358,
+          "yield": 0.679,
           "price": 5890.0,
-          "dps": 80.0
+          "dps": 40.0
         },
         {
           "date": "2017-10-31",
-          "yield": 1.258,
+          "yield": 0.629,
           "price": 6360.0,
-          "dps": 80.0
+          "dps": 40.0
         },
         {
           "date": "2017-11-30",
-          "yield": 1.199,
+          "yield": 0.6,
           "price": 6670.0,
-          "dps": 80.0
+          "dps": 40.0
         },
         {
           "date": "2017-12-29",
-          "yield": 1.189,
+          "yield": 0.594,
           "price": 6730.0,
-          "dps": 80.0
+          "dps": 40.0
         },
         {
           "date": "2018-01-31",
@@ -1845577,7 +1845289,7 @@
       "pbr": 0.79,
       "per_pbr": 17.22,
       "per_median": 38.26,
-      "pbr_median": 1.65,
+      "pbr_median": 1.66,
       "per_cheap": true,
       "pbr_cheap": true,
       "payout_ratio": 84.57,
@@ -1845694,15 +1845406,15 @@
       "valuation_history": [
         {
           "date": "2017-09-29",
-          "per": 49.94,
-          "pbr": 1.53,
-          "graham": 76.34
+          "per": 99.88,
+          "pbr": 3.06,
+          "graham": 305.37
         },
         {
           "date": "2017-10-31",
-          "per": 53.93,
-          "pbr": 1.65,
-          "graham": 89.01
+          "per": 107.85,
+          "pbr": 3.3,
+          "graham": 356.05
         },
         {
           "date": "2017-11-30",
@@ -1851693,30 +1851405,6 @@
       "yield_sample_n": 36,
       "yield_history": [
         {
-          "date": "2017-09-29",
-          "yield": 1.212,
-          "price": 1155.5,
-          "dps": 14.0
-        },
-        {
-          "date": "2017-10-31",
-          "yield": 1.132,
-          "price": 1236.5,
-          "dps": 14.0
-        },
-        {
-          "date": "2017-11-30",
-          "yield": 1.026,
-          "price": 1365.0,
-          "dps": 14.0
-        },
-        {
-          "date": "2017-12-29",
-          "yield": 0.984,
-          "price": 1423.0,
-          "dps": 14.0
-        },
-        {
           "date": "2018-01-31",
           "yield": 0.873,
           "price": 1947.5,
@@ -1852290,8 +1851978,8 @@
       "per": 38.9,
       "pbr": 12.19,
       "per_pbr": 474.2,
-      "per_median": 93.92,
-      "pbr_median": 14.96,
+      "per_median": 93.48,
+      "pbr_median": 15.99,
       "per_cheap": true,
       "pbr_cheap": true,
       "payout_ratio": 38.12,
@@ -1852311,7 +1851999,7 @@
         "min_yield": false
       },
       "screening_meta": {
-        "dividend_periods_used": 9
+        "dividend_periods_used": 8
       },
       "box": {
         "is_box": false,
@@ -1852406,30 +1852094,6 @@
         }
       ],
       "valuation_history": [
-        {
-          "date": "2017-09-29",
-          "per": 29.31,
-          "pbr": 4.26,
-          "graham": 124.75
-        },
-        {
-          "date": "2017-10-31",
-          "per": 564.61,
-          "pbr": 4.74,
-          "graham": 2677.28
-        },
-        {
-          "date": "2017-11-30",
-          "per": 623.29,
-          "pbr": 5.23,
-          "graham": 3262.65
-        },
-        {
-          "date": "2017-12-29",
-          "per": 649.77,
-          "pbr": 5.46,
-          "graham": 3545.81
-        },
         {
           "date": "2018-01-31",
           "per": 889.27,
@@ -1886677,7 +1886341,7 @@
         "min_yield": false
       },
       "screening_meta": {
-        "dividend_periods_used": 10
+        "dividend_periods_used": 9
       },
       "box": {
         "is_box": false,
@@ -1941847,7 +1941511,7 @@
         "min_yield": true
       },
       "screening_meta": {
-        "dividend_periods_used": 10
+        "dividend_periods_used": 9
       },
       "box": {
         "is_box": false,
@@ -2116901,7 +2116565,7 @@
         "min_yield": false
       },
       "screening_meta": {
-        "dividend_periods_used": 10
+        "dividend_periods_used": 9
       },
       "box": {
         "is_box": false,
@@ -2136869,30 +2136533,6 @@
       "yield_sample_n": 36,
       "yield_history": [
         {
-          "date": "2017-09-29",
-          "yield": 0.54,
-          "price": 2780.0,
-          "dps": 15.0
-        },
-        {
-          "date": "2017-10-31",
-          "yield": 0.551,
-          "price": 2720.0,
-          "dps": 15.0
-        },
-        {
-          "date": "2017-11-30",
-          "yield": 0.602,
-          "price": 2490.0,
-          "dps": 15.0
-        },
-        {
-          "date": "2017-12-29",
-          "yield": 0.637,
-          "price": 2356.0,
-          "dps": 15.0
-        },
-        {
           "date": "2019-01-31",
           "yield": 1.759,
           "price": 1649.0,
@@ -2137466,8 +2137106,8 @@
       "per": 12.65,
       "pbr": 1.8,
       "per_pbr": 22.72,
-      "per_median": 23.68,
-      "pbr_median": 1.76,
+      "per_median": 22.61,
+      "pbr_median": 1.75,
       "per_cheap": true,
       "pbr_cheap": false,
       "payout_ratio": 40.51,
@@ -2137487,7 +2137127,7 @@
         "min_yield": true
       },
       "screening_meta": {
-        "dividend_periods_used": 9
+        "dividend_periods_used": 8
       },
       "box": {
         "is_box": false,
@@ -2137582,30 +2137222,6 @@
         }
       ],
       "valuation_history": [
-        {
-          "date": "2017-09-29",
-          "per": 112.78,
-          "pbr": 9.62,
-          "graham": 1085.37
-        },
-        {
-          "date": "2017-10-31",
-          "per": 110.34,
-          "pbr": 9.42,
-          "graham": 1039.03
-        },
-        {
-          "date": "2017-11-30",
-          "per": 54.72,
-          "pbr": 8.05,
-          "graham": 440.68
-        },
-        {
-          "date": "2017-12-29",
-          "per": 51.77,
-          "pbr": 7.62,
-          "graham": 394.53
-        },
         {
           "date": "2019-01-31",
           "per": 24.35,
@@ -2140841,7 +2140457,7 @@
         "min_yield": false
       },
       "screening_meta": {
-        "dividend_periods_used": 10
+        "dividend_periods_used": 9
       },
       "box": {
         "is_box": false,
@@ -2153780,27 +2153396,27 @@
       "yield_history": [
         {
           "date": "2017-09-29",
-          "yield": 1.15,
+          "yield": 0.958,
           "price": 2371.2,
-          "dps": 27.27
+          "dps": 22.73
         },
         {
           "date": "2017-10-31",
-          "yield": 1.084,
+          "yield": 0.904,
           "price": 2515.2,
-          "dps": 27.27
+          "dps": 22.73
         },
         {
           "date": "2017-11-30",
-          "yield": 1.064,
+          "yield": 0.886,
           "price": 2564.4,
-          "dps": 27.27
+          "dps": 22.73
         },
         {
           "date": "2017-12-29",
-          "yield": 1.043,
+          "yield": 0.87,
           "price": 2613.6,
-          "dps": 27.27
+          "dps": 22.73
         },
         {
           "date": "2018-01-31",
@@ -2182063,7 +2181679,7 @@
         "min_yield": false
       },
       "screening_meta": {
-        "dividend_periods_used": 10
+        "dividend_periods_used": 9
       },
       "box": {
         "is_box": true,
@@ -2239754,7 +2239370,7 @@
         "min_yield": false
       },
       "screening_meta": {
-        "dividend_periods_used": 8
+        "dividend_periods_used": 7
       },
       "box": {
         "is_box": false,
@@ -2286310,7 +2285926,7 @@
         "min_yield": false
       },
       "screening_meta": {
-        "dividend_periods_used": 10
+        "dividend_periods_used": 9
       },
       "box": {
         "is_box": true,
@@ -2303330,7 +2302946,7 @@
       "latest_op_oku": 97,
       "latest_np_oku": 62,
       "screening": {
-        "dividend": false,
+        "dividend": true,
         "revenue": true,
         "op_profit": true,
         "net_profit": true,
@@ -2377886,30 +2377502,6 @@
       "yield_sample_n": 36,
       "yield_history": [
         {
-          "date": "2017-09-29",
-          "yield": 2.022,
-          "price": 742.0,
-          "dps": 15.0
-        },
-        {
-          "date": "2017-10-31",
-          "yield": 2.086,
-          "price": 719.0,
-          "dps": 15.0
-        },
-        {
-          "date": "2017-11-30",
-          "yield": 2.336,
-          "price": 642.0,
-          "dps": 15.0
-        },
-        {
-          "date": "2017-12-29",
-          "yield": 2.373,
-          "price": 632.0,
-          "dps": 15.0
-        },
-        {
           "date": "2018-01-31",
           "yield": 2.222,
           "price": 675.0,
@@ -2378489,8 +2378081,8 @@
       "per": 9.87,
       "pbr": 1.44,
       "per_pbr": 14.19,
-      "per_median": 18.7,
-      "pbr_median": 1.05,
+      "per_median": 18.11,
+      "pbr_median": 1.06,
       "per_cheap": true,
       "pbr_cheap": false,
       "payout_ratio": 30.01,
@@ -2378510,7 +2378102,7 @@
         "min_yield": true
       },
       "screening_meta": {
-        "dividend_periods_used": 9
+        "dividend_periods_used": 8
       },
       "box": {
         "is_box": false,
@@ -2378605,30 +2378197,6 @@
         }
       ],
       "valuation_history": [
-        {
-          "date": "2017-09-29",
-          "per": 18.99,
-          "pbr": 1.0,
-          "graham": 19.08
-        },
-        {
-          "date": "2017-10-31",
-          "per": 18.4,
-          "pbr": 0.97,
-          "graham": 17.91
-        },
-        {
-          "date": "2017-11-30",
-          "per": 115.01,
-          "pbr": 0.89,
-          "graham": 102.26
-        },
-        {
-          "date": "2017-12-29",
-          "per": 113.22,
-          "pbr": 0.88,
-          "graham": 99.1
-        },
         {
           "date": "2018-01-31",
           "per": 120.92,
@@ -2398634,7 +2398202,7 @@
         "min_yield": false
       },
       "screening_meta": {
-        "dividend_periods_used": 10
+        "dividend_periods_used": 9
       },
       "box": {
         "is_box": false,
@@ -2789935,27 +2789503,27 @@
       "yield_history": [
         {
           "date": "2017-09-29",
-          "yield": 7.16,
+          "yield": 0.716,
           "price": 2570.0,
-          "dps": 184.0
+          "dps": 18.4
         },
         {
           "date": "2017-10-31",
-          "yield": 6.557,
+          "yield": 0.656,
           "price": 2806.0,
-          "dps": 184.0
+          "dps": 18.4
         },
         {
           "date": "2017-11-30",
-          "yield": 6.158,
+          "yield": 0.616,
           "price": 2988.0,
-          "dps": 184.0
+          "dps": 18.4
         },
         {
           "date": "2017-12-29",
-          "yield": 5.993,
+          "yield": 0.599,
           "price": 3070.0,
-          "dps": 184.0
+          "dps": 18.4
         },
         {
           "date": "2018-01-31",
@@ -2817117,27 +2816685,27 @@
       "yield_history": [
         {
           "date": "2017-09-29",
-          "yield": 0.565,
+          "yield": 1.13,
           "price": 1593.0,
-          "dps": 9.0
+          "dps": 18.0
         },
         {
           "date": "2017-10-31",
-          "yield": 0.526,
+          "yield": 1.053,
           "price": 1710.0,
-          "dps": 9.0
+          "dps": 18.0
         },
         {
           "date": "2017-11-30",
-          "yield": 0.503,
+          "yield": 1.005,
           "price": 1791.0,
-          "dps": 9.0
+          "dps": 18.0
         },
         {
           "date": "2017-12-29",
-          "yield": 0.501,
+          "yield": 1.001,
           "price": 1798.0,
-          "dps": 9.0
+          "dps": 18.0
         },
         {
           "date": "2018-01-31",
@@ -2834498,7 +2834066,7 @@
         "min_yield": false
       },
       "screening_meta": {
-        "dividend_periods_used": 9
+        "dividend_periods_used": 8
       },
       "box": {
         "is_box": true,
@@ -2984829,7 +2984397,7 @@
         "min_yield": true
       },
       "screening_meta": {
-        "dividend_periods_used": 9
+        "dividend_periods_used": 8
       },
       "box": {
         "is_box": true,
@@ -3036070,27 +3035638,27 @@
       "yield_history": [
         {
           "date": "2017-09-29",
-          "yield": 2.425,
+          "yield": 2.205,
           "price": 1885.0,
-          "dps": 45.71
+          "dps": 41.56
         },
         {
           "date": "2017-10-31",
-          "yield": 2.321,
+          "yield": 2.11,
           "price": 1969.5,
-          "dps": 45.71
+          "dps": 41.56
         },
         {
           "date": "2017-11-30",
-          "yield": 2.047,
+          "yield": 1.861,
           "price": 2233.1,
-          "dps": 45.71
+          "dps": 41.56
         },
         {
           "date": "2017-12-29",
-          "yield": 2.044,
+          "yield": 1.858,
           "price": 2237.0,
-          "dps": 45.71
+          "dps": 41.56
         },
         {
           "date": "2018-01-31",
@@ -3061822,98 +3061390,26 @@
       "yield_history": [
         {
           "date": "2017-09-29",
-          "yield": 0.025,
-          "price": 16030.0,
-          "dps": 4.0
-        },
-        {
-          "date": "2017-10-31",
-          "yield": 0.024,
-          "price": 16860.0,
-          "dps": 4.0
-        },
-        {
-          "date": "2017-11-30",
-          "yield": 0.022,
-          "price": 18420.0,
-          "dps": 4.0
-        },
-        {
-          "date": "2017-12-29",
-          "yield": 0.021,
-          "price": 19230.0,
-          "dps": 4.0
-        },
-        {
-          "date": "2018-01-31",
-          "yield": 0.247,
-          "price": 16180.0,
-          "dps": 40.0
-        },
-        {
-          "date": "2018-02-28",
-          "yield": 0.266,
-          "price": 15040.0,
-          "dps": 40.0
-        },
-        {
-          "date": "2018-03-30",
-          "yield": 0.265,
-          "price": 15090.0,
-          "dps": 40.0
-        },
-        {
-          "date": "2018-04-27",
-          "yield": 0.249,
-          "price": 16080.0,
-          "dps": 40.0
-        },
-        {
-          "date": "2018-05-31",
-          "yield": 0.26,
-          "price": 15390.0,
-          "dps": 40.0
-        },
-        {
-          "date": "2018-06-29",
           "yield": 0.25,
           "price": 16030.0,
           "dps": 40.0
         },
         {
-          "date": "2018-07-31",
-          "yield": 0.296,
-          "price": 13520.0,
+          "date": "2017-10-31",
+          "yield": 0.237,
+          "price": 16860.0,
           "dps": 40.0
         },
         {
-          "date": "2018-08-31",
-          "yield": 0.294,
-          "price": 13610.0,
+          "date": "2017-11-30",
+          "yield": 0.217,
+          "price": 18420.0,
           "dps": 40.0
         },
         {
-          "date": "2018-09-28",
-          "yield": 0.288,
-          "price": 13880.0,
-          "dps": 40.0
-        },
-        {
-          "date": "2018-10-31",
-          "yield": 0.363,
-          "price": 11010.0,
-          "dps": 40.0
-        },
-        {
-          "date": "2018-11-30",
-          "yield": 0.336,
-          "price": 11890.0,
-          "dps": 40.0
-        },
-        {
-          "date": "2018-12-28",
-          "yield": 0.376,
-          "price": 10640.0,
+          "date": "2017-12-29",
+          "yield": 0.208,
+          "price": 19230.0,
           "dps": 40.0
         },
         {
@@ -3062346,8 +3061842,8 @@
       "per": 32.7,
       "pbr": 1.58,
       "per_pbr": 51.75,
-      "per_median": 69.88,
-      "pbr_median": 1.77,
+      "per_median": 67.03,
+      "pbr_median": 1.74,
       "per_cheap": true,
       "pbr_cheap": true,
       "payout_ratio": 10.5,
@@ -3062367,7 +3061863,7 @@
         "min_yield": false
       },
       "screening_meta": {
-        "dividend_periods_used": 10
+        "dividend_periods_used": 9
       },
       "box": {
         "is_box": true,
@@ -3062464,9 +3061960,9 @@
       "valuation_history": [
         {
           "date": "2017-09-29",
-          "per": 2065.72,
-          "pbr": 25.5,
-          "graham": 52666.92
+          "per": 206.57,
+          "pbr": 2.55,
+          "graham": 526.67
         },
         {
           "date": "2017-10-31",
@@ -3062485,78 +3061981,6 @@
           "per": 100.35,
           "pbr": 2.97,
           "graham": 298.35
-        },
-        {
-          "date": "2018-01-31",
-          "per": 74.69,
-          "pbr": 2.44,
-          "graham": 182.04
-        },
-        {
-          "date": "2018-02-28",
-          "per": 69.43,
-          "pbr": 2.27,
-          "graham": 157.29
-        },
-        {
-          "date": "2018-03-30",
-          "per": 69.66,
-          "pbr": 2.27,
-          "graham": 158.34
-        },
-        {
-          "date": "2018-04-27",
-          "per": 58.93,
-          "pbr": 2.39,
-          "graham": 140.66
-        },
-        {
-          "date": "2018-05-31",
-          "per": 56.4,
-          "pbr": 2.28,
-          "graham": 128.84
-        },
-        {
-          "date": "2018-06-29",
-          "per": 58.75,
-          "pbr": 2.38,
-          "graham": 139.78
-        },
-        {
-          "date": "2018-07-31",
-          "per": 621.32,
-          "pbr": 2.02,
-          "graham": 1252.68
-        },
-        {
-          "date": "2018-08-31",
-          "per": 625.46,
-          "pbr": 2.03,
-          "graham": 1269.41
-        },
-        {
-          "date": "2018-09-28",
-          "per": 637.87,
-          "pbr": 2.07,
-          "graham": 1320.28
-        },
-        {
-          "date": "2018-10-31",
-          "per": 111.2,
-          "pbr": 1.62,
-          "graham": 180.32
-        },
-        {
-          "date": "2018-11-30",
-          "per": 120.09,
-          "pbr": 1.75,
-          "graham": 210.3
-        },
-        {
-          "date": "2018-12-28",
-          "per": 107.46,
-          "pbr": 1.57,
-          "graham": 168.4
         },
         {
           "date": "2019-01-31",
@@ -3068781,7 +3068205,7 @@
         "min_yield": false
       },
       "screening_meta": {
-        "dividend_periods_used": 10
+        "dividend_periods_used": 9
       },
       "box": {
         "is_box": false,
@@ -3074506,27 +3073930,27 @@
       "yield_history": [
         {
           "date": "2017-09-29",
-          "yield": 1.845,
+          "yield": 0.923,
           "price": 1680.0,
-          "dps": 31.0
+          "dps": 15.5
         },
         {
           "date": "2017-10-31",
-          "yield": 1.737,
+          "yield": 0.868,
           "price": 1785.0,
-          "dps": 31.0
+          "dps": 15.5
         },
         {
           "date": "2017-11-30",
-          "yield": 1.535,
+          "yield": 0.767,
           "price": 2020.0,
-          "dps": 31.0
+          "dps": 15.5
         },
         {
           "date": "2017-12-29",
-          "yield": 1.361,
+          "yield": 0.681,
           "price": 2277.5,
-          "dps": 31.0
+          "dps": 15.5
         },
         {
           "date": "2018-01-31",
@@ -3085425,7 +3084849,7 @@
         "min_yield": false
       },
       "screening_meta": {
-        "dividend_periods_used": 10
+        "dividend_periods_used": 9
       },
       "box": {
         "is_box": false,
@@ -3102345,7 +3101769,7 @@
         "min_yield": true
       },
       "screening_meta": {
-        "dividend_periods_used": 10
+        "dividend_periods_used": 9
       },
       "box": {
         "is_box": true,
@@ -3115269,30 +3114693,6 @@
       "yield_sample_n": 36,
       "yield_history": [
         {
-          "date": "2017-09-29",
-          "yield": 1.119,
-          "price": 715.0,
-          "dps": 8.0
-        },
-        {
-          "date": "2017-10-31",
-          "yield": 1.11,
-          "price": 721.0,
-          "dps": 8.0
-        },
-        {
-          "date": "2017-11-30",
-          "yield": 1.088,
-          "price": 735.0,
-          "dps": 8.0
-        },
-        {
-          "date": "2017-12-29",
-          "yield": 1.132,
-          "price": 707.0,
-          "dps": 8.0
-        },
-        {
           "date": "2018-01-31",
           "yield": 1.164,
           "price": 687.0,
@@ -3115584,8 +3114984,8 @@
       "per": 18.54,
       "pbr": 4.65,
       "per_pbr": 86.27,
-      "per_median": 29.7,
-      "pbr_median": 1.72,
+      "per_median": 28.08,
+      "pbr_median": 2.22,
       "per_cheap": true,
       "pbr_cheap": false,
       "payout_ratio": 9.08,
@@ -3115605,7 +3115005,7 @@
         "min_yield": false
       },
       "screening_meta": {
-        "dividend_periods_used": 10
+        "dividend_periods_used": 9
       },
       "box": {
         "is_box": false,
@@ -3115700,30 +3115100,6 @@
         }
       ],
       "valuation_history": [
-        {
-          "date": "2017-09-29",
-          "per": null,
-          "pbr": 1.74,
-          "graham": null
-        },
-        {
-          "date": "2017-10-31",
-          "per": null,
-          "pbr": 1.75,
-          "graham": null
-        },
-        {
-          "date": "2017-11-30",
-          "per": 53.38,
-          "pbr": 1.7,
-          "graham": 90.92
-        },
-        {
-          "date": "2017-12-29",
-          "per": 51.34,
-          "pbr": 1.64,
-          "graham": 84.12
-        },
         {
           "date": "2018-01-31",
           "per": 49.89,
@@ -3128937,7 +3128313,7 @@
         "min_yield": false
       },
       "screening_meta": {
-        "dividend_periods_used": 9
+        "dividend_periods_used": 8
       },
       "box": {
         "is_box": false,
@@ -3145773,7 +3145149,7 @@
         "min_yield": false
       },
       "screening_meta": {
-        "dividend_periods_used": 10
+        "dividend_periods_used": 9
       },
       "box": {
         "is_box": false,
@@ -3169679,7 +3169055,7 @@
         "min_yield": false
       },
       "screening_meta": {
-        "dividend_periods_used": 10
+        "dividend_periods_used": 9
       },
       "box": {
         "is_box": true,
@@ -3210671,7 +3210047,7 @@
         "min_yield": false
       },
       "screening_meta": {
-        "dividend_periods_used": 9
+        "dividend_periods_used": 8
       },
       "box": {
         "is_box": false,
@@ -3220170,9 +3219546,9 @@
       "sector33_code": "6100",
       "market_cap_oku": 4595,
       "price": 3851.0,
-      "bucket": "対象外",
+      "bucket": "スイング",
       "core_type": null,
-      "screening_pass": false,
+      "screening_pass": true,
       "signal": "NEUTRAL",
       "is_box": true,
       "emergency_exit": false,
@@ -3220190,27 +3219566,27 @@
       "yield_history": [
         {
           "date": "2017-09-29",
-          "yield": 2.146,
+          "yield": 1.073,
           "price": 4660.0,
-          "dps": 100.0
+          "dps": 50.0
         },
         {
           "date": "2017-10-31",
-          "yield": 2.026,
+          "yield": 1.013,
           "price": 4935.0,
-          "dps": 100.0
+          "dps": 50.0
         },
         {
           "date": "2017-11-30",
-          "yield": 1.934,
+          "yield": 0.967,
           "price": 5170.0,
-          "dps": 100.0
+          "dps": 50.0
         },
         {
           "date": "2017-12-29",
-          "yield": 1.908,
+          "yield": 0.954,
           "price": 5240.0,
-          "dps": 100.0
+          "dps": 50.0
         },
         {
           "date": "2018-01-31",
@@ -3220869,7 +3220245,7 @@
       "latest_op_oku": 468,
       "latest_np_oku": 314,
       "screening": {
-        "dividend": false,
+        "dividend": true,
         "revenue": true,
         "op_profit": true,
         "net_profit": true,
