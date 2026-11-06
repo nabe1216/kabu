@@ -1186,6 +1186,17 @@
       "dividend_total": 153434,
       "tax_paid": 49842,
       "holdings_count": 6
+    },
+    {
+      "date": "2026-11-07",
+      "cash": 195558.0,
+      "holdings_value": 10308600.0,
+      "total_value": 10504158.0,
+      "unrealized_pl": 308650.0,
+      "realized_pl": 52800.0,
+      "dividend_total": 153434,
+      "tax_paid": 49842,
+      "holdings_count": 6
     }
   ],
   "dividends": [
