@@ -72,7 +72,7 @@ TARGET_HOLDINGS = 15
 TIER_WEIGHT = {'S': 2.0, 'A': 1.5, 'B': 1.0}
 
 # 2026年11月6日：20年分の検証に合わせた売買の決まり（tool_update_2026-11-06）
-ENGINE_VERSION = 2
+ENGINE_VERSION = 3          # 2：税・分割・二重計上を直した数え直し　3：毎日の記録の含み損益を直した
 TAX_RATE = 0.20315          # 売却益と配当の税（特定口座）
 TOPUP = True                # 配当で比率の下がった持ち株を買い増す（検証の X8。「おおむね効く」）
 HARVEST = True              # 12月の損出し（検証の R6。161通りで「いつ始めても効く」）
@@ -620,7 +620,7 @@ def migrate_v2(state: dict[str, Any], history: dict[str, Any], stocks_by_code: d
     ① 持ち株の株式分割（買った日の始値と、いまの株価の記録の同じ日の始値の比で見つける）
     ② 配当と売却益の税（検証と同じ条件。その年の損と配当は相殺）
     ③ 毎日の評価総額（配当の二重計上をやめ、分割と税を入れて、売買の履歴と株価の記録から数え直す）"""
-    if state.get('engine_version', 1) >= ENGINE_VERSION:
+    if state.get('engine_version', 1) >= 2:
         return
     notes = history.setdefault('notes', [])
     trades = history.get('trades', [])
@@ -703,8 +703,34 @@ def migrate_v2(state: dict[str, Any], history: dict[str, Any], stocks_by_code: d
         snap['dividend_total'] = sum(x.get('amount', 0) for x in history.get('dividends', []) if x['date'][:10] <= d)
     notes.append({'date': datetime.now(timezone(timedelta(hours=9))).date().isoformat(), 'code': '', 'name': '',
                   'note': '記録を数え直した（配当の二重計上をやめた・株式分割を反映した・税 20.315％をかけた）'})
-    state['engine_version'] = ENGINE_VERSION
-    log.info('Migrated portfolio to engine v%d (tax=%s)', ENGINE_VERSION, total_tax)
+    state['engine_version'] = 2
+    log.info('Migrated portfolio to engine v%d (tax=%s)', 2, total_tax)
+
+
+def migrate_v3(state: dict[str, Any], history: dict[str, Any]) -> None:
+    """2026年11月6日：毎日の記録の含み損益（unrealized_pl）を、数え直した評価額と取得額から直す（1回だけ）。
+    v2 の数え直しで評価総額は直したが、含み損益は前の値（分割を反映していない）のまま残っていた。
+    画面には使っていない値だが、記録として合わせる。売買の履歴と評価総額は変えない。"""
+    if state.get('engine_version', 1) >= 3:
+        return
+    trades = history.get('trades', [])
+    n = 0
+    for snap in history.get('daily_snapshots', []):
+        if snap.get('holdings_value') is None:
+            continue
+        d = snap['date']
+        cost: dict[str, float] = {}
+        for t in trades:
+            if t['date'] > d:
+                continue
+            if t.get('action') == 'BUY':
+                cost[t['code']] = cost.get(t['code'], 0.0) + float(t.get('amount') or 0)
+            else:
+                cost[t['code']] = 0.0
+        snap['unrealized_pl'] = round(float(snap['holdings_value']) - sum(cost.values()), 1)
+        n += 1
+    state['engine_version'] = 3
+    log.info('Migrated portfolio to engine v3 (unrealized_pl of %d snapshots)', n)
 
 
 def update_portfolio(stocks: list[dict[str, Any]]) -> dict[str, Any]:
@@ -720,6 +746,7 @@ def update_portfolio(stocks: list[dict[str, Any]]) -> dict[str, Any]:
         # スナップショットだけ更新
         stocks_by_code = {s['code']: s for s in stocks}
         migrate_v2(state, history, stocks_by_code)
+        migrate_v3(state, history)
         apply_splits(state, history, stocks_by_code, today_jst)
         update_valuations(state, stocks_by_code)
         save_json(HISTORY_PATH, history)
@@ -731,6 +758,7 @@ def update_portfolio(stocks: list[dict[str, Any]]) -> dict[str, Any]:
 
     # ステップ0: これまでの記録を直した決まりで数え直す（1回だけ）・株式分割を反映する
     migrate_v2(state, history, stocks_by_code)
+    migrate_v3(state, history)
     split_n = apply_splits(state, history, stocks_by_code, today_jst)
     if split_n:
         log.info('Applied splits: %d holdings', split_n)

@@ -86,6 +86,12 @@ BOX_ATR_MIN = 0.015                  # ATR/終値 ≥ 1.5%
 # --- シグナル判定（利回り分布） ---
 YIELD_LOOKBACK_YEARS = 9             # 過去5年の月次利回りで分布計算
 YIELD_LOOKBACK_DAYS = YIELD_LOOKBACK_YEARS * 365 + 60  # 余裕を持って取得
+# 分割・併合を読むためだけに、株価はもっと前までさかのぼって取る（2026年11月6日）。
+# 10期の配当を「期末の7日前」の基準で直すには、いちばん古い期の期末の7日前からの分割・併合が要る。
+# J-Quants のスタンダードは10年分。取れなければ（3銘柄続けて失敗したら）9年分に戻し、
+# 分割・併合が読めない古い期は減配の比べから外す（extract_annual_dividends の known_since）。
+# 利回りの分布・ボックス・株価の表示は、これまでどおり YIELD_LOOKBACK_DAYS の範囲だけを使う。
+SPLIT_LOOKBACK_YEARS = 10
 # 分位（Q25/Q75）の計算に使う期間。取得期間より短くできる。
 YIELD_DISTRIBUTION_YEARS = 3         # 出口が来ないときは 2 に下げる
 
@@ -468,6 +474,7 @@ def format_period(s: dict[str, Any]) -> str:
 def extract_annual_dividends(
     statements: list[dict[str, Any]],
     quotes_sorted: list[dict[str, Any]] | None = None,
+    known_since: date | None = None,
 ) -> list[float]:
     """
     財務一覧から年度単位の DPS（DivAnn 実績）を時系列で抽出。
@@ -480,6 +487,9 @@ def extract_annual_dividends(
     """
     # 2026年11月6日：分割・併合の基準は「期末の7日前」で直す（actual_dps_adjusted。V3）。
     # 同じ期の開示が2つ以上あるとき（訂正など）は、あとで開示した方を使う（同じ期を2回数えない）。
+    # known_since：株価を取り始めた日（取った範囲の都合で、それより前の分割・併合が見えないとき）。
+    # 期末の7日前がそれより前の期は、いまの基準に直せるかわからないので使わない
+    # （株価の範囲の外の分割で、古い期の配当が分割前の額のまま残り「減配」に見えるのを防ぐ。例：サンドラッグ 2017年3月期）。
     events = split_events(quotes_sorted)
     by_period: dict[date, tuple[date, float]] = {}
     for s in statements:
@@ -487,6 +497,8 @@ def extract_annual_dividends(
             continue
         period = parse_date(s.get('CurPerEn'))
         if period is None:
+            continue
+        if known_since is not None and period - timedelta(days=DIV_REC_DAYS) < known_since:
             continue
         v = actual_dps_adjusted(s, events)
         if v is None:
@@ -1219,6 +1231,17 @@ DIV_REC_DAYS = 7
 DIV_EV_DAYS = 270
 DIV_EV_MIN = 1.25
 
+# 長い期間の株価の取得の状態（3銘柄続けて失敗したら、その回は9年分に戻す）
+_LONG_QUOTES: dict[str, Any] = {'on': True, 'fail': 0, 'used': 0}
+
+
+def split_lookback_from(today: date) -> date:
+    """分割・併合を読むための株価の取り始め（SPLIT_LOOKBACK_YEARS 年前の14日あと。プランの範囲の端を避ける）。"""
+    import calendar
+    y = today.year - SPLIT_LOOKBACK_YEARS
+    d = date(y, today.month, min(today.day, calendar.monthrange(y, today.month)[1]))
+    return d + timedelta(days=14)
+
 
 def split_events(quotes: list[dict[str, Any]] | None) -> list[tuple[date, float]]:
     """株価の記録から、分割・併合の日と係数（1でない日だけ）を日付順に返す。"""
@@ -1495,20 +1518,47 @@ def process_stock(
     log.debug('Processing %s %s', code, name)
     time.sleep(API_SLEEP_SEC)
 
-    # --- 株価取得（過去 YIELD_LOOKBACK_DAYS 日）---
+    # --- 株価取得 ---
+    # 分割・併合を読むために SPLIT_LOOKBACK_YEARS 年前から取る（取れなければ YIELD_LOOKBACK_DAYS 日に戻す）。
+    # 利回りの分布・ボックス・表示に使う quotes は、これまでどおり YIELD_LOOKBACK_DAYS 日の範囲に絞る。
     to_date = today.strftime('%Y-%m-%d')
-    from_date = (today - timedelta(days=YIELD_LOOKBACK_DAYS)).strftime('%Y-%m-%d')
-    try:
-        quotes = client.get_daily_quotes(code, from_date, to_date)
-    except Exception as e:
-        log.warning('quotes fail %s: %s', code, e)
-        return None
+    short_from = today - timedelta(days=YIELD_LOOKBACK_DAYS)
+    quotes_all: list[dict[str, Any]] | None = None
+    if _LONG_QUOTES['on']:
+        long_from = split_lookback_from(today)
+        try:
+            quotes_all = client.get_daily_quotes(code, long_from.strftime('%Y-%m-%d'), to_date)
+            _LONG_QUOTES['used'] += 1
+            _LONG_QUOTES['fail'] = 0
+        except Exception as e:
+            quotes_all = None
+            _LONG_QUOTES['fail'] += 1
+            log.warning('long quotes fail %s: %s', code, e)
+            if _LONG_QUOTES['fail'] >= 3:
+                _LONG_QUOTES['on'] = False
+                log.warning('%d年前からの株価が取れないので、%d年分に戻す（古い期は減配の比べから外す）',
+                            SPLIT_LOOKBACK_YEARS, YIELD_LOOKBACK_YEARS)
+    if quotes_all is None:
+        try:
+            quotes_all = client.get_daily_quotes(code, short_from.strftime('%Y-%m-%d'), to_date)
+        except Exception as e:
+            log.warning('quotes fail %s: %s', code, e)
+            return None
 
-    if not quotes:
+    if not quotes_all:
         log.debug('no quotes for %s', code)
         return None
 
-    quotes.sort(key=lambda q: q.get('Date', ''))
+    quotes_all.sort(key=lambda q: q.get('Date', ''))
+    quotes = [q for q in quotes_all if (parse_date(q.get('Date')) or date.min) >= short_from]
+    if not quotes:
+        log.debug('no recent quotes for %s', code)
+        return None
+    # 株価の記録が9年分の範囲の始まり（＋14日）までに始まっていれば、それより前が見えないのは取った範囲の都合
+    # （J-Quants が黙って範囲を縮めて返したときも同じ）。その日より前の分割・併合は読めないので、古い期を減配の比べから外す。
+    # 記録がもっと遅く始まるのは、そのあとに上場した会社（上場前の分割は記録にない。これまでどおり扱う）。
+    first_q = parse_date(quotes_all[0].get('Date'))
+    split_known_since = first_q if (first_q is not None and first_q <= short_from + timedelta(days=14)) else None
     last_quote = quotes[-1]
     price = safe_float(last_quote.get('Close'))
     if price is None or price <= 0:
@@ -1524,7 +1574,8 @@ def process_stock(
         return None
 
     # --- 株価データを日付昇順ソート (分割調整係数の計算で使う) ---
-    quotes_sorted = sorted(quotes, key=lambda q: parse_date(q.get('Date')) or date.min)
+    # 2026年11月6日：分割・併合を読むので、長く取った quotes_all を使う（表示の株価は最後の250日だけ）
+    quotes_sorted = sorted(quotes_all, key=lambda q: parse_date(q.get('Date')) or date.min)
 
     # --- 時価総額の計算 (V2の listed_info には含まれないため、価格 × 発行株数で算出) ---
     if market_cap_oku <= 0:
@@ -1552,7 +1603,8 @@ def process_stock(
             market_cap_oku = 0.0  # 不明扱い
 
     # --- 指標抽出 (extract系は分割調整済) ---
-    div_annual = extract_annual_dividends(statements, quotes_sorted=quotes_sorted)
+    div_annual = extract_annual_dividends(statements, quotes_sorted=quotes_sorted,
+                                          known_since=split_known_since)
     sales_history = extract_annual_metric(statements, 'Sales')   # 総額: 調整不要
     op_history = extract_annual_metric(statements, 'OP')          # 総額: 調整不要
     np_history = extract_annual_metric(statements, 'NP')          # 総額: 調整不要
@@ -1976,6 +2028,8 @@ def main() -> int:
 
     log.info('=== Summary ===')
     log.info('Processed: %d / %d (failures=%d)', len(stocks), n_total, failures)
+    log.info('Long quotes (%d年前から・分割の読み取り用): %d銘柄で取得・%s',
+             SPLIT_LOOKBACK_YEARS, _LONG_QUOTES['used'], '有効' if _LONG_QUOTES['on'] else '途中で9年分に戻した')
     for k, v in bucket_counts.items():
         log.info('  bucket %s: %d', k, v)
     for k, v in signal_counts.items():
