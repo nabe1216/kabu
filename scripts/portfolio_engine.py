@@ -72,7 +72,8 @@ TARGET_HOLDINGS = 15
 TIER_WEIGHT = {'S': 2.0, 'A': 1.5, 'B': 1.0}
 
 # 2026年11月6日：20年分の検証に合わせた売買の決まり（tool_update_2026-11-06）
-ENGINE_VERSION = 3          # 2：税・分割・二重計上を直した数え直し　3：毎日の記録の含み損益を直した
+ENGINE_VERSION = 4          # 2：税・分割・二重計上を直した数え直し　3：毎日の記録の含み損益を直した　4：旧予算で買いすぎた持ち株を1回だけ目標まで減らした
+LEGACY_TRIM_OVER = 1.5      # v4：目標の1.5倍を超える持ち株だけを減らす（値上がりで大きくなった持ち株は減らさない決まりとは別）
 TAX_RATE = 0.20315          # 売却益と配当の税（特定口座）
 TOPUP = True                # 配当で比率の下がった持ち株を買い増す（検証の X8。「おおむね効く」）
 HARVEST = True              # 12月の損出し（検証の R6。161通りで「いつ始めても効く」）
@@ -733,6 +734,63 @@ def migrate_v3(state: dict[str, Any], history: dict[str, Any]) -> None:
     log.info('Migrated portfolio to engine v3 (unrealized_pl of %d snapshots)', n)
 
 
+def migrate_v4(state: dict[str, Any], history: dict[str, Any], stocks_by_code: dict[str, dict], today: date) -> None:
+    """2026年11月7日：6〜7月に古い固定の予算（S 400万円・A 200万円）で買った持ち株を、1回だけいまの予算まで減らす。
+    8月に予算を「総資産 ÷ 15 × Tier の重み」に変えたが、その前に買った分はそのまま残り、三井不動産1銘柄が資産の4割を
+    占めていた（目標の約4.7倍）。20年分の検証は15銘柄前後を前提にしているので、検証した手法の記録になるよう揃える。
+    目標の1.5倍を超える持ち株だけを、直近の終値で目標まで（100株単位・最低100株は残す）売る。税は通常どおりかける。
+    売って空いたお金は、次の通常の実行で、いつもの決まり（Tier 順・PBR の低い順・予算どおり）で新しい銘柄を買う。
+    値上がりで目標を超えた持ち株を売る決まりは、検証で裏付けがないので作らない（これは1回だけの是正）。"""
+    if state.get('engine_version', 1) >= 4:
+        return
+    update_valuations(state, stocks_by_code)
+    notes = history.setdefault('notes', [])
+    trimmed = []
+    for h in state['holdings']:
+        # 値段は評価に使っている直近の終値（その日の始値を使うと、終値を知ったうえで高い方で売ることになりうる）
+        px = h.get('current_price')
+        if not px or px <= 0:
+            continue
+        tgt = tier_budget(state, h.get('tier', 'B'))
+        if h['qty'] * px <= tgt * LEGACY_TRIM_OVER:
+            continue
+        keep = max(100, int(tgt // (px * 100)) * 100)
+        sell_qty = h['qty'] - keep
+        if sell_qty <= 0:
+            continue
+        amount = px * sell_qty
+        realized_pl = (px - h['buy_price']) * sell_qty
+        tax = gain_tax(state, realized_pl, today)
+        state['cash'] += amount - tax
+        state['realized_pl'] += realized_pl
+        history['trades'].append({
+            'date': today.isoformat(),
+            'action': 'SELL',
+            'code': h['code'],
+            'name': h.get('name', ''),
+            'tier': h.get('tier', 'B'),
+            'qty': sell_qty,
+            'price': px,
+            'amount': amount,
+            'buy_price': h['buy_price'],
+            'buy_date': h['buy_date'],
+            'holding_days': (today - date.fromisoformat(h['buy_date'])).days,
+            'realized_pl': realized_pl,
+            'realized_pl_pct': round((px - h['buy_price']) / h['buy_price'] * 100, 2),
+            'tax': tax,
+            'reason': 'REBALANCE_ONCE: 旧予算で買いすぎた分を目標まで減らした（1回だけ）',
+        })
+        before = h['qty']
+        h['qty'] = keep
+        trimmed.append((h, before, keep))
+        notes.append({'date': today.isoformat(), 'code': h['code'], 'name': h.get('name', ''),
+                      'note': f"{h.get('name', '')} 旧予算で買いすぎた分を目標まで減らした（{before:,}株 → {keep:,}株。1回だけ）"})
+    update_valuations(state, stocks_by_code)
+    state['engine_version'] = 4
+    log.info('Migrated portfolio to engine v4 (legacy trim: %s)',
+             ', '.join(f"{h['code']} {b}->{k}" for h, b, k in trimmed) or 'none')
+
+
 def update_portfolio(stocks: list[dict[str, Any]]) -> dict[str, Any]:
     """メイン処理: 毎日のポートフォリオ更新"""
     today_jst = datetime.now(timezone(timedelta(hours=9))).date()
@@ -748,6 +806,7 @@ def update_portfolio(stocks: list[dict[str, Any]]) -> dict[str, Any]:
         migrate_v2(state, history, stocks_by_code)
         migrate_v3(state, history)
         apply_splits(state, history, stocks_by_code, today_jst)
+        migrate_v4(state, history, stocks_by_code, today_jst)
         update_valuations(state, stocks_by_code)
         save_json(HISTORY_PATH, history)
         log.info('Already processed today (%s), updated valuations only', today_jst)
@@ -770,6 +829,8 @@ def update_portfolio(stocks: list[dict[str, Any]]) -> dict[str, Any]:
 
     # ステップ2: 評価額更新
     update_valuations(state, stocks_by_code)
+    # ステップ2b: 旧予算で買いすぎた持ち株を1回だけ目標まで減らす（engine v4）
+    migrate_v4(state, history, stocks_by_code, today_jst)
 
     # ステップ3: 売却判定（緊急撤退、SELLシグナル）
     holdings_to_remove = []
