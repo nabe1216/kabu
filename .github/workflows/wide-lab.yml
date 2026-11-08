@@ -115,7 +115,9 @@ concurrency:
 
 env:
   CACHE_PATH: ${{ inputs.years == '20' && 'data/wide_long.pkl' || 'data/wide_cache.pkl' }}
-  CACHE_PREFIX: ${{ inputs.years == '20' && 'yield-backtest-long-wide-v1-' || 'wide-lab-cache-v1-' }}
+  # 9年分は、11月9日から v2（スタンダードに戻したあとに取り直したもの）を使う。v1 はプレミアムの期間中（11月4日）に取ったもので、
+  # long-cleanup の2つめの欄に「消す」と入れると消える（v2 は消えない）
+  CACHE_PREFIX: ${{ inputs.years == '20' && 'yield-backtest-long-wide-v1-' || 'wide-lab-cache-v2-' }}
   # 売買の内訳（プレミアムだけのデータ）。名前を yield-backtest-long- で始めて、long-cleanup で一緒に消えるようにする
   BD_PATH: ${{ inputs.years == '20' && 'data/wide_bd_long.pkl' || 'data/wide_bd.pkl' }}
   BD_PREFIX: ${{ inputs.years == '20' && 'yield-backtest-long-bdl-v1-' || 'yield-backtest-long-bd-v1-' }}
