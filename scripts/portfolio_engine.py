@@ -963,8 +963,9 @@ def main():
         log.error('%s not found. Run generate.py first.', RESULTS_PATH)
         return 1
 
-    with RESULTS_PATH.open('r', encoding='utf-8') as f:
-        results = json.load(f)
+    # 2026年11月8日：履歴は data/history/ に分けてあるので、元の形に戻して読む
+    from results_io import load_results
+    results = load_results(RESULTS_PATH)
 
     stocks = results.get('stocks', [])
     log.info('Loaded %d stocks from %s', len(stocks), RESULTS_PATH)

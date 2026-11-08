@@ -41,7 +41,6 @@ rotation_engine.py — 入れ替えルールの並走フォワードテスト
 
 from __future__ import annotations
 
-import json
 import logging
 from datetime import date, datetime, timezone, timedelta
 from pathlib import Path
@@ -347,8 +346,9 @@ def main() -> int:
         log.error('%s がありません。先に generate.py を実行してください。', RESULTS_PATH)
         return 1
 
-    with RESULTS_PATH.open('r', encoding='utf-8') as f:
-        stocks = json.load(f).get('stocks', [])
+    # 2026年11月8日：利回りの履歴は data/history/ に分けてあるので、元の形に戻して読む
+    from results_io import load_results
+    stocks = load_results(RESULTS_PATH).get('stocks', [])
     log.info('%d銘柄を読み込みました', len(stocks))
 
     rot = update_rotation_portfolio(stocks)

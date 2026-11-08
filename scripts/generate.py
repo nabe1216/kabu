@@ -383,7 +383,10 @@ class JQuantsClient:
 # 株価と財務で1銘柄あたり2回APIを呼ぶため、財務を毎日取らなければ
 # 実行時間がほぼ半分になる。決算の反映はその日数ぶん遅れる。
 STMTS_CACHE_DAYS = 7
-_STMTS_CACHE_PATH = OUTPUT_DIR / 'stmts_cache.json'
+# 2026年11月8日：92MB まで大きくなり GitHub の上限（100MB）に近づいたので、圧縮して保存する（約6MB）。
+# 古い圧縮なしのファイルがあれば読み、圧縮して保存したあとに消す（daily.yml がその削除も保存する）。
+_STMTS_CACHE_PATH = OUTPUT_DIR / 'stmts_cache.json.gz'
+_STMTS_CACHE_LEGACY = OUTPUT_DIR / 'stmts_cache.json'
 _stmts_cache = None
 
 
@@ -393,9 +396,12 @@ def _load_stmts_cache():
     if _stmts_cache is not None:
         return _stmts_cache
     _stmts_cache = {'saved_at': '', 'data': {}}
-    if STMTS_CACHE_DAYS > 0 and _STMTS_CACHE_PATH.exists():
+    src = _STMTS_CACHE_PATH if _STMTS_CACHE_PATH.exists() else _STMTS_CACHE_LEGACY
+    if STMTS_CACHE_DAYS > 0 and src.exists():
         try:
-            with _STMTS_CACHE_PATH.open(encoding='utf-8') as f:
+            import gzip
+            opener = gzip.open if src.suffix == '.gz' else open
+            with opener(src, 'rt', encoding='utf-8') as f:
                 c = json.load(f)
             saved = parse_date(c.get('saved_at'))
             if saved is not None:
@@ -424,10 +430,15 @@ def _save_stmts_cache(force=True):
     try:
         _stmts_cache['saved_at'] = date.today().isoformat() if force else ''
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-        with _STMTS_CACHE_PATH.open('w', encoding='utf-8') as f:
-            json.dump(_stmts_cache, f, ensure_ascii=False)
-        log.info('財務データのキャッシュを保存しました（%d銘柄）',
-                 len(_stmts_cache['data']))
+        import gzip
+        tmp = _STMTS_CACHE_PATH.with_suffix('.tmp')
+        with gzip.open(tmp, 'wt', encoding='utf-8', compresslevel=6) as f:
+            json.dump(_stmts_cache, f, ensure_ascii=False, separators=(',', ':'))
+        tmp.replace(_STMTS_CACHE_PATH)
+        if _STMTS_CACHE_LEGACY.exists():
+            _STMTS_CACHE_LEGACY.unlink()
+        log.info('財務データのキャッシュを保存しました（%d銘柄・%.1fMB）',
+                 len(_stmts_cache['data']), _STMTS_CACHE_PATH.stat().st_size / 1e6)
     except Exception as e:
         log.warning('財務データのキャッシュを保存できません: %s', e)
 
@@ -1765,6 +1776,8 @@ def process_stock(
         'is_box': box['is_box'] if box else False,
         'emergency_exit': emergency,
         'emergency_reasons': reasons,
+        # 直近の株式分割・併合（毎日の点検で、分割と重なる「減配」がないかを見る）
+        'last_split': ({'date': split_ev[-1][0].isoformat(), 'factor': split_ev[-1][1]} if split_ev else None),
         'earnings_imminent': earnings_imminent,
         'next_earnings_date': next_earnings.isoformat() if next_earnings else None,
 
@@ -2051,12 +2064,18 @@ def main() -> int:
             'box_width_min': BOX_WIDTH_MIN,
             'box_width_max': BOX_WIDTH_MAX,
         },
+        # 株価の最後の日（毎日の点検で、データが古くなっていないかを見る）
+        'latest_price_date': max(
+            (s['price_history'][-1].get('d') for s in stocks if s.get('price_history')), default=None),
         'stocks': stocks,
     }
-    with OUTPUT_PATH.open('w', encoding='utf-8') as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2, default=str)
+    # 2026年11月8日：履歴を data/history/ に分けて書く（results.json が67MBまで大きくなったため）。
+    # stocks そのものは変えないので、このあとの検証運用は今までどおり履歴つきで動く。
+    from results_io import write_results
+    sizes = write_results(payload, OUTPUT_PATH)
 
-    log.info('Wrote %s (%d stocks)', OUTPUT_PATH, len(stocks))
+    log.info('Wrote %s (%d stocks) + history %d files (%.1fMB total)', OUTPUT_PATH, len(stocks),
+             len(sizes) - 1, sum(sizes.values()) / 1e6)
 
     # === ポートフォリオ自動売買シミュレーション ===
     try:
