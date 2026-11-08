@@ -1,0 +1,116 @@
+name: divup-track
+
+# DIVUP（増配の予想の発表のあとに買う形）の並走記録（2026年11月9日に追加）。
+# 計画はプロジェクトの divup_forward_plan_2026-11-08（記録を始める前に決めたもの）。記録は2026年12月1日から。
+# Actions タブ → 左の divup-track → 右の「Run workflow」
+#   mode=check  … 記録を始める前の道具の確かめ：直近12か月の合図の数と例だけを出す（成績は計算しない）
+#   mode=update … 足りない日のデータを取り、合図と途中の数字を data/divup/ に書いて保存する
+# 毎日の判定（daily.yml）とは別に動かす（毎日の判定の120分の上限と、片方の失敗がもう片方を止めないようにするため）。
+# 記録は毎回、生のデータから作り直すので、毎日でなくても、足りない日をあとから取れば同じ記録になる。
+# 生のデータ（J-Quants から取ったもの）は Actions のキャッシュにだけ持ち、公開のリポジトリには入れない（計画の9）。
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "check＝記録の前の確かめ（合図の数と例だけ。成績は計算しない） ／ update＝データを取って記録を作り直す"
+        required: true
+        default: "check"
+        type: choice
+        options:
+          - check
+          - update
+
+permissions:
+  contents: write       # data/divup/ の記録を保存するため
+  actions: write        # キャッシュの古い控えを消すため
+
+concurrency:
+  group: divup-track
+  cancel-in-progress: false
+
+env:
+  RAW_PATH: data/divup_raw.pkl.gz
+  RAW_PREFIX: divup-raw-v1-
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 依存関係をインストール
+        run: pip install --quiet numpy pandas requests
+
+      - name: キャッシュを復元
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.RAW_PATH }}
+          key: ${{ env.RAW_PREFIX }}
+          restore-keys: |
+            ${{ env.RAW_PREFIX }}
+
+      - name: 実行
+        env:
+          J_QUANTS_API_KEY: ${{ secrets.J_QUANTS_API_KEY }}
+          PYTHONUNBUFFERED: "1"
+          TZ: Asia/Tokyo
+        run: |
+          set +e
+          set -o pipefail
+          python divup_track.py --mode "${{ inputs.mode }}" 2>&1 | tee run.log
+          code=${PIPESTATUS[0]}
+          {
+            echo "## divup-track（${{ inputs.mode }}）"
+            echo ""
+            if [ $code -eq 3 ]; then echo "**まだ終わっていません。同じ設定のまま、もう一度「Run workflow」を押してください（取った分は保存しました）**"; fi
+            if [ $code -ne 0 ] && [ $code -ne 3 ]; then echo "**失敗しました（終了コード $code）**"; fi
+            echo '```'
+            tail -c 40000 run.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit $code
+
+      - name: キャッシュを保存
+        if: ${{ always() && hashFiles(env.RAW_PATH) != '' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.RAW_PATH }}
+          key: ${{ env.RAW_PREFIX }}${{ github.run_id }}
+
+      - name: 古い控えを整理する（新しい2つは残す）
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ids=$(gh api "repos/${GITHUB_REPOSITORY}/actions/caches?key=${RAW_PREFIX}&sort=created_at&direction=desc&per_page=100" \
+                --jq '.actions_caches[2:][] | .id' || true)
+          for id in $ids; do gh api -X DELETE "repos/${GITHUB_REPOSITORY}/actions/caches/${id}" || true; done
+
+      - name: 記録を保存する（update のときだけ）
+        if: ${{ inputs.mode == 'update' && success() }}
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add data/divup/status.json data/divup/signals.json
+          if git diff --cached --quiet; then
+            echo "記録に変わりはありません"
+            exit 0
+          fi
+          git commit -m "chore: DIVUP の並走記録を更新（$(date +%Y-%m-%d)）"
+          for i in 1 2 3; do
+            git pull --rebase --quiet && git push && break
+            sleep 5
+          done
+
+      - name: 結果をダウンロードできるようにする
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: divup-track-${{ inputs.mode }}-result
+          path: run.log
+          if-no-files-found: ignore
