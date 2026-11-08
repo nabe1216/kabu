@@ -113,6 +113,8 @@ tbody tr:last-child td{border-bottom:none}
 .p-neu{background:var(--neutral-bg);color:var(--neutral)}
 .p-box{background:var(--green-bg);color:var(--green)}
 .p-warn{background:var(--amber-bg);color:var(--amber)}
+.health-bar{margin:0 0 16px;padding:10px 14px;border-radius:8px;background:var(--amber-bg);border:1px solid var(--amber);color:var(--text);font-size:12.5px;line-height:1.6}
+.health-bar b{color:var(--amber)} .health-bar ul{margin:4px 0 0 18px;padding:0}
 .p-ex{background:var(--neutral-bg);color:var(--text-3)}
 .p-core{background:var(--primary-soft);color:var(--primary)}
 .p-swing{background:#F5F3FF;color:#7C3AED}
@@ -252,10 +254,12 @@ td.al-name{white-space:normal;min-width:250px}
       構成を見る
     </button>
   </nav>
-  <div class="side-foot">最終更新: <span id="lastUpdate">—</span></div>
+  <div class="side-foot">最終更新: <span id="lastUpdate">—</span><br><span id="healthMini"></span></div>
 </aside>
 
 <main class="main">
+  <!-- 毎日の自動点検（data/health.json）で警告があるときだけ出す -->
+  <div id="healthBar" class="health-bar" style="display:none"></div>
 
   <!-- ===== シグナル ===== -->
   <section id="view-signals">
@@ -722,10 +726,33 @@ async function init(){
     loadJSON('data/swing_state.json'),loadJSON('data/swing_history.json'),
     loadJSON('data/value_state.json'),loadJSON('data/value_history.json')]);
   S.trk.main={st,hi}; S.trk.rot={st:rs,hi:rh}; S.trk.swing={st:ss,hi:sh}; S.trk.val={st:vs,hi:vh};
+  renderHealth(await loadJSON('data/health.json'));
   const dt=new Date(S.data.generated_at);
   $('lastUpdate').textContent=dt.toLocaleString('ja-JP',{hour12:false}).replace(/\//g,'.');
   $('sigDate').textContent=dt.toLocaleDateString('ja-JP').replace(/\//g,'.');
   buildSectorFilter(); updateKpis(); updateFwdBadge(); fillLogic(); render();
+}
+/* 毎日の自動点検（2026年11月8日）。警告があれば画面の上に出す */
+function renderHealth(h){
+  const bar=$('healthBar'), mini=$('healthMini');
+  if(!h||!bar)return;
+  if(h.ok){bar.style.display='none';if(mini)mini.textContent='自動点検：問題なし（'+h.date+'）';return;}
+  if(mini)mini.textContent='自動点検：警告 '+h.warnings.length+' 件';
+  bar.innerHTML=`<b>自動点検の警告（${esc(h.date)}）</b><ul>${h.warnings.map(w=>`<li>${esc(w.message)}</li>`).join('')}</ul>`;
+  bar.style.display='';
+}
+/* 銘柄ごとの履歴（株価・利回り・PER と PBR・財務）は data/history/ に分けてある（2026年11月8日）。
+   詳細を開いたときに、その銘柄のファイルだけを読んで足す。古い形（results.json に履歴あり）ならそのまま */
+const HIST_CACHE={};
+async function ensureHistory(s){
+  if(!s||s.price_history!==undefined||!S.data||!S.data.history_shards)return false;
+  const c=String(s.code||'').slice(0,1), key=/^[0-9A-Za-z]$/.test(c)?c:'0';
+  if(!S.data.history_shards.includes(key))return false;
+  if(!HIST_CACHE[key])HIST_CACHE[key]=loadJSON(`data/history/h${key}.json`);
+  const d=await HIST_CACHE[key];
+  if(!d||!d.stocks)return false;
+  for(const x of S.data.stocks){const h=d.stocks[x.code];if(h&&x.price_history===undefined)Object.assign(x,h);}
+  return true;
 }
 /* 判定ロジックの数値を、実際の設定値で埋める */
 function fillLogic(){
@@ -952,6 +979,7 @@ function openDetail(code){
   $('dLinks').innerHTML=s.links?Object.entries({minkabu:'みんかぶ',irbank:'IR BANK',tdnet:'TDnet'}).map(([k,l])=>s.links[k]?`<a href="${s.links[k]}" target="_blank" rel="noopener">${l} ↗</a>`:'').join(''):'';
   switchTab('overview');
   $('overlay').classList.add('show');$('drawer').classList.add('show');
+  ensureHistory(s).then(ok=>{if(ok&&S.detail===s)switchTab(S.dtab);});
 }
 function closeDetail(){$('overlay').classList.remove('show');$('drawer').classList.remove('show');}
 $('dTabs').addEventListener('click',e=>{const b=e.target.closest('button');if(b)switchTab(b.dataset.tab);});
