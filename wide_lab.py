@@ -5341,6 +5341,483 @@ def lab20(store: dict, xs: dict) -> int:
     return 0
 
 
+# ───────────────────────── 21段目：上岡式（2016年の本）の答え合わせ ─────────────────────────
+# 計画は wide_lab_plan21_2026-11-08（結果を見る前に決めたもの）。
+# 上岡正明『うねりチャート底値買い投資術』（2016年12月）の決まりを、本人以外のまとめ（ねほり.com 2017年・ダイヤモンド・ザイ 2017年・
+# 書店サイトのレビュー）から決まりに直したもの。公開は2016年12月なので、9年分のデータ（2017年10月〜）はすべて公開のあと。
+K_CACHE = OUT / "wide_k.pkl"           # 業種別空売り比率（スタンダード）。Actions のキャッシュの名前は wide-lab-k-v1-
+K_MKT = {"0101", "0102", "0111", "0112"}   # 一部・二部・プライム・スタンダード（新興市場＝マザーズ・JASDAQ・グロースは除く）
+K_PRIME = {"0101", "0111"}             # 騰落レシオを数える市場（一部・プライム）
+K_WIN = 250                            # うねりを見る期間（営業日。約1年）
+K_LO_Q, K_HI_Q = 10, 90                # 箱の下と上：その期間の終値の10％点と90％点
+K_WMIN, K_WMAX = 0.15, 0.60            # 箱の幅（上 ÷ 下 − 1）
+K_ZONE = 0.25                          # 箱の下から幅の25％までを「底の近く」、上から25％までを「天井の近く」
+K_TRANS = 4                            # 1年で底の近くと天井の近くを行き来した回数の下限（4回＝2往復＝周期はおよそ6か月以内）
+K_TAIL = 0.05                          # 箱からはみ出さないこと：終値の2％点が箱の下の5％下より上、98％点が箱の上の5％上より下
+K_WATCH = 150                          # 見張る銘柄の数（ザイ 2017年：約150銘柄）
+K_BELOW = 0.95                         # 箱の下を5％より下に割っていたら、箱が崩れたとみなして買わない
+K_ADR_DAYS = 25                        # 騰落レシオ：25営業日の値上がり銘柄数の合計 ÷ 値下がり銘柄数の合計 × 100
+K_SR_TH = 0.30                         # 空売り比率の下限
+K_TP = 0.10                            # 平均の取得単価（費用込み）から +10％で全部売る
+K_STEP_DN = 0.05                       # 次の分は、前に買った値段より5％以上下がってから
+K_SLOTS = 20                           # 同時に持つ銘柄の数（1銘柄の予算は、最初に買う日の資産の20分の1）
+K_MIN_BUYS = 20                        # 前半・後半のどちらかで、最初の買いがこれ未満なら保留
+K_FORMS = (
+    ("K1", "基本：騰落レシオ80以下・空売り比率30％以上の日に、底の近くの見張り銘柄を買い始める。3分割（前の値段から5％下がり、20営業日あけて）。+10％で全部売る。損切りなし",
+     {"adr": 80, "split": (1 / 3, 1 / 3, 1 / 3), "gap": 20, "stop": None, "mkt": True, "fill": False}),
+    ("K2", "K1 の騰落レシオを70以下にする",
+     {"adr": 70, "split": (1 / 3, 1 / 3, 1 / 3), "gap": 20, "stop": None, "mkt": True, "fill": False}),
+    ("K3", "K1 の分け方を「1・2・1・2」（4回。60営業日あけて）にする（ねほり.com のまとめ）",
+     {"adr": 80, "split": (1 / 6, 2 / 6, 1 / 6, 2 / 6), "gap": 60, "stop": None, "mkt": True, "fill": False}),
+    ("K4", "K1 に損切りを足す（最初に買った値段から15％下で全部売る）",
+     {"adr": 80, "split": (1 / 3, 1 / 3, 1 / 3), "gap": 20, "stop": 0.15, "mkt": True, "fill": False}),
+    ("K5", "参考：市場の合図なし（いつでも底の近くで買い始める）",
+     {"adr": None, "split": (1 / 3, 1 / 3, 1 / 3), "gap": 20, "stop": None, "mkt": False, "fill": False}),
+    ("K6", "参考：K1 で、空いている資金をいつも 1306 で持つ",
+     {"adr": 80, "split": (1 / 3, 1 / 3, 1 / 3), "gap": 20, "stop": None, "mkt": True, "fill": True}),
+)
+
+
+def k_xs_load() -> dict:
+    """21段目の空売り比率は、5段目のデータ（プレミアムの時期に取ったもの）とは別のファイルに持つ。"""
+    global X_CACHE
+    X_CACHE = K_CACHE
+    return x_load()
+
+
+def k_market_codes(store: dict, D: dict) -> np.ndarray:
+    """月末ごとの市場コード（行＝銘柄・列＝月末。一覧にない月は空）。"""
+    ci = {c: i for i, c in enumerate(D["codes"])}
+    MK = np.full((len(D["codes"]), len(D["dates"])), "", dtype=object)
+    for j, d in enumerate(D["dates"]):
+        for c, mk, _sc, _s33, _nm in store["months"].get(d.strftime("%Y-%m"), ()):
+            i = ci.get(c)
+            if i is not None:
+                MK[i, j] = mk
+    return MK
+
+
+def k_adr(D: dict, MK: np.ndarray) -> np.ndarray:
+    """騰落レシオ（一部・プライムの普通株。25営業日）。値上がり＝その日の終値が前に売買があった日の終値より高い。数えられない日は NaN。"""
+    C, CF, me_idx = D["C"], D["CF"], D["me_idx"]
+    S, T = C.shape
+    jc = np.minimum(np.searchsorted(np.array(me_idx), np.arange(T), side="left"), len(me_idx) - 1)   # その日を含む月の月末
+    prime = np.isin(MK, list(K_PRIME))
+    nu, nd = np.zeros(T), np.zeros(T)
+    with np.errstate(invalid="ignore"):
+        for t in range(1, T):
+            pm = prime[:, jc[t]] & np.isfinite(C[:, t]) & np.isfinite(CF[:, t - 1])
+            nu[t] = float(np.sum(pm & (C[:, t] > CF[:, t - 1])))
+            nd[t] = float(np.sum(pm & (C[:, t] < CF[:, t - 1])))
+    out = np.full(T, np.nan)
+    cu, cd = np.cumsum(nu), np.cumsum(nd)
+    for t in range(K_ADR_DAYS, T):
+        u, d = cu[t] - cu[t - K_ADR_DAYS], cd[t] - cd[t - K_ADR_DAYS]
+        if d > 0:
+            out[t] = u / d * 100.0
+    return out
+
+
+def k_short_ratio(xs: dict, cal: np.ndarray) -> np.ndarray:
+    """空売り比率（全業種の合計）＝（価格規制ありの空売り＋なしの空売り）÷（実注文の売り＋空売り）。データのない日は前の日の値。"""
+    T = len(cal)
+    sr = np.full(T, np.nan)
+    for r in xs.get("srt", {}).get("rows", []):
+        d, sell, s1, s2 = r
+        tot = (sell or 0.0) + (s1 or 0.0) + (s2 or 0.0)
+        if tot <= 0:
+            continue
+        t = int(np.searchsorted(cal, np.datetime64(str(d)[:10])))
+        if t < T and cal[t] == np.datetime64(str(d)[:10]):
+            sr[t] = ((s1 or 0.0) + (s2 or 0.0)) / tot
+    return pd.Series(sr).ffill().to_numpy()
+
+
+def k_watch(D: dict, MK: np.ndarray) -> list:
+    """月末ごとの見張り銘柄：{銘柄の番号: (箱の下, 箱の上, 行き来の回数)}。範囲（共通の範囲 × 新興市場を除く）の中で、
+    1年の終値が箱（10％点〜90％点）の中を4回以上行き来し、幅が15〜60％で、箱から大きくはみ出さない（2％点と98％点が箱の5％の外まで）銘柄を、
+    行き来の多い順・売買代金の多い順に150まで。"""
+    CF, C, SEG, LIQ, UNI, me_idx = D["CF"], D["C"], D["SEG"], D["LIQ"], D["UNI"], D["me_idx"]
+    mk_ok = np.isin(MK, list(K_MKT))
+    out = []
+    for j, t in enumerate(me_idx):
+        if t < K_WIN - 1:
+            out.append({})
+            continue
+        t1 = t - K_WIN + 1
+        ok = UNI[:, j] & mk_ok[:, j] & (SEG[:, t] <= t1) & (np.isfinite(C[:, t1:t + 1]).sum(axis=1) >= 200)
+        idx = np.nonzero(ok)[0]
+        if len(idx) == 0:
+            out.append({})
+            continue
+        w = CF[idx, t1:t + 1].astype(float)
+        lo = np.nanpercentile(w, K_LO_Q, axis=1)
+        hi = np.nanpercentile(w, K_HI_Q, axis=1)
+        p2 = np.nanpercentile(w, 2, axis=1)
+        p98 = np.nanpercentile(w, 98, axis=1)
+        rng = hi - lo
+        with np.errstate(invalid="ignore", divide="ignore"):
+            width = hi / lo - 1.0
+            st = np.where(w <= (lo + K_ZONE * rng)[:, None], -1.0, np.where(w >= (hi - K_ZONE * rng)[:, None], 1.0, np.nan))
+        st = pd.DataFrame(st).ffill(axis=1).to_numpy()
+        trans = np.sum(np.isfinite(st[:, 1:]) & np.isfinite(st[:, :-1]) & (st[:, 1:] != st[:, :-1]), axis=1)
+        q = (lo > 0) & (width >= K_WMIN) & (width <= K_WMAX) & (trans >= K_TRANS) & (p2 >= lo * (1.0 - K_TAIL)) & (p98 <= hi * (1.0 + K_TAIL))
+        sel = np.nonzero(q)[0]
+        liq = np.nan_to_num(LIQ[idx[sel], j])
+        order = sel[np.lexsort((-liq, -trans[sel]))][:K_WATCH]
+        out.append({int(idx[k]): (float(lo[k]), float(hi[k]), int(trans[k])) for k in order})
+    return out
+
+
+def k_sim(cands: dict, D: dict, divpay: dict, t0: int, cfg: dict, last_t: np.ndarray, cap: float = CAP, slip: float = SLIP,
+          tax: float = TAX, eslip: float = ETF_SLIP):
+    """上岡式の運用。cands … {合図の日の番号: [最初に買う候補の銘柄の番号（優先の順）]}。合図はその日の終値で決め、次の営業日の終値で売り買いする。
+    毎日 ①上場をやめた銘柄を最後の値段で売る ②前の日に決めた売りと買い（買い足しが先・新しい銘柄はそのあと）③配当 ④（fill なら）空いた資金で 1306
+    ⑤その日の終値で、次の日の売り（+10％・損切り）と買い足し・新しい買いを決める。1銘柄の予算は最初に買う日の資産の20分の1で、split の割合ずつ買う。
+    新しい買いは cands の順（見張り銘柄の順）に、空いている枠の数まで。"""
+    CF, C, me_idx, cal = D["CF"], D["C"], D["me_idx"], D["cal"]
+    tpc = np.asarray(D["tp"]["c"], dtype=float)
+    T = CF.shape[1]
+    split, gap, stop, fill = cfg["split"], cfg["gap"], cfg["stop"], cfg["fill"]
+    me_set = set(me_idx)
+    dist: dict = {}
+    if fill:
+        for d_, a_ in yb.ETF_DIST.get("1306", ()):
+            tt = int(np.searchsorted(cal, np.datetime64(pd.Timestamp(d_).date()), side="left"))
+            if tt < T:
+                dist[tt] = dist.get(tt, 0.0) + a_ / 100.0
+    cash, loss = float(cap), 0.0
+    eu, ecost = 0, 0.0
+    pos: dict = {}            # 銘柄 → {sh, cost, budget, k, last_px, last_t, first_px, first_t}
+    pend_buy: list = []
+    pend_sell: set = set()
+    vals = []
+    st = {"n_new": 0, "n_add": 0, "buy_t": [], "closed": [], "tax": 0.0, "held": [], "cash_share": [], "etf_share": [], "delist": 0}
+
+    def px(i, t):
+        v = CF[i, t]
+        return float(v) if (v == v and v > 0) else 0.0
+
+    def realize(g):
+        nonlocal cash, loss
+        if g > 0:
+            tx = max(0.0, g - loss) * tax
+            loss = max(0.0, loss - g)
+            cash -= tx
+            st["tax"] += tx
+        else:
+            loss += -g
+
+    def close_pos(i, t, price):
+        nonlocal cash
+        p = pos.pop(i)
+        eff = price * (1.0 - slip)
+        cash += p["sh"] * eff
+        realize(p["sh"] * eff - p["cost"])
+        st["closed"].append((p["first_t"], t, p["sh"] * eff / p["cost"] - 1.0, p["k"]))
+
+    def etf_sell(units, t):
+        nonlocal eu, ecost, cash
+        units = min(int(units), eu)
+        if units <= 0:
+            return
+        pr = tpc[t] * (1.0 - eslip)
+        c_part = ecost * units / eu
+        cash += units * pr
+        eu -= units
+        ecost -= c_part
+        realize(units * pr - c_part)
+
+    def value_at(t):
+        return cash + eu * tpc[t] + sum(p["sh"] * px(k, t) for k, p in pos.items())
+    for t in range(t0, T):
+        ep = float(tpc[t])
+        if t in dist and eu > 0:
+            g = eu * dist[t]
+            cash += g * (1.0 - tax)
+            st["tax"] += g * tax
+        # ① 上場をやめた銘柄（最後の売買の日から5営業日たっても売買がない）は、最後の値段で売る
+        for i in [k for k in pos if last_t[k] < t - 5]:
+            close_pos(i, t, px(i, last_t[i]))
+            pend_sell.discard(i)
+            st["delist"] += 1
+        # ② 前の日に決めた売り
+        for i in sorted(pend_sell):
+            v = C[i, t]
+            if i in pos and v == v and v > 0:
+                close_pos(i, t, float(v))
+                pend_sell.discard(i)
+            elif i not in pos:
+                pend_sell.discard(i)
+        # ② 前の日に決めた買い（買い足しが先）
+        if pend_buy:
+            value = value_at(t)
+            for i, kind in pend_buy:
+                v = C[i, t]
+                if not (v == v and v > 0):
+                    continue
+                if kind == "new":
+                    if i in pos or len(pos) >= K_SLOTS:
+                        continue
+                    budget = value / K_SLOTS
+                    amt = budget * split[0]
+                else:
+                    p = pos.get(i)
+                    if p is None or p["k"] >= len(split):
+                        continue
+                    amt = p["budget"] * split[p["k"]]
+                pb = float(v) * (1.0 + slip)
+                if fill and cash < amt and eu > 0:
+                    etf_sell(np.ceil((amt - cash) / (ep * (1.0 - eslip))), t)
+                sh = int(min(amt, cash) / pb)
+                if sh < 1:
+                    continue
+                cash -= sh * pb
+                if kind == "new":
+                    pos[i] = {"sh": sh, "cost": sh * pb, "budget": budget, "k": 1, "last_px": float(v), "last_t": t,
+                              "first_px": float(v), "first_t": t}
+                    st["n_new"] += 1
+                    st["buy_t"].append(t)
+                else:
+                    p["sh"] += sh
+                    p["cost"] += sh * pb
+                    p["k"] += 1
+                    p["last_px"], p["last_t"] = float(v), t
+                    st["n_add"] += 1
+            pend_buy = []
+        # ③ 配当（権利付き最終日の終わりに持っていれば受け取る）
+        for i, amt in divpay.get(t, ()):
+            if i in pos:
+                g = pos[i]["sh"] * amt
+                cash += g * (1.0 - tax)
+                st["tax"] += g * tax
+        # ④ 空いた資金で 1306
+        if fill and ep > 0:
+            value = value_at(t)
+            if cash > 0.01 * value:
+                u = int(cash / (ep * (1.0 + eslip)))
+                if u > 0:
+                    cash -= u * ep * (1.0 + eslip)
+                    eu += u
+                    ecost += u * ep * (1.0 + eslip)
+        if t in me_set:
+            value = value_at(t)
+            vals.append(value)
+            st["held"].append(len(pos))
+            st["cash_share"].append(cash / value if value > 0 else 0.0)
+            st["etf_share"].append(eu * ep / value if value > 0 else 0.0)
+        if t >= T - 1:
+            break
+        # ⑤ その日の終値で、次の日の売り買いを決める
+        for i, p in pos.items():
+            v = C[i, t]
+            if not (v == v and v > 0):
+                continue
+            if v >= p["cost"] / p["sh"] * (1.0 + K_TP):
+                pend_sell.add(i)
+                continue
+            if stop is not None and v < p["first_px"] * (1.0 - stop):
+                pend_sell.add(i)
+                continue
+            if p["k"] < len(split) and t - p["last_t"] >= gap and v <= p["last_px"] * (1.0 - K_STEP_DN):
+                pend_buy.append((i, "add"))
+        for i in cands.get(t, ()):
+            if i not in pos and i not in pend_sell:
+                pend_buy.append((i, "new"))
+    liq, gain = cash, 0.0
+    for k, p in pos.items():
+        eff = px(k, T - 1) * (1.0 - slip)
+        liq += p["sh"] * eff
+        gain += p["sh"] * eff - p["cost"]
+    if eu > 0:
+        eff = tpc[T - 1] * (1.0 - eslip) * eu
+        liq += eff
+        gain += eff - ecost
+    liq -= tax * max(0.0, gain - loss)
+    st["open"] = [(p["first_t"], px(k, T - 1) * p["sh"] / p["cost"] - 1.0, px(k, T - 1) * p["sh"]) for k, p in pos.items()]
+    return np.array(vals), liq, st
+
+
+def k_judge(x: dict, ST_TX: dict) -> tuple:
+    """判定：TOPIX と でたらめ（範囲から）は judge1 と同じ。でたらめ（見張り銘柄から）は「底で買う効き目」の向きだけを見る。"""
+    det = {}
+    ok_tx, ok_ra, rb_up, rb_dn = True, True, True, True
+    for h in ("前半", "後半"):
+        a = x["st"][h]["ann"]
+        ra = [y[h]["ann"] for y in x["ra"]]
+        rb = [y[h]["ann"] for y in x["rb"]]
+        d_tx, d_ra, d_rb = a - ST_TX[h]["ann"], a - float(np.mean(ra)), a - float(np.mean(rb))
+        b_ra, b_rb = int(sum(1 for y in ra if a > y)), int(sum(1 for y in rb if a > y))
+        det[h] = (d_tx, d_ra, b_ra, d_rb, b_rb)
+        ok_tx &= d_tx >= PT_TX
+        ok_ra &= (d_ra >= PT_RND) and (b_ra >= BEAT_MIN)
+        rb_up &= (d_rb >= PT_RND) and (b_rb >= BEAT_MIN)
+        rb_dn &= (d_rb <= -PT_RND) and (b_rb <= N_RAND - BEAT_MIN)
+    rb_lab = "ある" if rb_up else ("裏目" if rb_dn else "見えない")
+    if min(x["nb"].values()) < K_MIN_BUYS or x["fill_ra"] < RND_FILL_MIN or x["fill_rb"] < RND_FILL_MIN:
+        return "保留（データ不足）", rb_lab, det
+    return ("候補" if (ok_tx and ok_ra) else ("範囲の中では効く" if ok_ra else "効かない")), rb_lab, det
+
+
+def lab21(store: dict, xs: dict) -> int:
+    """21段目：上岡式（2016年の本）の答え合わせ。計画は wide_lab_plan21_2026-11-08。"""
+    log("21段目（上岡式の答え合わせ）を回します（指標を作っています）…")
+    D = build(store)
+    dates, UNI, me_idx, cal, codes = D["dates"], D["UNI"], D["me_idx"], D["cal"], D["codes"]
+    T = len(cal)
+    C = D["C"]
+    MK = k_market_codes(store, D)
+    mk_ok = np.isin(MK, list(K_MKT))
+    j0 = next((j for j, t in enumerate(me_idx) if t >= K_WIN), None)
+    if j0 is None:
+        print("\n■ 株価の期間が短すぎます（1年分のうねりを見る期間が取れません）")
+        return 2
+    t0 = me_idx[j0]
+    ev = dates[j0:]
+    yrs = max((ev[-1] - ev[0]).days / 365.25, 0.5)
+    E = ev_extract(store, D)
+    TXv, TXliq = topix_taxed(D, j0)
+    ST_TX = half_stats(TXv, ev)
+    traded = np.isfinite(C) & (C > 0)
+    last_t = np.array([int(np.nonzero(traded[i])[0][-1]) if traded[i].any() else -1 for i in range(len(codes))])
+    jm = np.searchsorted(np.array(me_idx), np.arange(T), side="left") - 1      # その日より前の最後の月末（その日の月末の日は前の月末）
+    log("  騰落レシオ・空売り比率・見張り銘柄を作っています…")
+    adr = k_adr(D, MK)
+    sr_ok = bool(xs.get("srt", {}).get("rows")) and not xs.get("srt", {}).get("bad")
+    sr = k_short_ratio(xs, cal) if sr_ok else np.full(T, np.nan)
+    W = k_watch(D, MK)
+    # 底の近くにいる見張り銘柄（合図の日ごと。見張り銘柄の順＝うねりのきれいな順。W[j] は行き来の多い順・売買代金の多い順に並んでいる）
+    zone_c: dict = {}
+    for t in range(t0, T - 1):
+        j = jm[t]
+        if j < 0 or not W[j]:
+            continue
+        ids = np.array(list(W[j].keys()))
+        lo = np.array([W[j][i][0] for i in ids])
+        hi = np.array([W[j][i][1] for i in ids])
+        v = C[ids, t]
+        ok = np.isfinite(v) & (v >= lo * K_BELOW) & (v <= lo + K_ZONE * (hi - lo))
+        if ok.any():
+            zone_c[t] = [int(x) for x in ids[ok]]
+
+    def mkt_on(t, th):
+        return (adr[t] == adr[t] and adr[t] <= th) and (not sr_ok or (sr[t] == sr[t] and sr[t] >= K_SR_TH))
+
+    def pool_ra(t):
+        j = jm[t]
+        return np.nonzero(UNI[:, j] & mk_ok[:, j] & traded[:, t])[0] if j >= 0 else np.zeros(0, dtype=int)
+
+    def pool_rb(t):
+        j = jm[t]
+        if j < 0 or not W[j]:
+            return np.zeros(0, dtype=int)
+        ids = np.array(list(W[j].keys()))
+        return ids[traded[ids, t]]
+
+    # ── 市場の合図と見張り銘柄の様子（判定の前に見る） ──
+    tt = np.arange(t0, T)
+    sr_v = sr[tt][np.isfinite(sr[tt])]
+    adr_v = adr[tt][np.isfinite(adr[tt])]
+    print("\n" + "=" * 100)
+    print("【日本株の手法・21段目（上岡式〈2016年の本〉の答え合わせ）（wide_lab）：東証の一部・二部・プライム・スタンダード】")
+    print("  （基準は結果を見る前に決めたもの。計画はプロジェクトの wide_lab_plan21_2026-11-08。決まりは本人以外のまとめから直したもの）")
+    print(f"  比べる期間 {ev[0].date()}〜{ev[-1].date()}（{len(ev) - 1}か月）。前半＝〜{(SPLIT - pd.Timedelta(days=1)).date()}・後半＝{SPLIT.date()}〜")
+    print(f"  費用と税 {COST}：株 片道{SLIP * 100:.1f}％・1306 片道{ETF_SLIP * 100:.2f}％・{TAX_TXT}（損は同じ運用の中で繰り越す）。元本{CAP / 1e4:,.0f}万円")
+    print("\n  0. 市場の合図と見張り銘柄")
+    if sr_ok:
+        yr_min = pd.Series(sr[tt], index=pd.DatetimeIndex(cal[tt])).groupby(lambda x: x.year).min()
+        print(f"     空売り比率 … 30％以上の日 {np.mean(sr_v >= K_SR_TH) * 100:.1f}％（{len(sr_v)}日）・いちばん低い日 {np.min(sr_v) * 100:.1f}％・"
+              f"5％点 {np.percentile(sr_v, 5) * 100:.1f}％・中央 {np.median(sr_v) * 100:.1f}％・年ごとのいちばん低い日 "
+              + "・".join(f"{y} {v * 100:.0f}％" for y, v in yr_min.items()))
+    else:
+        print(f"     空売り比率 … 取れませんでした（{xs.get('srt', {}).get('bad', 'データなし')}）。市場の合図は騰落レシオだけで見ます（計画の4）")
+    for th in (80, 70):
+        on = np.array([mkt_on(t, th) for t in tt])
+        runs = int(np.sum(on[1:] & ~on[:-1]) + (1 if on[0] else 0))
+        print(f"     騰落レシオ{th}以下 … {np.mean(adr_v <= th) * 100:.1f}％の日（{int(np.sum(adr_v <= th))}日）・空売り比率とあわせた合図の日 {int(on.sum())}日"
+              f"（1年あたり {on.sum() / yrs:.0f}日・ひと続きの回数 {runs}回）")
+    nW = [len(W[j]) for j in range(j0, len(W))]
+    allq = [np.mean([v[2] for v in W[j].values()]) if W[j] else np.nan for j in range(j0, len(W))]
+    print(f"     見張り銘柄 … 月平均 {np.mean(nW):.0f}銘柄（{min(nW)}〜{max(nW)}）・行き来の回数の平均 {np.nanmean(allq):.1f}回・"
+          f"底の近くにいる銘柄 1日平均 {np.mean([len(zone_c.get(t, ())) for t in tt]):.1f}銘柄")
+    for jj in sorted({j0, (j0 + len(W) - 1) // 2, len(W) - 1}):
+        top = sorted(W[jj].items(), key=lambda kv: (-kv[1][2], -np.nan_to_num(D["LIQ"][kv[0], jj])))[:8]
+        print(f"     例（{dates[jj].date()}）：" + "・".join(f"{codes[i]} {D['names'].get(codes[i], '')[:8]}（{v[2]}回・幅{(v[1] / v[0] - 1) * 100:.0f}％）" for i, v in top))
+    res = {}
+    for key, lab, cfg in K_FORMS:
+        if ONLY and key not in ONLY:
+            continue
+        log(f"  {key} を回しています（でたらめ 20回 × 2）…")
+        if cfg["mkt"]:
+            cands = {t: zone_c[t] for t in zone_c if mkt_on(t, cfg["adr"])}
+        else:
+            cands = dict(zone_c)
+        v, liq, s_ = k_sim(cands, D, E["divpay"], t0, cfg, last_t)
+        ra, rb, nra, nrb = [], [], [], []
+        n_c = max(1, sum(len(cl) for cl in cands.values()))
+        for nm, pool_fn, seed, out_, nout in (("ra", pool_ra, 7000, ra, nra), ("rb", pool_rb, 8000, rb, nrb)):
+            pools = {t: pool_fn(t) for t in cands}
+            nout.append(sum(min(len(cl), len(pools[t])) for t, cl in cands.items()) / n_c)    # 候補の数だけ、でたらめに選べた割合
+            for k in range(N_RAND):
+                rg = np.random.default_rng(seed + k)
+                pl = {}
+                for t, cl in cands.items():
+                    pool = pools[t]
+                    if len(pool):
+                        pl[t] = [int(x) for x in rg.choice(pool, size=min(len(cl), len(pool)), replace=False)]
+                pv, _l, ps_ = k_sim(pl, D, E["divpay"], t0, cfg, last_t)
+                out_.append(half_stats(pv, ev))
+        nb = {"前半": sum(1 for t in s_["buy_t"] if pd.Timestamp(cal[t]) < SPLIT),
+              "後半": sum(1 for t in s_["buy_t"] if pd.Timestamp(cal[t]) >= SPLIT)}
+        x = {"st": half_stats(v, ev), "liq": liq, "s": s_, "ra": ra, "rb": rb, "nb": nb,
+             "fill_ra": nra[0], "fill_rb": nrb[0]}
+        x["verdict"], x["rb_lab"], x["det"] = k_judge(x, ST_TX)
+        res[key] = (lab, x)
+    print(f"\n  1. 結果（年率％「前半 ／ 後半」。TOPIX（税あり）{ST_TX['前半']['ann']:.1f} ／ {ST_TX['後半']['ann']:.1f}。"
+          "差は「TOPIX との差／でたらめ（範囲から）との差・上回った回数／でたらめ（見張り銘柄から）との差・上回った回数」）")
+    for key, (lab, x) in res.items():
+        a, s_ = x["st"], x["s"]
+        cl = s_["closed"]
+        win = np.mean([r[2] > 0 for r in cl]) * 100 if cl else float("nan")
+        gw = [r[2] for r in cl if r[2] > 0]
+        gl = [r[2] for r in cl if r[2] <= 0]
+        hold = [(r[1] - r[0]) for r in cl]
+        opn = s_["open"]
+        old = [o for o in opn if o[0] < T - 1 - 250]
+        ov = sum(o[2] for o in opn)
+        ra_m = [np.mean([y[h]["ann"] for y in x["ra"]]) for h in ("前半", "後半")]
+        rb_m = [np.mean([y[h]["ann"] for y in x["rb"]]) for h in ("前半", "後半")]
+        print(f"\n  {key} {lab}")
+        print(f"     年率 {a['前半']['ann']:6.1f} ／ {a['後半']['ann']:6.1f}（最大下落 {a['通し']['mdd']:.0f}％・清算後の通し {((x['liq'] / CAP) ** (1 / yrs) - 1) * 100:.1f}％）"
+              f"［{x['det']['前半'][0]:+.1f}／{x['det']['前半'][1]:+.1f}・{x['det']['前半'][2]}／{x['det']['前半'][3]:+.1f}・{x['det']['前半'][4]} ｜ "
+              f"{x['det']['後半'][0]:+.1f}／{x['det']['後半'][1]:+.1f}・{x['det']['後半'][2]}／{x['det']['後半'][3]:+.1f}・{x['det']['後半'][4]}］"
+              f" … {x['verdict']}・底で買う効き目 {x['rb_lab']}")
+        print(f"     でたらめの平均：範囲から {ra_m[0]:.1f} ／ {ra_m[1]:.1f}・見張り銘柄から {rb_m[0]:.1f} ／ {rb_m[1]:.1f}")
+        print(f"     最初の買い {s_['n_new']}回（前半 {x['nb']['前半']}・後半 {x['nb']['後半']}・1年あたり {s_['n_new'] / yrs:.0f}回）・買い足し {s_['n_add']}回・"
+              f"売り {len(cl)}回（勝ち {win:.0f}％・勝ちの平均 {(f'{np.mean(gw) * 100:+.1f}％') if gw else '—'}・負けの平均 {(f'{np.mean(gl) * 100:+.1f}％') if gl else '—'}・"
+              f"持った日数の中央 {np.median(hold) if hold else float('nan'):.0f}営業日）・上場をやめて売った {s_['delist']}回")
+        print(f"     平均の持ち数 {np.mean(s_['held']):.1f}銘柄・現金の割合 平均 {np.mean(s_['cash_share']) * 100:.0f}％"
+              + (f"・1306 の割合 平均 {np.mean(s_['etf_share']) * 100:.0f}％" if key == "K6" else "")
+              + f"・最後に持っていた {len(opn)}銘柄（含み損益 {np.mean([o[1] for o in opn]) * 100 if opn else 0:+.1f}％・1年以上持っている {len(old)}銘柄"
+              f"＝評価額の {sum(o[2] for o in old) / ov * 100 if ov > 0 else 0:.0f}％）・でたらめに候補の数だけ選べた割合 {x['fill_ra'] * 100:.0f}％／{x['fill_rb'] * 100:.0f}％")
+    print("\n  2. 判定のまとめ")
+    for vv in ("候補", "範囲の中では効く", "効かない", "保留（データ不足）"):
+        ks = [k for k, (_l, x) in res.items() if x["verdict"] == vv]
+        print(f"     {vv} … " + ("・".join(ks) if ks else "なし"))
+    for vv in ("ある", "見えない", "裏目"):
+        ks = [k for k, (_l, x) in res.items() if x["rb_lab"] == vv]
+        print(f"     底で買う効き目 {vv} … " + ("・".join(ks) if ks else "なし"))
+    if "K1" in res and "K5" in res:
+        d = [res["K1"][1]["st"][h]["ann"] - res["K5"][1]["st"][h]["ann"] for h in ("前半", "後半")]
+        lab_m = "市場の売られすぎを待つと良い" if min(d) >= PT_RND else ("待つと悪い" if max(d) <= -PT_RND else "差は見えない")
+        print(f"     市場の合図の効き目（K1 − K5）… {d[0]:+.1f} ／ {d[1]:+.1f}pt → {lab_m}")
+    if "K1" in res and "K6" in res:
+        d = [res["K6"][1]["st"][h]["ann"] - res["K1"][1]["st"][h]["ann"] for h in ("前半", "後半")]
+        print(f"     空いた資金を 1306 で持つ効き目（K6 − K1・参考）… {d[0]:+.1f} ／ {d[1]:+.1f}pt")
+    print(f"     （TOPIX の清算後の通し {((TXliq / CAP) ** (1 / yrs) - 1) * 100:.1f}％）")
+    return 0
+
+
 def run_mode(mode: str, store: dict, args) -> int:
     """1つの mode を回す（データはそろっている前提で、足りなければ取る）。14段目の lab14 は、これを続けて呼ぶ。"""
     global LAB_TITLE, LAB_PLAN, LAB_NOTE
@@ -5355,6 +5832,21 @@ def run_mode(mode: str, store: dict, args) -> int:
         LAB_TITLE, LAB_PLAN = "12段目（財務の明細の型）", "wide_lab_plan12_2026-11-05"
     elif mode == "lab13":
         LAB_TITLE, LAB_PLAN = "13段目（J-Quants の残りのデータ）", "wide_lab_plan13_2026-11-05"
+    if mode == "lab21":
+        # 21段目：上岡式の答え合わせ。業種別空売り比率（スタンダード）を日ごとに取り、別のファイル（data/wide_k.pkl）に持つ
+        xs = k_xs_load()
+        if not x_complete(store, xs, ("srt",)):
+            key = os.environ.get("J_QUANTS_API_KEY")
+            if not key:
+                print("J_QUANTS_API_KEY が設定されていません")
+                return 2
+            if not fetch_x(yb.JQ(key), store, xs, ("srt",)):
+                print("\n■ まだ終わっていません（業種別空売り比率を取っている途中です）。同じ設定のまま、もう一度押してください。")
+                return EXIT_UNFINISHED
+        st = xs.get("srt", {})
+        log(f"  業種別空売り比率 … {len(st.get('rows', [])):,}日・取れなかった日 {len(st.get('fail', ()))}日"
+            + (f"・取るのをやめた：{st['bad']}" if st.get("bad") else ""))
+        return lab21(store, xs)
     if mode == "lab7":
         return lab7(store)
     if mode == "lab6":
@@ -5595,7 +6087,7 @@ def lab14(store: dict, args) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab5", "lab6", "lab7", "lab8", "lab9", "lab10", "lab11", "lab12", "lab13", "lab14", "lab15", "lab16", "lab17", "lab18", "lab19", "lab20", "xfetch"], default="lab1")
+    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab5", "lab6", "lab7", "lab8", "lab9", "lab10", "lab11", "lab12", "lab13", "lab14", "lab15", "lab16", "lab17", "lab18", "lab19", "lab20", "lab21", "xfetch"], default="lab1")
     ap.add_argument("--combo", default="", help="3回目：1回目で「範囲の中では効く」以上だった型の記号（カンマ区切り）。2つ以上なら SEL として回す")
     ap.add_argument("--only", default="", help="回す型の記号（カンマ区切り。空欄なら全部）。確かめる段階で候補だけを回すとき")
     ap.add_argument("--cfg", default="", help="7段目の確かめる段階で回す組み立て（例: VQM/TOP500/20/Q,NXG/TOP500/20/Q）")
