@@ -6301,7 +6301,8 @@ def g_panel(store: dict, D: dict) -> dict:
     me_np = np.array([np.datetime64(d.date()) for d in D["dates"]])
     keys = ("per_a", "per_f", "pbr", "dy", "payout", "gs1", "gp1", "gs0", "gp0", "gop1", "ge_f", "netcash", "np_a",
             "np_f", "eq", "eq_up3", "div_nocut3", "div_up3", "stable3",      # この6つは24段目（ヘムの増配株）で足したもの
-            "eqr", "opm", "roa", "psr")                                       # この4つは25段目（たーちゃん）で足したもの
+            "eqr", "opm", "roa", "psr",                                       # この4つは25段目（たーちゃん）で足したもの
+            "up3")                                                             # 26段目（なのなの）：3期で売上・営業利益が増え、3期とも黒字
     P = {k: np.full((S, M), np.nan) for k in keys}
     for i, c in enumerate(codes):
         tl = fin_timeline(store["fins"].get(c))
@@ -6416,6 +6417,9 @@ def g_panel(store: dict, D: dict) -> dict:
                 sl = [num(x.get("Sales")) for x in (fy[-3], fy[-1])]
                 P["stable3"][i, j] = float(all(v is not None and v > 0 for v in n3) and all(v is not None and v > 0 for v in cov)
                                            and sl[0] is not None and sl[1] is not None and sl[1] >= sl[0])
+                op2 = [num(x.get("OP")) for x in (fy[-3], fy[-1])]
+                P["up3"][i, j] = float(all(v is not None and v > 0 for v in n3) and sl[0] is not None and sl[1] is not None and sl[1] >= sl[0]
+                                       and op2[0] is not None and op2[1] is not None and op2[1] >= op2[0])
                 s0, sm = num(fy[-2].get("Sales")), num(fy[-3].get("Sales"))
                 p0, pm = num(fy[-2].get(pk)), num(fy[-3].get(pk))
                 if s0 is not None and sm and sm > 0:
@@ -6618,6 +6622,73 @@ def lab25(store: dict) -> int:
     return rc
 
 
+# ───────────────────────── 26段目：なのなの『「爆配当」株投資』（KADOKAWA、2023年12月26日）の数値の決まり ─────────────────────────
+# 計画は wide_lab_plan26_2026-11-10（結果を見る前に決めたもの）。24・25段目と同じ形。
+N_PUB = pd.Timestamp("2023-12-31")
+N_TYPES = (
+    ("N1", "買いの4条件：配当利回り4.0％以上・PER18倍以下・3期で減配なし・3期で売上と営業利益が増え3期とも黒字（利回りの高い順）"),
+    ("N2", "基本のスクリーニング：配当利回り3.8％以上・PER18倍以下（利回りの高い順）"),
+    ("N3", "強いスクリーニング：N2 に自己資本比率50％以上・ROE12％以上・営業利益率10％以上を足す（利回りの高い順）"),
+    ("N1S", "参考：N1 で買い、売りは本の決まりに近い形（利回り2.5％未満で売る。減配して PER20倍以上になったら売る。それまでは持つ）"),
+)
+
+
+def n_scores(store: dict, D: dict) -> dict:
+    P = g_panel(store, D)
+    per = np.where(np.isfinite(P["per_f"]), P["per_f"], P["per_a"])
+    out = {}
+    with np.errstate(invalid="ignore", divide="ignore"):
+        dy = P["dy"]
+        roe = P["np_a"] / P["eq"]
+        e1 = (dy >= 0.04) & (per > 0) & (per <= 18) & (P["div_nocut3"] == 1) & (P["up3"] == 1)
+        b2 = (dy >= 0.038) & (per > 0) & (per <= 18)
+        out["N1"] = np.where(e1, dy, np.nan)
+        out["N2"] = np.where(b2, dy, np.nan)
+        out["N3"] = np.where(b2 & (P["eqr"] >= 0.50) & (roe >= 0.12) & (P["opm"] >= 0.10), dy, np.nan)
+        broke = (P["div_nocut3"] == 0) & ((per >= 20) | ~(per > 0))
+        keep = (dy >= 0.025) & ~broke
+        held = np.zeros_like(e1)
+        last = np.full(e1.shape[0], -10 ** 6)
+        for j in range(e1.shape[1]):
+            last = np.where(e1[:, j], j, last)
+            held[:, j] = (j - last) <= 36
+        out["N1S"] = np.where(e1, dy, np.where(held & keep, dy - 1.0, np.nan))
+    return out
+
+
+def lab26(store: dict) -> int:
+    """26段目：なのなのの高配当株の数値の決まり。出版のあとの期間（2024年1月〜）の成績を別に出す（判定には使わない）。"""
+    global LAB_TITLE, LAB_PLAN, LAB_NOTE, PUB_FROM
+    LAB_TITLE, LAB_PLAN = "26段目（なのなの『「爆配当」株投資』2023年12月の数値の決まり）", "wide_lab_plan26_2026-11-10"
+    LAB_NOTE = ("26段目：24・25段目と同じく、条件に合う銘柄だけに点数をつけ、合う銘柄が20より少ない月は現金。条件に合わなくなった銘柄は、その月末に売る（N1S だけ本の売りの決まりに近い形）。"
+                "保留は「合格した銘柄が1か月あたり平均5未満」。前半（〜2022年10月）は出版より前。後半（2022年11月〜）のうち2024年1月からは出版のあと。"
+                "出版後（2024年1月〜）は別にも出す（判定はしない）。外国人持株比率・優待・定性の判断は使わない")
+    PUB_FROM = N_PUB
+    cache: dict = {}
+
+    def mk(name):
+        def fn(D):
+            if "sc" not in cache:
+                log("  基礎の値（配当利回り・PER・減配・業績・自己資本比率・ROE・営業利益率）を作っています…")
+                cache["sc"] = n_scores(store, D)
+            return cache["sc"][name]
+        return fn
+    rc = lab1(store, extra={nm: (mk(nm), lab) for nm, lab in N_TYPES}, filt=True)
+    if rc == 0 and LAST_LAB1:
+        print("\n  3. 出版のあと（2024年1月〜。判定はしない。年率％） … A ／ B ／ TOPIX（税あり） ／ でたらめな20銘柄の平均 A ／ でたらめ（同じ数・A）の平均")
+        for k, r in LAST_LAB1.items():
+            if "出版後" not in r["A"]:
+                continue
+            ra = [x["出版後"]["ann"] for x in r["rnd"]["A"] if "出版後" in x]
+            rn = [x["出版後"]["ann"] for x in r.get("rnd_n", []) if "出版後" in x]
+            print(f"     {k:<4} {r['A']['出版後']['ann']:6.1f} ／ {r['B']['出版後']['ann']:6.1f} ／ {r['tx']['出版後']['ann']:6.1f} ／ "
+                  f"{np.mean(ra) if ra else float('nan'):6.1f}（上回った回数 {sum(1 for x in ra if r['A']['出版後']['ann'] > x)}） ／ "
+                  f"{np.mean(rn) if rn else float('nan'):6.1f}（{sum(1 for x in rn if r['A']['出版後']['ann'] > x)}）"
+                  f" ・ 最大下落 A {r['A']['出版後']['mdd']:.0f}％")
+    PUB_FROM = None
+    return rc
+
+
 def d_judge(x: dict, ST_TX: dict, no_rb: bool) -> tuple:
     """判定は k_judge と同じ（でたらめ〈範囲から〉で判定・でたらめ〈同じ日の新高値ブレイクから〉は業績で絞る効き目の向き）。最初の買いの下限は D_MIN_BUYS。"""
     det = {}
@@ -6661,6 +6732,8 @@ def run_mode(mode: str, store: dict, args) -> int:
         return lab24(store)
     if mode == "lab25":
         return lab25(store)
+    if mode == "lab26":
+        return lab26(store)
     if mode == "lab21":
         # 21段目：上岡式の答え合わせ。業種別空売り比率（スタンダード）を日ごとに取り、別のファイル（data/wide_k.pkl）に持つ
         xs = k_xs_load()
@@ -6916,7 +6989,7 @@ def lab14(store: dict, args) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab5", "lab6", "lab7", "lab8", "lab9", "lab10", "lab11", "lab12", "lab13", "lab14", "lab15", "lab16", "lab17", "lab18", "lab19", "lab20", "lab21", "lab22", "lab23", "lab24", "lab25", "xfetch"], default="lab1")
+    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab5", "lab6", "lab7", "lab8", "lab9", "lab10", "lab11", "lab12", "lab13", "lab14", "lab15", "lab16", "lab17", "lab18", "lab19", "lab20", "lab21", "lab22", "lab23", "lab24", "lab25", "lab26", "xfetch"], default="lab1")
     ap.add_argument("--combo", default="", help="3回目：1回目で「範囲の中では効く」以上だった型の記号（カンマ区切り）。2つ以上なら SEL として回す")
     ap.add_argument("--only", default="", help="回す型の記号（カンマ区切り。空欄なら全部）。確かめる段階で候補だけを回すとき")
     ap.add_argument("--cfg", default="", help="7段目の確かめる段階で回す組み立て（例: VQM/TOP500/20/Q,NXG/TOP500/20/Q）")
