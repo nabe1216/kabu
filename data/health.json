@@ -1,0 +1,46 @@
+{
+ "generated_at": "2026-11-10T07:05:48+09:00",
+ "date": "2026-11-10",
+ "ok": false,
+ "warnings": [
+  {
+   "code": "cut_near_split",
+   "message": "分割・併合の近くで減配と判定した銘柄が 3 件：2695 くら寿司（分割・併合 2026-04-28）、5445 東京鐵鋼（分割・併合 2026-03-30）、7433 伯東（分割・併合 2026-09-29）。決算短信で実際の減配か確かめる"
+  }
+ ],
+ "checks": {
+  "counts": {
+   "pass": 107,
+   "buy": 127,
+   "emergency": 116,
+   "cut": 39
+  },
+  "processed": {
+   "universe": 970,
+   "processed": 970,
+   "failures": 0
+  },
+  "latest_price_date": "2026-11-09",
+  "prev_counts": {
+   "pass": 110,
+   "buy": 130,
+   "emergency": 116,
+   "cut": 39
+  },
+  "cut_near_split": [
+   "2695 くら寿司（分割・併合 2026-04-28）",
+   "5445 東京鐵鋼（分割・併合 2026-03-30）",
+   "7433 伯東（分割・併合 2026-09-29）"
+  ],
+  "portfolio": {
+   "total_value": 10511103.0,
+   "cash": 2996103.0,
+   "holdings": 17,
+   "last_updated": "2026-11-10",
+   "engine_version": 4
+  },
+  "overweight": [],
+  "run_minutes": 70.3,
+  "big_files": []
+ }
+}

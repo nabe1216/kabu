@@ -93,6 +93,195 @@
       "price": 2260.0,
       "amount": 226000.0,
       "reason": "BUY_SIGNAL"
+    },
+    {
+      "date": "2026-11-10",
+      "action": "SELL",
+      "code": "8801",
+      "name": "三井不動産",
+      "tier": "S",
+      "qty": 2200,
+      "price": 1573.5,
+      "amount": 3461700.0,
+      "buy_price": 1451.5,
+      "buy_date": "2026-06-28",
+      "holding_days": 135,
+      "realized_pl": 268400.0,
+      "realized_pl_pct": 8.41,
+      "tax": 54525,
+      "reason": "REBALANCE_ONCE: 旧予算で買いすぎた分を目標まで減らした（1回だけ）"
+    },
+    {
+      "date": "2026-11-10",
+      "action": "SELL",
+      "code": "6902",
+      "name": "デンソー",
+      "tier": "A",
+      "qty": 700,
+      "price": 1931.0,
+      "amount": 1351700.0,
+      "buy_price": 1879.5,
+      "buy_date": "2026-06-28",
+      "holding_days": 135,
+      "realized_pl": 36050.0,
+      "realized_pl_pct": 2.74,
+      "tax": 7324,
+      "reason": "REBALANCE_ONCE: 旧予算で買いすぎた分を目標まで減らした（1回だけ）"
+    },
+    {
+      "date": "2026-11-10",
+      "action": "SELL",
+      "code": "8439",
+      "name": "東京センチュリー",
+      "tier": "A",
+      "qty": 500,
+      "price": 2446.0,
+      "amount": 1223000.0,
+      "buy_price": 2519.0,
+      "buy_date": "2026-06-28",
+      "holding_days": 135,
+      "realized_pl": -36500.0,
+      "realized_pl_pct": -2.9,
+      "tax": -7415,
+      "reason": "REBALANCE_ONCE: 旧予算で買いすぎた分を目標まで減らした（1回だけ）"
+    },
+    {
+      "date": "2026-11-10",
+      "action": "SELL",
+      "code": "1925",
+      "name": "大和ハウス工業",
+      "tier": "A",
+      "qty": 500,
+      "price": 2310.5,
+      "amount": 1155250.0,
+      "buy_price": 2297.0,
+      "buy_date": "2026-07-08",
+      "holding_days": 125,
+      "realized_pl": 6750.0,
+      "realized_pl_pct": 0.59,
+      "tax": 1371,
+      "reason": "REBALANCE_ONCE: 旧予算で買いすぎた分を目標まで減らした（1回だけ）"
+    },
+    {
+      "date": "2026-11-10",
+      "action": "BUY",
+      "code": "1605",
+      "name": "ＩＮＰＥＸ",
+      "tier": "S",
+      "qty": 200,
+      "price": 3483.0,
+      "amount": 696600.0,
+      "reason": "BUY_SIGNAL"
+    },
+    {
+      "date": "2026-11-10",
+      "action": "BUY",
+      "code": "8600",
+      "name": "トモニホールディングス",
+      "tier": "B",
+      "qty": 400,
+      "price": 970.0,
+      "amount": 388000.0,
+      "reason": "BUY_SIGNAL"
+    },
+    {
+      "date": "2026-11-10",
+      "action": "BUY",
+      "code": "6209",
+      "name": "リケンＮＰＲ",
+      "tier": "B",
+      "qty": 100,
+      "price": 3765.0,
+      "amount": 376500.0,
+      "reason": "BUY_SIGNAL"
+    },
+    {
+      "date": "2026-11-10",
+      "action": "BUY",
+      "code": "2292",
+      "name": "Ｓ　Ｆｏｏｄｓ",
+      "tier": "B",
+      "qty": 100,
+      "price": 2718.0,
+      "amount": 271800.0,
+      "reason": "BUY_SIGNAL"
+    },
+    {
+      "date": "2026-11-10",
+      "action": "BUY",
+      "code": "2733",
+      "name": "あらた",
+      "tier": "B",
+      "qty": 100,
+      "price": 2639.0,
+      "amount": 263900.0,
+      "reason": "BUY_SIGNAL"
+    },
+    {
+      "date": "2026-11-10",
+      "action": "BUY",
+      "code": "8253",
+      "name": "クレディセゾン",
+      "tier": "B",
+      "qty": 100,
+      "price": 4009.0,
+      "amount": 400900.0,
+      "reason": "BUY_SIGNAL"
+    },
+    {
+      "date": "2026-11-10",
+      "action": "BUY",
+      "code": "9543",
+      "name": "静岡ガス",
+      "tier": "B",
+      "qty": 300,
+      "price": 1367.0,
+      "amount": 410100.0,
+      "reason": "BUY_SIGNAL"
+    },
+    {
+      "date": "2026-11-10",
+      "action": "BUY",
+      "code": "4516",
+      "name": "日本新薬",
+      "tier": "B",
+      "qty": 100,
+      "price": 3375.0,
+      "amount": 337500.0,
+      "reason": "BUY_SIGNAL"
+    },
+    {
+      "date": "2026-11-10",
+      "action": "BUY",
+      "code": "8336",
+      "name": "武蔵野銀行",
+      "tier": "B",
+      "qty": 200,
+      "price": 2273.0,
+      "amount": 454600.0,
+      "reason": "BUY_SIGNAL"
+    },
+    {
+      "date": "2026-11-10",
+      "action": "BUY",
+      "code": "8367",
+      "name": "南都銀行",
+      "tier": "B",
+      "qty": 200,
+      "price": 1604.0,
+      "amount": 320800.0,
+      "reason": "BUY_SIGNAL"
+    },
+    {
+      "date": "2026-11-10",
+      "action": "BUY",
+      "code": "4008",
+      "name": "住友精化",
+      "tier": "B",
+      "qty": 300,
+      "price": 1382.0,
+      "amount": 414600.0,
+      "reason": "BUY_SIGNAL"
     }
   ],
   "daily_snapshots": [
@@ -1197,6 +1386,17 @@
       "dividend_total": 153434,
       "tax_paid": 49842,
       "holdings_count": 6
+    },
+    {
+      "date": "2026-11-10",
+      "cash": 2996103.0,
+      "holdings_value": 7515000.0,
+      "total_value": 10511103.0,
+      "unrealized_pl": 96700.0,
+      "realized_pl": 327500.0,
+      "dividend_total": 153434,
+      "tax_paid": 105647,
+      "holdings_count": 17
     }
   ],
   "dividends": [
@@ -1279,6 +1479,30 @@
       "code": "",
       "name": "",
       "note": "記録を数え直した（配当の二重計上をやめた・株式分割を反映した・税 20.315％をかけた）"
+    },
+    {
+      "date": "2026-11-10",
+      "code": "8801",
+      "name": "三井不動産",
+      "note": "三井不動産 旧予算で買いすぎた分を目標まで減らした（2,700株 → 500株。1回だけ）"
+    },
+    {
+      "date": "2026-11-10",
+      "code": "6902",
+      "name": "デンソー",
+      "note": "デンソー 旧予算で買いすぎた分を目標まで減らした（1,000株 → 300株。1回だけ）"
+    },
+    {
+      "date": "2026-11-10",
+      "code": "8439",
+      "name": "東京センチュリー",
+      "note": "東京センチュリー 旧予算で買いすぎた分を目標まで減らした（700株 → 200株。1回だけ）"
+    },
+    {
+      "date": "2026-11-10",
+      "code": "1925",
+      "name": "大和ハウス工業",
+      "note": "大和ハウス工業 旧予算で買いすぎた分を目標まで減らした（800株 → 300株。1回だけ）"
     }
   ]
 }
