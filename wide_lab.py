@@ -6300,7 +6300,8 @@ def g_panel(store: dict, D: dict) -> dict:
     S, M = len(codes), len(me_idx)
     me_np = np.array([np.datetime64(d.date()) for d in D["dates"]])
     keys = ("per_a", "per_f", "pbr", "dy", "payout", "gs1", "gp1", "gs0", "gp0", "gop1", "ge_f", "netcash", "np_a",
-            "np_f", "eq", "eq_up3", "div_nocut3", "div_up3", "stable3")      # 後ろの6つは24段目（ヘムの増配株）で足したもの
+            "np_f", "eq", "eq_up3", "div_nocut3", "div_up3", "stable3",      # この6つは24段目（ヘムの増配株）で足したもの
+            "eqr", "opm", "roa", "psr")                                       # この4つは25段目（たーちゃん）で足したもの
     P = {k: np.full((S, M), np.nan) for k in keys}
     for i, c in enumerate(codes):
         tl = fin_timeline(store["fins"].get(c))
@@ -6366,6 +6367,17 @@ def g_panel(store: dict, D: dict) -> dict:
             cash_r = next((q for q in reversed(sub) if num(q.get("CashEq")) is not None), None)
             if eq is not None and ta_r is not None and cash_r is not None:
                 P["netcash"][i, j] = (num(cash_r.get("CashEq")) - (num(ta_r.get("TA")) - eq)) / mc
+            # 25段目：自己資本比率（純資産 ÷ 総資産）・営業利益率・ROA（通期の純利益 ÷ 総資産）・PSR（時価総額 ÷ 通期の売上）
+            ta = num(ta_r.get("TA")) if ta_r is not None else None
+            if eq is not None and ta and ta > 0:
+                P["eqr"][i, j] = eq / ta
+                if np_a is not None:
+                    P["roa"][i, j] = np_a / ta
+            s_l, o_l = num(r.get("Sales")), num(r.get("OP"))
+            if s_l and s_l > 0:
+                P["psr"][i, j] = mc / s_l
+                if o_l is not None:
+                    P["opm"][i, j] = o_l / s_l
             # 配当利回り：当期の四半期の短信の予想の年間配当。まだなければ、いちばん新しい通期の実績（来期の配当の予想はキャッシュにない）
             ann = num(r.get("DivAnn"))
             if dps_f is not None:
@@ -6539,6 +6551,73 @@ def lab24(store: dict) -> int:
     return rc
 
 
+# ───────────────────────── 25段目：たーちゃん『50万円を50億円に増やした』（ダイヤモンド社、2025年7月3日）の数値の決まり ─────────────────────────
+# 計画は wide_lab_plan25_2026-11-10（結果を見る前に決めたもの）。24段目と同じ形。
+T_PUB = pd.Timestamp("2025-07-31")
+T_TYPES = (
+    ("T1", "資産バリュー：PBR0.5倍以下・自己資本比率60％以上（PBR の低い順）"),
+    ("T1P", "資産バリュー＋収益：T1 に PER12倍以下（黒字）を足す（PBR の低い順）"),
+    ("T2", "収益バリュー：営業利益率10％以上・PER10倍以下・PBR1.5倍以下（PER×PBR22.5以下なら PBR は問わない）・ROA7％以上・時価総額300億円以下（PER×PBR の小さい順）"),
+    ("T2L", "収益バリュー（緩めた形）：営業利益率8％以上・PER15倍以下・ほかは T2 と同じ"),
+    ("T3", "シクリカル（近い形）：通期が赤字・PSR0.5倍以下・純資産がプラス・金融を除く（PSR の小さい順）"),
+)
+
+
+def t_scores(store: dict, D: dict) -> dict:
+    P = g_panel(store, D)
+    MC = D["MCAP"]
+    fin = np.array([D["sector"].get(c, "") in yb.FIN_SECTORS for c in D["codes"]])[:, None]
+    per = np.where(np.isfinite(P["per_f"]), P["per_f"], P["per_a"])
+    out = {}
+    with np.errstate(invalid="ignore", divide="ignore"):
+        pbr = P["pbr"]
+        a = (pbr > 0) & (pbr <= 0.5) & (P["eqr"] >= 0.60)
+        out["T1"] = np.where(a, -pbr, np.nan)
+        out["T1P"] = np.where(a & (per > 0) & (per <= 12), -pbr, np.nan)
+        mix = per * pbr
+
+        def t2(opm_mn, per_mx):
+            return ((P["opm"] >= opm_mn) & (per > 0) & (per <= per_mx) & (pbr > 0) & ((pbr <= 1.5) | (mix <= 22.5))
+                    & (P["roa"] >= 0.07) & (MC <= 3e10))
+        out["T2"] = np.where(t2(0.10, 10), -mix, np.nan)
+        out["T2L"] = np.where(t2(0.08, 15), -mix, np.nan)
+        out["T3"] = np.where((P["np_a"] < 0) & (P["psr"] > 0) & (P["psr"] <= 0.5) & (pbr > 0) & ~fin, -P["psr"], np.nan)
+    return out
+
+
+def lab25(store: dict) -> int:
+    """25段目：たーちゃんの3つの投資法の数値の決まり。24段目と同じく、出版のあとの期間の成績を別に出す（判定には使わない）。"""
+    global LAB_TITLE, LAB_PLAN, LAB_NOTE, PUB_FROM
+    LAB_TITLE, LAB_PLAN = "25段目（たーちゃん『50万円を50億円に増やした』2025年7月の数値の決まり）", "wide_lab_plan25_2026-11-10"
+    LAB_NOTE = ("25段目：24段目と同じく、条件に合う銘柄だけに点数をつけ、合う銘柄が20より少ない月は現金。条件に合わなくなった銘柄は、その月末に売る。"
+                "保留は「合格した銘柄が1か月あたり平均5未満」。前半・後半とも本の出版（2025年7月3日）より前なので、判定は「本人が見ていた期間で効いたか」の参考。"
+                "出版後（2025年8月〜）は別に出し、判定はしない。土地・有価証券の含み益・黒字化のシナリオ・出来高の急増での売りは使えない")
+    PUB_FROM = T_PUB
+    cache: dict = {}
+
+    def mk(name):
+        def fn(D):
+            if "sc" not in cache:
+                log("  基礎の値（PBR・自己資本比率・PER・営業利益率・ROA・PSR）を作っています…")
+                cache["sc"] = t_scores(store, D)
+            return cache["sc"][name]
+        return fn
+    rc = lab1(store, extra={nm: (mk(nm), lab) for nm, lab in T_TYPES}, filt=True)
+    if rc == 0 and LAST_LAB1:
+        print("\n  3. 出版のあと（2025年8月〜。判定はしない。年率％） … A ／ B ／ TOPIX（税あり） ／ でたらめな20銘柄の平均 A ／ でたらめ（同じ数・A）の平均")
+        for k, r in LAST_LAB1.items():
+            if "出版後" not in r["A"]:
+                continue
+            ra = [x["出版後"]["ann"] for x in r["rnd"]["A"] if "出版後" in x]
+            rn = [x["出版後"]["ann"] for x in r.get("rnd_n", []) if "出版後" in x]
+            print(f"     {k:<4} {r['A']['出版後']['ann']:6.1f} ／ {r['B']['出版後']['ann']:6.1f} ／ {r['tx']['出版後']['ann']:6.1f} ／ "
+                  f"{np.mean(ra) if ra else float('nan'):6.1f}（上回った回数 {sum(1 for x in ra if r['A']['出版後']['ann'] > x)}） ／ "
+                  f"{np.mean(rn) if rn else float('nan'):6.1f}（{sum(1 for x in rn if r['A']['出版後']['ann'] > x)}）"
+                  f" ・ 最大下落 A {r['A']['出版後']['mdd']:.0f}％")
+    PUB_FROM = None
+    return rc
+
+
 def d_judge(x: dict, ST_TX: dict, no_rb: bool) -> tuple:
     """判定は k_judge と同じ（でたらめ〈範囲から〉で判定・でたらめ〈同じ日の新高値ブレイクから〉は業績で絞る効き目の向き）。最初の買いの下限は D_MIN_BUYS。"""
     det = {}
@@ -6580,6 +6659,8 @@ def run_mode(mode: str, store: dict, args) -> int:
         return lab23(store)
     if mode == "lab24":
         return lab24(store)
+    if mode == "lab25":
+        return lab25(store)
     if mode == "lab21":
         # 21段目：上岡式の答え合わせ。業種別空売り比率（スタンダード）を日ごとに取り、別のファイル（data/wide_k.pkl）に持つ
         xs = k_xs_load()
@@ -6835,7 +6916,7 @@ def lab14(store: dict, args) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab5", "lab6", "lab7", "lab8", "lab9", "lab10", "lab11", "lab12", "lab13", "lab14", "lab15", "lab16", "lab17", "lab18", "lab19", "lab20", "lab21", "lab22", "lab23", "lab24", "xfetch"], default="lab1")
+    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab5", "lab6", "lab7", "lab8", "lab9", "lab10", "lab11", "lab12", "lab13", "lab14", "lab15", "lab16", "lab17", "lab18", "lab19", "lab20", "lab21", "lab22", "lab23", "lab24", "lab25", "xfetch"], default="lab1")
     ap.add_argument("--combo", default="", help="3回目：1回目で「範囲の中では効く」以上だった型の記号（カンマ区切り）。2つ以上なら SEL として回す")
     ap.add_argument("--only", default="", help="回す型の記号（カンマ区切り。空欄なら全部）。確かめる段階で候補だけを回すとき")
     ap.add_argument("--cfg", default="", help="7段目の確かめる段階で回す組み立て（例: VQM/TOP500/20/Q,NXG/TOP500/20/Q）")
