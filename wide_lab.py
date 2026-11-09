@@ -6875,6 +6875,234 @@ def lab27(store: dict) -> int:
     return 0
 
 
+# ───────────────────────── 28段目：ALFA『高配当株で小金持ちになる方法』の往復銘柄の売り買い ─────────────────────────
+# 計画は wide_lab_plan28_2026-11-10（結果を見る前に決めたもの）。毎日の売り買い。損切りはしない（本のとおり）。
+R_MEAN = 250             # 「ここ数年の平均値」の代わり：250営業日の終値の平均
+R_STEP = 0.03            # 買い下がり：前に買った値段から3％下がるごとに
+R_TRANCHE = 4            # 資金を4回に分ける
+R_TARGET = 0.06          # 売り：終値が平均の +6％以上（本の例：平均1,650円・売り1,750円）。平均より上で買ったでたらめは、最初に買った値段の +6％
+R_FORMS = (
+    ("R1", "東証一部・プライムの大型株（範囲の時価総額の上から500位）・配当利回り4％以上・1日の出来高100万株以上。終値が250日平均以下で買い、3％下がるごとに買い増し（4回まで）、平均の+6％で売る。損切りなし。5銘柄",
+     {"slots": 5, "yld": 0.04}),
+    ("R2", "参考：R1 を20銘柄に広げる", {"slots": 20, "yld": 0.04}),
+    ("R0", "参考：R1 から配当利回りの条件を外す（往復の売り買いだけの効き目）", {"slots": 5, "yld": 0.0}),
+)
+
+
+def r_sim(cands: dict, D: dict, divpay: dict, t0: int, cfg: dict, last_t: np.ndarray, MEAN: np.ndarray, rand_hold: bool = False,
+          cap: float = CAP, slip: float = SLIP, tax: float = TAX):
+    """往復銘柄の運用。cands … {日: [銘柄, …]（優先の順）}。合図はその日の終値で決め、次の営業日の終値で売り買いする。"""
+    CF, C, me_idx = D["CF"], D["C"], D["me_idx"]
+    T = CF.shape[1]
+    slots = cfg["slots"]
+    me_set = set(me_idx)
+    cash, loss = float(cap), 0.0
+    pos: dict = {}
+    pend: list = []
+    vals = []
+    st = {"n_new": 0, "n_add": 0, "buy_t": [], "closed": [], "held": [], "cash_share": [], "delist": 0, "open_days": []}
+
+    def px(i, t):
+        v = CF[i, t]
+        return float(v) if (v == v and v > 0) else 0.0
+
+    def realize(g):
+        nonlocal cash, loss
+        if g > 0:
+            tx = max(0.0, g - loss) * tax
+            loss = max(0.0, loss - g)
+            cash -= tx
+        else:
+            loss += -g
+
+    def close_pos(i, t, price):
+        nonlocal cash
+        p_ = pos.pop(i)
+        eff = price * (1.0 - slip)
+        cash += p_["sh"] * eff
+        realize(p_["sh"] * eff - p_["cost"])
+        st["closed"].append((p_["first_t"], t, p_["sh"] * eff / p_["cost"] - 1.0))
+
+    for t in range(t0, T):
+        for i in [k for k in pos if last_t[k] < t - 5]:
+            close_pos(i, t, px(i, last_t[i]))
+            st["delist"] += 1
+        if pend:
+            value = cash + sum(p_["sh"] * px(k, t) for k, p_ in pos.items())
+            for i, kind in pend:
+                v = C[i, t]
+                if not (v == v and v > 0):
+                    continue
+                if kind == "sell":
+                    if i in pos:
+                        close_pos(i, t, float(v))
+                    continue
+                if kind == "new":
+                    if i in pos or len(pos) >= slots:
+                        continue
+                    budget = value / slots
+                else:
+                    p_ = pos.get(i)
+                    if p_ is None or p_["k"] >= R_TRANCHE:
+                        continue
+                    budget = p_["budget"]
+                pb = float(v) * (1.0 + slip)
+                sh = int(min(budget / R_TRANCHE, cash) / pb)
+                if sh < 1:
+                    continue
+                cash -= sh * pb
+                if kind == "new":
+                    pos[i] = {"sh": sh, "cost": sh * pb, "budget": budget, "k": 1, "last": float(v), "first": float(v), "first_t": t}
+                    st["n_new"] += 1
+                    st["buy_t"].append(t)
+                else:
+                    p_["sh"] += sh
+                    p_["cost"] += sh * pb
+                    p_["k"] += 1
+                    p_["last"] = float(v)
+                    st["n_add"] += 1
+            pend = []
+        for i, amt in divpay.get(t, ()):
+            if i in pos:
+                cash += pos[i]["sh"] * amt * (1.0 - tax)
+        if t in me_set:
+            value = cash + sum(p_["sh"] * px(k, t) for k, p_ in pos.items())
+            vals.append(value)
+            st["held"].append(len(pos))
+            st["cash_share"].append(cash / value if value > 0 else 0.0)
+        if t >= T - 1:
+            break
+        for i, p_ in pos.items():
+            v, m = C[i, t], MEAN[i, t]
+            if not (v == v and v > 0 and m == m):
+                continue
+            if v >= max(m, p_["first"]) * (1.0 + R_TARGET):      # 平均の+6％（平均より上で買ったでたらめは、最初に買った値段の+6％。平均以下で買う本の形では平均の+6％と同じ）
+                pend.append((i, "sell"))
+            elif p_["k"] < R_TRANCHE and v <= p_["last"] * (1.0 - R_STEP):
+                pend.append((i, "add"))
+        for i in cands.get(t, ()):
+            if i not in pos:
+                pend.append((i, "new"))
+    liq, gain = cash, 0.0
+    for k, p_ in pos.items():
+        eff = px(k, T - 1) * (1.0 - slip)
+        liq += p_["sh"] * eff
+        gain += p_["sh"] * eff - p_["cost"]
+    liq -= tax * max(0.0, gain - loss)
+    st["open_days"] = [T - 1 - p_["first_t"] for p_ in pos.values()]
+    return np.array(vals), liq, st
+
+
+def lab28(store: dict) -> int:
+    """28段目：往復銘柄の売り買い（平均以下で買い、買い下がり、平均の上で売る。損切りなし）。計画は wide_lab_plan28_2026-11-10。"""
+    log("28段目（ALFA の往復銘柄）を回します（指標を作っています）…")
+    D = build(store)
+    dates, UNI, me_idx, cal, codes, MC = D["dates"], D["UNI"], D["me_idx"], D["cal"], D["codes"], D["MCAP"]
+    C, CF = D["C"], D["CF"]
+    S, T = C.shape
+    j0 = next((j for j, t in enumerate(me_idx) if t >= R_MEAN + 5), None)
+    if j0 is None:
+        print("\n■ 株価の期間が短すぎます")
+        return 2
+    t0 = me_idx[j0]
+    ev = dates[j0:]
+    yrs = max((ev[-1] - ev[0]).days / 365.25, 0.5)
+    E = ev_extract(store, D)
+    TXv, TXliq = topix_taxed(D, j0)
+    ST_TX = half_stats(TXv, ev)
+    traded = np.isfinite(C) & (C > 0)
+    last_t = np.array([int(np.nonzero(traded[i])[0][-1]) if traded[i].any() else -1 for i in range(S)])
+    MK = k_market_codes(store, D)
+    P = g_panel(store, D)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        MEAN = pd.DataFrame(CF.T).rolling(R_MEAN, min_periods=R_MEAN).mean().to_numpy().T
+    # 1日の出来高（株数）＝売買代金 ÷ 終値。20営業日の中央値
+    SHV = np.full((S, T), np.nan)
+    cal_i = D["cal"].astype("datetime64[D]")
+    for i, c in enumerate(codes):
+        b = store["bars"][c]
+        d_i = np.asarray(b["d"]).astype("datetime64[D]")
+        idx = np.searchsorted(cal_i, d_i)
+        ok = (idx < T)
+        ok[ok] &= cal_i[idx[ok]] == d_i[ok]
+        sv = np.full(T, np.nan)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            sv[idx[ok]] = np.asarray(b["va"], dtype=float)[ok] / np.asarray(b["c"], dtype=float)[ok]
+        SHV[i] = pd.Series(sv).rolling(20, min_periods=10).median().to_numpy()
+    jm = np.searchsorted(np.array(me_idx), np.arange(T), side="left") - 1
+    rank_mc = np.full(UNI.shape, np.inf)
+    for j in range(len(me_idx)):
+        idx = np.nonzero(UNI[:, j])[0]
+        o = idx[np.argsort(-MC[idx, j])]
+        rank_mc[o, j] = np.arange(len(o))
+    big = (rank_mc < 500) & np.isin(MK, ["0101", "0111"])
+    res = {}
+    print("\n" + "=" * 100)
+    print("【日本株の手法・28段目（ALFA『高配当株で小金持ちになる方法』の往復銘柄）（wide_lab）：一部・プライムの大型株】")
+    print("  （基準は結果を見る前に決めたもの。計画はプロジェクトの wide_lab_plan28_2026-11-10）")
+    print(f"  比べる期間 {ev[0].date()}〜{ev[-1].date()}（{len(ev) - 1}か月）。前半＝〜{(SPLIT - pd.Timedelta(days=1)).date()}・後半＝{SPLIT.date()}〜")
+    print(f"  費用と税 {COST}：株 片道{SLIP * 100:.1f}％・{TAX_TXT}（損は同じ運用の中で繰り越す）。元本{CAP / 1e4:,.0f}万円。合図の次の営業日の終値で売り買い。損切りなし")
+    for key, lab, cfg in R_FORMS:
+        if ONLY and key not in ONLY:
+            continue
+        log(f"  {key} を回しています（でたらめ 20回）…")
+        elig = {}
+        cands = {}
+        n_c = 0
+        for t in range(t0, T - 1):
+            j = jm[t]
+            if j < 0:
+                continue
+            ok = big[:, j] & traded[:, t] & (SHV[:, t] >= 1e6)
+            if cfg["yld"] > 0:
+                ok &= P["dy"][:, j] >= cfg["yld"]
+            ids = np.nonzero(ok)[0]
+            if not len(ids):
+                continue
+            elig[t] = ids
+            sig = [i for i in ids if C[i, t] <= MEAN[i, t]]
+            if sig:
+                cands[t] = sorted(sig, key=lambda i: -(P["dy"][i, j] if P["dy"][i, j] == P["dy"][i, j] else 0))
+                n_c += len(sig)
+        v, liq, s_ = r_sim(cands, D, E["divpay"], t0, cfg, last_t, MEAN)
+        ra = []
+        for k in range(N_RAND):
+            rg = np.random.default_rng(9100 + k)
+            pl = {}
+            for t, cl in cands.items():
+                pool = elig[t]
+                pl[t] = [int(i) for i in rg.choice(pool, size=min(len(cl), len(pool)), replace=False)]
+            pv, _l, _s = r_sim(pl, D, E["divpay"], t0, cfg, last_t, MEAN)
+            ra.append(half_stats(pv, ev))
+        st_ = half_stats(v, ev)
+        det = {}
+        ok_tx = ok_ra = True
+        for h in ("前半", "後半"):
+            a = st_[h]["ann"]
+            rr = [y[h]["ann"] for y in ra]
+            d_tx, d_ra, b_ra = a - ST_TX[h]["ann"], a - float(np.mean(rr)), int(sum(1 for y in rr if a > y))
+            det[h] = (d_tx, d_ra, b_ra, float(np.mean(rr)))
+            ok_tx &= d_tx >= PT_TX
+            ok_ra &= (d_ra >= PT_RND) and (b_ra >= BEAT_MIN)
+        nb = {"前半": sum(1 for t in s_["buy_t"] if pd.Timestamp(cal[t]) < SPLIT), "後半": sum(1 for t in s_["buy_t"] if pd.Timestamp(cal[t]) >= SPLIT)}
+        verdict = "保留（データ不足）" if min(nb.values()) < 20 else ("候補" if (ok_tx and ok_ra) else ("範囲の中では効く" if ok_ra else "効かない"))
+        res[key] = verdict
+        cl = s_["closed"]
+        win = np.mean([r[2] > 0 for r in cl]) * 100 if cl else float("nan")
+        hold = [r[1] - r[0] for r in cl]
+        log(f"  {key} … {verdict}")
+        print(f"\n  {key} {lab}")
+        print(f"     年率 {st_['前半']['ann']:6.1f} ／ {st_['後半']['ann']:6.1f}（最大下落 {st_['通し']['mdd']:.0f}％・清算後の通し {((liq / CAP) ** (1 / yrs) - 1) * 100:.1f}％）"
+              f"［TOPIX との差 {det['前半'][0]:+.1f} ／ {det['後半'][0]:+.1f}・でたらめとの差 {det['前半'][1]:+.1f}・{det['前半'][2]}回 ／ {det['後半'][1]:+.1f}・{det['後半'][2]}回］ … {verdict}")
+        print(f"     合図 {n_c}回（銘柄×日）・最初の買い {s_['n_new']}（前半 {nb['前半']}・後半 {nb['後半']}）・買い増し {s_['n_add']}・売り {len(cl)}回（勝ち {win:.0f}％・"
+              f"平均 {np.mean([r[2] for r in cl]) * 100 if cl else float('nan'):+.1f}％・持った日数の中央 {np.median(hold) if hold else float('nan'):.0f}日）・"
+              f"最後に持ったまま {len(s_['open_days'])}銘柄（持った日数の中央 {np.median(s_['open_days']) if s_['open_days'] else 0:.0f}日）・現金の割合 {np.mean(s_['cash_share']) * 100:.0f}％・上場をやめた {s_['delist']}")
+        print(f"     でたらめ（同じ日に、条件に合う銘柄から同じ数だけでたらめに選ぶ。売り買いの決まりは同じ）の平均 {det['前半'][3]:.1f} ／ {det['後半'][3]:.1f}")
+    print(f"\n  TOPIX（税あり） {ST_TX['前半']['ann']:.1f} ／ {ST_TX['後半']['ann']:.1f}（清算後の通し {((TXliq / CAP) ** (1 / yrs) - 1) * 100:.1f}％）")
+    print("  判定のまとめ … " + "・".join(f"{k} {v}" for k, v in res.items()))
+    return 0
+
+
 def d_judge(x: dict, ST_TX: dict, no_rb: bool) -> tuple:
     """判定は k_judge と同じ（でたらめ〈範囲から〉で判定・でたらめ〈同じ日の新高値ブレイクから〉は業績で絞る効き目の向き）。最初の買いの下限は D_MIN_BUYS。"""
     det = {}
@@ -6922,6 +7150,8 @@ def run_mode(mode: str, store: dict, args) -> int:
         return lab26(store)
     if mode == "lab27":
         return lab27(store)
+    if mode == "lab28":
+        return lab28(store)
     if mode == "lab21":
         # 21段目：上岡式の答え合わせ。業種別空売り比率（スタンダード）を日ごとに取り、別のファイル（data/wide_k.pkl）に持つ
         xs = k_xs_load()
@@ -7177,7 +7407,7 @@ def lab14(store: dict, args) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab5", "lab6", "lab7", "lab8", "lab9", "lab10", "lab11", "lab12", "lab13", "lab14", "lab15", "lab16", "lab17", "lab18", "lab19", "lab20", "lab21", "lab22", "lab23", "lab24", "lab25", "lab26", "lab27", "xfetch"], default="lab1")
+    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab5", "lab6", "lab7", "lab8", "lab9", "lab10", "lab11", "lab12", "lab13", "lab14", "lab15", "lab16", "lab17", "lab18", "lab19", "lab20", "lab21", "lab22", "lab23", "lab24", "lab25", "lab26", "lab27", "lab28", "xfetch"], default="lab1")
     ap.add_argument("--combo", default="", help="3回目：1回目で「範囲の中では効く」以上だった型の記号（カンマ区切り）。2つ以上なら SEL として回す")
     ap.add_argument("--only", default="", help="回す型の記号（カンマ区切り。空欄なら全部）。確かめる段階で候補だけを回すとき")
     ap.add_argument("--cfg", default="", help="7段目の確かめる段階で回す組み立て（例: VQM/TOP500/20/Q,NXG/TOP500/20/Q）")
