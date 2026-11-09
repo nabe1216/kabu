@@ -9,6 +9,10 @@ name: divup-track
 # 記録は毎回、生のデータから作り直すので、毎日でなくても、足りない日をあとから取れば同じ記録になる。
 # 生のデータ（J-Quants から取ったもの）は Actions のキャッシュにだけ持ち、公開のリポジトリには入れない（計画の9）。
 on:
+  # 2026年11月9日：記録の前の確かめ（mode=check）が済んだので、週2回（火・土の朝7時17分）に update を動かす。
+  # 生のデータのキャッシュは7日使わないと消えるので、週2回にしている。毎日の判定（平日19時半）とは重ならない
+  schedule:
+    - cron: '17 22 * * 1,5'
   workflow_dispatch:
     inputs:
       mode:
@@ -29,6 +33,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  MODE: ${{ inputs.mode || 'update' }}
   RAW_PATH: data/divup_raw.pkl.gz
   RAW_PREFIX: divup-raw-v1-
 
@@ -62,10 +67,10 @@ jobs:
         run: |
           set +e
           set -o pipefail
-          python divup_track.py --mode "${{ inputs.mode }}" 2>&1 | tee run.log
+          python divup_track.py --mode "${MODE}" 2>&1 | tee run.log
           code=${PIPESTATUS[0]}
           {
-            echo "## divup-track（${{ inputs.mode }}）"
+            echo "## divup-track（${MODE}）"
             echo ""
             if [ $code -eq 3 ]; then echo "**まだ終わっていません。同じ設定のまま、もう一度「Run workflow」を押してください（取った分は保存しました）**"; fi
             if [ $code -ne 0 ] && [ $code -ne 3 ]; then echo "**失敗しました（終了コード $code）**"; fi
@@ -92,7 +97,7 @@ jobs:
           for id in $ids; do gh api -X DELETE "repos/${GITHUB_REPOSITORY}/actions/caches/${id}" || true; done
 
       - name: 記録を保存する（update のときだけ）
-        if: ${{ inputs.mode == 'update' && success() }}
+        if: ${{ env.MODE == 'update' && success() }}
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
@@ -111,6 +116,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: divup-track-${{ inputs.mode }}-result
+          name: divup-track-${{ env.MODE }}-result
           path: run.log
           if-no-files-found: ignore
