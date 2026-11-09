@@ -264,6 +264,74 @@ def fac_after(fd: np.ndarray, ff: np.ndarray, t) -> float:
     return float(np.prod(ff[k:])) if k < len(ff) else 1.0
 
 
+# 29段目のあと（別のレビューで見つかった誤りを直したもの。2026年11月10日）：
+# 期末を基準日にした株式分割では、権利落ちの日（＝調整係数のつく日）が期末より前に来る。決算短信の実績の配当と期末の株数は、
+# 分割前の実額のこともあれば、分割後に直してあることもある。前の値（いまの基準）に近いほうを選ぶ
+SPLIT_DIAG: dict = {"div": set(), "div_post": set(), "sh": set(), "sh_post": set()}
+
+
+def _d7(t) -> pd.Timestamp:
+    return pd.Timestamp(str(t)[:10]) - pd.Timedelta(days=7)
+
+
+def div_post_map(code: str, fd: np.ndarray, ff: np.ndarray, tl: list) -> dict:
+    """期末の日 → True（その期の配当の実績は分割後の基準に直してある）。期末の7日前より後〜開示の日までに分割・併合がなければ False。"""
+    out, ref = {}, None
+    for r in tl:
+        if not is_fy(r):
+            continue
+        fy_end = str(r.get("CurFYEn") or "")[:10]
+        if len(fy_end) != 10 or fy_end in out:
+            continue
+        ann = num(r.get("DivAnn"))
+        a, b = fac_after(fd, ff, _d7(fy_end)), fac_after(fd, ff, str(r["DiscDate"])[:10])
+        post = False
+        if abs(a - b) > 1e-9:
+            SPLIT_DIAG["div"].add((code, fy_end))
+            if ref and ann and ann > 0:
+                post = bool(abs(np.log(ann * b / ref)) < abs(np.log(ann * a / ref)))
+            if post:
+                SPLIT_DIAG["div_post"].add((code, fy_end))
+        out[fy_end] = post
+        if ann and ann > 0:
+            ref = ann * (b if post else a)
+    return out
+
+
+def dps_now(fd: np.ndarray, ff: np.ndarray, r: dict, amt: float, rec_me, post: bool) -> float:
+    """決算短信の実績の配当 amt（rec_me＝権利確定の月末）を、いまの株価の基準へ。"""
+    if post:
+        return amt * fac_after(fd, ff, str(r["DiscDate"])[:10])
+    return amt * fac_after(fd, ff, _d7(rec_me))
+
+
+def sh_now_list(code: str, fd: np.ndarray, ff: np.ndarray, tl: list) -> list:
+    """開示ごとの、自己株を除く株数（いまの基準）。期間の末の7日前より後〜開示の日までに分割・併合があれば、前の開示の株数に近いほうを選ぶ。"""
+    out, ref = [], None
+    for r in tl:
+        sh = num(r.get("ShOutFY"))
+        if not sh:
+            out.append(None)
+            continue
+        sh = sh - (num(r.get("TrShFY")) or 0.0)
+        pe = str(r.get("CurPerEn") or r.get("CurFYEn") or "")[:10]
+        b = fac_after(fd, ff, str(r["DiscDate"])[:10])
+        a = fac_after(fd, ff, _d7(pe)) if len(pe) == 10 else b
+        v = sh / b
+        if abs(a - b) > 1e-9:
+            key = (code, str(r["DiscDate"])[:10])
+            SPLIT_DIAG["sh"].add(key)
+            va = sh / a
+            if not (ref and ref > 0 and sh > 0 and abs(np.log(v / ref)) < abs(np.log(va / ref))):
+                v = va
+            else:
+                SPLIT_DIAG["sh_post"].add(key)
+        out.append(v if v > 0 else None)
+        if v > 0:
+            ref = v
+    return out
+
+
 def fin_timeline(st: list) -> list:
     rows = []
     for r in st or []:
@@ -374,6 +442,8 @@ def build(store: dict) -> dict:
         cal_i = cal.astype("datetime64[D]")
         # 配当（受け取る側）：通期の決算短信の実績。中間は期末の6か月前の月、期末は期末の月に、前の月末から持っていれば受け取る
         seen_fy = set()
+        dpost = div_post_map(c, fd, ff, tl)
+        shn = sh_now_list(c, fd, ff, tl)
         for r in tl:
             if not is_fy(r):
                 continue
@@ -390,9 +460,9 @@ def build(store: dict) -> dict:
                 if amt > 0:
                     j = ym_j.get((rec + pd.offsets.MonthEnd(0)).strftime("%Y-%m"))
                     if j is not None:
-                        DIV[i, j] += amt * fac_after(fd, ff, rec + pd.offsets.MonthEnd(0))
+                        DIV[i, j] += dps_now(fd, ff, r, amt, rec + pd.offsets.MonthEnd(0), dpost.get(fy_end, False))
         for j in range(M):
-            k = int(np.searchsorted(dd, me_np[j], side="left")) - 1      # 月末の日より前に出た開示だけ
+            k = int(np.searchsorted(dd, cal_i[me_idx[j]], side="left")) - 1      # 月末の最後の営業日より前に出た開示だけ（その日の引けのあとの開示を使わない）
             if k < 0:
                 continue
             # 売買が長く途切れたあと（コードの使い回しなど）は、途切れたあとに出た開示だけを使う
@@ -408,11 +478,10 @@ def build(store: dict) -> dict:
                 fy_by_end[str(r.get("CurFYEn") or "")[:10]] = r
             fy_list = [fy_by_end[e] for e in sorted(fy_by_end)]
             # 株数（自己株を除く）：直近の開示。いまの株数の基準へ
-            sh_r = next((r for r in reversed(sub) if num(r.get("ShOutFY"))), None)
-            if sh_r is None:
+            k_sh = next((kk for kk in range(k, k_lo - 1, -1) if shn[kk]), None)
+            if k_sh is None:
                 continue
-            sh = num(sh_r.get("ShOutFY")) - (num(sh_r.get("TrShFY")) or 0.0)
-            sh_cur = sh / fac_after(fd, ff, str(sh_r["DiscDate"])[:10])
+            sh_cur = shn[k_sh]
             px = CF[i, me_idx[j]]
             if not (px == px and px > 0 and sh_cur > 0):
                 continue
@@ -445,7 +514,8 @@ def build(store: dict) -> dict:
                     F["FCF"][i, j] = (cfo + cfi) / mcap
                 ann = num(r.get("DivAnn"))
                 if ann is not None:
-                    F["DY"][i, j] = ann * fac_after(fd, ff, str(r["DiscDate"])[:10]) / float(px)
+                    fe_ = str(r.get("CurFYEn") or "")[:10]
+                    F["DY"][i, j] = dps_now(fd, ff, r, ann, fe_, dpost.get(fe_, False)) / float(px)
                 nc = "NonConsolidated" in str(r.get("DocType") or "")      # 単体だけの会社は、単体の予想も見る
                 k_fc = ("FNP",) + (("FNCNP",) if nc else ())
                 nx = first_num(r, ("NxFNp", "NxFNP") + (("NxFNCNP", "NxFNCNp") if nc else ()))
@@ -471,10 +541,8 @@ def build(store: dict) -> dict:
                     a0, a1 = num(p.get("TA")), num(r.get("TA"))
                     if a0 and a0 > 0 and a1 is not None:
                         F["AGROW"][i, j] = -(a1 / a0 - 1.0)
-                    h0, h1 = num(p.get("ShOutFY")), num(r.get("ShOutFY"))
+                    h0, h1 = shn[tl.index(p)], shn[tl.index(r)]
                     if h0 and h1:
-                        h0 = (h0 - (num(p.get("TrShFY")) or 0.0)) / fac_after(fd, ff, str(p["DiscDate"])[:10])
-                        h1 = (h1 - (num(r.get("TrShFY")) or 0.0)) / fac_after(fd, ff, str(r["DiscDate"])[:10])
                         if h0 > 0:
                             F["SHR"][i, j] = -(h1 / h0 - 1.0)
     # 値動きから作る型
@@ -993,6 +1061,7 @@ def ev_extract(store: dict, D: dict) -> dict:
                     splits.append((i, t_s))
         tl = fin_timeline(store["fins"].get(c))
         seen_d, seen_fy = set(), set()
+        dpost = div_post_map(c, fd, ff, tl)
         for r in tl:
             d = str(r["DiscDate"])[:10]
             if "FinancialStatements" in str(r.get("DocType") or "") and d not in seen_d:
@@ -1019,7 +1088,7 @@ def ev_extract(store: dict, D: dict) -> dict:
                     me = rec + pd.offsets.MonthEnd(0)
                     t_rec = last_td(cal, me)
                     if t_rec >= 3:
-                        divpay.setdefault(t_cum_of(cal, t_rec), []).append((i, amt * fac_after(fd, ff, me)))
+                        divpay.setdefault(t_cum_of(cal, t_rec), []).append((i, dps_now(fd, ff, r, amt, me, dpost.get(fy_end, False))))
             # 権利付き最終日の前に買う型の候補：この決算短信のあとに来る、次の期の中間と期末の権利確定日
             t_disc = int(np.searchsorted(cal, np.datetime64(d), side="left"))
             dps = ann * fac_after(fd, ff, d)
@@ -6311,6 +6380,7 @@ def g_panel(store: dict, D: dict) -> dict:
         b = store["bars"][c]
         fd, ff = b["fd"], b["ff"]
         dd = np.array([np.datetime64(str(r["DiscDate"])[:10]) for r in tl])
+        dpost = div_post_map(c, fd, ff, tl)
         fys_all = [r for r in tl if is_fy(r)]
         use_od = bool(fys_all) and all(num(r.get("OdP")) is not None for r in fys_all)
         pk = "OdP" if use_od else "OP"          # 利益は経常利益（経常利益のない会社は、すべての期を営業利益で。22段目と同じ）
@@ -6319,7 +6389,7 @@ def g_panel(store: dict, D: dict) -> dict:
             px = CF[i, me_idx[j]]
             if not (mc == mc and mc > 0 and px == px and px > 0):
                 continue
-            k = int(np.searchsorted(dd, me_np[j], side="left")) - 1
+            k = int(np.searchsorted(dd, cal_i[me_idx[j]], side="left")) - 1      # 月末の最後の営業日より前の開示だけ（build と同じ）
             if k < 0:
                 continue
             sg = int(SEG[i, me_idx[j]])
@@ -6384,15 +6454,17 @@ def g_panel(store: dict, D: dict) -> dict:
             if dps_f is not None:
                 P["dy"][i, j] = dps_f * fac_after(fd, ff, dps_f_d) / float(px)
             elif ann is not None:
-                P["dy"][i, j] = ann * fac_after(fd, ff, str(r["DiscDate"])[:10]) / float(px)
+                P["dy"][i, j] = dps_now(fd, ff, r, ann, fy_end, dpost.get(fy_end, False)) / float(px)
             # 配当性向：いちばん新しい通期の実績の年間配当 ÷ 1株利益（1株利益がなければ、純利益 ÷ 自己株を除く株数）
             eps = num(r.get("EPS"))
             shr = (num(r.get("ShOutFY")) or 0.0) - (num(r.get("TrShFY")) or 0.0)
             if ann is not None and np_a and np_a > 0:
+                # 1株利益は、分割が期末のあと開示の前なら分割後に直して出す決まり（会計基準）。配当はいまの基準にそろえてから割る
+                dps_c = dps_now(fd, ff, r, ann, fy_end, dpost.get(fy_end, False))
                 if eps and eps > 0:
-                    P["payout"][i, j] = ann / eps
+                    P["payout"][i, j] = dps_c / (eps * fac_after(fd, ff, str(r["DiscDate"])[:10]))
                 elif shr > 0:
-                    P["payout"][i, j] = ann * shr / np_a
+                    P["payout"][i, j] = dps_c * (mc / float(px)) / np_a
             if len(fy) >= 2:
                 s1, s0 = num(fy[-1].get("Sales")), num(fy[-2].get("Sales"))
                 p1, p0 = num(fy[-1].get(pk)), num(fy[-2].get(pk))
@@ -6409,7 +6481,8 @@ def g_panel(store: dict, D: dict) -> dict:
                 P["eq_up3"][i, j] = float(all(v is not None for v in e3) and e3[0] < e3[1] < e3[2])
                 d3 = [num(x.get("DivAnn")) for x in fy[-3:]]
                 if all(v is not None for v in d3):
-                    d3 = [v * fac_after(fd, ff, str(x["DiscDate"])[:10]) for v, x in zip(d3, fy[-3:])]
+                    d3 = [dps_now(fd, ff, x, v, str(x.get("CurFYEn") or "")[:10], dpost.get(str(x.get("CurFYEn") or "")[:10], False))
+                          for v, x in zip(d3, fy[-3:])]
                     P["div_nocut3"][i, j] = float(d3[2] > 0 and d3[0] <= d3[1] * 1.0001 and d3[1] <= d3[2] * 1.0001)
                     P["div_up3"][i, j] = float(d3[2] > 0 and d3[0] <= d3[1] * 1.0001 and d3[1] <= d3[2] * 1.0001 and d3[2] > d3[0] * 1.0001)
                 n3 = [num(x.get("NP")) for x in fy[-3:]]
@@ -7371,6 +7444,9 @@ def lab29(store: dict) -> int:
             print(f"     {k}（{ks[0][:4]}-{ks[0][4:]}〜{ks[-1][:4]}-{ks[-1][4:]}・{len(ks)}か月） … 相関 {cor:.2f}・年率 French {x_ann(xa):+.1f}％ ／ こちら {x_ann(xb):+.1f}％"
                   f" … {'合う' if good else '合わない'}")
         verdict["③"] = ok3
+    sd = {k: len(v) for k, v in SPLIT_DIAG.items()}
+    print(f"\n  ④ 直したあとの診断（判定しない）：期末のまわり（期末の7日前〜開示の日）に分割・併合があり、基準があいまいだったもの … "
+          f"通期の配当 {sd['div']}件（うち分割後に直してあると判断 {sd['div_post']}件）・株数 {sd['sh']}件（うち {sd['sh_post']}件）")
     txt = {True: "合う", False: "合わない", None: "判定できない"}
     print("\n  判定のまとめ … " + "・".join(f"{k} {txt[v]}" for k, v in verdict.items()))
     return 0
