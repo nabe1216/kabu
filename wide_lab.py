@@ -6092,10 +6092,10 @@ def d_sim(cands: dict, D: dict, divpay: dict, t0: int, cfg: dict, last_t: np.nda
             if not (v == v and v > 0) or i in pend_sell:
                 continue
             avg = p["cost"] / p["sh"]
-            if v >= p["entry"] * (1.0 + D_BE):
+            if v >= p["entry"] * (1.0 + cfg.get("be", D_BE)):
                 p["be"] = True
             if not p["be"]:
-                if v <= avg * (1.0 - D_STOP):
+                if v <= avg * (1.0 - cfg.get("stop", D_STOP)):        # 27段目は cfg で損切りの幅を変える（なければ22段目の −10％）
                     pend_sell[i] = "損切り"
                     continue
                 if v < p["level"] and not cfg.get("nobox"):
@@ -6689,6 +6689,192 @@ def lab26(store: dict) -> int:
     return rc
 
 
+# ───────────────────────── 27段目：ミネルヴィニ『ミネルヴィニの成長株投資法』（原書2013年）の数値の決まり ─────────────────────────
+# 計画は wide_lab_plan27_2026-11-10（結果を見る前に決めたもの）。売り買いは22段目と同じ毎日の道具（d_sim）を使う。
+M_RS_MIN = 0.70          # レラティブストレングスの順位（範囲の中で上から何割か）70以上
+M_PIVOT = 25             # ブレイクの基準：その前の25営業日（約5週）の終値の高値を超えた日
+M_TIGHT = 0.15           # M2：その25営業日の値幅（高値 ÷ 安値 − 1）が15％以下（ボラティリティの縮小の近い形）
+M_FORMS = (
+    ("M1", "トレンドテンプレート（8つ）・RS70以上・25営業日の高値を超えた日に買う・5銘柄・−7.5％で損切り・+20％で損切りを取得単価へ・その後は50日線割れで売る",
+     {"filt": "none", "slots": 5, "pyr": False, "mkt": False, "nobox": True, "stop": 0.075}),
+    ("M2", "M1 に「その前の25営業日の値幅が15％以下」（ボラティリティの縮小）を足す", {"filt": "tight", "slots": 5, "pyr": False, "mkt": False, "nobox": True, "stop": 0.075}),
+    ("M3", "M1 に業績（直近2四半期の利益が前年比+20％以上・売上+10％以上）を足す", {"filt": "fin", "slots": 5, "pyr": False, "mkt": False, "nobox": True, "stop": 0.075}),
+    ("M4", "参考：M1 を20銘柄に広げる（運の幅を小さくした形）", {"filt": "none", "slots": 20, "pyr": False, "mkt": False, "nobox": True, "stop": 0.075}),
+)
+
+
+def m_signals(D: dict) -> tuple:
+    """毎日のトレンドテンプレート・RS の順位・25営業日の高値のブレイク・値幅。どれもその日の終値までで決める。"""
+    CF, UNI, me_idx = D["CF"], D["UNI"], D["me_idx"]
+    S, T = CF.shape
+    df = pd.DataFrame(CF.T)
+    with np.errstate(invalid="ignore"):
+        ma50 = df.rolling(50, min_periods=50).mean().to_numpy().T
+        ma150 = df.rolling(150, min_periods=150).mean().to_numpy().T
+        ma200 = df.rolling(200, min_periods=200).mean().to_numpy().T
+        lo52 = df.rolling(250, min_periods=250).min().to_numpy().T
+        hi52 = df.rolling(250, min_periods=250).max().to_numpy().T
+        ma200_prev = np.full_like(ma200, np.nan)
+        ma200_prev[:, 21:] = ma200[:, :-21]
+        p = CF
+        tt = ((p > ma150) & (p > ma200) & (ma150 > ma200) & (ma200 > ma200_prev) & (ma50 > ma150) & (ma50 > ma200) & (p > ma50)
+              & (p >= lo52 * 1.30) & (p >= hi52 * 0.75))
+        prev_hi = df.shift(1).rolling(M_PIVOT, min_periods=M_PIVOT).max().to_numpy().T
+        prev_lo = df.shift(1).rolling(M_PIVOT, min_periods=M_PIVOT).min().to_numpy().T
+        brk = (p > prev_hi)
+        tight = (prev_hi / prev_lo - 1.0) <= M_TIGHT
+
+        def lag(k):
+            out = np.full_like(CF, np.nan)
+            out[:, k:] = CF[:, :-k]
+            return out
+        rs_raw = 0.4 * (p / lag(63) - 1) + 0.2 * (p / lag(126) - 1) + 0.2 * (p / lag(189) - 1) + 0.2 * (p / lag(252) - 1)
+    jm = np.searchsorted(np.array(me_idx), np.arange(T), side="left") - 1
+    rs = np.full((S, T), np.nan)
+    for t in range(T):
+        j = jm[t]
+        if j < 0:
+            continue
+        idx = np.nonzero(UNI[:, j] & np.isfinite(rs_raw[:, t]))[0]
+        if len(idx) > 1:
+            r = np.argsort(np.argsort(rs_raw[idx, t], kind="stable"), kind="stable")
+            rs[idx, t] = r / (len(idx) - 1)
+    return tt, rs, brk, tight, prev_hi, ma50, jm
+
+
+def lab27(store: dict) -> int:
+    """27段目：ミネルヴィニのトレンドテンプレートとブレイク。計画は wide_lab_plan27_2026-11-10。"""
+    log("27段目（ミネルヴィニ）を回します（指標を作っています）…")
+    D = build(store)
+    dates, UNI, me_idx, cal, codes = D["dates"], D["UNI"], D["me_idx"], D["cal"], D["codes"]
+    C, CF = D["C"], D["CF"]
+    S, T = C.shape
+    j0 = next((j for j, t in enumerate(me_idx) if t >= 260), None)
+    if j0 is None:
+        print("\n■ 株価の期間が短すぎます")
+        return 2
+    t0 = me_idx[j0]
+    ev = dates[j0:]
+    yrs = max((ev[-1] - ev[0]).days / 365.25, 0.5)
+    E = ev_extract(store, D)
+    TXv, TXliq = topix_taxed(D, j0)
+    ST_TX = half_stats(TXv, ev)
+    traded = np.isfinite(C) & (C > 0)
+    last_t = np.array([int(np.nonzero(traded[i])[0][-1]) if traded[i].any() else -1 for i in range(S)])
+    LIMU, LIMD = D.get("LIMU"), D.get("LIMD")
+    if LIMU is None:
+        LIMU, LIMD = limit_masks_close(store, codes, cal, C, CF)
+    log("  トレンドテンプレート・RS・ブレイクを作っています…")
+    tt, rs, brk, tight, prev_hi, MA, jm = m_signals(D)
+    fst = {}
+    for i, c in enumerate(codes):
+        s_ = d_fin_status(store["fins"].get(c))
+        if s_:
+            fst[i] = ([x[0] for x in s_], s_)
+    calS = [str(pd.Timestamp(d).date()) for d in cal]
+    base: dict = {}      # 合図の日 → [(銘柄, ブレイクの基準, 値幅が狭い, 業績, RS)]
+    allbrk: dict = {}    # でたらめ（同じ日のブレイクから）の元：範囲の中で25営業日の高値を超えた銘柄（トレンドテンプレートは問わない）
+    n_sig = n_tt = 0
+    for t in range(t0, T - 1):
+        j = jm[t]
+        if j < 0:
+            continue
+        b_ids = np.nonzero(brk[:, t] & UNI[:, j] & traded[:, t])[0]
+        if not len(b_ids):
+            continue
+        allbrk[t] = b_ids
+        n_sig += len(b_ids)
+        ids = [int(i) for i in b_ids if tt[i, t] and rs[i, t] == rs[i, t] and rs[i, t] >= M_RS_MIN]
+        if not ids:
+            continue
+        lst = []
+        for i in ids:
+            f = fst.get(i)
+            du = False
+            if f:
+                k = bisect.bisect_left(f[0], calS[t]) - 1
+                if k >= 0:
+                    du = bool(f[1][k][1])
+            lst.append((i, float(prev_hi[i, t]), bool(tight[i, t]), du, float(rs[i, t])))
+        base[t] = lst
+        n_tt += len(lst)
+
+    def pool_ra(t):
+        j = jm[t]
+        return np.nonzero(UNI[:, j] & traded[:, t])[0] if j >= 0 else np.zeros(0, dtype=int)
+
+    print("\n" + "=" * 100)
+    print("【日本株の手法・27段目（ミネルヴィニ『ミネルヴィニの成長株投資法』原書2013年）（wide_lab）：東証全銘柄】")
+    print("  （基準は結果を見る前に決めたもの。計画はプロジェクトの wide_lab_plan27_2026-11-10。9年分はすべて本が出たあと）")
+    print(f"  比べる期間 {ev[0].date()}〜{ev[-1].date()}（{len(ev) - 1}か月）。前半＝〜{(SPLIT - pd.Timedelta(days=1)).date()}・後半＝{SPLIT.date()}〜")
+    print(f"  費用と税 {COST}：株 片道{SLIP * 100:.1f}％・{TAX_TXT}（損は同じ運用の中で繰り越す）。元本{CAP / 1e4:,.0f}万円。合図の次の営業日の終値で売り買い（9年分は始値がないので終値）")
+    print(f"\n  0. 合図：範囲の中で25営業日の高値を超えた日 {n_sig}回（{n_sig / yrs:.0f}回／年）・そのうちトレンドテンプレートと RS70以上 {n_tt}回（{n_tt / yrs:.0f}回／年）")
+    res = {}
+    for key, lab, cfg in M_FORMS:
+        if ONLY and key not in ONLY:
+            continue
+        log(f"  {key} を回しています（でたらめ 20回 × 2）…")
+        cands: dict = {}
+        for t, lst in base.items():
+            if cfg["filt"] == "tight":
+                sel = [x for x in lst if x[2]]
+            elif cfg["filt"] == "fin":
+                sel = [x for x in lst if x[3]]
+            else:
+                sel = lst
+            sel = sorted(sel, key=lambda x: -x[4])          # RS の高い順
+            if sel:
+                cands[t] = [(x[0], x[1]) for x in sel]
+        v, liq, s_ = d_sim(cands, D, E["divpay"], t0, cfg, last_t, LIMU, LIMD, MA)
+        ra, rb, fill = [], [], []
+        n_c = max(1, sum(len(cl) for cl in cands.values()))
+        for nm, seed, out_ in (("ra", 7200, ra), ("rb", 8200, rb)):
+            pools = {t: (pool_ra(t) if nm == "ra" else allbrk.get(t, np.zeros(0, dtype=int))) for t in cands}
+            fill.append(sum(min(len(cl), len(pools[t])) for t, cl in cands.items()) / n_c)
+            for k in range(N_RAND):
+                rg = np.random.default_rng(seed + k)
+                pl = {}
+                for t, cl in cands.items():
+                    pool = pools[t]
+                    if len(pool):
+                        pick = rg.choice(pool, size=min(len(cl), len(pool)), replace=False)
+                        pl[t] = [(int(i), 0.0) for i in pick]
+                pv, _l, _s = d_sim(pl, D, E["divpay"], t0, cfg, last_t, LIMU, LIMD, MA)
+                out_.append(half_stats(pv, ev))
+        nb = {"前半": sum(1 for t in s_["buy_t"] if pd.Timestamp(cal[t]) < SPLIT),
+              "後半": sum(1 for t in s_["buy_t"] if pd.Timestamp(cal[t]) >= SPLIT)}
+        x = {"st": half_stats(v, ev), "liq": liq, "s": s_, "ra": ra, "rb": rb, "nb": nb, "fill_ra": fill[0], "fill_rb": fill[1]}
+        x["verdict"], x["rb_lab"], x["det"] = d_judge(x, ST_TX, False)
+        res[key] = (lab, x)
+        log(f"  {key} … {x['verdict']}")
+    print(f"\n  1. 結果（年率％「前半 ／ 後半」。TOPIX（税あり）{ST_TX['前半']['ann']:.1f} ／ {ST_TX['後半']['ann']:.1f}。"
+          "差は「TOPIX との差／でたらめ（範囲から）との差・上回った回数／でたらめ（同じ日に25営業日の高値を超えた銘柄から）との差・上回った回数」）")
+    for key, (lab, x) in res.items():
+        a, s_ = x["st"], x["s"]
+        cl = s_["closed"]
+        win = np.mean([r[2] > 0 for r in cl]) * 100 if cl else float("nan")
+        gw = [r[2] for r in cl if r[2] > 0]
+        gl = [r[2] for r in cl if r[2] <= 0]
+        hold = [r[1] - r[0] for r in cl]
+        dd = x["det"]
+        print(f"\n  {key} {lab}")
+        print(f"     年率 {a['前半']['ann']:6.1f} ／ {a['後半']['ann']:6.1f}（最大下落 {a['通し']['mdd']:.0f}％・清算後の通し {((x['liq'] / CAP) ** (1 / yrs) - 1) * 100:.1f}％）"
+              f"［{dd['前半'][0]:+.1f}／{dd['前半'][1]:+.1f}・{dd['前半'][2]}／{dd['前半'][3]:+.1f}・{dd['前半'][4]} ｜ "
+              f"{dd['後半'][0]:+.1f}／{dd['後半'][1]:+.1f}・{dd['後半'][2]}／{dd['後半'][3]:+.1f}・{dd['後半'][4]}］ … {x['verdict']}・選ぶ効き目（同じ日のブレイクと比べて） {x['rb_lab']}")
+        print(f"     最初の買い {s_['n_new']}（前半 {x['nb']['前半']}・後半 {x['nb']['後半']}）・売り {len(cl)}回（勝ち {win:.0f}％・勝ちの平均 {np.mean(gw) * 100 if gw else float('nan'):+.1f}％・"
+              f"負けの平均 {np.mean(gl) * 100 if gl else float('nan'):+.1f}％・持った日数の中央 {np.median(hold) if hold else float('nan'):.0f}日）・"
+              f"売った理由 " + "・".join(f"{k}{n}" for k, n in s_["why"].items() if n) + f"・現金の割合 {np.mean(s_['cash_share']) * 100:.0f}％・ストップ高で買えず {s_['skip_lim']}")
+        ram = [np.mean([y[h]["ann"] for y in x["ra"]]) for h in ("前半", "後半")]
+        rbm = [np.mean([y[h]["ann"] for y in x["rb"]]) for h in ("前半", "後半")]
+        print(f"     でたらめの平均（範囲から ／ 同じ日のブレイクから） {ram[0]:.1f}・{ram[1]:.1f} ／ {rbm[0]:.1f}・{rbm[1]:.1f}・選べた割合 {x['fill_ra'] * 100:.0f}％・{x['fill_rb'] * 100:.0f}％")
+    print("\n  2. 判定のまとめ")
+    for vv in ("候補", "範囲の中では効く", "効かない", "保留（データ不足）"):
+        ks = [k for k, (_l, x) in res.items() if x["verdict"] == vv]
+        print(f"     {vv} … " + ("・".join(ks) if ks else "なし"))
+    print(f"     （TOPIX の清算後の通し {((TXliq / CAP) ** (1 / yrs) - 1) * 100:.1f}％）")
+    return 0
+
+
 def d_judge(x: dict, ST_TX: dict, no_rb: bool) -> tuple:
     """判定は k_judge と同じ（でたらめ〈範囲から〉で判定・でたらめ〈同じ日の新高値ブレイクから〉は業績で絞る効き目の向き）。最初の買いの下限は D_MIN_BUYS。"""
     det = {}
@@ -6734,6 +6920,8 @@ def run_mode(mode: str, store: dict, args) -> int:
         return lab25(store)
     if mode == "lab26":
         return lab26(store)
+    if mode == "lab27":
+        return lab27(store)
     if mode == "lab21":
         # 21段目：上岡式の答え合わせ。業種別空売り比率（スタンダード）を日ごとに取り、別のファイル（data/wide_k.pkl）に持つ
         xs = k_xs_load()
@@ -6989,7 +7177,7 @@ def lab14(store: dict, args) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab5", "lab6", "lab7", "lab8", "lab9", "lab10", "lab11", "lab12", "lab13", "lab14", "lab15", "lab16", "lab17", "lab18", "lab19", "lab20", "lab21", "lab22", "lab23", "lab24", "lab25", "lab26", "xfetch"], default="lab1")
+    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab5", "lab6", "lab7", "lab8", "lab9", "lab10", "lab11", "lab12", "lab13", "lab14", "lab15", "lab16", "lab17", "lab18", "lab19", "lab20", "lab21", "lab22", "lab23", "lab24", "lab25", "lab26", "lab27", "xfetch"], default="lab1")
     ap.add_argument("--combo", default="", help="3回目：1回目で「範囲の中では効く」以上だった型の記号（カンマ区切り）。2つ以上なら SEL として回す")
     ap.add_argument("--only", default="", help="回す型の記号（カンマ区切り。空欄なら全部）。確かめる段階で候補だけを回すとき")
     ap.add_argument("--cfg", default="", help="7段目の確かめる段階で回す組み立て（例: VQM/TOP500/20/Q,NXG/TOP500/20/Q）")
