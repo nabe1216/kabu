@@ -7124,6 +7124,258 @@ def d_judge(x: dict, ST_TX: dict, no_rb: bool) -> tuple:
     return ("候補" if (ok_tx and ok_ra) else ("範囲の中では効く" if ok_ra else "効かない")), rb_lab, det
 
 
+# ───────────────────────── 29段目：外部の数字との答え合わせ ─────────────────────────
+# 計画は wide_lab_plan29_2026-11-10（結果を見る前に決めたもの）。道具の土台（株価・分割・株数・配当・TOPIX の比べる相手）が、
+# 公表されている数字と合うかを確かめる。売り買いのエンジンそのものは、別のレビューで確かめる
+X_JPX_ASOF = "2026-09-30"
+X_JPX_TR = ((1, 33.91), (3, 89.75), (5, 128.72))   # JPX の TOPIX（配当込み）の累積騰落率（％）。2026年9月30日現在のファクトシート
+X_TOL_TR = 1.0          # ① 1306＋分配金と JPX の年率の差の許容（pt）
+X_COR_REC = 0.98        # ② 作り直した TOPIX と 1306＋分配金の、月ごとの値動きの相関の下限
+X_TOL_REC = 2.0         # ② 年率の差の許容（pt。前半・後半・通しのそれぞれ）
+X_COR_FF = 0.70         # ③ Fama-French の日本の要因との、月ごとの相関の下限
+FF_ROOT = "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/"
+
+
+def x_tr_daily(D: dict) -> np.ndarray:
+    """1306 の終値に分配金を足し戻した日ごとの値（税・費用なし）。分配金は、決算日より前の最後の営業日（権利落ちの日の近く）に再投資する。"""
+    px = np.asarray(D["tp"]["c"], dtype=float)
+    calD = D["cal"].astype("datetime64[D]")
+    add = np.zeros(len(px))
+    for d, a in yb.ETF_DIST.get("1306", ()):
+        k = int(np.searchsorted(calD, np.datetime64(pd.Timestamp(d).date()), side="left")) - 1
+        if 1 <= k < len(px):
+            add[k] += a / 100.0
+    g = np.ones(len(px))
+    g[1:] = (px[1:] + add[1:]) / px[:-1]
+    return np.cumprod(g)
+
+
+def x_ann(r: np.ndarray) -> float:
+    r = np.asarray(r, dtype=float)
+    r = r[np.isfinite(r)]
+    if not len(r):
+        return float("nan")
+    return (float(np.prod(1.0 + r)) ** (12.0 / len(r)) - 1.0) * 100.0
+
+
+def x_ff_fetch() -> tuple:
+    """Kenneth French のデータ館から、日本の3要因（SMB・HML）と勢い（WML）の月次（％・米ドル建て）を取る。取れなければ空。"""
+    import io
+    import re
+    import zipfile
+    import requests
+    names = {"3F": "Japan_3_Factors_CSV.zip", "MOM": "Japan_Mom_Factor_CSV.zip"}
+    try:
+        h = requests.get(FF_ROOT + "data_library.html", timeout=40, headers=_UA).text
+        links = re.findall(r'href="(ftp/[^"]+?_CSV\.zip)"', h)
+        a = next((l for l in links if l.endswith("Japan_3_Factors_CSV.zip")), None)
+        b = next((l for l in links if re.search(r"Japan_Mo?m_Factor_CSV\.zip$", l, re.I)), None)
+        if a:
+            names["3F"] = a.split("/")[-1]
+        if b:
+            names["MOM"] = b.split("/")[-1]
+    except Exception as e:
+        log(f"  データ館のページが取れませんでした（{e}）。決まった名前で取ります")
+    out, src = {}, []
+    for key, nm in names.items():
+        try:
+            z = requests.get(FF_ROOT + "ftp/" + nm, timeout=60, headers=_UA).content
+            zf = zipfile.ZipFile(io.BytesIO(z))
+            txt = zf.read(zf.namelist()[0]).decode("latin-1")
+        except Exception as e:
+            log(f"  {nm} が取れませんでした（{e}）")
+            continue
+        src.append(nm)
+        head = None
+        for line in txt.splitlines():
+            if "Annual" in line:
+                break
+            cells = [x.strip() for x in line.split(",")]
+            if len(cells) < 2:
+                continue
+            if head is None and cells[0] == "" and any(re.search(r"[A-Za-z]", x) for x in cells[1:]):
+                head = cells[1:]
+            elif head is not None and re.fullmatch(r"\d{6}", cells[0]):
+                for h_, v in zip(head, cells[1:]):
+                    try:
+                        out.setdefault(h_, {})[cells[0]] = float(v) / 100.0
+                    except ValueError:
+                        pass
+    if "WML" not in out:
+        for k in ("Mom", "MOM", "UMD"):
+            if k in out:
+                out["WML"] = out[k]
+    return out, src
+
+
+def x_ff_ours(D: dict, MK: np.ndarray) -> dict:
+    """同じ作り方に近い形で、こちらのデータから SMB・HML・WML を作る（月ごとに組み直す・時価総額で加重）。
+    大型＝時価総額の合計の上から90％までの銘柄。HML は純資産 ÷ 時価総額（直近の開示）、WML は12か月の勢い（直近1か月を除く）で、
+    大型株の30％・70％の点で分ける。中身は東証の全市場の普通株（範囲の条件はかけない）。"""
+    PXM, DIV, MC, BP, MOM = D["PXM"], D["DIV"], D["MCAP"], D["F"]["BP"], D["F"]["MOM12"]
+    S, M = PXM.shape
+    res = {"SMB": {}, "HML": {}, "WML": {}}
+    for j in range(M - 1):
+        p0, p1 = PXM[:, j], PXM[:, j + 1]
+        with np.errstate(invalid="ignore", divide="ignore"):
+            r = (p1 + DIV[:, j + 1]) / p0 - 1.0
+        mc = MC[:, j]
+        ok = (MK[:, j] != "") & np.isfinite(mc) & (mc > 0) & np.isfinite(r) & (p0 > 0)
+        if ok.sum() < 200:
+            continue
+        idx = np.nonzero(ok)[0]
+        o = idx[np.argsort(-mc[idx])]
+        cs = np.cumsum(mc[o]) / mc[o].sum()
+        big = np.zeros(S, dtype=bool)
+        big[o[(cs - mc[o] / mc[o].sum()) < 0.90]] = True
+        ym = D["dates"][j + 1].strftime("%Y%m")
+
+        def vw(m):
+            w = mc[m]
+            return float((w * r[m]).sum() / w.sum()) if m.any() and w.sum() > 0 else float("nan")
+
+        def two_by_three(x):
+            okx = ok & np.isfinite(x)
+            xb = x[okx & big]
+            if len(xb) < 30 or (okx & ~big).sum() < 30:
+                return None
+            lo, hi = np.percentile(xb, 30), np.percentile(xb, 70)
+            g = {}
+            for sz, m_sz in (("S", okx & ~big), ("B", okx & big)):
+                g[sz + "L"] = vw(m_sz & (x <= lo))
+                g[sz + "M"] = vw(m_sz & (x > lo) & (x < hi))
+                g[sz + "H"] = vw(m_sz & (x >= hi))
+            return g
+        bpj = np.where(BP[:, j] > 0, BP[:, j], np.nan)
+        g = two_by_three(bpj)
+        if g is not None:
+            res["HML"][ym] = 0.5 * (g["SH"] + g["BH"]) - 0.5 * (g["SL"] + g["BL"])
+            res["SMB"][ym] = (g["SL"] + g["SM"] + g["SH"]) / 3.0 - (g["BL"] + g["BM"] + g["BH"]) / 3.0
+        g = two_by_three(MOM[:, j])
+        if g is not None:
+            res["WML"][ym] = 0.5 * (g["SH"] + g["BH"]) - 0.5 * (g["SL"] + g["BL"])
+    for k in res:                      # 組が空で作れなかった月は除く
+        res[k] = {m: v for m, v in res[k].items() if np.isfinite(v)}
+    return res
+
+
+def lab29(store: dict) -> int:
+    """29段目：外部の数字との答え合わせ。計画は wide_lab_plan29_2026-11-10。"""
+    log("29段目（外部の数字との答え合わせ）を回します（指標を作っています）…")
+    D = build(store)
+    dates, me_idx, cal = D["dates"], D["me_idx"], D["cal"]
+    MK = k_market_codes(store, D)
+    PXM, DIV, MC, UNI = D["PXM"], D["DIV"], D["MCAP"], D["UNI"]
+    S, M = PXM.shape
+    j0 = next((j for j, t in enumerate(me_idx) if t >= 252), None)
+    TR = x_tr_daily(D)
+    calD = cal.astype("datetime64[D]")
+    verdict = {}
+    print("\n【日本株の手法・29段目（外部の数字との答え合わせ）（wide_lab）】")
+    print("  （基準は結果を見る前に決めたもの。計画はプロジェクトの wide_lab_plan29_2026-11-10）")
+    print(f"  データ … {str(calD[0])}〜{str(calD[-1])}（{len(D['codes'])}銘柄）。税と費用は入れない（公表値と同じ土台で比べるため）")
+
+    # ① 比べる相手の TOPIX（1306＋分配金）が、JPX の公表値（TOPIX 配当込み）と合うか
+    print(f"\n  ① 比べる相手の TOPIX（1306 の終値＋分配金）と、JPX の TOPIX（配当込み）の公表値（{X_JPX_ASOF} 現在のファクトシート）")
+    t_end = int(np.searchsorted(calD, np.datetime64(X_JPX_ASOF), side="right")) - 1
+    ok1 = True
+    for n, jpx in X_JPX_TR:
+        d_st = (pd.Timestamp(X_JPX_ASOF) - pd.DateOffset(years=n)).date()
+        t_st = int(np.searchsorted(calD, np.datetime64(d_st), side="right")) - 1
+        if t_st < 0 or t_end <= t_st:
+            print(f"     {n}年 … データが足りません")
+            ok1 = False
+            continue
+        ours = (TR[t_end] / TR[t_st] - 1.0) * 100.0
+        a_o = ((1 + ours / 100) ** (1 / n) - 1) * 100
+        a_j = ((1 + jpx / 100) ** (1 / n) - 1) * 100
+        good = abs(a_o - a_j) <= X_TOL_TR
+        ok1 &= good
+        print(f"     {n}年（{str(calD[t_st])}〜{str(calD[t_end])}） … こちら {ours:+.2f}％（年率 {a_o:.2f}） ／ JPX {jpx:+.2f}％（年率 {a_j:.2f}）"
+              f" … 年率の差 {a_o - a_j:+.2f}pt … {'合う' if good else '合わない'}")
+    # 分配金の利回りの桁（分配金 ÷ その日の終値）
+    ys = []
+    for d, a in yb.ETF_DIST.get("1306", ()):
+        k = int(np.searchsorted(calD, np.datetime64(pd.Timestamp(d).date()), side="left")) - 1
+        if 0 <= k < len(TR):
+            ys.append((d[:4], a / 100.0 / float(D["tp"]["c"][k]) * 100.0))
+    print("     分配金 ÷ 終値（％） … " + "・".join(f"{y} {v:.2f}" for y, v in ys))
+    verdict["①"] = ok1
+
+    # ② 銘柄ごとのデータから TOPIX を作り直す（一部・プライムの普通株を、時価総額で加重。浮動株の調整はしない）
+    tr_m = np.array([TR[t] for t in me_idx])
+    rows = []
+    cover = []
+    for j in range(max(1, j0 or 1), M):
+        p0, p1 = PXM[:, j - 1], PXM[:, j]
+        with np.errstate(invalid="ignore", divide="ignore"):
+            r = (p1 + DIV[:, j]) / p0 - 1.0
+        mc = MC[:, j - 1]
+        prime_all = np.isin(MK[:, j - 1], ["0101", "0111"])
+        okp = prime_all & np.isfinite(r) & np.isfinite(mc) & (mc > 0) & (p0 > 0)
+        cover.append(okp.sum() / max(1, prime_all.sum()))
+        w = mc[okp]
+        cap = float((w * r[okp]).sum() / w.sum())
+        oku = UNI[:, j - 1] & np.isfinite(r) & np.isfinite(mc) & (mc > 0)
+        ew = float(r[oku].mean()) if oku.any() else np.nan
+        cw = float((mc[oku] * r[oku]).sum() / mc[oku].sum()) if oku.any() else np.nan
+        contrib = w * r[okp] / w.sum()
+        top = np.argsort(-np.abs(contrib))[:3]
+        ii = np.nonzero(okp)[0][top]
+        rows.append({"d": dates[j], "tx": tr_m[j] / tr_m[j - 1] - 1.0, "cap": cap, "ew": ew, "cw": cw,
+                     "top": [(D["codes"][i], float(r[i]) * 100, float(mc[i] / w.sum()) * 100) for i in ii]})
+    R = pd.DataFrame(rows).set_index("d")
+    print(f"\n  ② 銘柄ごとのデータ（株価・分割・株数・配当）から作り直した TOPIX（一部・プライムの普通株を時価総額で加重。浮動株の調整なし）と、①の TOPIX")
+    print(f"     比べる期間 {R.index[0]:%Y-%m}〜{R.index[-1]:%Y-%m}（{len(R)}か月）。時価総額が分かった銘柄の割合（一部・プライムのうち）平均 {np.mean(cover) * 100:.0f}％・最少 {np.min(cover) * 100:.0f}％")
+    ok2 = True
+    for h, m in (("前半", R.index < SPLIT), ("後半", R.index >= SPLIT), ("通し", np.ones(len(R), dtype=bool))):
+        a, b = x_ann(R["cap"][m]), x_ann(R["tx"][m])
+        cor = float(np.corrcoef(R["cap"][m], R["tx"][m])[0, 1])
+        te = float(np.std(R["cap"][m] - R["tx"][m]) * np.sqrt(12) * 100)
+        good = (cor >= X_COR_REC) and abs(a - b) <= X_TOL_REC
+        ok2 &= good
+        print(f"     {h} … 作り直し {a:.1f}％ ／ TOPIX {b:.1f}％（年率の差 {a - b:+.1f}pt）・相関 {cor:.3f}・ずれの大きさ（年率） {te:.1f}％ … {'合う' if good else '合わない'}")
+    dif = (R["cap"] - R["tx"]).abs().sort_values(ascending=False)
+    print("     ずれの大きい月（作り直し − TOPIX。その月に効いた銘柄：コード 騰落率％ 重み％）")
+    for d in dif.index[:3]:
+        x = R.loc[d]
+        print(f"       {d:%Y-%m} … {x['cap'] * 100:+.1f}％ ／ {x['tx'] * 100:+.1f}％ … " +
+              "・".join(f"{c} {rr:+.0f}％ {ww:.1f}％" for c, rr, ww in x["top"]))
+    verdict["②"] = ok2
+    print(f"\n  参考（判定しない）：範囲（売買代金5,000万円以上・時価総額100億円以上）を、同じ額ずつ持つ形と時価総額で加重する形（税・費用なし。毎月組み直す）")
+    for h, m in (("前半", R.index < SPLIT), ("後半", R.index >= SPLIT), ("通し", np.ones(len(R), dtype=bool))):
+        print(f"     {h} … 同じ額ずつ {x_ann(R['ew'][m]):.1f}％ ／ 時価総額で加重 {x_ann(R['cw'][m]):.1f}％ ／ TOPIX {x_ann(R['tx'][m]):.1f}％")
+
+    # ③ Fama-French の日本の要因と、こちらで作った要因の突き合わせ
+    print("\n  ③ Kenneth French のデータ館の日本の要因（月次・米ドル建て）と、こちらのデータで作った要因（円建て。月ごとに組み直す）")
+    ff, src = x_ff_fetch()
+    ours = x_ff_ours(D, MK)
+    if not ff:
+        print("     データ館から取れませんでした … 判定できない")
+        verdict["③"] = None
+    else:
+        print(f"     取ったファイル … {'・'.join(src)}")
+        ok3 = True
+        for k in ("SMB", "HML", "WML"):
+            a, b = ff.get(k, {}), ours.get(k, {})
+            ks = sorted(x for x in set(a) & set(b) if np.isfinite(a[x]) and np.isfinite(b[x]))
+            ks = [x for x in ks if x >= f"{dates[j0]:%Y%m}"] if j0 is not None else ks
+            if len(ks) < 24:
+                print(f"     {k} … 重なる月が {len(ks)}か月しかありません … 判定できない")
+                ok3 = False
+                continue
+            xa, xb = np.array([a[x] for x in ks]), np.array([b[x] for x in ks])
+            cor = float(np.corrcoef(xa, xb)[0, 1])
+            good = cor >= X_COR_FF
+            ok3 &= good
+            print(f"     {k}（{ks[0][:4]}-{ks[0][4:]}〜{ks[-1][:4]}-{ks[-1][4:]}・{len(ks)}か月） … 相関 {cor:.2f}・年率 French {x_ann(xa):+.1f}％ ／ こちら {x_ann(xb):+.1f}％"
+                  f" … {'合う' if good else '合わない'}")
+        verdict["③"] = ok3
+    txt = {True: "合う", False: "合わない", None: "判定できない"}
+    print("\n  判定のまとめ … " + "・".join(f"{k} {txt[v]}" for k, v in verdict.items()))
+    return 0
+
+
 def run_mode(mode: str, store: dict, args) -> int:
     """1つの mode を回す（データはそろっている前提で、足りなければ取る）。14段目の lab14 は、これを続けて呼ぶ。"""
     global LAB_TITLE, LAB_PLAN, LAB_NOTE
@@ -7152,6 +7404,8 @@ def run_mode(mode: str, store: dict, args) -> int:
         return lab27(store)
     if mode == "lab28":
         return lab28(store)
+    if mode == "lab29":
+        return lab29(store)
     if mode == "lab21":
         # 21段目：上岡式の答え合わせ。業種別空売り比率（スタンダード）を日ごとに取り、別のファイル（data/wide_k.pkl）に持つ
         xs = k_xs_load()
@@ -7407,7 +7661,7 @@ def lab14(store: dict, args) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab5", "lab6", "lab7", "lab8", "lab9", "lab10", "lab11", "lab12", "lab13", "lab14", "lab15", "lab16", "lab17", "lab18", "lab19", "lab20", "lab21", "lab22", "lab23", "lab24", "lab25", "lab26", "lab27", "lab28", "xfetch"], default="lab1")
+    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab5", "lab6", "lab7", "lab8", "lab9", "lab10", "lab11", "lab12", "lab13", "lab14", "lab15", "lab16", "lab17", "lab18", "lab19", "lab20", "lab21", "lab22", "lab23", "lab24", "lab25", "lab26", "lab27", "lab28", "lab29", "xfetch"], default="lab1")
     ap.add_argument("--combo", default="", help="3回目：1回目で「範囲の中では効く」以上だった型の記号（カンマ区切り）。2つ以上なら SEL として回す")
     ap.add_argument("--only", default="", help="回す型の記号（カンマ区切り。空欄なら全部）。確かめる段階で候補だけを回すとき")
     ap.add_argument("--cfg", default="", help="7段目の確かめる段階で回す組み立て（例: VQM/TOP500/20/Q,NXG/TOP500/20/Q）")
