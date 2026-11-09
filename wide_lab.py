@@ -616,7 +616,7 @@ def sim(ranks: list, PXM: np.ndarray, DIV: np.ndarray, j0: int, keep: int, nmax:
     pos: dict = {}
     loss = 0.0
     vals = []
-    st = {"n_buy": 0, "n_sell": 0, "tax": 0.0}
+    st = {"n_buy": 0, "n_sell": 0, "tax": 0.0, "hold": []}      # hold … 月末ごとの持ち銘柄の数（23段目の現金の割合の目安）
     M = PXM.shape[1]
 
     def p_(i, j):
@@ -633,6 +633,7 @@ def sim(ranks: list, PXM: np.ndarray, DIV: np.ndarray, j0: int, keep: int, nmax:
         rk = ranks[j]
         if rk is None:            # 入れ替えない月：配当を受け取って評価するだけ
             vals.append(cash + sum(sh * p_(i, j) for i, (sh, _c) in pos.items()))
+            st["hold"].append(len(pos))
             continue
         rp = {i: k for k, i in enumerate(rk)}
         for i in list(pos):
@@ -674,6 +675,7 @@ def sim(ranks: list, PXM: np.ndarray, DIV: np.ndarray, j0: int, keep: int, nmax:
             pos[i] = [sh, sh * px]
             st["n_buy"] += 1
         vals.append(cash + sum(sh * p_(i, j) for i, (sh, _c) in pos.items()))
+        st["hold"].append(len(pos))
     liq, gain = cash, 0.0
     for i, (sh, cost) in pos.items():
         eff = p_(i, M - 1) * (1.0 - slip)
@@ -763,7 +765,7 @@ def combo_score(F: dict, keys: list, uni: np.ndarray) -> np.ndarray:
 VQM = ("BP", "ROE", "MOM12")      # 割安・質・勢いの古典的な組み合わせ（結果を見ずに決めた固定の組み合わせ）
 
 
-def lab1(store: dict, combos: dict | None = None, extra: dict | None = None, uni_fn=None, w_fn=None) -> int:
+def lab1(store: dict, combos: dict | None = None, extra: dict | None = None, uni_fn=None, w_fn=None, filt: bool = False) -> int:
     log("1回目の型をまとめて回します（指標を作っています）…" if not (combos or extra) else
         ("3回目（組み合わせ）を回します（指標を作っています）…" if combos else "4回目（売買の内訳）を回します（指標を作っています）…"))
     D = build(store)
@@ -827,6 +829,19 @@ def lab1(store: dict, combos: dict | None = None, extra: dict | None = None, uni
         cov = [float((UNI[:, j] & np.isfinite(sc[:, j])).sum() / max(1, UNI[:, j].sum())) for j in range(jf, M)]
         r = {"lab": lab, "cov": cov, "low": sum(1 for x in cov if x < 0.5), "start": evf[0], "n": len(evf),
              "yrs": max((evf[-1] - evf[0]).days / 365.25, 0.5), "tx": tx_f, "txliq": txliq_f}
+        if filt:      # 23段目：条件に合う銘柄だけに点数がある型。点数のある割合ではなく、合格した銘柄の数で保留を決める（平均5銘柄未満なら保留）
+            npass = [int((UNI[:, j] & np.isfinite(sc[:, j])).sum()) for j in range(jf, M)]
+            r["npass"] = npass
+            r["low"] = 3 if np.mean(npass) < 5 else 0
+            # 参考：でたらめ（同じ数）… 月末ごとに、合格した銘柄と同じ数だけ範囲からでたらめに選ぶ（現金の割合をそろえ、選び方だけの効き目を見る。売る決まり A）
+            npf = [0] * jf + npass
+            rng_n = np.random.default_rng(20261109)
+            r["rnd_n"] = []
+            for _k in range(N_RAND):
+                rk_r = ranks_from(np.repeat(rng_n.random(UNI.shape[0])[:, None], M, axis=1), UNI)
+                rk_r = [x[:npf[j]] for j, x in enumerate(rk_r)]
+                v, _l, _s = sim(rk_r, PXM, DIV, jf, KEEPS[0][1], W=WM)
+                r["rnd_n"].append(half_stats(v, evf))
         rk = ranks_from(sc, UNI)
         for nm, kp in KEEPS:
             v, liq, s_ = sim(rk, PXM, DIV, jf, kp, W=WM)
@@ -889,7 +904,8 @@ def report(D, res, RND, ST_TX, TXliq, ev, j0):
     if LAB_NOTE:
         print(f"  ※ {LAB_NOTE}")
     print(f"  判定 … 両方の期間で、A・B の両方とも ①TOPIX（税あり）を +{PT_TX:.1f}pt 以上 ②でたらめな20銘柄の平均を +{PT_RND:.1f}pt 以上かつ20回のうち{BEAT_MIN}回以上上回る"
-          "→ ①②とも「候補」・②だけ「範囲の中では効く」・それ以外「効かない」。点数がある銘柄が範囲の半分未満の月が3か月以上なら保留")
+          "→ ①②とも「候補」・②だけ「範囲の中では効く」・それ以外「効かない」。"
+          + ("合格した銘柄が1か月あたり平均5未満なら保留" if any("npass" in r for r in res.values()) else "点数がある銘柄が範囲の半分未満の月が3か月以上なら保留"))
     rA = {h: np.mean([x[h]["ann"] for x in RND["A"]]) for h in HH + ("通し",)}
     rB = {h: np.mean([x[h]["ann"] for x in RND["B"]]) for h in HH + ("通し",)}
     print(f"\n  比べる相手（年率％。「前半 ／ 後半」） … TOPIX（税あり） {ST_TX['前半']['ann']:.1f} ／ {ST_TX['後半']['ann']:.1f}"
@@ -904,14 +920,30 @@ def report(D, res, RND, ST_TX, TXliq, ev, j0):
         print(f"     {key:<8}{r['lab']}{extra}")
         print(f"         A {a['前半']['ann']:6.1f} ／ {a['後半']['ann']:6.1f}（最大下落 {a['通し']['mdd']:.0f}％）［{dA}］"
               f"  B {b['前半']['ann']:6.1f} ／ {b['後半']['ann']:6.1f}（最大下落 {b['通し']['mdd']:.0f}％）［{dB}］ … {r['verdict']}")
+        if "rnd_n" in r:
+            sel = []
+            for h in HH:
+                rn = [x[h]["ann"] for x in r["rnd_n"]]
+                sel.append((a[h]["ann"] - float(np.mean(rn)), int(sum(1 for x in rn if a[h]["ann"] > x)), float(np.mean(rn))))
+            up = all(d >= PT_RND and bt >= BEAT_MIN for d, bt, _m in sel)
+            dn = all(d <= -PT_RND and bt <= N_RAND - BEAT_MIN for d, bt, _m in sel)
+            r["sel"] = "ある" if up else ("裏目" if dn else "見えない")
+            print(f"         でたらめ（同じ数・A） {sel[0][2]:.1f} ／ {sel[1][2]:.1f}［差 {sel[0][0]:+.1f}・{sel[0][1]}回 ／ {sel[1][0]:+.1f}・{sel[1][1]}回］"
+                  f" … 選び方の効き目 {r['sel']} ・ 持ち銘柄の数 平均 {np.mean(r['A_st']['hold']):.1f}（A）・{np.mean(r['B_st']['hold']):.1f}（B）")
         bk = " ・ ".join(f"{bn} {v['前半']['ann']:.1f} ／ {v['後半']['ann']:.1f}" for bn, v in r["bk"].items())
         print(f"         参考：下から20（A） {r['low20']['前半']['ann']:.1f} ／ {r['low20']['後半']['ann']:.1f} ・ 大きさ別（A） {bk}"
-              f" ・ 点数のある割合 平均 {np.mean(r['cov']) * 100:.0f}％・清算後の通し A {((r['A_liq'] / CAP) ** (1 / r['yrs']) - 1) * 100:.1f}％"
+              + (f" ・ 合格した銘柄 平均 {np.mean(r['npass']):.0f}（{min(r['npass'])}〜{max(r['npass'])}。0の月 {sum(1 for x in r['npass'] if x == 0)}）" if "npass" in r else
+                 f" ・ 点数のある割合 平均 {np.mean(r['cov']) * 100:.0f}％")
+              + f"・清算後の通し A {((r['A_liq'] / CAP) ** (1 / r['yrs']) - 1) * 100:.1f}％"
               f"・買い A {r['A_st']['n_buy'] / r['yrs']:.0f}回／年・B {r['B_st']['n_buy'] / r['yrs']:.0f}回／年")
     print("\n  2. 判定のまとめ")
     for v in ("候補", "範囲の中では効く", "効かない", "保留（データ不足）"):
         ks = [k for k, r in res.items() if r["verdict"] == v]
         print(f"     {v} … " + ("・".join(ks) if ks else "なし"))
+    if any("sel" in r for r in res.values()):
+        for v in ("ある", "見えない", "裏目"):
+            ks = [k for k, r in res.items() if r.get("sel") == v]
+            print(f"     選び方の効き目（でたらめ〈同じ数〉と比べて） {v} … " + ("・".join(ks) if ks else "なし"))
     print(f"     （TOPIX の清算後の通し {((TXliq / CAP) ** (1 / yrs) - 1) * 100:.1f}％）")
 
 
@@ -6241,6 +6273,172 @@ def lab22(store: dict) -> int:
     return 0
 
 
+# ───────────────────────── 23段目：成長×割安の手法（弐億貯男・井村俊哉・PEG）と、みきまる・清原達郎の近い形 ─────────────────────────
+# 計画は wide_lab_plan23_2026-11-09（結果を見る前に決めたもの）。第1部と同じ月末の運用の形（20銘柄・売る決まり A・B・でたらめな20銘柄）で、
+# 条件に合う銘柄だけに点数をつける。条件に合わなくなった銘柄は、その月末に売る。
+G_TYPES = (
+    ("NIOKU", "弐億貯男：2期続けて増収増益・PER15倍以下（実績か予想の低いほう）・配当性向30％以上・配当利回り3％以上・時価総額1,000億円未満（PER の低い順）"),
+    ("IMURA", "井村俊哉：通期の売上+30％以上・営業利益+30％以上（粗利の代わり）・PER が売上の伸び率（％）より小さい（伸び率÷PER の大きい順）"),
+    ("IMURA_S", "井村俊哉（売上だけ）：通期の売上+30％以上・PER が売上の伸び率（％）より小さい（伸び率÷PER の大きい順）"),
+    ("PEG", "リンチの PEG：予想 PER ÷ 会社予想の利益の伸び率（％）が1未満（PEG の小さい順）"),
+    ("MIKI", "みきまる：PER×PBR が11.25未満・配当利回り3％以上（優待は入れない）・時価総額300億円以下（PER×PBR の小さい順）"),
+    ("KIYO", "清原達郎（近い形）：（現金同等物 −（総資産 − 純資産））÷ 時価総額が1以上・黒字・時価総額500億円未満・金融を除く（比率の大きい順）"),
+)
+
+
+def g_panel(store: dict, D: dict) -> dict:
+    """月末ごとの基礎の値（行＝銘柄・列＝月末）：実績と予想の PER・PBR・配当利回り・配当性向・通期の売上と利益の伸び・
+    会社予想の利益の伸び・現金から負債を引いた額。開示は月末の日より前のものだけ（build と同じ。売買が長く途切れたあとは、そのあとの開示だけ）。"""
+    codes, me_idx, MC, CF, SEG, seg_first = D["codes"], D["me_idx"], D["MCAP"], D["CF"], D["SEG"], D["seg_first"]
+    T = len(D["cal"])
+    cal_i = D["cal"].astype("datetime64[D]")
+    S, M = len(codes), len(me_idx)
+    me_np = np.array([np.datetime64(d.date()) for d in D["dates"]])
+    keys = ("per_a", "per_f", "pbr", "dy", "payout", "gs1", "gp1", "gs0", "gp0", "gop1", "ge_f", "netcash", "np_a")
+    P = {k: np.full((S, M), np.nan) for k in keys}
+    for i, c in enumerate(codes):
+        tl = fin_timeline(store["fins"].get(c))
+        if not tl:
+            continue
+        b = store["bars"][c]
+        fd, ff = b["fd"], b["ff"]
+        dd = np.array([np.datetime64(str(r["DiscDate"])[:10]) for r in tl])
+        fys_all = [r for r in tl if is_fy(r)]
+        use_od = bool(fys_all) and all(num(r.get("OdP")) is not None for r in fys_all)
+        pk = "OdP" if use_od else "OP"          # 利益は経常利益（経常利益のない会社は、すべての期を営業利益で。22段目と同じ）
+        for j in range(M):
+            mc = MC[i, j]
+            px = CF[i, me_idx[j]]
+            if not (mc == mc and mc > 0 and px == px and px > 0):
+                continue
+            k = int(np.searchsorted(dd, me_np[j], side="left")) - 1
+            if k < 0:
+                continue
+            sg = int(SEG[i, me_idx[j]])
+            k_lo = int(np.searchsorted(dd, cal_i[sg], side="left")) if (sg < T and sg > seg_first[i]) else 0
+            if k_lo > k:
+                continue
+            sub = tl[k_lo:k + 1]
+            by_end = {}
+            for r in sub:
+                if is_fy(r):
+                    by_end[str(r.get("CurFYEn") or "")[:10]] = r
+            fy = [by_end[e] for e in sorted(by_end)]
+            if not fy:
+                continue
+            r = fy[-1]
+            fy_end = str(r.get("CurFYEn") or "")[:10]
+            nc = "NonConsolidated" in str(r.get("DocType") or "")      # 単体だけの会社は、単体の予想も見る（build と同じ）
+            np_a = num(r.get("NP"))
+            P["np_a"][i, j] = np_a if np_a is not None else np.nan
+            if np_a and np_a > 0:
+                P["per_a"][i, j] = mc / np_a
+            # 会社予想の当期の純利益：いちばん新しい本決算の短信の「来期」の予想。そのあとに当期の四半期の短信が出ていれば、その「当期」の予想
+            np_f, dps_f, dps_f_d = None, None, None
+            for q in reversed(sub):
+                if is_fy(q):
+                    if np_f is None and str(q.get("CurFYEn") or "")[:10] == fy_end:
+                        np_f = first_num(q, ("NxFNp", "NxFNP") + (("NxFNCNP", "NxFNCNp") if nc else ()))
+                    break
+                if str(q.get("CurFYEn") or "")[:10] > fy_end:
+                    if np_f is None:
+                        np_f = first_num(q, ("FNP",) + (("FNCNP",) if nc else ()))
+                    if dps_f is None and num(q.get("FDivAnn")) is not None:
+                        dps_f, dps_f_d = num(q.get("FDivAnn")), str(q["DiscDate"])[:10]
+            if np_f and np_f > 0:
+                P["per_f"][i, j] = mc / np_f
+            if np_f is not None and np_a and np_a > 0:
+                P["ge_f"][i, j] = np_f / np_a - 1.0
+            eq_r = next((q for q in reversed(sub) if num(q.get("Eq")) is not None), None)
+            eq = num(eq_r.get("Eq")) if eq_r else None
+            if eq and eq > 0:
+                P["pbr"][i, j] = mc / eq
+            ta_r = next((q for q in reversed(sub) if num(q.get("TA")) is not None), None)
+            cash_r = next((q for q in reversed(sub) if num(q.get("CashEq")) is not None), None)
+            if eq is not None and ta_r is not None and cash_r is not None:
+                P["netcash"][i, j] = (num(cash_r.get("CashEq")) - (num(ta_r.get("TA")) - eq)) / mc
+            # 配当利回り：当期の四半期の短信の予想の年間配当。まだなければ、いちばん新しい通期の実績（来期の配当の予想はキャッシュにない）
+            ann = num(r.get("DivAnn"))
+            if dps_f is not None:
+                P["dy"][i, j] = dps_f * fac_after(fd, ff, dps_f_d) / float(px)
+            elif ann is not None:
+                P["dy"][i, j] = ann * fac_after(fd, ff, str(r["DiscDate"])[:10]) / float(px)
+            # 配当性向：いちばん新しい通期の実績の年間配当 ÷ 1株利益（1株利益がなければ、純利益 ÷ 自己株を除く株数）
+            eps = num(r.get("EPS"))
+            shr = (num(r.get("ShOutFY")) or 0.0) - (num(r.get("TrShFY")) or 0.0)
+            if ann is not None and np_a and np_a > 0:
+                if eps and eps > 0:
+                    P["payout"][i, j] = ann / eps
+                elif shr > 0:
+                    P["payout"][i, j] = ann * shr / np_a
+            if len(fy) >= 2:
+                s1, s0 = num(fy[-1].get("Sales")), num(fy[-2].get("Sales"))
+                p1, p0 = num(fy[-1].get(pk)), num(fy[-2].get(pk))
+                o1, o0 = num(fy[-1].get("OP")), num(fy[-2].get("OP"))
+                if s1 is not None and s0 and s0 > 0:
+                    P["gs1"][i, j] = s1 / s0 - 1.0
+                if p1 is not None and p0 is not None:
+                    P["gp1"][i, j] = (p1 - p0) / abs(p0) if p0 != 0 else (np.inf if p1 > 0 else np.nan)
+                if o1 is not None and o0 and o0 > 0:
+                    P["gop1"][i, j] = o1 / o0 - 1.0
+            if len(fy) >= 3:
+                s0, sm = num(fy[-2].get("Sales")), num(fy[-3].get("Sales"))
+                p0, pm = num(fy[-2].get(pk)), num(fy[-3].get(pk))
+                if s0 is not None and sm and sm > 0:
+                    P["gs0"][i, j] = s0 / sm - 1.0
+                if p0 is not None and pm is not None:
+                    P["gp0"][i, j] = (p0 - pm) / abs(pm) if pm != 0 else (np.inf if p0 > 0 else np.nan)
+    return P
+
+
+def g_scores(store: dict, D: dict) -> dict:
+    """23段目の型の点数（条件に合う銘柄だけ。合わない銘柄は空）。"""
+    P = g_panel(store, D)
+    MC = D["MCAP"]
+    fin = np.array([D["sector"].get(c, "") in yb.FIN_SECTORS for c in D["codes"]])[:, None]
+    per = np.where(np.isfinite(P["per_f"]), P["per_f"], P["per_a"])            # 予想があれば予想、なければ実績
+    per_min = np.fmin(P["per_a"], P["per_f"])                                  # 実績か予想の低いほう（弐億）
+    out = {}
+    with np.errstate(invalid="ignore", divide="ignore"):
+        ok = ((P["gs1"] > 0) & (P["gs0"] > 0) & (P["gp1"] > 0) & (P["gp0"] > 0) & (per_min > 0) & (per_min <= 15)
+              & (P["payout"] >= 0.30) & (P["dy"] >= 0.03) & (MC < 1e11))
+        out["NIOKU"] = np.where(ok, -per_min, np.nan)
+        g = P["gs1"] * 100.0
+        ok = (P["gs1"] >= 0.30) & (P["gop1"] >= 0.30) & (per > 0) & (per < g)
+        out["IMURA"] = np.where(ok, g / per, np.nan)
+        ok = (P["gs1"] >= 0.30) & (per > 0) & (per < g)
+        out["IMURA_S"] = np.where(ok, g / per, np.nan)
+        peg = P["per_f"] / (P["ge_f"] * 100.0)
+        ok = (P["per_f"] > 0) & (P["ge_f"] > 0) & (peg < 1.0)
+        out["PEG"] = np.where(ok, -peg, np.nan)
+        mix = per * P["pbr"]
+        ok = (per > 0) & (P["pbr"] > 0) & (mix < 11.25) & (P["dy"] >= 0.03) & (MC <= 3e10)
+        out["MIKI"] = np.where(ok, -mix, np.nan)
+        ok = (P["netcash"] >= 1.0) & (P["np_a"] > 0) & (MC < 5e10) & ~fin
+        out["KIYO"] = np.where(ok, P["netcash"], np.nan)
+    return out
+
+
+def lab23(store: dict) -> int:
+    """23段目：成長×割安の手法。第1部の lab1 の運用の形を、そのまま使う（条件に合う銘柄だけに点数）。"""
+    global LAB_TITLE, LAB_PLAN, LAB_NOTE
+    LAB_TITLE, LAB_PLAN = "23段目（手法が公開されている投資家の型：弐億貯男・井村俊哉・PEG・みきまる・清原達郎）", "wide_lab_plan23_2026-11-09"
+    LAB_NOTE = ("23段目：条件に合う銘柄だけに点数をつけ、合う銘柄が20より少ない月は、空いた分を現金で持つ。条件に合わなくなった銘柄は、その月末に売る。"
+                "保留は「合格した銘柄が1か月あたり平均5未満」（点数のある割合の決まりの代わり）。決算短信の要約だけで作る（優待・粗利・流動資産は使えない）。"
+                "参考の「でたらめ（同じ数）」は、毎月の合格した数だけ範囲からでたらめに選んだもの（現金の割合をそろえて、選び方だけを比べる）")
+    cache: dict = {}
+
+    def mk(name):
+        def fn(D):
+            if "sc" not in cache:
+                log("  基礎の値（PER・PBR・配当・伸び・現金）を作っています…")
+                cache["sc"] = g_scores(store, D)
+            return cache["sc"][name]
+        return fn
+    extra = {nm: (mk(nm), lab) for nm, lab in G_TYPES}
+    return lab1(store, extra=extra, filt=True)
+
+
 def d_judge(x: dict, ST_TX: dict, no_rb: bool) -> tuple:
     """判定は k_judge と同じ（でたらめ〈範囲から〉で判定・でたらめ〈同じ日の新高値ブレイクから〉は業績で絞る効き目の向き）。最初の買いの下限は D_MIN_BUYS。"""
     det = {}
@@ -6278,6 +6476,8 @@ def run_mode(mode: str, store: dict, args) -> int:
         LAB_TITLE, LAB_PLAN = "13段目（J-Quants の残りのデータ）", "wide_lab_plan13_2026-11-05"
     if mode == "lab22":
         return lab22(store)
+    if mode == "lab23":
+        return lab23(store)
     if mode == "lab21":
         # 21段目：上岡式の答え合わせ。業種別空売り比率（スタンダード）を日ごとに取り、別のファイル（data/wide_k.pkl）に持つ
         xs = k_xs_load()
@@ -6533,7 +6733,7 @@ def lab14(store: dict, args) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab5", "lab6", "lab7", "lab8", "lab9", "lab10", "lab11", "lab12", "lab13", "lab14", "lab15", "lab16", "lab17", "lab18", "lab19", "lab20", "lab21", "lab22", "xfetch"], default="lab1")
+    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab5", "lab6", "lab7", "lab8", "lab9", "lab10", "lab11", "lab12", "lab13", "lab14", "lab15", "lab16", "lab17", "lab18", "lab19", "lab20", "lab21", "lab22", "lab23", "xfetch"], default="lab1")
     ap.add_argument("--combo", default="", help="3回目：1回目で「範囲の中では効く」以上だった型の記号（カンマ区切り）。2つ以上なら SEL として回す")
     ap.add_argument("--only", default="", help="回す型の記号（カンマ区切り。空欄なら全部）。確かめる段階で候補だけを回すとき")
     ap.add_argument("--cfg", default="", help="7段目の確かめる段階で回す組み立て（例: VQM/TOP500/20/Q,NXG/TOP500/20/Q）")
