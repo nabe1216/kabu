@@ -10,6 +10,7 @@
 """
 import argparse
 import bisect
+import json
 import os
 import pickle
 import sys
@@ -801,6 +802,7 @@ def sim(ranks: list, PXM: np.ndarray, DIV: np.ndarray, j0: int, keep: int, nmax:
             st["n_buy"] += 1
         vals.append(cash + sum(sh * p_(i, j) for i, (sh, _c) in pos.items()))
         st["hold"].append(len(pos))
+    st["pos"] = {i: (sh, c_) for i, (sh, c_) in pos.items()}      # 31段目：最後の持ち株（並走記録で見せる）
     liq, gain = cash, 0.0
     for i, (sh, cost) in pos.items():
         eff = p_(i, M - 1) * (1.0 - slip)
@@ -7557,6 +7559,189 @@ def lab29(store: dict) -> int:
     return 0
 
 
+# ───────────────────────── 31段目：ヘムの H3・H0 の並走記録（h_forward_plan_2026-11-10） ─────────────────────────
+# 決まりは h_forward_plan_2026-11-10（記録を始める前に決めたもの）。24段目の H3・H0 の決まりを変えずに、2026年11月末の終値で組み、
+# 12月からの値動きを記録する。生のデータ（株価・要約）は Actions のキャッシュに置き、リポジトリには data/h_track.json（結果だけ）を入れる
+HT_START_YM = "2026-11"            # この月の最後の営業日の終値で最初に組む
+HT_FORMS = (("H3", "増配テーマの近い形"), ("H0", "基本条件の指標だけ"))
+HT_OUT = OUT / "h_track.json"
+HT_NW_LAG = 3                       # 月ごとの超過の t（Newey-West・ずらし3か月）
+HT_SUMM_KEY = ("Code", "DiscDate", "DiscTime", "DocType", "CurPerType", "CurFYEn")
+
+
+def _append_bar(b: dict, d, c, va, f, o=None, h=None, l_=None, v=None) -> None:
+    """1銘柄に1日分を足す。分割・併合の係数（その日が権利落ち）があれば、それより前の株価をいまの基準に直してから足す。"""
+    if f is not None and f == f and f > 0 and abs(f - 1.0) > 1e-12:
+        b["c"] = (b["c"].astype(np.float64) * f).astype(np.float32)
+        for k in ("o", "h", "l"):
+            if k in b:
+                b[k] = (b[k].astype(np.float64) * f).astype(np.float32)
+        if "v" in b:
+            b["v"] = (b["v"].astype(np.float64) / f).astype(np.float32)
+        b["fd"] = np.append(b["fd"], np.datetime64(d, "D"))
+        b["ff"] = np.append(b["ff"], float(f))
+    b["d"] = np.append(b["d"], np.datetime64(d, "D"))
+    b["c"] = np.append(b["c"], np.float32(np.nan if c is None else c))
+    b["va"] = np.append(b["va"], np.float32(np.nan if va is None else va))
+    for k, x in (("o", o), ("h", h), ("l", l_), ("v", v)):
+        if k in b:
+            b[k] = np.append(b[k], np.float32(np.nan if x is None else x))
+
+
+def update_by_date(jq, store: dict) -> bool:
+    """31段目：キャッシュの最後の日の次から今日までを、日付ごとに取り足す（全銘柄の株価・決算短信の要約・月末の銘柄一覧）。
+    株価はその日の終値（調整前）を足し、権利落ちの日の係数でそれより前をいまの基準に直す（pack_bars と同じ基準になる）。"""
+    tp = store["etf1306"]
+    last = pd.Timestamp(tp["d"][-1])
+    today = pd.Timestamp(date.today())
+    hol = set(store.setdefault("upd_holidays", []))
+    sdone = set(store.setdefault("upd_summ_done", []))
+    days = [d.strftime("%Y-%m-%d") for d in pd.bdate_range(last + pd.Timedelta(days=1), today) if d.strftime("%Y-%m-%d") not in hol]
+    if days:
+        log(f"株価（全銘柄・日付ごと）を取り足しています（{days[0]}〜・{len(days)}日）…")
+    bars, fins = store["bars"], store["fins"]
+    n_new = n_split = 0
+    for ds in days:
+        time.sleep(yb.API_SLEEP)
+        rows = jq.get("/v2/equities/bars/daily", {"date": ds})
+        if not rows:
+            if ds < today.strftime("%Y-%m-%d"):
+                hol.add(ds)
+            continue
+        for r in rows:
+            c = yb.norm_code(r.get("Code") or "")
+            if not c:
+                continue
+            cr = num(r.get("C", r.get("Close")))
+            va = num(r.get("Va", r.get("TurnoverValue")))
+            if va is None:
+                vo = num(r.get("Vo", r.get("Volume")))
+                va = vo * cr if (vo is not None and cr is not None) else None
+            f = num(r.get("AdjFactor", r.get("AdjustmentFactor"))) or 1.0
+            ohlv = (num(r.get("O", r.get("Open"))), num(r.get("H", r.get("High"))), num(r.get("L", r.get("Low"))), num(r.get("Vo", r.get("Volume"))))
+            if c == "1306":
+                _append_bar(tp, ds, cr, va, f, *ohlv)
+                continue
+            b = bars.get(c)
+            if b is None:
+                b = {"d": np.array([], dtype="datetime64[D]"), "c": np.array([], dtype=np.float32), "va": np.array([], dtype=np.float32),
+                     "fd": np.array([], dtype="datetime64[D]"), "ff": np.array([], dtype=float)}
+                bars[c] = b
+                fins.setdefault(c, [])
+                n_new += 1
+            elif len(b["d"]) and b["d"][-1] >= np.datetime64(ds, "D"):
+                continue
+            if abs(f - 1.0) > 1e-12:
+                n_split += 1
+            _append_bar(b, ds, cr, va, f, *ohlv)
+        if store.get("done") is not None:
+            store["done"] = sorted(set(store["done"]) | set(bars))
+    # 決算短信の要約：株価のある日すべて（キャッシュの最後の日の翌日から）。今日の分は、夜の開示があるので次の実行でも取り直す
+    s_days = [d.strftime("%Y-%m-%d") for d in pd.bdate_range(last + pd.Timedelta(days=1), today)
+              if d.strftime("%Y-%m-%d") not in sdone and d.strftime("%Y-%m-%d") not in hol]
+    n_s = 0
+    for ds in s_days:
+        time.sleep(yb.API_SLEEP)
+        rows = jq.get("/v2/fins/summary", {"date": ds})
+        for r in rows or []:
+            c = yb.norm_code(r.get("Code") or "")
+            if not c:
+                continue
+            pr = prune_fins([r])[0]
+            lst = fins.setdefault(c, [])
+            key = tuple(str(pr.get(k)) for k in HT_SUMM_KEY)
+            if any(tuple(str(x.get(k)) for k in HT_SUMM_KEY) == key for x in lst[-12:]):
+                continue
+            lst.append(pr)
+            n_s += 1
+        if ds < today.strftime("%Y-%m-%d"):
+            sdone.add(ds)
+    store["upd_holidays"], store["upd_summ_done"] = sorted(hol), sorted(sdone)
+    ok = fetch_months(jq, store)
+    log(f"  取り足した … 株価 {len(days)}日（新しい銘柄 {n_new}・分割・併合 {n_split}）・要約 {n_s}件・いちばん新しい日 {str(tp['d'][-1])}")
+    return ok
+
+
+def ht_nw(x: np.ndarray, lag: int = HT_NW_LAG) -> tuple:
+    x = np.asarray(x, dtype=float)
+    n = len(x)
+    if n < 3:
+        return (float(x.mean()) if n else float("nan")), float("nan")
+    m = float(x.mean())
+    u = x - m
+    s = float(np.sum(u * u))
+    for L in range(1, min(lag, n - 1) + 1):
+        s += 2.0 * (1.0 - L / (lag + 1.0)) * float(np.sum(u[L:] * u[:-L]))
+    se = np.sqrt(max(s, 0.0)) / n
+    return m, (m / se if se > 0 else float("nan"))
+
+
+def htrack(store: dict) -> int:
+    """31段目：H3・H0 の並走記録を作り直して data/h_track.json に書く。決まりは h_forward_plan_2026-11-10。"""
+    log("31段目（ヘムの H3・H0 の並走記録）を作っています…")
+    D = build(store)
+    dates, UNI, PXM, DIV, codes, names = D["dates"], D["UNI"], D["PXM"], D["DIV"], D["codes"], D["names"]
+    M = len(dates)
+    sc = h_scores(store, D)
+    ym = [d.strftime("%Y-%m") for d in dates]
+    out = {"generated_at": pd.Timestamp.now(tz="Asia/Tokyo").isoformat(timespec="seconds"), "plan": "h_forward_plan_2026-11-10",
+           "data_last": str(D["cal"][-1]), "start_month_end": HT_START_YM, "forms": {}}
+    jl = M - 1
+    print("\n【31段目：ヘムの H3・H0 の並走記録（wide_lab）】（決まりは記録を始める前に決めたもの。プロジェクトの h_forward_plan_2026-11-10）")
+    print(f"  データ … いちばん新しい日 {out['data_last']}・最後の月末 {dates[jl].date()}・範囲 {int(UNI[:, jl].sum())}銘柄")
+    if HT_START_YM not in ym:
+        out["status"] = "記録前"
+        for k, lab in HT_FORMS:
+            ok = UNI[:, jl] & np.isfinite(sc[k][:, jl])
+            idx = np.nonzero(ok)[0]
+            idx = idx[np.argsort(-sc[k][idx, jl], kind="stable")]
+            out["forms"][k] = {"label": lab, "n_pass_last": int(len(idx)),
+                               "top20_last": [{"code": codes[i], "name": names.get(codes[i], ""), "score": round(float(sc[k][i, jl]), 3)} for i in idx[:20]]}
+            print(f"  {k} {lab} … 記録前（{HT_START_YM} 末から）。いちばん新しい月末の合格 {len(idx)}銘柄・上位：" +
+                  "・".join(f"{codes[i]} {names.get(codes[i], '')}" for i in idx[:5]))
+        HT_OUT.parent.mkdir(parents=True, exist_ok=True)
+        HT_OUT.write_text(json.dumps(out, ensure_ascii=False, indent=1))
+        return 0
+    j0 = ym.index(HT_START_YM)
+    ev = dates[j0:]
+    tv, tl = topix_taxed(D, j0)
+    out["status"] = "記録中"
+    out["dates"] = [d.strftime("%Y-%m-%d") for d in ev]
+    out["topix"] = {"vals": [round(float(x)) for x in tv], "liq": round(float(tl))}
+    for k, lab in HT_FORMS:
+        s = sc[k]
+        rk = ranks_from(s, UNI)
+        fo = {"label": lab}
+        for nm, kp in KEEPS:
+            v, liq, st = sim(rk, PXM, DIV, j0, kp)
+            hold = [{"code": codes[i], "name": names.get(codes[i], ""), "shares": int(sh)} for i, (sh, _c) in sorted(st["pos"].items())]
+            fo[nm] = {"vals": [round(float(x)) for x in v], "liq": round(float(liq)), "n_buy": st["n_buy"], "n_sell": st["n_sell"], "holdings": hold}
+        # 判定に使う測り方：月末ごとに合格したすべての銘柄（同じ額ずつ・配当を含む・費用なし）の翌月の値上がり − 範囲の全銘柄の平均
+        ex, npass = [], []
+        for j in range(j0, M - 1):
+            with np.errstate(invalid="ignore", divide="ignore"):
+                r = (PXM[:, j + 1] + DIV[:, j + 1]) / PXM[:, j] - 1.0
+            u = UNI[:, j] & np.isfinite(r)
+            p = u & np.isfinite(s[:, j])
+            npass.append(int(p.sum()))
+            if p.sum() >= 1 and u.sum() >= 50:
+                ex.append(float(r[p].mean() - r[u].mean()))
+        m, t = ht_nw(np.array(ex))
+        fo["excess"] = {"monthly": [round(x, 5) for x in ex], "mean": None if m != m else round(m, 5), "t": None if t != t else round(t, 2),
+                        "n_months": len(ex), "n_pass": npass}
+        out["forms"][k] = fo
+        a = fo["A"]
+        print(f"\n  {k} {lab}")
+        print(f"     紙の上の運用（A・20銘柄）… 評価額 {a['vals'][-1]:,} 円（{ev[0].date()} から）・清算後 {a['liq']:,} 円 ／ TOPIX（税あり）{out['topix']['vals'][-1]:,} 円・清算後 {out['topix']['liq']:,} 円")
+        print(f"     判定に使う超過（合格した銘柄すべて − 範囲の平均。月ごと）… {len(ex)}か月・平均 "
+              + ("—" if m != m else f"{m * 100:+.2f}％／月") + "・t " + ("—" if t != t else f"{t:.2f}") + "（途中。判定は計画の時点で）")
+        print("     いまの持ち株（A）… " + "・".join(f"{h['code']} {h['name']}" for h in a["holdings"][:20]))
+    HT_OUT.parent.mkdir(parents=True, exist_ok=True)
+    HT_OUT.write_text(json.dumps(out, ensure_ascii=False, indent=1))
+    log(f"  {HT_OUT} に書きました")
+    return 0
+
+
 def run_mode(mode: str, store: dict, args) -> int:
     """1つの mode を回す（データはそろっている前提で、足りなければ取る）。14段目の lab14 は、これを続けて呼ぶ。"""
     global LAB_TITLE, LAB_PLAN, LAB_NOTE
@@ -7842,7 +8027,7 @@ def lab14(store: dict, args) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab5", "lab6", "lab7", "lab8", "lab9", "lab10", "lab11", "lab12", "lab13", "lab14", "lab15", "lab16", "lab17", "lab18", "lab19", "lab20", "lab21", "lab22", "lab23", "lab24", "lab25", "lab26", "lab27", "lab28", "lab29", "xfetch"], default="lab1")
+    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab5", "lab6", "lab7", "lab8", "lab9", "lab10", "lab11", "lab12", "lab13", "lab14", "lab15", "lab16", "lab17", "lab18", "lab19", "lab20", "lab21", "lab22", "lab23", "lab24", "lab25", "lab26", "lab27", "lab28", "lab29", "htrack", "xfetch"], default="lab1")
     ap.add_argument("--combo", default="", help="3回目：1回目で「範囲の中では効く」以上だった型の記号（カンマ区切り）。2つ以上なら SEL として回す")
     ap.add_argument("--only", default="", help="回す型の記号（カンマ区切り。空欄なら全部）。確かめる段階で候補だけを回すとき")
     ap.add_argument("--cfg", default="", help="7段目の確かめる段階で回す組み立て（例: VQM/TOP500/20/Q,NXG/TOP500/20/Q）")
@@ -7859,6 +8044,17 @@ def main() -> int:
         yb.API_SLEEP = float(os.environ.get("LONG_API_SLEEP", "0.25"))    # プレミアムは呼び出しの上限が大きい
         log(f"確かめる段階（{YEARS}年分・データは {CACHE}）")
     store = load()
+    if args.mode == "htrack":         # 31段目：キャッシュを日付ごとに取り足してから、並走記録を作り直す
+        key = os.environ.get("J_QUANTS_API_KEY")
+        if not store.get("complete"):
+            print("■ 9年分のキャッシュがありません（wide-lab の fetch のあとに動かす）")
+            return 2
+        if key:
+            update_by_date(yb.JQ(key), store)
+            save(store, "取り足した分を保存しました")
+        else:
+            log("  J_QUANTS_API_KEY がないので、取り足さずに作ります")
+        return htrack(store)
     need_ohlc = KEEP_OHLC and any("o" not in b for b in store.get("bars", {}).values())
     if not store.get("complete") or need_ohlc:
         key = os.environ.get("J_QUANTS_API_KEY")
