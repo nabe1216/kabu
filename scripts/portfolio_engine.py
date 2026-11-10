@@ -28,6 +28,7 @@ generate.py の実行後に呼び出される。
 from __future__ import annotations
 
 import json
+import math
 import logging
 import os
 import urllib.request
@@ -80,6 +81,74 @@ HARVEST = True              # 12月の損出し（検証の R6。161通りで「
 HARVEST_MIN_LOSS = 0.02     # 取得単価より2％以上下がっている持ち株だけ（検証と同じ）
 HARVEST_FROM_DAY = 15       # 12月15日以降の最初の実行日（年内に受け渡しが終わるように）
 SPLIT_TOL = 0.03            # 株価の記録が3％以上ずれたら、株式分割・併合とみなす
+# 2026年11月10日：待機中の現金を TOPIX 連動ETF（1306）で持つ（本の検証の結論。tool_update_2026-11-10）。
+# 買い付けや買い増しで現金が足りないときは、必要な分だけ 1306 を売る。分配金は数えない（控えめ）。
+ETF_SLEEVE = True
+ETF_CODE = '1306'
+ETF_NAME = 'TOPIX連動ETF（待機資金）'
+ETF_COST = 0.001            # 片道0.1％
+ETF_BUFFER = 100_000        # いつも現金で残す額
+ETF_MIN_TRADE = 200_000     # 1306 を買うのは、余った現金がこれ以上のときだけ（細かい売り買いを避ける）
+_ETF_PX: dict[str, Any] = {'price': None, 'date': None}
+
+
+def etf_value(state: dict[str, Any]) -> float:
+    e = state.get('etf') or {}
+    return float(e.get('qty', 0)) * float(e.get('price') or 0)
+
+
+def _etf_px(state: dict[str, Any]) -> float | None:
+    return _ETF_PX['price'] or (state.get('etf') or {}).get('price')
+
+
+def ensure_cash(state: dict[str, Any], history: dict[str, Any], need: float, today: date) -> None:
+    """現金が need に足りなければ、足りない分だけ 1306 を売る（税は持ち株と同じ年の中で通算）。"""
+    e = state.get('etf') or {}
+    px = _etf_px(state)
+    if state['cash'] >= need or not e.get('qty') or not px:
+        return
+    net = px * (1.0 - ETF_COST)
+    qty = min(int(e['qty']), int(math.ceil((need - state['cash']) / net)))
+    if qty <= 0:
+        return
+    pl = (net - e['cost']) * qty
+    tax = gain_tax(state, pl, today)
+    state['cash'] += net * qty - tax
+    state['realized_pl'] += pl
+    e['qty'] -= qty
+    history['trades'].append({
+        'date': today.isoformat(), 'action': 'SELL', 'code': ETF_CODE, 'name': ETF_NAME, 'tier': '-',
+        'qty': qty, 'price': px, 'amount': px * qty, 'buy_price': e['cost'], 'buy_date': e.get('since', today.isoformat()),
+        'holding_days': (today - date.fromisoformat(e.get('since', today.isoformat()))).days,
+        'realized_pl': pl, 'realized_pl_pct': round((net - e['cost']) / e['cost'] * 100, 2) if e.get('cost') else 0,
+        'tax': tax, 'reason': '買い付けの資金に充てる（待機資金の1306を売る）'})
+    if e['qty'] <= 0:
+        state['etf'] = {'qty': 0, 'cost': 0.0, 'price': px, 'value': 0.0}
+
+
+def invest_idle(state: dict[str, Any], history: dict[str, Any], today: date) -> None:
+    """その日の売り買いのあと、余った現金（ETF_BUFFER を残す）で 1306 を買う。"""
+    px = _ETF_PX['price']
+    if not ETF_SLEEVE or not px:
+        return
+    room = state['cash'] - ETF_BUFFER
+    if room < ETF_MIN_TRADE:
+        return
+    qty = int(room // (px * (1.0 + ETF_COST)))
+    if qty <= 0:
+        return
+    paid = px * (1.0 + ETF_COST) * qty
+    e = state.get('etf') or {'qty': 0, 'cost': 0.0}
+    tot = e.get('qty', 0) + qty
+    e['cost'] = (e.get('cost', 0.0) * e.get('qty', 0) + paid) / tot
+    if not e.get('qty'):
+        e['since'] = today.isoformat()
+    e['qty'] = tot
+    e['price'] = px
+    state['etf'] = e
+    state['cash'] -= paid
+    history['trades'].append({'date': today.isoformat(), 'action': 'BUY', 'code': ETF_CODE, 'name': ETF_NAME, 'tier': '-',
+                              'qty': qty, 'price': px, 'amount': px * qty, 'reason': '待機中の現金を1306で持つ'})
 
 
 def tier_budget(state: dict, tier: str) -> int:
@@ -279,8 +348,13 @@ def update_valuations(state: dict[str, Any], stocks_by_code: dict[str, dict]) ->
             holdings_value += holding.get('value', holding['buy_price'] * holding['qty'])
 
     state['holdings_value'] = holdings_value
+    # 待機資金の 1306（2026年11月10日）
+    if state.get('etf'):
+        if _ETF_PX['price']:
+            state['etf']['price'] = _ETF_PX['price']
+        state['etf']['value'] = etf_value(state)
     # 配当は受け取ったときに現金へ入れているので、ここで足すと2回数えることになる（2026年11月6日に直した）
-    state['total_value'] = state['cash'] + holdings_value
+    state['total_value'] = state['cash'] + holdings_value + etf_value(state)
 
 
 def process_dividends(
@@ -396,8 +470,8 @@ def buy_stock(
     tier = stock.get('tier', 'B')
     budget = tier_budget(state, tier)
 
-    # 利用可能キャッシュが予算未満なら見送り
-    if state['cash'] < budget:
+    # 利用可能キャッシュ（待機資金の1306を含む）が予算未満なら見送り
+    if state['cash'] + etf_value(state) < budget:
         return False
 
     # 始値取得
@@ -411,6 +485,9 @@ def buy_stock(
         return False
 
     amount = buy_price * qty
+    if amount > state['cash'] + etf_value(state) * (1.0 - ETF_COST) * 0.995:
+        return False
+    ensure_cash(state, history, amount, today)
     if amount > state['cash']:
         return False
 
@@ -546,7 +623,8 @@ def topup_holdings(state: dict[str, Any], history: dict[str, Any], stocks_by_cod
                 continue
             tgt = _target_value(state, st.get('tier') or h.get('tier', 'B'))
             val = h['qty'] * (st.get('price') or px)
-            if tgt - val < 100 * px or state['cash'] < 100 * px:
+            avail = state['cash'] + etf_value(state) * (1.0 - ETF_COST) * 0.995
+            if tgt - val < 100 * px or avail < 100 * px:
                 continue
             ratio = val / tgt if tgt > 0 else 9.9
             if best is None or ratio < best[0]:
@@ -554,11 +632,15 @@ def topup_holdings(state: dict[str, Any], history: dict[str, Any], stocks_by_cod
         if best is None:
             break
         _r, h, st, px, room = best
-        lots = int(min(room // (100 * px), state['cash'] // (100 * px)))
+        avail = state['cash'] + etf_value(state) * (1.0 - ETF_COST) * 0.995
+        lots = int(min(room // (100 * px), avail // (100 * px)))
         if lots <= 0:
             break
         qty = lots * 100
         amount = qty * px
+        ensure_cash(state, history, amount, today)
+        if amount > state['cash']:
+            break
         state['cash'] -= amount
         state['total_invested'] += amount
         h['buy_price'] = (h['buy_price'] * h['qty'] + amount) / (h['qty'] + qty)   # 取得単価は平均でまとめる
@@ -791,9 +873,10 @@ def migrate_v4(state: dict[str, Any], history: dict[str, Any], stocks_by_code: d
              ', '.join(f"{h['code']} {b}->{k}" for h, b, k in trimmed) or 'none')
 
 
-def update_portfolio(stocks: list[dict[str, Any]]) -> dict[str, Any]:
-    """メイン処理: 毎日のポートフォリオ更新"""
+def update_portfolio(stocks: list[dict[str, Any]], etf_px: float | None = None) -> dict[str, Any]:
+    """メイン処理: 毎日のポートフォリオ更新。etf_px は 1306 のいちばん新しい終値（待機資金に使う）。"""
     today_jst = datetime.now(timezone(timedelta(hours=9))).date()
+    _ETF_PX['price'] = etf_px if (etf_px and etf_px > 0) else None
 
     # 既存データ読み込み
     state = load_json(STATE_PATH, init_state())
@@ -910,6 +993,9 @@ def update_portfolio(stocks: list[dict[str, Any]]) -> dict[str, Any]:
         new_sells += [t for t in hv if t['action'] == 'SELL']
         state['last_harvest_year'] = today_jst.year
 
+    # ステップ4d: 余った現金を 1306 で持つ（2026年11月10日）
+    invest_idle(state, history, today_jst)
+
     # 再度評価額更新（購入分を反映）
     update_valuations(state, stocks_by_code)
 
@@ -918,6 +1004,7 @@ def update_portfolio(stocks: list[dict[str, Any]]) -> dict[str, Any]:
         'date': today_jst.isoformat(),
         'cash': state['cash'],
         'holdings_value': state['holdings_value'],
+        'etf_value': etf_value(state),
         'total_value': state['total_value'],
         'unrealized_pl': sum(h.get('unrealized_pl', 0) for h in state['holdings']),
         'realized_pl': state['realized_pl'],

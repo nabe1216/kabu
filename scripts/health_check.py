@@ -41,6 +41,19 @@ TIER_WEIGHT = {'S': 2.0, 'A': 1.5, 'B': 1.0}
 TARGET_HOLDINGS = 15
 
 
+
+def _split_in_risky_window(sd: date, fiscal_month) -> bool:
+    """分割・併合の日が、期末の7日前〜期末の120日あと（決算短信の開示まで）に入るか（2026年11月10日）。
+    この窓の外の分割は、比べる2つの期の配当を同じ係数で直すので、減配の読み違いにならない。期末の月が分からなければ True。"""
+    if not fiscal_month:
+        return True
+    import calendar
+    for y in (sd.year + 1, sd.year, sd.year - 1):
+        fe = date(y, int(fiscal_month), calendar.monthrange(y, int(fiscal_month))[1])
+        if fe - timedelta(days=7) <= sd <= fe + timedelta(days=120):
+            return True
+    return False
+
 def _load(path: Path) -> Any:
     with path.open('r', encoding='utf-8') as f:
         return json.load(f)
@@ -122,7 +135,8 @@ def run(prev_path: str | None = None, today: date | None = None) -> dict[str, An
             continue
         ls = s.get('last_split') or {}
         try:
-            if ls.get('date') and (today - date.fromisoformat(ls['date'])).days <= SPLIT_NEAR_CUT_DAYS:
+            if ls.get('date') and (today - date.fromisoformat(ls['date'])).days <= SPLIT_NEAR_CUT_DAYS \
+                    and _split_in_risky_window(date.fromisoformat(ls['date']), s.get('fiscal_month')):
                 near.append(f"{s.get('code')} {s.get('name', '')}（分割・併合 {ls['date']}）")
         except ValueError:
             continue
@@ -135,6 +149,7 @@ def run(prev_path: str | None = None, today: date | None = None) -> dict[str, An
     try:
         st = _load(STATE)
         hv = sum(float(h.get('value') or 0) for h in st.get('holdings', []))
+        hv += float((st.get('etf') or {}).get('value') or 0)        # 待機資金の 1306（2026年11月10日）
         tv = float(st.get('total_value') or 0)
         cash = float(st.get('cash') or 0)
         checks['portfolio'] = {'total_value': tv, 'cash': cash, 'holdings': len(st.get('holdings', [])),

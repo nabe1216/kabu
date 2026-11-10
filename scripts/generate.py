@@ -502,7 +502,7 @@ def extract_annual_dividends(
     # 期末の7日前がそれより前の期は、いまの基準に直せるかわからないので使わない
     # （株価の範囲の外の分割で、古い期の配当が分割前の額のまま残り「減配」に見えるのを防ぐ。例：サンドラッグ 2017年3月期）。
     events = split_events(quotes_sorted)
-    by_period: dict[date, tuple[date, float]] = {}
+    by_period: dict[date, tuple[date, float, float | None]] = {}
     for s in statements:
         if s.get('CurPerType') not in ('FY', '4Q'):
             continue
@@ -515,9 +515,23 @@ def extract_annual_dividends(
         if v is None:
             continue
         disc = parse_date(s.get('DiscDate')) or period
+        # 2026年11月10日：期末の7日前〜開示の日に分割・併合があった期は、「すでに分割後の基準で書いた」読み方も持っておく
+        # （本の検証の道具で見つけた。期末を基準日にした分割で、実績の配当を分割後に直して載せる会社が約2％ある）
+        alt = None
+        fe = _fy_end_of(s)
+        raw = safe_float(s.get('DivAnn'))
+        if fe is not None and raw is not None and any(fe - timedelta(days=DIV_REC_DAYS) <= d <= disc for d, _f in events):
+            alt = raw * _factor_after(events, disc)
         if period not in by_period or disc >= by_period[period][0]:
-            by_period[period] = (disc, v)
-    return [by_period[p][1] for p in sorted(by_period)]
+            by_period[period] = (disc, v, alt)
+    out: list[float] = []
+    for p in sorted(by_period):
+        _d, v, alt = by_period[p]
+        if alt is not None and out and out[-1] > 0 and v > 0 and alt > 0 \
+                and abs(math.log(alt / out[-1])) < abs(math.log(v / out[-1])):
+            v = alt
+        out.append(v)
+    return out
 
 
 def check_dividend_history(div_history: list[float], code: str) -> tuple[bool | None, int]:
@@ -1189,6 +1203,39 @@ def is_imminent_business_day(target: date | None, today: date) -> bool:
     return target == next_bday
 
 
+SAFETY_FIN_S33 = {'7050', '7100', '7150', '7200'}   # 銀行・証券・保険・その他金融（営業利益の意味が違うので安全域を出さない）
+
+
+def safety_margin(statements: list[dict[str, Any]], market_cap_oku: float, sector33: str) -> float | None:
+    """2026年11月10日：山口揚平の安全域（保守的。34段目の Y1）＝（営業利益の前々期・前期・今期予想の平均×10 ＋ 現預金 − 負債の合計）÷ 時価総額。
+    負債の合計＝総資産 − 純資産（いちばん新しい開示）。並走記録（variant_engine）の買う順番に使う。本番の売買には使わない。"""
+    if sector33 in SAFETY_FIN_S33 or not market_cap_oku or market_cap_oku <= 0:
+        return None
+    fy = _sorted_fy_statements(statements)
+    ops = [safe_float(x.get('OP')) for x in fy[:2]]
+    op_f = None
+    fy_end = parse_date(fy[0].get('CurFYEn') or fy[0].get('CurPerEn')) if fy else None
+    for x in sorted(statements, key=lambda q: q.get('DiscDate') or '', reverse=True):
+        fe = parse_date(x.get('CurFYEn') or x.get('CurPerEn'))
+        if x.get('CurPerType') in ('FY', '4Q'):
+            if fe == fy_end:
+                op_f = safe_float(x.get('NxFOP'))
+            break
+        if fy_end is not None and fe is not None and fe > fy_end:
+            op_f = safe_float(x.get('FOP'))
+            if op_f is not None:
+                break
+    vals = [v for v in ops + [op_f] if v is not None]
+    if len(vals) < 2 or sum(vals) <= 0:
+        return None
+    last = next((x for x in sorted(statements, key=lambda q: q.get('DiscDate') or '', reverse=True)
+                 if safe_float(x.get('TA')) and safe_float(x.get('Eq')) is not None and safe_float(x.get('CashEq')) is not None), None)
+    if last is None:
+        return None
+    net_cash = safe_float(last['CashEq']) - (safe_float(last['TA']) - safe_float(last['Eq']))
+    return (10.0 * sum(vals) / len(vals) + net_cash) / (market_cap_oku * 1e8)
+
+
 def _sorted_fy_statements(statements: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """FY/4Q の disclosure を CurPerEn 降順 (新しい順) に返す。"""
     fy_list = [s for s in statements if s.get('CurPerType') in ('FY', '4Q')]
@@ -1805,6 +1852,7 @@ def process_stock(
 
         'latest_sales_oku': round(latest_sales / 1e8) if latest_sales is not None else None,
         'latest_op_oku': round(latest_op / 1e8) if latest_op is not None else None,
+        'safety_y1': (lambda v: round(v, 3) if v is not None else None)(safety_margin(statements, market_cap_oku, sector33)),
         'latest_np_oku': round(latest_np / 1e8) if latest_np is not None else None,
 
         'screening': s_results,
@@ -2000,6 +2048,7 @@ def main() -> int:
     _rank = {c: (i + 1) / _n * 100 for i, (c, _) in enumerate(_pbrs)} if _n else {}
     for x in stocks:
         x['pbr_rank'] = round(_rank.get(x['code'], 0.0), 1)
+        x['signal_pre_rank'] = x.get('signal')        # 2026年11月10日：低PBRの足切りの前の合図（並走記録 variant_engine が使う）
         if BUY_MODE == 'pbr':
             x['buy_sort'] = x['pbr'] if x.get('pbr') else 99.0
             if x.get('signal') == 'BUY' and _rank.get(x['code'], 0.0) < PBR_TOP_PCT:
@@ -2081,7 +2130,23 @@ def main() -> int:
     try:
         from portfolio_engine import update_portfolio
         log.info('Updating portfolio (forward test)...')
-        portfolio_state = update_portfolio(stocks)
+        etf_px = None
+        try:      # 待機資金に使う 1306 のいちばん新しい終値（2026年11月10日）
+            to_d = date.today()
+            q = client.get_daily_quotes('13060', (to_d - timedelta(days=14)).isoformat(), to_d.isoformat())
+            q = [x for x in q if safe_float(x.get('Close')) is not None]
+            if q:
+                q.sort(key=lambda x: x.get('Date', ''))
+                etf_px = safe_float(q[-1].get('Close'))
+                log.info('1306 close %s (%s)', etf_px, q[-1].get('Date'))
+        except Exception as e:
+            log.warning('1306 の株価が取れませんでした（待機資金は前の値段で評価）: %s', e)
+        portfolio_state = update_portfolio(stocks, etf_px)
+        try:      # 2026年11月10日：買う順番の並走記録（12月1日から。本番の売買には影響しない）
+            from variant_engine import update_variants
+            update_variants(stocks, etf_px)
+        except Exception as e:
+            log.error('Variant tracks failed: %s', e, exc_info=True)
         total_return = portfolio_state['total_value'] - portfolio_state['initial_cash']
         return_pct = total_return / portfolio_state['initial_cash'] * 100
         log.info(
