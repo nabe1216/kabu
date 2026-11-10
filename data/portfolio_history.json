@@ -282,6 +282,17 @@
       "price": 1382.0,
       "amount": 414600.0,
       "reason": "BUY_SIGNAL"
+    },
+    {
+      "date": "2026-11-11",
+      "action": "BUY",
+      "code": "1306",
+      "name": "TOPIX連動ETF（待機資金）",
+      "tier": "-",
+      "qty": 7048,
+      "price": 410.5,
+      "amount": 2893204.0,
+      "reason": "待機中の現金を1306で持つ"
     }
   ],
   "daily_snapshots": [
@@ -1393,6 +1404,18 @@
       "holdings_value": 7515000.0,
       "total_value": 10511103.0,
       "unrealized_pl": 96700.0,
+      "realized_pl": 327500.0,
+      "dividend_total": 153434,
+      "tax_paid": 105647,
+      "holdings_count": 17
+    },
+    {
+      "date": "2026-11-11",
+      "cash": 100005.79600000009,
+      "holdings_value": 7612000.0,
+      "etf_value": 2893204.0,
+      "total_value": 10605209.796,
+      "unrealized_pl": 193700.0,
       "realized_pl": 327500.0,
       "dividend_total": 153434,
       "tax_paid": 105647,
