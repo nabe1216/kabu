@@ -54,6 +54,7 @@ FIN_KEEP = ("Code", "DiscDate", "DiscTime", "DocType", "CurPerType", "CurPerSt",
 # ── 共通の決まり（method_map_2026-11-04 で、結果を見る前に決めたもの）──
 MIN_LIQ = 5e7            # その月末までの60営業日の売買代金の中央値の下限（円）
 MIN_MCAP = 1e10          # 時価総額の下限（円）
+CFG36: set = set()       # 36段目 B：回す組み立て（cfg で指定。空なら全部）
 FAIR = True              # 30段目：判定のでたらめを「同じ数・同じ入れ替え」にそろえ、ぶれの幅を出す（wide_lab_plan30_2026-11-10）
 
 
@@ -734,10 +735,13 @@ def cap_weights(w: np.ndarray, cap: float) -> np.ndarray:
     return w
 
 
-def sim(ranks: list, PXM: np.ndarray, DIV: np.ndarray, j0: int, keep: int, nmax: int = NMAX, cap: float = CAP,
+def sim(ranks: list, PXM: np.ndarray, DIV: np.ndarray, j0: int, keep: int, nmax: int | None = None, cap: float = CAP,
         slip: float = SLIP, tax: float = TAX, W: np.ndarray | None = None):
     """月末ごとに、順位の上から買い、keep 位より下になったら売る。1株単位・税（繰り越しの損あり）・配当は受け取るときに税。
-    ranks[j] … その月末の順位（銘柄の番号の並び。範囲の中だけ）。返す値：j0 から最後までの月末の評価額、最後に全部売って税を払った額、診断。"""
+    ranks[j] … その月末の順位（銘柄の番号の並び。範囲の中だけ）。返す値：j0 から最後までの月末の評価額、最後に全部売って税を払った額、診断。
+    nmax を渡さなければ、その時点の NMAX（36段目で持つ数を変えるため、呼ぶときに読む）。"""
+    if nmax is None:
+        nmax = NMAX
     cash = float(cap)
     pos: dict = {}
     loss = 0.0
@@ -7149,6 +7153,74 @@ def lab34(store: dict) -> int:
     return lab1(store, extra={nm: (mk(nm), lab) for nm, lab in Y_TYPES}, filt=True)
 
 
+# ───────────────────────── 36段目 B：組み立て方を本人のやり方に寄せる点検（持つ数・大型株だけ・時価総額で加重） ─────────────────────────
+# 計画は wide_lab_plan36_2026-11-11（結果を見る前に決めたもの）。良い形を探すのではなく、「組み立て方のせいで負けていたか」を見る点検
+R36_FORMS = (("H0", "h"), ("H3", "h"), ("H2", "h"), ("NIOKU", "g"), ("MIKI", "g"), ("N1", "n"), ("T1P", "t"), ("Y1", "y"),
+             ("IMURA", "g"), ("G1", "j"))
+R36_VARS = (("BASE", "20銘柄・同じ額・共通の範囲（これまでと同じ）", 20, None, False),
+            ("N10", "10銘柄（売る決まり A＝10位・B＝30位より下）", 10, None, False),
+            ("N5", "5銘柄（A＝5位・B＝15位より下）", 5, None, False),
+            ("TOP500", "範囲を時価総額の上位500社に絞る（20銘柄・同じ額）", 20, 500, False),
+            ("CAPW", "時価総額で加重（1銘柄は資産の15％まで。20銘柄）", 20, None, True),
+            ("T500W", "上位500社 × 時価総額で加重（TOPIX にいちばん近い組み立て）", 20, 500, True))
+
+
+def lab36(store: dict) -> int:
+    global LAB_TITLE, LAB_PLAN, LAB_NOTE, NMAX, KEEPS
+    LAB_PLAN = "wide_lab_plan36_2026-11-11"
+    fns = {"h": h_scores, "g": g_scores, "n": n_scores, "t": t_scores, "y": y_scores, "j": j_scores}
+    labels = {}
+    for tbl in (H_TYPES, G_TYPES, N_TYPES, T_TYPES, Y_TYPES, J_TYPES):
+        labels.update({k: v for k, v in tbl})
+    sc_cache: dict = {}
+
+    def mk(nm, kind):
+        def fn(D):
+            if kind not in sc_cache:
+                log(f"  基礎の値（{kind}）を作っています…")
+                sc_cache[kind] = fns[kind](store, D)
+            return sc_cache[kind][nm]
+        return fn
+    only = ONLY
+    vsel = [v for v in R36_VARS if not CFG36 or v[0] in CFG36]
+    table = {}
+    n0, k0 = NMAX, KEEPS
+    try:
+        for vk, vlab, n, topn, capw in vsel:
+            NMAX, KEEPS = n, (("A", n), ("B", 3 * n))
+            LAB_TITLE = f"36段目 B（組み立て方の点検）：{vk} … {vlab}"
+            LAB_NOTE = f"36段目 B：{vlab}。本の条件と並べる順は各段のまま。判定の基準と、でたらめ（同じ数・同じ入れ替え）は各段と同じ作り方"
+            log(f"■ {vk}：{vlab}")
+            extra = {nm: (mk(nm, kind), labels.get(nm, nm)) for nm, kind in R36_FORMS if not only or nm in only}
+            rc = lab1(store, extra=extra, filt=True, uni_fn=(None if topn is None else (lambda D, n_=topn: topn_mask(D, n_))),
+                      w_fn=(w16("CAP") if capw else None))
+            if rc != 0:
+                return rc
+            for nm, r in LAST_LAB1.items():
+                table[(vk, nm)] = (r["A_ci"][0], r["B_ci"][0], r["verdict"], float(np.mean(r.get("npass", [0]))),
+                                   r["A"]["前半"]["ann"] - r["tx"]["前半"]["ann"], r["A"]["後半"]["ann"] - r["tx"]["後半"]["ann"])
+    finally:
+        NMAX, KEEPS = n0, k0
+    print("\n【36段目 B のまとめ：清算後の通しの TOPIX との差（pt。A ／ B）】")
+    forms = [nm for nm, _ in R36_FORMS if not only or nm in only]
+    print("形 | " + " | ".join(v[0] for v in vsel))
+    for nm in forms:
+        cells = []
+        for v in vsel:
+            t = table.get((v[0], nm))
+            cells.append("—" if t is None else f"{t[0]:+.1f} ／ {t[1]:+.1f}（{t[3]:.0f}）")
+        print(f"{nm} | " + " | ".join(cells))
+    if "BASE" in [v[0] for v in vsel]:
+        print("\nBASE からの変わり方（A。10の形の中央値・良くなった形の数）")
+        for v in vsel:
+            if v[0] == "BASE":
+                continue
+            dif = [table[(v[0], nm)][0] - table[("BASE", nm)][0] for nm in forms if (v[0], nm) in table and ("BASE", nm) in table]
+            if dif:
+                print(f"  {v[0]} … 中央値 {float(np.median(dif)):+.1f}pt・良くなった {sum(1 for x in dif if x > 0)}／{len(dif)}")
+    return 0
+
+
 # ───────────────────────── 35段目：日本個別株デューデリジェンスセンター『機関投資家の「手口」を知れば、株価の「なぜ」はすべて読める』（2026年2月18日）の需給の条件 ─────────────────────────
 # 計画は wide_lab_plan35_2026-11-10（結果を見る前に決めたもの）。24〜26・32〜34段目と同じ月末の運用の形（条件に合う銘柄だけに点数・20銘柄・売る決まり A・B）。
 # 範囲は小型株を含む範囲（cfg=SMALL：売買代金の中央値1,000万円以上・時価総額30億円以上）で回す。信用取引の週末残高（スタンダード）を週ごとに取り、data/wide_k.pkl に持つ
@@ -8228,6 +8300,8 @@ def run_mode(mode: str, store: dict, args) -> int:
         return lab33(store)
     if mode == "lab34":
         return lab34(store)
+    if mode == "lab36":
+        return lab36(store)
     if mode == "lab35":
         # 35段目：信用取引の週末残高（スタンダード）を週ごとに取り、21段目と同じ別のファイル（data/wide_k.pkl）に持つ
         xs = k_xs_load()
@@ -8500,7 +8574,7 @@ def lab14(store: dict, args) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab5", "lab6", "lab7", "lab8", "lab9", "lab10", "lab11", "lab12", "lab13", "lab14", "lab15", "lab16", "lab17", "lab18", "lab19", "lab20", "lab21", "lab22", "lab23", "lab24", "lab25", "lab26", "lab27", "lab28", "lab29", "lab32", "lab33", "lab34", "lab35", "htrack", "xfetch"], default="lab1")
+    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab5", "lab6", "lab7", "lab8", "lab9", "lab10", "lab11", "lab12", "lab13", "lab14", "lab15", "lab16", "lab17", "lab18", "lab19", "lab20", "lab21", "lab22", "lab23", "lab24", "lab25", "lab26", "lab27", "lab28", "lab29", "lab32", "lab33", "lab34", "lab35", "lab36", "htrack", "xfetch"], default="lab1")
     ap.add_argument("--combo", default="", help="3回目：1回目で「範囲の中では効く」以上だった型の記号（カンマ区切り）。2つ以上なら SEL として回す")
     ap.add_argument("--only", default="", help="回す型の記号（カンマ区切り。空欄なら全部）。確かめる段階で候補だけを回すとき")
     ap.add_argument("--cfg", default="", help="7段目の確かめる段階で回す組み立て（例: VQM/TOP500/20/Q,NXG/TOP500/20/Q）")
@@ -8508,6 +8582,8 @@ def main() -> int:
     global ONLY, CFG
     ONLY = {x.strip().upper() for x in args.only.split(",") if x.strip()}
     CFG = [x.strip() for x in args.cfg.split(",") if x.strip()]
+    global CFG36
+    CFG36 = {c.upper() for c in CFG} & {v[0] for v in R36_VARS}     # 36段目 B：回す組み立て（空なら全部）
     if "SMALL" in [c.upper() for c in CFG]:      # 30段目：小型株を含む範囲（売買代金の中央値1,000万円以上・時価総額30億円以上）
         global MIN_LIQ, MIN_MCAP
         MIN_LIQ, MIN_MCAP = 1e7, 3e9
