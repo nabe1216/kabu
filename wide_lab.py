@@ -53,6 +53,11 @@ FIN_KEEP = ("Code", "DiscDate", "DiscTime", "DocType", "CurPerType", "CurPerSt",
 # ── 共通の決まり（method_map_2026-11-04 で、結果を見る前に決めたもの）──
 MIN_LIQ = 5e7            # その月末までの60営業日の売買代金の中央値の下限（円）
 MIN_MCAP = 1e10          # 時価総額の下限（円）
+FAIR = True              # 30段目：判定のでたらめを「同じ数・同じ入れ替え」にそろえ、ぶれの幅を出す（wide_lab_plan30_2026-11-10）
+
+
+def uni_txt() -> str:
+    return f"売買代金の中央値{MIN_LIQ / 1e4:,.0f}万円以上・時価総額{MIN_MCAP / 1e8:,.0f}億円以上" + ("（30段目の小型株を含む範囲）" if MIN_MCAP < 1e10 else "")
 STALE_DAYS = 5           # 最後に売買があった日が、月末からこの営業日より前なら、その月は買えない
 NMAX = 20
 KEEPS = (("A", 20), ("B", 60))     # A＝20位より下で売る・B＝60位より下で売る
@@ -332,6 +337,53 @@ def sh_now_list(code: str, fd: np.ndarray, ff: np.ndarray, tl: list) -> list:
     return out
 
 
+def interim_only(tl: list, seen_fy: set) -> list:
+    """通期の決算短信がまだない期の中間配当（2Q の決算短信の実績）。[(行, 期末, 額, 権利確定の月末)]。期ごとに1回だけ。"""
+    out, done = [], set()
+    for r in tl:
+        if str(r.get("CurPerType") or "") != "2Q" or "FinancialStatements" not in str(r.get("DocType") or ""):
+            continue
+        fy_end = str(r.get("CurFYEn") or "")[:10]
+        if len(fy_end) != 10 or fy_end in seen_fy or fy_end in done:
+            continue
+        q2 = num(r.get("Div2Q"))
+        if q2 and q2 > 0:
+            done.add(fy_end)
+            out.append((r, fy_end, q2, pd.Timestamp(fy_end) - pd.DateOffset(months=6) + pd.offsets.MonthEnd(0)))
+    return out
+
+
+BOOT_N, BOOT_BLOCK = 2000, 6      # 30段目：ぶれの幅（月ごとの値動きを6か月のかたまりで組み直す・2,000回。12か月のかたまりは96か月では幅が狭く出やすい）
+
+
+def boot_ci(v: np.ndarray, tv: np.ndarray, liq: float, tliq: float, yrs: float, seed: int = 20261110) -> tuple:
+    """清算後の通しの TOPIX との差（年率pt）と、その90％の幅・差が正になった割合。
+    月末の評価額（v）と TOPIX（tv）の月ごとの値動きを、同じ月をそろえて12か月のかたまりで組み直す（循環ブロック・ブートストラップ）。
+    中心は清算後の通しの差（税を両方とも払った後）。幅は、組み直した年率の差のぶれを足したもの。"""
+    v, tv = np.asarray(v, dtype=float), np.asarray(tv, dtype=float)
+    n = min(len(v), len(tv)) - 1
+    L = (((liq / CAP) ** (1 / yrs)) - ((tliq / CAP) ** (1 / yrs))) * 100.0
+    if n < 24 or not np.all(v[:n + 1] > 0):
+        return L, float("nan"), float("nan"), float("nan")
+    rs, rt = v[1:n + 1] / v[:n] - 1.0, tv[1:n + 1] / tv[:n] - 1.0
+    ls, lt = np.log1p(rs), np.log1p(rt)
+    base = (np.exp(ls.mean() * 12) - np.exp(lt.mean() * 12)) * 100.0
+    rng = np.random.default_rng(seed)
+    nb = int(np.ceil(n / BOOT_BLOCK))
+    st = rng.integers(0, n, size=(BOOT_N, nb))
+    idx = ((st[:, :, None] + np.arange(BOOT_BLOCK)[None, None, :]) % n).reshape(BOOT_N, -1)[:, :n]
+    d = (np.exp(ls[idx].mean(axis=1) * 12) - np.exp(lt[idx].mean(axis=1) * 12)) * 100.0
+    out = L + (d - base)
+    return L, float(np.percentile(out, 5)), float(np.percentile(out, 95)), float((out > 0).mean())
+
+
+def ci_txt(c: tuple) -> str:
+    L, lo, hi, p = c
+    if lo != lo:
+        return f"清算後の通しの TOPIX との差 {L:+.1f}pt"
+    return f"清算後の通しの TOPIX との差 {L:+.1f}pt［90％の幅 {lo:+.1f}〜{hi:+.1f}・組み直して差が正だった割合 {p * 100:.0f}％］"
+
+
 def fin_timeline(st: list) -> list:
     rows = []
     for r in st or []:
@@ -461,6 +513,11 @@ def build(store: dict) -> dict:
                     j = ym_j.get((rec + pd.offsets.MonthEnd(0)).strftime("%Y-%m"))
                     if j is not None:
                         DIV[i, j] += dps_now(fd, ff, r, amt, rec + pd.offsets.MonthEnd(0), dpost.get(fy_end, False))
+        # 30段目（レビューの指摘）：通期の決算短信がまだ出ていない期の中間配当は、2Q の決算短信の実績から入れる
+        for r, fy_end, amt, rec_me in interim_only(tl, seen_fy):
+            j = ym_j.get(rec_me.strftime("%Y-%m"))
+            if j is not None:
+                DIV[i, j] += dps_now(fd, ff, r, amt, rec_me, False)
         for j in range(M):
             k = int(np.searchsorted(dd, cal_i[me_idx[j]], side="left")) - 1      # 月末の最後の営業日より前に出た開示だけ（その日の引けのあとの開示を使わない）
             if k < 0:
@@ -880,7 +937,9 @@ def lab1(store: dict, combos: dict | None = None, extra: dict | None = None, uni
                     v, _l, _s = sim(rk_r, PXM, DIV, jx, kp, W=WM)
                     rnd[nm].append(half_stats(v, evx))
             base[jx] = (evx, half_stats(tv, evx), tl, rnd)
+            TXV[jx] = tv
         return base[jx]
+    TXV: dict = {}
     _ev, ST_TX, TXliq, RND = baseline(j0)
     # 大きさの区分（その月末の範囲の中の時価総額の順位）
     rank_mc = np.full(UNI.shape, np.inf)
@@ -921,6 +980,32 @@ def lab1(store: dict, combos: dict | None = None, extra: dict | None = None, uni
             r[nm] = half_stats(v, evf)
             r[nm + "_liq"] = liq
             r[nm + "_st"] = s_
+            r[nm + "_ci"] = boot_ci(v, TXV[jf], liq, txliq_f, r["yrs"])
+        if FAIR:
+            # 30段目（レビューの指摘）：判定に使うでたらめを、戦略と同じ数（合格した銘柄の数）・同じ入れ替えの速さにそろえる。
+            # 銘柄ごとの点数を、毎月 q の確率で引き直す（q＝戦略の1か月あたりの売りの数 ÷ 持ち銘柄の数）
+            npf_ = ([0] * jf + r["npass"]) if filt else None
+            r["rnd_fair"] = {}
+            for nm, kp in KEEPS:
+                s_ = r[nm + "_st"]
+                q = min(1.0, s_["n_sell"] / max(1.0, float(np.sum(s_["hold"]))))
+                r[nm + "_q"] = q
+                rng_q = np.random.default_rng(20261110 + kp)
+                outs = []
+                for _k in range(N_RAND):
+                    scr = np.empty((UNI.shape[0], M))
+                    scr[:, 0] = rng_q.random(UNI.shape[0])
+                    for jj in range(1, M):
+                        col = scr[:, jj - 1].copy()
+                        m_ = rng_q.random(UNI.shape[0]) < q
+                        col[m_] = rng_q.random(int(m_.sum()))
+                        scr[:, jj] = col
+                    rk_r = ranks_from(scr, UNI)
+                    if npf_ is not None:
+                        rk_r = [x[:npf_[j]] for j, x in enumerate(rk_r)]
+                    v_, _l, _s = sim(rk_r, PXM, DIV, jf, kp, W=WM)
+                    outs.append(half_stats(v_, evf))
+                r["rnd_fair"][nm] = outs
         rk_low = ranks_from(-sc, UNI)
         v, _l, _s = sim(rk_low, PXM, DIV, jf, 20, W=WM)
         r["low20"] = half_stats(v, evf)
@@ -934,7 +1019,7 @@ def lab1(store: dict, combos: dict | None = None, extra: dict | None = None, uni
         for nm, _kp in KEEPS:
             for h in ("前半", "後半"):
                 a = r[nm][h]["ann"]
-                rnd = [x[h]["ann"] for x in rnd_f[nm]]
+                rnd = [x[h]["ann"] for x in (r["rnd_fair"][nm] if FAIR else rnd_f[nm])]
                 d_tx = a - tx_f[h]["ann"]
                 d_rn = a - float(np.mean(rnd))
                 beat = int(sum(1 for x in rnd if a > x))
@@ -970,12 +1055,15 @@ def report(D, res, RND, ST_TX, TXliq, ev, j0):
     stage_note()
     print(f"  期間 … 比べる期間 {ev[0].date()}〜{ev[-1].date()}（{len(ev)}か月。前半 〜{(SPLIT - pd.Timedelta(days=1)).date()}・後半 {SPLIT.date()}〜）")
     nu = D["UNI"][:, j0:].sum(axis=0)
-    print(f"  範囲 … 東証の全市場の普通株（配当のない株・上場をやめた銘柄も入れる）。売買代金の中央値5,000万円以上・時価総額100億円以上。"
+    print(f"  範囲 … 東証の全市場の普通株（配当のない株・上場をやめた銘柄も入れる）。{uni_txt()}。"
           f"1か月あたり平均 {nu.mean():.0f}銘柄（最少 {nu.min()}・最多 {nu.max()}）")
     print(f"  決まり … 元本1,000万円・20銘柄・1株単位・月末の終値・片道{SLIP * 100:.1f}％・{TAX_TXT}（繰り越しの損あり・配当は受け取るときに）。"
           "売る決まり A＝20位より下で売る・B＝60位より下で売る")
     if LAB_NOTE:
         print(f"  ※ {LAB_NOTE}")
+    if FAIR:
+        print("  ※ 30段目から：判定の②のでたらめは、型ごとに「同じ数・同じ入れ替えの速さ」にそろえたもの（条件で絞る型は合格した銘柄と同じ数。下の行の「判定に使ったでたらめ」）。"
+              "下の「でたらめな20銘柄の平均」は前と同じ作り方の参考。ぶれの幅は、月ごとの値動きを6か月のかたまりで2,000回組み直したもの")
     print(f"  判定 … 両方の期間で、A・B の両方とも ①TOPIX（税あり）を +{PT_TX:.1f}pt 以上 ②でたらめな20銘柄の平均を +{PT_RND:.1f}pt 以上かつ20回のうち{BEAT_MIN}回以上上回る"
           "→ ①②とも「候補」・②だけ「範囲の中では効く」・それ以外「効かない」。"
           + ("合格した銘柄が1か月あたり平均5未満なら保留" if any("npass" in r for r in res.values()) else "点数がある銘柄が範囲の半分未満の月が3か月以上なら保留"))
@@ -1003,6 +1091,11 @@ def report(D, res, RND, ST_TX, TXliq, ev, j0):
             r["sel"] = "ある" if up else ("裏目" if dn else "見えない")
             print(f"         でたらめ（同じ数・A） {sel[0][2]:.1f} ／ {sel[1][2]:.1f}［差 {sel[0][0]:+.1f}・{sel[0][1]}回 ／ {sel[1][0]:+.1f}・{sel[1][1]}回］"
                   f" … 選び方の効き目 {r['sel']} ・ 持ち銘柄の数 平均 {np.mean(r['A_st']['hold']):.1f}（A）・{np.mean(r['B_st']['hold']):.1f}（B）")
+        if FAIR:
+            fm = {nm: [np.mean([x[h]["ann"] for x in r["rnd_fair"][nm]]) for h in HH] for nm, _kp in KEEPS}
+            print(f"         {ci_txt(r['A_ci'])}（A）・{ci_txt(r['B_ci'])}（B）")
+            print(f"         判定に使ったでたらめ（同じ数・同じ入れ替え）の平均 A {fm['A'][0]:.1f} ／ {fm['A'][1]:.1f}（毎月 {r['A_q'] * 100:.0f}％を入れ替え）"
+                  f" ・ B {fm['B'][0]:.1f} ／ {fm['B'][1]:.1f}（{r['B_q'] * 100:.0f}％）")
         bk = " ・ ".join(f"{bn} {v['前半']['ann']:.1f} ／ {v['後半']['ann']:.1f}" for bn, v in r["bk"].items())
         print(f"         参考：下から20（A） {r['low20']['前半']['ann']:.1f} ／ {r['low20']['後半']['ann']:.1f} ・ 大きさ別（A） {bk}"
               + (f" ・ 合格した銘柄 平均 {np.mean(r['npass']):.0f}（{min(r['npass'])}〜{max(r['npass'])}。0の月 {sum(1 for x in r['npass'] if x == 0)}）" if "npass" in r else
@@ -1098,6 +1191,11 @@ def ev_extract(store: dict, D: dict) -> dict:
                     t_rec = last_td(cal, rec + pd.offsets.MonthEnd(0))
                     if t_rec >= 3:
                         recs.append((i, t_cum_of(cal, t_rec), dps, t_disc))
+        # 30段目（レビューの指摘）：通期の決算短信がまだ出ていない期の中間配当は、2Q の決算短信の実績から入れる
+        for r, fy_end, amt, me in interim_only(tl, seen_fy):
+            t_rec = last_td(cal, me)
+            if t_rec >= 3:
+                divpay.setdefault(t_cum_of(cal, t_rec), []).append((i, dps_now(fd, ff, r, amt, me, False)))
     return {"annc": annc, "recs": recs, "splits": splits, "divpay": divpay}
 
 
@@ -5878,6 +5976,7 @@ def lab21(store: dict, xs: dict) -> int:
               "後半": sum(1 for t in s_["buy_t"] if pd.Timestamp(cal[t]) >= SPLIT)}
         x = {"st": half_stats(v, ev), "liq": liq, "s": s_, "ra": ra, "rb": rb, "nb": nb,
              "fill_ra": nra[0], "fill_rb": nrb[0]}
+        x["ci"] = boot_ci(v, TXv, liq, TXliq, yrs)      # 30段目：ぶれの幅
         x["verdict"], x["rb_lab"], x["det"] = k_judge(x, ST_TX)
         res[key] = (lab, x)
     print(f"\n  1. 結果（年率％「前半 ／ 後半」。TOPIX（税あり）{ST_TX['前半']['ann']:.1f} ／ {ST_TX['後半']['ann']:.1f}。"
@@ -5895,6 +5994,7 @@ def lab21(store: dict, xs: dict) -> int:
         ra_m = [np.mean([y[h]["ann"] for y in x["ra"]]) for h in ("前半", "後半")]
         rb_m = [np.mean([y[h]["ann"] for y in x["rb"]]) for h in ("前半", "後半")]
         print(f"\n  {key} {lab}")
+        print(f"     {ci_txt(x['ci'])}")
         print(f"     年率 {a['前半']['ann']:6.1f} ／ {a['後半']['ann']:6.1f}（最大下落 {a['通し']['mdd']:.0f}％・清算後の通し {((x['liq'] / CAP) ** (1 / yrs) - 1) * 100:.1f}％）"
               f"［{x['det']['前半'][0]:+.1f}／{x['det']['前半'][1]:+.1f}・{x['det']['前半'][2]}／{x['det']['前半'][3]:+.1f}・{x['det']['前半'][4]} ｜ "
               f"{x['det']['後半'][0]:+.1f}／{x['det']['後半'][1]:+.1f}・{x['det']['後半'][2]}／{x['det']['後半'][3]:+.1f}・{x['det']['後半'][4]}］"
@@ -6310,6 +6410,7 @@ def lab22(store: dict) -> int:
         nb = {"前半": sum(1 for t in s_["buy_t"] if pd.Timestamp(cal[t]) < SPLIT),
               "後半": sum(1 for t in s_["buy_t"] if pd.Timestamp(cal[t]) >= SPLIT)}
         x = {"st": half_stats(v, ev), "liq": liq, "s": s_, "ra": ra, "rb": rb, "nb": nb, "fill_ra": fill[0], "fill_rb": fill[1]}
+        x["ci"] = boot_ci(v, TXv, liq, TXliq, yrs)      # 30段目：ぶれの幅
         x["verdict"], x["rb_lab"], x["det"] = d_judge(x, ST_TX, cfg["filt"] == "none")
         res[key] = (lab, x)
     print(f"\n  1. 結果（年率％「前半 ／ 後半」。TOPIX（税あり）{ST_TX['前半']['ann']:.1f} ／ {ST_TX['後半']['ann']:.1f}。"
@@ -6323,6 +6424,7 @@ def lab22(store: dict) -> int:
         hold = [r[1] - r[0] for r in cl]
         dd = x["det"]
         print(f"\n  {key} {lab}")
+        print(f"     {ci_txt(x['ci'])}")
         print(f"     年率 {a['前半']['ann']:6.1f} ／ {a['後半']['ann']:6.1f}（最大下落 {a['通し']['mdd']:.0f}％・清算後の通し {((x['liq'] / CAP) ** (1 / yrs) - 1) * 100:.1f}％）"
               f"［{dd['前半'][0]:+.1f}／{dd['前半'][1]:+.1f}・{dd['前半'][2]}／{dd['前半'][3]:+.1f}・{dd['前半'][4]} ｜ "
               f"{dd['後半'][0]:+.1f}／{dd['後半'][1]:+.1f}・{dd['後半'][2]}／{dd['後半'][3]:+.1f}・{dd['後半'][4]}］ … {x['verdict']}"
@@ -6917,6 +7019,7 @@ def lab27(store: dict) -> int:
         nb = {"前半": sum(1 for t in s_["buy_t"] if pd.Timestamp(cal[t]) < SPLIT),
               "後半": sum(1 for t in s_["buy_t"] if pd.Timestamp(cal[t]) >= SPLIT)}
         x = {"st": half_stats(v, ev), "liq": liq, "s": s_, "ra": ra, "rb": rb, "nb": nb, "fill_ra": fill[0], "fill_rb": fill[1]}
+        x["ci"] = boot_ci(v, TXv, liq, TXliq, yrs)      # 30段目：ぶれの幅
         x["verdict"], x["rb_lab"], x["det"] = d_judge(x, ST_TX, False)
         res[key] = (lab, x)
         log(f"  {key} … {x['verdict']}")
@@ -6931,6 +7034,7 @@ def lab27(store: dict) -> int:
         hold = [r[1] - r[0] for r in cl]
         dd = x["det"]
         print(f"\n  {key} {lab}")
+        print(f"     {ci_txt(x['ci'])}")
         print(f"     年率 {a['前半']['ann']:6.1f} ／ {a['後半']['ann']:6.1f}（最大下落 {a['通し']['mdd']:.0f}％・清算後の通し {((x['liq'] / CAP) ** (1 / yrs) - 1) * 100:.1f}％）"
               f"［{dd['前半'][0]:+.1f}／{dd['前半'][1]:+.1f}・{dd['前半'][2]}／{dd['前半'][3]:+.1f}・{dd['前半'][4]} ｜ "
               f"{dd['後半'][0]:+.1f}／{dd['後半'][1]:+.1f}・{dd['後半'][2]}／{dd['後半'][3]:+.1f}・{dd['後半'][4]}］ … {x['verdict']}・選ぶ効き目（同じ日のブレイクと比べて） {x['rb_lab']}")
@@ -7165,6 +7269,7 @@ def lab28(store: dict) -> int:
         hold = [r[1] - r[0] for r in cl]
         log(f"  {key} … {verdict}")
         print(f"\n  {key} {lab}")
+        print(f"     {ci_txt(boot_ci(v, TXv, liq, TXliq, yrs))}")
         print(f"     年率 {st_['前半']['ann']:6.1f} ／ {st_['後半']['ann']:6.1f}（最大下落 {st_['通し']['mdd']:.0f}％・清算後の通し {((liq / CAP) ** (1 / yrs) - 1) * 100:.1f}％）"
               f"［TOPIX との差 {det['前半'][0]:+.1f} ／ {det['後半'][0]:+.1f}・でたらめとの差 {det['前半'][1]:+.1f}・{det['前半'][2]}回 ／ {det['後半'][1]:+.1f}・{det['後半'][2]}回］ … {verdict}")
         print(f"     合図 {n_c}回（銘柄×日）・最初の買い {s_['n_new']}（前半 {nb['前半']}・後半 {nb['後半']}）・買い増し {s_['n_add']}・売り {len(cl)}回（勝ち {win:.0f}％・"
@@ -7745,6 +7850,10 @@ def main() -> int:
     global ONLY, CFG
     ONLY = {x.strip().upper() for x in args.only.split(",") if x.strip()}
     CFG = [x.strip() for x in args.cfg.split(",") if x.strip()]
+    if "SMALL" in [c.upper() for c in CFG]:      # 30段目：小型株を含む範囲（売買代金の中央値1,000万円以上・時価総額30億円以上）
+        global MIN_LIQ, MIN_MCAP
+        MIN_LIQ, MIN_MCAP = 1e7, 3e9
+        log(f"  範囲：{uni_txt()}")
     if LONG:
         yb.LONG_MODE = True          # 株価を「20年前まで」で取る。取れなければプレミアムではないので止まる
         yb.API_SLEEP = float(os.environ.get("LONG_API_SLEEP", "0.25"))    # プレミアムは呼び出しの上限が大きい
