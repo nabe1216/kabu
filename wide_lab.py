@@ -6478,7 +6478,8 @@ def g_panel(store: dict, D: dict) -> dict:
             "up3",                                                             # 26段目（なのなの）：3期で売上・営業利益が増え、3期とも黒字
             "sal_up2", "np_up2", "cash_up", "cash_cov", "div_cut2",            # 32段目（バク）：売上・純利益が2期続けて増加・現金の増加と配当の何年分か・2期続けて減配
             "sal_cagr", "op_cagr", "opm_up", "np_g1",                          # 33段目（児玉）：売上・営業利益の年平均の伸び（最大5年）・営業利益率の改善・純利益の伸び
-            "op_avg3")                                                         # 34段目（山口）：営業利益の前々期・前期・今期予想の平均
+            "op_avg3",                                                         # 34段目（山口）：営業利益の前々期・前期・今期予想の平均
+            "gs_f", "roe", "roic", "sal_cagr3")                                # 35段目（機関投資家の手口）：売上の伸びの予想・ROE・ROIC の近い値・売上の3年の年平均の伸び
     P = {k: np.full((S, M), np.nan) for k in keys}
     for i, c in enumerate(codes):
         tl = fin_timeline(store["fins"].get(c))
@@ -6521,16 +6522,21 @@ def g_panel(store: dict, D: dict) -> dict:
             # 会社予想の当期の純利益：いちばん新しい本決算の短信の「来期」の予想。そのあとに当期の四半期の短信が出ていれば、その「当期」の予想
             np_f, dps_f, dps_f_d = None, None, None
             op_f = None
+            sal_f = None
             for q in reversed(sub):
                 if is_fy(q):
                     if np_f is None and str(q.get("CurFYEn") or "")[:10] == fy_end:
                         np_f = first_num(q, ("NxFNp", "NxFNP") + (("NxFNCNP", "NxFNCNp") if nc else ()))
                     if op_f is None and str(q.get("CurFYEn") or "")[:10] == fy_end:
                         op_f = num(q.get("NxFOP"))
+                    if sal_f is None and str(q.get("CurFYEn") or "")[:10] == fy_end:
+                        sal_f = num(q.get("NxFSales"))
                     break
                 if str(q.get("CurFYEn") or "")[:10] > fy_end:
                     if op_f is None:
                         op_f = num(q.get("FOP"))
+                    if sal_f is None:
+                        sal_f = num(q.get("FSales"))
                     if np_f is None:
                         np_f = first_num(q, ("FNP",) + (("FNCNP",) if nc else ()))
                     if dps_f is None and num(q.get("FDivAnn")) is not None:
@@ -6562,6 +6568,14 @@ def g_panel(store: dict, D: dict) -> dict:
                 if np_a is not None:
                     P["roa"][i, j] = np_a / ta
             s_l, o_l = num(r.get("Sales")), num(r.get("OP"))
+            # 35段目：売上の伸びの予想（今期の会社予想 ÷ いちばん新しい通期の実績 − 1）・ROE（通期の純利益 ÷ 純資産）・
+            #         ROIC の近い値（営業利益 ×（1 − 30％）÷（総資産 − 現預金）。有利子負債が要約にないので、投下資本を大きめに見る＝低めに出る）
+            if sal_f is not None and s_l and s_l > 0:
+                P["gs_f"][i, j] = sal_f / s_l - 1.0
+            if np_a is not None and eq and eq > 0:
+                P["roe"][i, j] = np_a / eq
+            if o_l is not None and ta and cash_r is not None and ta - num(cash_r.get("CashEq")) > 0:
+                P["roic"][i, j] = o_l * 0.7 / (ta - num(cash_r.get("CashEq")))
             if s_l and s_l > 0:
                 P["psr"][i, j] = mc / s_l
                 if o_l is not None:
@@ -6605,6 +6619,10 @@ def g_panel(store: dict, D: dict) -> dict:
                     P["sal_cagr"][i, j] = (sb / sa) ** (1.0 / (kk - 1)) - 1.0
                 if kk >= 3 and oa and ob and oa > 0 and ob > 0:
                     P["op_cagr"][i, j] = (ob / oa) ** (1.0 / (kk - 1)) - 1.0
+                if len(fy) >= 4:          # 35段目：売上の3年の年平均の伸び（3期前 → いちばん新しい通期）
+                    s3a, s3b = num(fy[-4].get("Sales")), num(fy[-1].get("Sales"))
+                    if s3a and s3b and s3a > 0 and s3b > 0:
+                        P["sal_cagr3"][i, j] = (s3b / s3a) ** (1.0 / 3.0) - 1.0
                 c1, c0 = num(fy[-1].get("CashEq")), num(fy[-2].get("CashEq"))
                 if c1 is not None and c0 is not None:
                     P["cash_up"][i, j] = float(c1 > c0)
@@ -7129,6 +7147,172 @@ def lab34(store: dict) -> int:
             return cache["sc"][name]
         return fn
     return lab1(store, extra={nm: (mk(nm), lab) for nm, lab in Y_TYPES}, filt=True)
+
+
+# ───────────────────────── 35段目：日本個別株デューデリジェンスセンター『機関投資家の「手口」を知れば、株価の「なぜ」はすべて読める』（2026年2月18日）の需給の条件 ─────────────────────────
+# 計画は wide_lab_plan35_2026-11-10（結果を見る前に決めたもの）。24〜26・32〜34段目と同じ月末の運用の形（条件に合う銘柄だけに点数・20銘柄・売る決まり A・B）。
+# 範囲は小型株を含む範囲（cfg=SMALL：売買代金の中央値1,000万円以上・時価総額30億円以上）で回す。信用取引の週末残高（スタンダード）を週ごとに取り、data/wide_k.pkl に持つ
+Q_TYPES = (
+    ("Q1", "品薄・好業績の初動狙い（浮動株比率を除く）：時価総額50〜500億円・売上の伸びの予想20％以上・ROE10％以上・25日線からの乖離0〜+5％。売上の伸びの予想の大きい順"),
+    ("Q2", "Q1 に出来高の急増（直近20営業日の売買代金の平均が、その前の60営業日の平均の1.5倍以上）を足す"),
+    ("Q3", "踏み上げ予備軍：信用倍率1倍以下（売り残あり）・信用倍率が前の週より低下・終値が年初来高値の95％以上。信用倍率の低い順"),
+    ("Q4", "機関投資家のユニバース入り候補：時価総額300〜500億円・ROIC8％以上（近い値）・営業利益率10％以上・売買代金が増加傾向（直近20営業日の平均＞その前の60営業日の平均）。ROIC の大きい順"),
+    ("Q5", "機関に発見される前（第7章）：時価総額50〜200億円・売上の3年の年平均の伸び20％以上・営業利益率10％以上。売上の伸びの大きい順"),
+    ("Q6", "空売りの踏み上げ狙い（第6章）：信用倍率0.5倍以下・終値が250営業日の安値の1.2倍以下・直近3か月に会社予想の上方修正（5％以上）。信用倍率の低い順"),
+)
+Q_REV_DAYS = 92          # 上方修正を見る期間（月末の日から何日前まで）
+Q_REV_MIN = 0.05         # 上方修正とみなす幅（前の予想より5％以上高い）
+
+
+def q_margin(store: dict, xs: dict, D: dict) -> tuple:
+    """月末ごとの信用倍率（買い残 ÷ 売り残）と、その1つ前の週の信用倍率。
+    残高は、月末の7日前までの日付の最新のもの（月末から37日より前なら使わない。5段目と同じ）。1つ前の週は、その前の記録（14日以内）。
+    売り残が0の銘柄は信用倍率を出さない（貸借銘柄でない株など）。倍率は株数どうしの比なので、分割で直さなくてよい。"""
+    rows = x_rows(xs, "mi")
+    codes, dates = D["codes"], D["dates"]
+    ci = {c: i for i, c in enumerate(codes)}
+    S, M = len(codes), len(dates)
+    mr, mp = np.full((S, M), np.nan), np.full((S, M), np.nan)
+    by = {}
+    for r in rows:
+        c = yb.norm_code(r.get("code") or "")
+        lv, sv = num(r.get("long")), num(r.get("short"))
+        if c in ci and lv is not None and sv is not None:
+            by.setdefault(c, {})[str(r.get("date") or "")[:10]] = (lv, sv)
+    for c, mp_ in by.items():
+        lst = sorted(mp_.items())
+        ds = np.array([x[0] for x in lst])
+        i = ci[c]
+        for j, d in enumerate(dates):
+            hi = (d - pd.Timedelta(days=7)).strftime("%Y-%m-%d")
+            lo = (d - pd.Timedelta(days=37)).strftime("%Y-%m-%d")
+            k = int(np.searchsorted(ds, hi, side="right")) - 1
+            if k < 0 or ds[k] < lo:
+                continue
+            lv, sv = lst[k][1]
+            if sv > 0:
+                mr[i, j] = lv / sv
+            if k >= 1 and (np.datetime64(str(ds[k])) - np.datetime64(str(ds[k - 1]))).astype(int) <= 14:
+                lv0, sv0 = lst[k - 1][1]
+                if sv0 > 0:
+                    mp[i, j] = lv0 / sv0
+    return mr, mp
+
+
+def q_revision(store: dict, D: dict) -> np.ndarray:
+    """月末ごとに、直近 Q_REV_DAYS 日に会社予想の上方修正があったか（1・0）。
+    同じ期の予想（本決算の短信は来期の予想、四半期の短信と予想の修正は当期の予想）が、その前の開示の予想より Q_REV_MIN 以上高い。
+    比べるのは営業利益（前と今の両方にあるとき）、なければ純利益。前の予想がプラスのときだけ。開示は月末の最後の営業日より前のものだけ（build と同じ）。"""
+    codes, me_idx = D["codes"], D["me_idx"]
+    cal_i = D["cal"].astype("datetime64[D]")
+    S, M = len(codes), len(me_idx)
+    out = np.zeros((S, M))
+    for i, c in enumerate(codes):
+        tl = fin_timeline(store["fins"].get(c))
+        if not tl:
+            continue
+        last = {}
+        ups = []
+        for r in tl:
+            d = str(r.get("DiscDate") or "")[:10]
+            fe = str(r.get("CurFYEn") or "")[:10]
+            if len(fe) != 10:
+                continue
+            if is_fy(r):
+                tgt = f"{int(fe[:4]) + 1}{fe[4:]}"
+                op, npf = num(r.get("NxFOP")), first_num(r, ("NxFNp", "NxFNP"))
+            else:
+                tgt = fe
+                op, npf = num(r.get("FOP")), num(r.get("FNP"))
+            if op is None and npf is None:
+                continue
+            prev = last.get(tgt)
+            if prev is not None:
+                if op is not None and prev[0] is not None and prev[0] > 0:
+                    if op >= prev[0] * (1 + Q_REV_MIN):
+                        ups.append(np.datetime64(d))
+                elif npf is not None and prev[1] is not None and prev[1] > 0:
+                    if npf >= prev[1] * (1 + Q_REV_MIN):
+                        ups.append(np.datetime64(d))
+            last[tgt] = (op if op is not None else (prev[0] if prev else None), npf if npf is not None else (prev[1] if prev else None))
+        if not ups:
+            continue
+        ua = np.array(sorted(ups))
+        for j in range(M):
+            t_me = cal_i[me_idx[j]]
+            k1 = int(np.searchsorted(ua, t_me, side="left"))
+            k0 = int(np.searchsorted(ua, t_me - np.timedelta64(Q_REV_DAYS, "D"), side="left"))
+            out[i, j] = float(k1 > k0)
+    return out
+
+
+def q_price(D: dict) -> dict:
+    """月末ごとの値動きの値：25日線からの乖離・年初来高値に対する位置・250営業日の安値に対する位置・売買代金の20日平均 ÷ その前の60日平均。"""
+    CF, VA, me_idx, cal = D["CF"], D["VA"], D["me_idx"], D["cal"]
+    S, M = CF.shape[0], len(me_idx)
+    out = {k: np.full((S, M), np.nan) for k in ("dev25", "ytd", "lo250", "va_r")}
+    yr = pd.DatetimeIndex(cal).year.to_numpy()
+    with np.errstate(invalid="ignore", divide="ignore"):
+        for j, t in enumerate(me_idx):
+            if t >= 24:
+                out["dev25"][:, j] = CF[:, t] / np.nanmean(CF[:, t - 24:t + 1], axis=1) - 1.0
+            y0 = int(np.searchsorted(yr, yr[t], side="left"))
+            out["ytd"][:, j] = CF[:, t] / np.nanmax(CF[:, y0:t + 1], axis=1)
+            if t >= 249:
+                out["lo250"][:, j] = CF[:, t] / np.nanmin(CF[:, t - 249:t + 1], axis=1)
+            if t >= 79:
+                a20 = VA[:, t - 19:t + 1].mean(axis=1)
+                a60 = VA[:, t - 79:t - 19].mean(axis=1)
+                out["va_r"][:, j] = np.where(a60 > 0, a20 / a60, np.nan)
+    return out
+
+
+def q_scores(store: dict, xs: dict, D: dict) -> dict:
+    P = g_panel(store, D)
+    X = q_price(D)
+    mr, mp = q_margin(store, xs, D)
+    rev = q_revision(store, D)
+    MC = D["MCAP"]
+    fin = np.array([D["sector"].get(c, "") in yb.FIN_SECTORS for c in D["codes"]])[:, None]
+    out = {}
+    with np.errstate(invalid="ignore", divide="ignore"):
+        q1 = ((MC >= 5e9) & (MC <= 5e10) & (P["gs_f"] >= 0.20) & (P["roe"] >= 0.10) & (X["dev25"] >= 0.0) & (X["dev25"] <= 0.05))
+        out["Q1"] = np.where(q1, P["gs_f"], np.nan)
+        out["Q2"] = np.where(q1 & (X["va_r"] >= 1.5), P["gs_f"], np.nan)
+        q3 = (mr <= 1.0) & (mr < mp) & (X["ytd"] >= 0.95)
+        out["Q3"] = np.where(q3, -mr, np.nan)
+        q4 = (MC >= 3e10) & (MC <= 5e10) & (P["roic"] >= 0.08) & (P["opm"] >= 0.10) & (X["va_r"] > 1.0) & ~fin
+        out["Q4"] = np.where(q4, P["roic"], np.nan)
+        q5 = (MC >= 5e9) & (MC <= 2e10) & (P["sal_cagr3"] >= 0.20) & (P["opm"] >= 0.10)
+        out["Q5"] = np.where(q5, P["sal_cagr3"], np.nan)
+        q6 = (mr <= 0.5) & (X["lo250"] <= 1.2) & (rev == 1)
+        out["Q6"] = np.where(q6, -mr, np.nan)
+        cov = np.isfinite(mr) & D["UNI"]
+        out["_mcov"] = cov.sum(axis=0) / np.maximum(1, D["UNI"].sum(axis=0))
+    return out
+
+
+def lab35(store: dict, xs: dict) -> int:
+    """35段目：機関投資家の手口（需給）の本の数値の決まり。9年分はすべて出版（2026年2月）の前。"""
+    global LAB_TITLE, LAB_PLAN, LAB_NOTE
+    LAB_TITLE, LAB_PLAN = "35段目（日本個別株デューデリジェンスセンター『機関投資家の「手口」を知れば…』2026年2月の需給の条件）", "wide_lab_plan35_2026-11-10"
+    LAB_NOTE = ("35段目：24〜26・32〜34段目と同じく、条件に合う銘柄だけに点数をつけ、合う銘柄が20より少ない月は現金。条件に合わなくなった銘柄は、その月末に売る（本の「前提が崩れたら売る」）。"
+                "保留は「合格した銘柄が1か月あたり平均5未満」。9年分はすべて本の出版（2026年2月18日）の前。浮動株比率・逆日歩・大量保有報告書・自社株買いの発表・板と歩み値は使えない（データがない）。"
+                "損切り（1〜2％）は月末の運用では入れない")
+    if MIN_MCAP >= 1e10:
+        log("  ※ 35段目は小型株を含む範囲（cfg=SMALL）で回す計画です。いまは共通の範囲です")
+    cache: dict = {}
+
+    def mk(name):
+        def fn(D):
+            if "sc" not in cache:
+                log("  基礎の値（売上の伸びの予想・ROE・ROIC・営業利益率・信用倍率・上方修正・25日線・年初来高値・売買代金の増え方）を作っています…")
+                cache["sc"] = q_scores(store, xs, D)
+                cv = cache["sc"]["_mcov"]
+                log(f"  範囲の中で信用倍率が出せた割合 … 中央値 {float(np.median(cv)) * 100:.0f}％（最小 {float(cv.min()) * 100:.0f}％）")
+            return cache["sc"][name]
+        return fn
+    return lab1(store, extra={nm: (mk(nm), lab) for nm, lab in Q_TYPES}, filt=True)
 
 
 # ───────────────────────── 27段目：ミネルヴィニ『ミネルヴィニの成長株投資法』（原書2013年）の数値の決まり ─────────────────────────
@@ -7828,7 +8012,7 @@ def lab29(store: dict) -> int:
 # 決まりは h_forward_plan_2026-11-10（記録を始める前に決めたもの）。24段目の H3・H0 の決まりを変えずに、2026年11月末の終値で組み、
 # 12月からの値動きを記録する。生のデータ（株価・要約）は Actions のキャッシュに置き、リポジトリには data/h_track.json（結果だけ）を入れる
 HT_START_YM = "2026-11"            # この月の最後の営業日の終値で最初に組む
-HT_FORMS = (("H3", "増配テーマの近い形"), ("H0", "基本条件の指標だけ"))
+HT_FORMS = (("H3", "増配テーマの近い形"), ("H0", "基本条件の指標だけ"), ("Y1", "山口揚平の保守的な安全域（11月10日に足した）"))
 HT_OUT = OUT / "h_track.json"
 HT_NW_LAG = 3                       # 月ごとの超過の t（Newey-West・ずらし3か月）
 HT_SUMM_KEY = ("Code", "DiscDate", "DiscTime", "DocType", "CurPerType", "CurFYEn")
@@ -7947,7 +8131,8 @@ def htrack(store: dict) -> int:
     D = build(store)
     dates, UNI, PXM, DIV, codes, names = D["dates"], D["UNI"], D["PXM"], D["DIV"], D["codes"], D["names"]
     M = len(dates)
-    sc = h_scores(store, D)
+    sc = dict(h_scores(store, D))
+    sc["Y1"] = y_scores(store, D)["Y1"]          # 34段目（2026年11月10日に足した。記録を始める前）
     ym = [d.strftime("%Y-%m") for d in dates]
     out = {"generated_at": pd.Timestamp.now(tz="Asia/Tokyo").isoformat(timespec="seconds"), "plan": "h_forward_plan_2026-11-10",
            "data_last": str(D["cal"][-1]), "start_month_end": HT_START_YM, "forms": {}}
@@ -8043,6 +8228,23 @@ def run_mode(mode: str, store: dict, args) -> int:
         return lab33(store)
     if mode == "lab34":
         return lab34(store)
+    if mode == "lab35":
+        # 35段目：信用取引の週末残高（スタンダード）を週ごとに取り、21段目と同じ別のファイル（data/wide_k.pkl）に持つ
+        xs = k_xs_load()
+        if not x_complete(store, xs, ("mi",)):
+            key = os.environ.get("J_QUANTS_API_KEY")
+            if not key:
+                print("J_QUANTS_API_KEY が設定されていません")
+                return 2
+            if not fetch_x(yb.JQ(key), store, xs, ("mi",)):
+                print("\n■ まだ終わっていません（信用取引の週末残高を取っている途中です）。同じ設定のまま、もう一度押してください。")
+                return EXIT_UNFINISHED
+        st = xs.get("mi", {})
+        log(f"  信用取引の週末残高 … {len(st.get('rows', [])):,}件・取れた週 {len(st.get('done', ())):,}・取れなかった週 {len(st.get('fail', ()))}"
+            + (f"・取るのをやめた：{st['bad']}" if st.get("bad") else ""))
+        if st.get("bad"):
+            print("\n■ 信用取引の週末残高が取れなかったので、Q3・Q6 は保留になります")
+        return lab35(store, xs)
     if mode == "lab21":
         # 21段目：上岡式の答え合わせ。業種別空売り比率（スタンダード）を日ごとに取り、別のファイル（data/wide_k.pkl）に持つ
         xs = k_xs_load()

@@ -927,7 +927,7 @@ function renderFwd(){
   $('fxTotal').textContent=fmt.yen(st.total_value);
   $('fxRet').innerHTML=`<span class="${ret>=0?'pl-pos':'pl-neg'}">${ret>=0?'+':''}${fmt.yen(ret)}<small style="font-size:13px;font-weight:600"> (${pct>=0?'+':''}${pct.toFixed(2)}%)</small></span>`;
   $('fxDiv').textContent=fmt.yen(st.dividend_received);
-  $('fxCash').textContent=fmt.yen(st.cash);
+  $('fxCash').innerHTML=st.etf&&st.etf.value?`${fmt.yen(st.cash+st.etf.value)}<small style="font-size:12px;font-weight:600;display:block;color:#6B7280">うち1306で待機 ${fmt.yen(st.etf.value)}</small>`:fmt.yen(st.cash);
   $('fxCount').textContent=`${st.holdings.length} / 20`;
   // curve
   const snaps=hi?.daily_snapshots||[];
