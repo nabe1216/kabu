@@ -1,0 +1,97 @@
+name: h-track
+
+# ヘム『「増配」株投資』の H3・H0（24段目）の並走記録（31段目。決まりはプロジェクトの h_forward_plan_2026-11-10）。
+#
+# - wide-lab の9年分のキャッシュを、日付ごとに取り足して（株価・決算短信の要約・月末の銘柄一覧）、
+#   2026年11月末の終値で組んだ紙の上の運用と、判定に使う超過を、毎回はじめから作り直す
+# - 生のデータは Actions のキャッシュ（h-track-cache-v1-）に置き、リポジトリには data/h_track.json（結果だけ）を入れる
+# - キャッシュは7日使わないと消えるので、週1回（土曜の朝）動かす。毎日の判定（daily.yml）とは別に動き、本番には影響しない
+on:
+  schedule:
+    - cron: "47 22 * * 5"      # 土曜 7:47（日本時間）
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write        # キャッシュの古い控えを消すため
+
+concurrency:
+  group: h-track
+  cancel-in-progress: false
+
+env:
+  CACHE_PATH: data/wide_cache.pkl
+  CACHE_PREFIX: h-track-cache-v1-
+
+jobs:
+  track:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 依存関係をインストール
+        run: pip install --quiet numpy pandas requests
+
+      # 最初の1回は wide-lab の9年分のキャッシュから始める（2回目からは自分のキャッシュ）
+      - name: キャッシュを復元
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.CACHE_PATH }}
+          key: ${{ env.CACHE_PREFIX }}
+          restore-keys: |
+            ${{ env.CACHE_PREFIX }}
+            wide-lab-cache-v2-
+
+      - name: 取り足して記録を作り直す
+        env:
+          J_QUANTS_API_KEY: ${{ secrets.J_QUANTS_API_KEY }}
+          WIDE_YEARS: "9"
+          PYTHONUNBUFFERED: "1"
+        run: |
+          set -o pipefail
+          python wide_lab.py --mode htrack 2>&1 | tee run.log
+          {
+            echo "## h-track（ヘムの H3・H0 の並走記録）"
+            echo '```'
+            tail -c 20000 run.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: キャッシュを保存
+        if: ${{ always() && hashFiles(env.CACHE_PATH) != '' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.CACHE_PATH }}
+          key: ${{ env.CACHE_PREFIX }}${{ github.run_id }}
+
+      - name: 古い控えを整理する（新しい2つは残す）
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ids=$(gh api "repos/${GITHUB_REPOSITORY}/actions/caches?key=${CACHE_PREFIX}&sort=created_at&direction=desc&per_page=100" \
+                --jq '.actions_caches[2:][] | .id' || true)
+          for id in $ids; do gh api -X DELETE "repos/${GITHUB_REPOSITORY}/actions/caches/${id}" || true; done
+
+      - name: 記録を保存する
+        run: |
+          if [ ! -f data/h_track.json ]; then echo "記録のファイルがありません。"; exit 0; fi
+          git add data/h_track.json
+          if git diff --cached --quiet; then echo "変更なし。"; exit 0; fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "ヘムの H3・H0 の並走記録"
+          for i in 1 2 3; do
+            git pull --rebase --autostash origin main && git push && exit 0
+            echo "送信に失敗しました（${i}回目）。少し待って送り直します。"
+            sleep $((i * 5))
+          done
+          echo "3回送り直しても保存できませんでした。"
+          exit 1
