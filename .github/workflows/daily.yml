@@ -63,6 +63,10 @@ jobs:
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           git add data/results.json data/portfolio_state.json data/portfolio_history.json
+          # 2026年11月10日：買う順番の並走記録（12月1日から。variant_engine）
+          for f in data/variant_*_state.json data/variant_*_history.json; do
+            if [ -f "$f" ]; then git add "$f"; fi
+          done
           # 2026年11月8日：銘柄ごとの履歴は data/history/ に分けた（増えたファイル・消えたファイルも含めて保存）
           if [ -d data/history ]; then
             git add -A data/history

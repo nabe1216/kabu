@@ -29,6 +29,7 @@ name: wide-lab
 #   mode=lab27 … 27段目（ミネルヴィニ『ミネルヴィニの成長株投資法』原書2013年。毎日の売り買い。years=9。wide_lab_plan27_2026-11-10）
 #   mode=lab28 … 28段目（ALFA『高配当株で小金持ちになる方法』の往復銘柄。毎日の売り買い。years=9。wide_lab_plan28_2026-11-10）
 #   mode=lab29 … 29段目（外部の数字との答え合わせ：JPX の TOPIX 配当込み・TOPIX の作り直し・Fama-French の日本の要因。years=9。wide_lab_plan29_2026-11-10）
+#   mode=lab35 … 35段目（機関投資家の手口〈2026年2月の本〉の需給の条件。信用取引の週末残高〈スタンダード〉を週ごとに取り、data/wide_k.pkl に持つ。years=9・cfg=SMALL。wide_lab_plan35_2026-11-10）
 #   cost=S0 … 第1部と同じ（株 片道0.2％・1306 片道0.1％・税20.315％） ／ S1 … 低い費用（0.1％・0.05％・税あり） ／ S2 … 低い費用・税なし
 #   years=9  … 探す段階（スタンダードで足りる9年分。data/wide_cache.pkl）
 #   years=20 … 確かめる段階（プレミアムの20年分。data/wide_long.pkl。キャッシュの名前を yield-backtest-long- で始めているので、
@@ -37,7 +38,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "fetch＝データを集める ／ lab1＝1回目の型（24通り） ／ lab2＝2回目（出来事と暦） ／ lab3＝3回目（組み合わせ） ／ lab4＝4回目（売買の内訳） ／ lab5＝5段目（残りの型） ／ lab6＝6段目（短期売買） ／ lab7＝7段目（組み立て方） ／ lab8＝8段目（空売り） ／ lab9＝9段目（まとめて学ばせる） ／ lab10＝10段目（出来事＋TOPIX） ／ lab11＝11段目（出来事・大型株） ／ lab12＝12段目（財務の明細） ／ lab13＝13段目（残りのデータ） ／ lab14＝14段目（費用と税の前提で、1〜5・8〜13段目をまとめて回し直す） ／ lab15＝15段目（出来事の組み立て方） ／ lab16＝16段目（加重） ／ lab17＝17段目（暦と短期。years=20） ／ lab18＝18段目（点数の残り） ／ lab19＝19段目（組み合わせ・空売り側） ／ lab20＝20段目（市況で切り替える。years=20） ／ lab21＝21段目（上岡式の答え合わせ。years=9） ／ lab22＝22段目（DUKE。・CAN SLIM。years=9） ／ lab23＝23段目（成長×割安の手法。years=9） ／ lab24＝24段目（ヘムの増配株。years=9） ／ lab25＝25段目（たーちゃんの3つの投資法。years=9） ／ lab26＝26段目（なのなのの高配当株。years=9） ／ lab27＝27段目（ミネルヴィニ。years=9） ／ lab28＝28段目（往復銘柄。years=9） ／ lab29＝29段目（外部の数字との答え合わせ。years=9） ／ lab32＝32段目（投資家バクの高配当・増配株。years=9） ／ lab33＝33段目（児玉一希の高配当10倍株。years=9） ／ lab34＝34段目（山口揚平の企業価値の算定。years=9） ／ xfetch＝配当金情報などを取るだけ"
+        description: "fetch＝データを集める ／ lab1＝1回目の型（24通り） ／ lab2＝2回目（出来事と暦） ／ lab3＝3回目（組み合わせ） ／ lab4＝4回目（売買の内訳） ／ lab5＝5段目（残りの型） ／ lab6＝6段目（短期売買） ／ lab7＝7段目（組み立て方） ／ lab8＝8段目（空売り） ／ lab9＝9段目（まとめて学ばせる） ／ lab10＝10段目（出来事＋TOPIX） ／ lab11＝11段目（出来事・大型株） ／ lab12＝12段目（財務の明細） ／ lab13＝13段目（残りのデータ） ／ lab14＝14段目（費用と税の前提で、1〜5・8〜13段目をまとめて回し直す） ／ lab15＝15段目（出来事の組み立て方） ／ lab16＝16段目（加重） ／ lab17＝17段目（暦と短期。years=20） ／ lab18＝18段目（点数の残り） ／ lab19＝19段目（組み合わせ・空売り側） ／ lab20＝20段目（市況で切り替える。years=20） ／ lab21＝21段目（上岡式の答え合わせ。years=9） ／ lab22＝22段目（DUKE。・CAN SLIM。years=9） ／ lab23＝23段目（成長×割安の手法。years=9） ／ lab24＝24段目（ヘムの増配株。years=9） ／ lab25＝25段目（たーちゃんの3つの投資法。years=9） ／ lab26＝26段目（なのなのの高配当株。years=9） ／ lab27＝27段目（ミネルヴィニ。years=9） ／ lab28＝28段目（往復銘柄。years=9） ／ lab29＝29段目（外部の数字との答え合わせ。years=9） ／ lab32＝32段目（投資家バクの高配当・増配株。years=9） ／ lab33＝33段目（児玉一希の高配当10倍株。years=9） ／ lab34＝34段目（山口揚平の企業価値の算定。years=9） ／ lab35＝35段目（機関投資家の手口・需給。years=9・cfg=SMALL） ／ xfetch＝配当金情報などを取るだけ"
         required: true
         default: "fetch"
         type: choice
@@ -75,6 +76,7 @@ on:
           - lab32
           - lab33
           - lab34
+          - lab35
           - xfetch
       years:
         description: "9＝探す段階（9年分） ／ 20＝確かめる段階（プレミアムの20年分）"
@@ -189,7 +191,7 @@ jobs:
             ${{ env.X_PREFIX }}
 
       - name: 21段目のデータのキャッシュを復元
-        if: ${{ inputs.mode == 'lab21' }}
+        if: ${{ inputs.mode == 'lab21' || inputs.mode == 'lab35' }}
         uses: actions/cache/restore@v4
         with:
           path: ${{ env.K_PATH }}
@@ -245,7 +247,7 @@ jobs:
           key: ${{ env.X_PREFIX }}${{ github.run_id }}
 
       - name: 21段目のデータのキャッシュを保存
-        if: ${{ always() && inputs.mode == 'lab21' && hashFiles(env.K_PATH) != '' }}
+        if: ${{ always() && (inputs.mode == 'lab21' || inputs.mode == 'lab35') && hashFiles(env.K_PATH) != '' }}
         uses: actions/cache/save@v4
         with:
           path: ${{ env.K_PATH }}
