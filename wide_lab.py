@@ -6477,7 +6477,8 @@ def g_panel(store: dict, D: dict) -> dict:
             "eqr", "opm", "roa", "psr",                                       # この4つは25段目（たーちゃん）で足したもの
             "up3",                                                             # 26段目（なのなの）：3期で売上・営業利益が増え、3期とも黒字
             "sal_up2", "np_up2", "cash_up", "cash_cov", "div_cut2",            # 32段目（バク）：売上・純利益が2期続けて増加・現金の増加と配当の何年分か・2期続けて減配
-            "sal_cagr", "op_cagr", "opm_up", "np_g1")                          # 33段目（児玉）：売上・営業利益の年平均の伸び（最大5年）・営業利益率の改善・純利益の伸び
+            "sal_cagr", "op_cagr", "opm_up", "np_g1",                          # 33段目（児玉）：売上・営業利益の年平均の伸び（最大5年）・営業利益率の改善・純利益の伸び
+            "op_avg3")                                                         # 34段目（山口）：営業利益の前々期・前期・今期予想の平均
     P = {k: np.full((S, M), np.nan) for k in keys}
     for i, c in enumerate(codes):
         tl = fin_timeline(store["fins"].get(c))
@@ -6519,18 +6520,28 @@ def g_panel(store: dict, D: dict) -> dict:
                 P["per_a"][i, j] = mc / np_a
             # 会社予想の当期の純利益：いちばん新しい本決算の短信の「来期」の予想。そのあとに当期の四半期の短信が出ていれば、その「当期」の予想
             np_f, dps_f, dps_f_d = None, None, None
+            op_f = None
             for q in reversed(sub):
                 if is_fy(q):
                     if np_f is None and str(q.get("CurFYEn") or "")[:10] == fy_end:
                         np_f = first_num(q, ("NxFNp", "NxFNP") + (("NxFNCNP", "NxFNCNp") if nc else ()))
+                    if op_f is None and str(q.get("CurFYEn") or "")[:10] == fy_end:
+                        op_f = num(q.get("NxFOP"))
                     break
                 if str(q.get("CurFYEn") or "")[:10] > fy_end:
+                    if op_f is None:
+                        op_f = num(q.get("FOP"))
                     if np_f is None:
                         np_f = first_num(q, ("FNP",) + (("FNCNP",) if nc else ()))
                     if dps_f is None and num(q.get("FDivAnn")) is not None:
                         dps_f, dps_f_d = num(q.get("FDivAnn")), str(q["DiscDate"])[:10]
             if np_f is not None:
                 P["np_f"][i, j] = np_f
+            # 34段目：営業利益の前々期・前期の実績と今期の予想の平均（そろわなければ、あるものの平均。2つ以上あるとき）
+            ops = [num(x.get("OP")) for x in fy[-2:]] + [op_f]
+            ops = [v for v in ops if v is not None]
+            if len(ops) >= 2:
+                P["op_avg3"][i, j] = float(np.mean(ops))
             if np_f and np_f > 0:
                 P["per_f"][i, j] = mc / np_f
             if np_f is not None and np_a and np_a > 0:
@@ -7070,6 +7081,54 @@ def lab33(store: dict) -> int:
                   f" ・ 最大下落 A {r['A']['出版後']['mdd']:.0f}％")
     PUB_FROM = None
     return rc
+
+
+# ───────────────────────── 34段目：山口揚平『知ってそうで知らなかった ほんとうの株のしくみ』（PHP文庫、2013年）の5分でできる企業価値の算定 ─────────────────────────
+# 計画は wide_lab_plan34_2026-11-10（結果を見る前に決めたもの）。24〜26・32・33段目と同じ月末の運用の形（条件に合う銘柄だけに点数・20銘柄・売る決まり A・B）。
+Y_TYPES = (
+    ("Y1", "本の形（保守的）：事業価値（営業利益の前々期・前期・今期予想の平均×10）＋現預金 − 負債の合計 が時価総額以上（安全域1倍以上）。金融を除く。安全域の大きい順"),
+    ("Y2", "本の形（甘め）：財産価値 − 負債 を純資産で代用（事業価値＋純資産）。安全域1倍以上。安全域の大きい順"),
+    ("Y3", "Y1 の安全域を2倍以上にする（株価が価値の半分以下）"),
+    ("Y4", "参考：事業価値だけ（営業利益の3期平均×10 ÷ 時価総額）。1倍以上。大きい順"),
+)
+
+
+def y_scores(store: dict, D: dict) -> dict:
+    P = g_panel(store, D)
+    MC = D["MCAP"]
+    fin = np.array([D["sector"].get(c, "") in yb.FIN_SECTORS for c in D["codes"]])[:, None]
+    out = {}
+    with np.errstate(invalid="ignore", divide="ignore"):
+        biz = 10.0 * P["op_avg3"]
+        net_cash = P["netcash"] * MC                          # 現預金 −（総資産 − 純資産）
+        s1 = (biz + net_cash) / MC
+        s2 = (biz + P["eq"]) / MC
+        s4 = biz / MC
+        ok = (P["op_avg3"] > 0) & ~fin
+        out["Y1"] = np.where(ok & (s1 >= 1.0), s1, np.nan)
+        out["Y2"] = np.where(ok & (s2 >= 1.0), s2, np.nan)
+        out["Y3"] = np.where(ok & (s1 >= 2.0), s1, np.nan)
+        out["Y4"] = np.where(ok & (s4 >= 1.0), s4, np.nan)
+    return out
+
+
+def lab34(store: dict) -> int:
+    """34段目：山口揚平の5分でできる企業価値の算定。9年分はすべて出版のあと。"""
+    global LAB_TITLE, LAB_PLAN, LAB_NOTE
+    LAB_TITLE, LAB_PLAN = "34段目（山口揚平『ほんとうの株のしくみ』2013年の企業価値の算定）", "wide_lab_plan34_2026-11-10"
+    LAB_NOTE = ("34段目：24〜26・32・33段目と同じく、条件に合う銘柄だけに点数をつけ、合う銘柄が20より少ない月は現金。条件に合わなくなった銘柄（株価が価値に追いついた銘柄）は、その月末に売る。"
+                "保留は「合格した銘柄が1か月あたり平均5未満」。9年分はすべて本の出版（2013年）のあと。流動資産・流動負債・投資その他の資産は決算短信の要約にないので、"
+                "財産価値 − 負債 を「現預金 − 負債の合計」（保守的）と「純資産」（甘め）の2通りで代用する")
+    cache: dict = {}
+
+    def mk(name):
+        def fn(D):
+            if "sc" not in cache:
+                log("  基礎の値（営業利益の3期平均・現預金・負債・純資産）を作っています…")
+                cache["sc"] = y_scores(store, D)
+            return cache["sc"][name]
+        return fn
+    return lab1(store, extra={nm: (mk(nm), lab) for nm, lab in Y_TYPES}, filt=True)
 
 
 # ───────────────────────── 27段目：ミネルヴィニ『ミネルヴィニの成長株投資法』（原書2013年）の数値の決まり ─────────────────────────
@@ -7982,6 +8041,8 @@ def run_mode(mode: str, store: dict, args) -> int:
         return lab32(store)
     if mode == "lab33":
         return lab33(store)
+    if mode == "lab34":
+        return lab34(store)
     if mode == "lab21":
         # 21段目：上岡式の答え合わせ。業種別空売り比率（スタンダード）を日ごとに取り、別のファイル（data/wide_k.pkl）に持つ
         xs = k_xs_load()
@@ -8237,7 +8298,7 @@ def lab14(store: dict, args) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab5", "lab6", "lab7", "lab8", "lab9", "lab10", "lab11", "lab12", "lab13", "lab14", "lab15", "lab16", "lab17", "lab18", "lab19", "lab20", "lab21", "lab22", "lab23", "lab24", "lab25", "lab26", "lab27", "lab28", "lab29", "lab32", "lab33", "htrack", "xfetch"], default="lab1")
+    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab5", "lab6", "lab7", "lab8", "lab9", "lab10", "lab11", "lab12", "lab13", "lab14", "lab15", "lab16", "lab17", "lab18", "lab19", "lab20", "lab21", "lab22", "lab23", "lab24", "lab25", "lab26", "lab27", "lab28", "lab29", "lab32", "lab33", "lab34", "htrack", "xfetch"], default="lab1")
     ap.add_argument("--combo", default="", help="3回目：1回目で「範囲の中では効く」以上だった型の記号（カンマ区切り）。2つ以上なら SEL として回す")
     ap.add_argument("--only", default="", help="回す型の記号（カンマ区切り。空欄なら全部）。確かめる段階で候補だけを回すとき")
     ap.add_argument("--cfg", default="", help="7段目の確かめる段階で回す組み立て（例: VQM/TOP500/20/Q,NXG/TOP500/20/Q）")
