@@ -6476,7 +6476,8 @@ def g_panel(store: dict, D: dict) -> dict:
             "np_f", "eq", "eq_up3", "div_nocut3", "div_up3", "stable3",      # この6つは24段目（ヘムの増配株）で足したもの
             "eqr", "opm", "roa", "psr",                                       # この4つは25段目（たーちゃん）で足したもの
             "up3",                                                             # 26段目（なのなの）：3期で売上・営業利益が増え、3期とも黒字
-            "sal_up2", "np_up2", "cash_up", "cash_cov", "div_cut2")            # 32段目（バク）：売上・純利益が2期続けて増加・現金の増加と配当の何年分か・2期続けて減配
+            "sal_up2", "np_up2", "cash_up", "cash_cov", "div_cut2",            # 32段目（バク）：売上・純利益が2期続けて増加・現金の増加と配当の何年分か・2期続けて減配
+            "sal_cagr", "op_cagr", "opm_up", "np_g1")                          # 33段目（児玉）：売上・営業利益の年平均の伸び（最大5年）・営業利益率の改善・純利益の伸び
     P = {k: np.full((S, M), np.nan) for k in keys}
     for i, c in enumerate(codes):
         tl = fin_timeline(store["fins"].get(c))
@@ -6580,6 +6581,19 @@ def g_panel(store: dict, D: dict) -> dict:
                     P["gp1"][i, j] = (p1 - p0) / abs(p0) if p0 != 0 else (np.inf if p1 > 0 else np.nan)
                 if o1 is not None and o0 and o0 > 0:
                     P["gop1"][i, j] = o1 / o0 - 1.0
+                # 33段目：営業利益率の改善・純利益の伸び（前期比）・売上と営業利益の年平均の伸び（いちばん古くて5期前まで）
+                if s1 and s0 and s1 > 0 and s0 > 0 and o1 is not None and o0 is not None:
+                    P["opm_up"][i, j] = float(o1 / s1 > o0 / s0)
+                n1_, n0_ = num(fy[-1].get("NP")), num(fy[-2].get("NP"))
+                if n1_ is not None and n0_ and n0_ > 0:
+                    P["np_g1"][i, j] = n1_ / n0_ - 1.0
+                kk = min(6, len(fy))
+                sa, sb = num(fy[-kk].get("Sales")), num(fy[-1].get("Sales"))
+                oa, ob = num(fy[-kk].get("OP")), num(fy[-1].get("OP"))
+                if kk >= 3 and sa and sb and sa > 0 and sb > 0:
+                    P["sal_cagr"][i, j] = (sb / sa) ** (1.0 / (kk - 1)) - 1.0
+                if kk >= 3 and oa and ob and oa > 0 and ob > 0:
+                    P["op_cagr"][i, j] = (ob / oa) ** (1.0 / (kk - 1)) - 1.0
                 c1, c0 = num(fy[-1].get("CashEq")), num(fy[-2].get("CashEq"))
                 if c1 is not None and c0 is not None:
                     P["cash_up"][i, j] = float(c1 > c0)
@@ -6955,6 +6969,96 @@ def lab32(store: dict) -> int:
     rc = lab1(store, extra={nm: (mk(nm), lab) for nm, lab in B_TYPES}, filt=True)
     if rc == 0 and LAST_LAB1:
         print("\n  3. 出版のあと（2023年7月〜。判定はしない。年率％） … A ／ B ／ TOPIX（税あり） ／ でたらめな20銘柄の平均 A ／ でたらめ（同じ数・A）の平均")
+        for k, r in LAST_LAB1.items():
+            if "出版後" not in r["A"]:
+                continue
+            ra = [x["出版後"]["ann"] for x in r["rnd"]["A"] if "出版後" in x]
+            rn = [x["出版後"]["ann"] for x in r.get("rnd_n", []) if "出版後" in x]
+            print(f"     {k:<4} {r['A']['出版後']['ann']:6.1f} ／ {r['B']['出版後']['ann']:6.1f} ／ {r['tx']['出版後']['ann']:6.1f} ／ "
+                  f"{np.mean(ra) if ra else float('nan'):6.1f}（上回った回数 {sum(1 for x in ra if r['A']['出版後']['ann'] > x)}） ／ "
+                  f"{np.mean(rn) if rn else float('nan'):6.1f}（{sum(1 for x in rn if r['A']['出版後']['ann'] > x)}）"
+                  f" ・ 最大下落 A {r['A']['出版後']['mdd']:.0f}％")
+    PUB_FROM = None
+    return rc
+
+
+# ───────────────────────── 33段目：児玉一希『高配当10倍株投資』（KADOKAWA、2024年3月22日）の数値の決まり ─────────────────────────
+# 計画は wide_lab_plan33_2026-11-10（結果を見る前に決めたもの）。24〜26・32段目と同じ月末の運用の形（条件に合う銘柄だけに点数・20銘柄・売る決まり A・B）。
+J_PUB = pd.Timestamp("2024-03-31")      # 出版（2024年3月22日）のあとの最初の月末。この次の月からを「出版後」として別に出す
+J_ADR = 80.0                             # G2：その月のうちに騰落レシオ（25営業日・一部とプライム）が80以下になった月だけ入れ替える
+J_TYPES = (
+    ("G1", "スクリーニング4STEP＋α：時価総額500億円以上・自己資本比率40％以上・売上と営業利益の年平均の伸び（最大5年）がどちらも3％以上・配当性向30％未満（配当あり）・"
+           "PER が過去3年の下半分（売上の伸びの大きい順）"),
+    ("G2", "G1 を、騰落レシオ80以下になった月だけ入れ替える（暴落の買いのタイミング）"),
+    ("G3", "G1 に成功率を上げるポイント（売上が2期続けて増加・純利益が前期比+10％以上・営業利益率が前期より改善・直近1年の安値がその前の1年の安値より高い）を足す"),
+    ("G4", "参考：G1 から PER の条件（α）を外す"),
+    ("G5", "参考：G1 に配当利回り3％以上を足す"),
+)
+
+
+def j_scores(store: dict, D: dict) -> dict:
+    P = g_panel(store, D)
+    MC, CF, me_idx = D["MCAP"], D["CF"], D["me_idx"]
+    per = np.where(np.isfinite(P["per_f"]), P["per_f"], P["per_a"])
+    per_p = own_pct(np.where(per > 0, per, np.nan))
+    S, M = MC.shape
+    hl = np.zeros((S, M), dtype=bool)          # 直近250営業日の安値 > その前の250営業日の安値（下値の切り上がり）
+    for j, t in enumerate(me_idx):
+        if t >= 500:
+            with np.errstate(invalid="ignore"):
+                hl[:, j] = np.nanmin(CF[:, t - 249:t + 1], axis=1) > np.nanmin(CF[:, t - 499:t - 249], axis=1)
+    out = {}
+    with np.errstate(invalid="ignore", divide="ignore"):
+        g1 = ((MC >= 5e10) & (P["eqr"] >= 0.40) & (P["sal_cagr"] >= 0.03) & (P["op_cagr"] >= 0.03)
+              & (P["payout"] > 0) & (P["payout"] < 0.30) & (per > 0) & (per_p <= 0.50))
+        g4 = ((MC >= 5e10) & (P["eqr"] >= 0.40) & (P["sal_cagr"] >= 0.03) & (P["op_cagr"] >= 0.03) & (P["payout"] > 0) & (P["payout"] < 0.30))
+        sg = P["sal_cagr"]
+        out["G1"] = np.where(g1, sg, np.nan)
+        out["G3"] = np.where(g1 & (P["sal_up2"] == 1) & (P["np_g1"] >= 0.10) & (P["opm_up"] == 1) & hl, sg, np.nan)
+        out["G4"] = np.where(g4, sg, np.nan)
+        out["G5"] = np.where(g1 & (P["dy"] >= 0.03), sg, np.nan)
+        # G2：騰落レシオ80以下になった月だけ入れ替え、ほかの月は直前に入れ替えた月の合格をそのまま使う（持ち株を変えない）
+        adr = k_adr(D, k_market_codes(store, D))
+        sig = np.zeros(M, dtype=bool)
+        for j in range(M):
+            t1 = me_idx[j]
+            t0 = me_idx[j - 1] + 1 if j > 0 else 0
+            w = adr[t0:t1 + 1]
+            sig[j] = bool(np.any(w[np.isfinite(w)] <= J_ADR)) if np.isfinite(w).any() else False
+        g2 = np.full((S, M), np.nan)
+        last = None
+        for j in range(M):
+            if sig[j]:
+                last = j
+            if last is not None:
+                g2[:, j] = out["G1"][:, last]
+        out["G2"] = g2
+        out["_sig"] = sig
+    return out
+
+
+def lab33(store: dict) -> int:
+    """33段目：児玉一希『高配当10倍株投資』の数値の決まり。出版のあとの期間（2024年4月〜）の成績を別に出す（判定には使わない）。"""
+    global LAB_TITLE, LAB_PLAN, LAB_NOTE, PUB_FROM
+    LAB_TITLE, LAB_PLAN = "33段目（児玉一希『高配当10倍株投資』2024年3月の数値の決まり）", "wide_lab_plan33_2026-11-10"
+    LAB_NOTE = ("33段目：24〜26・32段目と同じく、条件に合う銘柄だけに点数をつけ、合う銘柄が20より少ない月は現金。条件に合わなくなった銘柄は、その月末に売る。"
+                "保留は「合格した銘柄が1か月あたり平均5未満」。前半（〜2022年10月）は出版より前。後半（2022年11月〜）のうち2024年4月からは出版のあと（31か月）。"
+                "出版後（2024年4月〜）は別にも出す（判定はしない）。従業員数・設備投資・VIX指数・時代の流れ・ビジネスモデル（定性）は使わない")
+    PUB_FROM = J_PUB
+    cache: dict = {}
+
+    def mk(name):
+        def fn(D):
+            if "sc" not in cache:
+                log("  基礎の値（時価総額・自己資本比率・売上と営業利益の伸び・配当性向・PER の位置・騰落レシオ）を作っています…")
+                cache["sc"] = j_scores(store, D)
+                sig = cache["sc"]["_sig"]
+                log(f"  騰落レシオ{J_ADR:.0f}以下になった月 … {int(sig.sum())}か月（{', '.join(d.strftime('%Y-%m') for d, s in zip(D['dates'], sig) if s)}）")
+            return cache["sc"][name]
+        return fn
+    rc = lab1(store, extra={nm: (mk(nm), lab) for nm, lab in J_TYPES}, filt=True)
+    if rc == 0 and LAST_LAB1:
+        print("\n  3. 出版のあと（2024年4月〜。判定はしない。年率％） … A ／ B ／ TOPIX（税あり） ／ でたらめな20銘柄の平均 A ／ でたらめ（同じ数・A）の平均")
         for k, r in LAST_LAB1.items():
             if "出版後" not in r["A"]:
                 continue
@@ -7876,6 +7980,8 @@ def run_mode(mode: str, store: dict, args) -> int:
         return lab29(store)
     if mode == "lab32":
         return lab32(store)
+    if mode == "lab33":
+        return lab33(store)
     if mode == "lab21":
         # 21段目：上岡式の答え合わせ。業種別空売り比率（スタンダード）を日ごとに取り、別のファイル（data/wide_k.pkl）に持つ
         xs = k_xs_load()
@@ -8131,7 +8237,7 @@ def lab14(store: dict, args) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab5", "lab6", "lab7", "lab8", "lab9", "lab10", "lab11", "lab12", "lab13", "lab14", "lab15", "lab16", "lab17", "lab18", "lab19", "lab20", "lab21", "lab22", "lab23", "lab24", "lab25", "lab26", "lab27", "lab28", "lab29", "lab32", "htrack", "xfetch"], default="lab1")
+    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab5", "lab6", "lab7", "lab8", "lab9", "lab10", "lab11", "lab12", "lab13", "lab14", "lab15", "lab16", "lab17", "lab18", "lab19", "lab20", "lab21", "lab22", "lab23", "lab24", "lab25", "lab26", "lab27", "lab28", "lab29", "lab32", "lab33", "htrack", "xfetch"], default="lab1")
     ap.add_argument("--combo", default="", help="3回目：1回目で「範囲の中では効く」以上だった型の記号（カンマ区切り）。2つ以上なら SEL として回す")
     ap.add_argument("--only", default="", help="回す型の記号（カンマ区切り。空欄なら全部）。確かめる段階で候補だけを回すとき")
     ap.add_argument("--cfg", default="", help="7段目の確かめる段階で回す組み立て（例: VQM/TOP500/20/Q,NXG/TOP500/20/Q）")
