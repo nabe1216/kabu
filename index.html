@@ -348,7 +348,9 @@ td.al-name{white-space:normal;min-width:250px}
         </div>
 
         <div class="lg-sec"><h5>⑥ 売る条件（これだけ）</h5>
-          <div class="lg-row"><span class="tag p-warn">緊急</span><span class="lg-v">次のどれかが決算で出たら、次の取引日に売ります：<br>・減配（年間配当の実績が前の期より10%以上減った。株式分割・併合は除く）<br>・営業利益が前の年より20%以上減った<br>・累進配当の約束をやめた</span></div>
+          <div class="lg-row"><span class="tag p-warn">緊急</span><span class="lg-v">次のどれかが決算で出たら「印」が立ちます：<br>・減配（年間配当の実績が前の期より10%以上減った。株式分割・併合は除く）<br>・営業利益が前の年より20%以上減った<br>・累進配当の約束をやめた</span></div>
+          <div class="lg-row"><span class="tag p-neu">印・持つ</span><span class="lg-v">印が立っても、次に当たれば<b>売らずに持ち続けます</b>（2026年11月14日から。ワタナベさんの方針「多少の差なら塩漬け」）：<br>・減配が30%未満（浅い減配）で、営業利益は20%以上減っていない<br>当たらなければ、次の取引日に売ります。持っているあいだは買い増さず、条件から外れた日に売ります（深い減配になった・利回りが下がったなど）</span></div>
+          <div class="lg-note">9年分の検証で、この持ち方はいまの売り方と年率の差が平均0.3pt以内・いちばん悪い条件でも2pt以内（「多少の差」）でした。成績を上げる形ではありません。持つと、悪い時期の落ち込みが少し深くなります。</div>
           <div class="lg-row"><span class="lg-k">それ以外</span><span class="lg-v"><b>売りません。</b>値上がりしても、相場が下がっても、SELL が出ても持ち続けます</span></div>
           <div class="lg-note">20年分の検証では、利確・損切り・入れ替え・相場や市況（日経平均・金利・原油・為替）を見た売買のどれも、成績を上げませんでした。</div>
         </div>
@@ -706,6 +708,7 @@ const bucketLabel=s=>{ if(s.bucket==='対象外')return'対象外';
   if(s.bucket==='コア'&&s.core_type==='doe')return'コア・DOE'; return s.bucket||'—'; };
 const bucketClass=s=>s.bucket==='対象外'?'p-ex':(s.bucket==='コア'?'p-core':'p-swing');
 const sigPill=s=>{
+  if(s.emergency_exit&&s.emergency_hold)return`<span class="pill p-neu" title="減配・業績の悪化が出ましたが、${esc(s.emergency_hold_reason||'持ち続ける条件')}なので売らずに持ち続けます（新しくは買いません）"><span class="dot" style="background:var(--amber)"></span>印・持つ</span>`;
   if(s.emergency_exit)return'<span class="pill p-warn"><span class="dot" style="background:var(--amber)"></span>緊急</span>';
   // 2026年11月13日：利回りは条件内でも、8条件を通らない銘柄は買わないので BUY と出さない（「条件外」）
   if(s.signal==='BUY'&&!s.screening_pass)return'<span class="pill p-neu" title="利回りは3％以上ですが、8条件を満たさないので買いません"><span class="dot" style="background:var(--neutral)"></span>条件外</span>';
@@ -1653,9 +1656,17 @@ function renderPf(){
   }
 
   // 減配・業績急変の警告
-  const emg=known.filter(r=>r.s?.emergency_exit);
+  const emg=known.filter(r=>r.s?.emergency_exit&&!r.s?.emergency_hold);
+  const emgHold=known.filter(r=>r.s?.emergency_exit&&r.s?.emergency_hold);
+  if(emgHold.length){
+    h+=`<div class="card sec al-note"><h4>減配・業績の悪化が出たが、持ち続ける銘柄</h4>`;
+    for(const r of emgHold)h+=`<div class="al-note">・<b>${esc(r.s.name)}</b>
+      ${esc((r.s.emergency_reasons||[]).join(' / '))} → <b>${esc(r.s.emergency_hold_reason||'持ち続ける条件')}</b>なので売りません</div>`;
+    h+=`<div class="al-note" style="margin-top:8px">「多少の差なら塩漬け」の決まり（${esc(S.data.thresholds?.emergency_hold_rule?.name||'')}）です。
+      条件から外れたら（深い減配になった、利回りが下がったなど）売ります。持っているあいだは買い増しません。</div></div>`;
+  }
   if(emg.length){
-    h+=`<div class="card sec al-note warn"><h4>減配・業績急変が出ています</h4>`;
+    h+=`<div class="card sec al-note warn"><h4>減配・業績急変が出ています（売る）</h4>`;
     for(const r of emg)h+=`<div class="al-note">・<b>${esc(r.s.name)}</b>
       ${esc((r.s.emergency_reasons||[]).join(' / ')||'緊急撤退の判定')}</div>`;
     h+=`<div class="al-note" style="margin-top:8px">このルールで<b>唯一、売ると決めている場面</b>です。
