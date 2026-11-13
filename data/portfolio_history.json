@@ -293,6 +293,90 @@
       "price": 410.5,
       "amount": 2893204.0,
       "reason": "待機中の現金を1306で持つ"
+    },
+    {
+      "date": "2026-11-14",
+      "action": "SELL",
+      "code": "1306",
+      "name": "TOPIX連動ETF（待機資金）",
+      "tier": "-",
+      "qty": 1478,
+      "price": 415.5,
+      "amount": 614109.0,
+      "buy_price": 410.9105,
+      "buy_date": "2026-11-11",
+      "holding_days": 3,
+      "realized_pl": 6169.171999999968,
+      "realized_pl_pct": 1.02,
+      "tax": 1253,
+      "reason": "買い付けの資金に充てる（待機資金の1306を売る）"
+    },
+    {
+      "date": "2026-11-14",
+      "action": "BUY",
+      "code": "1928",
+      "name": "積水ハウス",
+      "tier": "S",
+      "qty": 200,
+      "price": 3559.0,
+      "amount": 711800.0,
+      "reason": "BUY_SIGNAL"
+    },
+    {
+      "date": "2026-11-14",
+      "action": "SELL",
+      "code": "1306",
+      "name": "TOPIX連動ETF（待機資金）",
+      "tier": "-",
+      "qty": 2189,
+      "price": 415.5,
+      "amount": 909529.5,
+      "buy_price": 410.9105,
+      "buy_date": "2026-11-11",
+      "holding_days": 3,
+      "realized_pl": 9136.885999999951,
+      "realized_pl_pct": 1.02,
+      "tax": 1856,
+      "reason": "買い付けの資金に充てる（待機資金の1306を売る）"
+    },
+    {
+      "date": "2026-11-14",
+      "action": "BUY",
+      "code": "8593",
+      "name": "三菱ＨＣキャピタル",
+      "tier": "S",
+      "qty": 700,
+      "price": 1295.0,
+      "amount": 906500.0,
+      "reason": "BUY_SIGNAL"
+    },
+    {
+      "date": "2026-11-14",
+      "action": "SELL",
+      "code": "1306",
+      "name": "TOPIX連動ETF（待機資金）",
+      "tier": "-",
+      "qty": 1279,
+      "price": 415.5,
+      "amount": 531424.5,
+      "buy_price": 410.9105,
+      "buy_date": "2026-11-11",
+      "holding_days": 3,
+      "realized_pl": 5338.545999999972,
+      "realized_pl_pct": 1.02,
+      "tax": 1085,
+      "reason": "買い付けの資金に充てる（待機資金の1306を売る）"
+    },
+    {
+      "date": "2026-11-14",
+      "action": "BUY",
+      "code": "8725",
+      "name": "ＭＳ＆ＡＤインシュアランスグループホールディングス",
+      "tier": "S",
+      "qty": 100,
+      "price": 5298.0,
+      "amount": 529800.0,
+      "reason": "BUY_SIGNAL"
     }
   ],
   "daily_snapshots": [
@@ -1444,6 +1528,18 @@
       "dividend_total": 153434,
       "tax_paid": 105647,
       "holdings_count": 17
+    },
+    {
+      "date": "2026-11-14",
+      "cash": 719.7330000000075,
+      "holdings_value": 9931550.0,
+      "etf_value": 873381.0,
+      "total_value": 10805650.733,
+      "unrealized_pl": 365150.0,
+      "realized_pl": 348144.6039999999,
+      "dividend_total": 153434,
+      "tax_paid": 109841,
+      "holdings_count": 20
     }
   ],
   "dividends": [

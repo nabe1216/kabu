@@ -1,7 +1,7 @@
 {
   "started_at": "2026-06-28",
   "initial_cash": 10000000,
-  "cash": 100005.79600000009,
+  "cash": 719.7330000000075,
   "holdings": [
     {
       "code": "8801",
@@ -240,15 +240,57 @@
       "unrealized_pl_pct": -1.66,
       "ref_d": "2026-11-13",
       "ref_c": 1359.0
+    },
+    {
+      "code": "1928",
+      "name": "積水ハウス",
+      "tier": "S",
+      "qty": 200,
+      "buy_date": "2026-11-14",
+      "buy_price": 3559.0,
+      "current_price": 3617.0,
+      "value": 723400.0,
+      "unrealized_pl": 11600.0,
+      "unrealized_pl_pct": 1.63,
+      "ref_d": "2026-11-13",
+      "ref_c": 3617.0
+    },
+    {
+      "code": "8593",
+      "name": "三菱ＨＣキャピタル",
+      "tier": "S",
+      "qty": 700,
+      "buy_date": "2026-11-14",
+      "buy_price": 1295.0,
+      "current_price": 1312.5,
+      "value": 918750.0,
+      "unrealized_pl": 12250.0,
+      "unrealized_pl_pct": 1.35,
+      "ref_d": "2026-11-13",
+      "ref_c": 1312.5
+    },
+    {
+      "code": "8725",
+      "name": "ＭＳ＆ＡＤインシュアランスグループホールディングス",
+      "tier": "S",
+      "qty": 100,
+      "buy_date": "2026-11-14",
+      "buy_price": 5298.0,
+      "current_price": 5316.0,
+      "value": 531600.0,
+      "unrealized_pl": 1800.0,
+      "unrealized_pl_pct": 0.34,
+      "ref_d": "2026-11-13",
+      "ref_c": 5316.0
     }
   ],
-  "total_value": 10786249.796,
-  "total_invested": 16196450.0,
-  "realized_pl": 327500.0,
+  "total_value": 10805650.733,
+  "total_invested": 18344550.0,
+  "realized_pl": 348144.6039999999,
   "dividend_received": 153434,
-  "last_updated": "2026-11-13",
-  "holdings_value": 7757800.0,
-  "tax_paid": 105647,
+  "last_updated": "2026-11-14",
+  "holdings_value": 9931550.0,
+  "tax_paid": 109841,
   "loss_pool": 0.0,
   "year_div_taxed": {
     "2026": 156050.0
@@ -257,10 +299,10 @@
   "engine_version": 4,
   "last_topup_month": "2026-11",
   "etf": {
-    "qty": 7048,
+    "qty": 2102,
     "cost": 410.9105,
     "since": "2026-11-11",
     "price": 415.5,
-    "value": 2928444.0
+    "value": 873381.0
   }
 }
