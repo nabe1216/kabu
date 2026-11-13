@@ -2191,6 +2191,15 @@ VARIANTS.update({
     "lab4_y20": _lab_rule("Y2 本番・利回り2.0％以上", min_yield_fixed=2.0),
     "lab4_k_eq": _lab_rule("K1 本番・Tier の重みを均等に（S1・A1・B1）", tier_weight={"S": 1.0, "A": 1.0, "B": 1.0}),
     "lab4_k_s3": _lab_rule("K2 本番・S を厚く（S3・A1.5・B1）", tier_weight={"S": 3.0, "A": 1.5, "B": 1.0}),
+    # Tier を外した「全体の利回り順」（2026年11月13日に追加。計画はプロジェクトの tier_flat_plan_2026-11-13。9年分で回す）
+    #   どれも lab_yield（いまの本番＝利回り順）と同じ。違うのは、買う順番（Tier 順か、全体の利回り順か）と、Tier の重みだけ
+    "tier_flat_y": _lab_rule("Y1 全体の利回り順・重み S2/A1.5/B1", drop=("measure", "priority"), entry=[0], cross=True),
+    "tier_flat_eq": _lab_rule("Y2 全体の利回り順・重み均等", drop=("measure", "priority"), entry=[0], cross=True,
+                              tier_weight={"S": 1.0, "A": 1.0, "B": 1.0}),
+    "tier_y_eq": _lab_rule("Y3 Tier順・重み均等", drop=("measure",), entry=[0], cross=True,
+                           tier_weight={"S": 1.0, "A": 1.0, "B": 1.0}),
+    "tier_y_np": _lab_rule("Y4 Tier順・後出しなしのTier（参考）", drop=("measure",), entry=[0], cross=True,
+                           tier_col="tier_live_np"),
 })
 # （記号, ルール名, 短い名前）
 LAB4_C = (("C1", "lab4_c_div", "「10期減配なし」を外す"), ("C2", "lab4_c_sales", "「売上の安定」を外す"),
@@ -8699,6 +8708,69 @@ def income_share(dist_by_month: dict, curve: pd.DataFrame, capital: float, m0, m
         base = float(v0.iloc[-1]) if len(v0) else float(capital)
         out.append(float(by[y_]) / base * 100)
     return out
+
+
+FLAT_RULES = (("Y1", "tier_flat_y", "全体の利回り順・重み S2/A1.5/B1"), ("Y2", "tier_flat_eq", "全体の利回り順・重み均等"),
+              ("Y3", "tier_y_eq", "Tier順・重み均等"), ("Y4", "tier_y_np", "Tier順・後出しなしのTier（参考・判定しない）"))
+
+
+def flat_judge(d: pd.Series, dm: pd.Series, base: pd.Series, cand: pd.Series, base_m: pd.Series, cand_m: pd.Series) -> str:
+    """long_lab と同じ基準。d・dm は（候補 − 本番）の清算後・評価額の差。base・cand は年率そのもの（いちばん悪い差に使う）。"""
+    def one(dd: pd.Series, b_: pd.Series, c_: pd.Series) -> str:
+        if dd.empty:
+            return "—"
+        w, l, m = float((dd > 0).mean()), float((dd < 0).mean()), float(dd.mean())
+        if w >= 0.85 and m >= 1.0:
+            return "良い"
+        if l >= 0.85:
+            return "悪い"
+        if m >= -0.5 and float(dd.min()) >= -1.0 and l < 0.85:
+            return "同じくらい"
+        return "決められない"
+    a, b = one(d, base, cand), one(dm, base_m, cand_m)
+    return a if a == b else f"決められない（清算後「{a}」・評価額「{b}」）"
+
+
+def flat_report(gf: pd.DataFrame, cond_cols: list) -> dict:
+    """Tier を外した「全体の利回り順」の結果を出す（2026年11月13日に追加）。戻り値は判定（確かめ用）。"""
+    L0 = VARIANTS["lab_yield"]["label"]
+    pl = gf.pivot_table(index=cond_cols, columns="ルール", values="清算後年率")
+    pm = gf.pivot_table(index=cond_cols, columns="ルール", values="評価額年率")
+    print("\n【Tier を外した「全体の利回り順」】（9年分・24条件。基準は結果を見る前に決めたもの。計画は tier_flat_plan_2026-11-13）")
+    print("  予想 … Y1・Y2 は配当が多く、年率は「決められない」。Y3 は「同じくらい」か「決められない」。Y4 は Y0 とほぼ同じ")
+    print(f"\n  {'形':<34}{'清算後':>8}{'最悪':>8}{'評価額':>8}{'最大下落':>9}{'配当/年':>9}{'緊急/年':>9}{'持ち株':>8}{'売り/年':>8}")
+    rows = [("Y0", "lab_yield", "本番（Tier順・重み S2/A1.5/B1）")] + list(FLAT_RULES)
+    for k_, n_, sh_ in rows:
+        g_ = gf[gf["ルール"] == VARIANTS[n_]["label"]]
+        if g_.empty:
+            print(f"  {k_} {sh_} … 結果なし")
+            continue
+        yrs_ = g_["期間"].map(lambda sp: max((pd.Timestamp(sp.split("〜")[1]) - pd.Timestamp(sp.split("〜")[0])).days / 365.25, 0.5))
+        emg_ = float((g_["緊急売り"] / yrs_).mean()) if "緊急売り" in g_.columns else float("nan")
+        hold_ = float(g_["平均保有銘柄"].mean()) if "平均保有銘柄" in g_.columns else float("nan")
+        div_ = float(g_["受取配当"].mean()) if "受取配当" in g_.columns else float("nan")
+        print(f"  {(k_ + ' ' + sh_):<34}{g_['清算後年率'].mean():>7.1f}％{g_['清算後年率'].min():>7.1f}％{g_['評価額年率'].mean():>7.1f}％"
+              f"{g_['最大下落'].mean():>8.1f}％{div_:>8.2f}％{emg_:>8.2f}回"
+              + (f"{hold_:>7.1f}" if hold_ == hold_ else f"{'—':>7}") + f"{g_['売り/年'].mean():>8.1f}")
+    res = {}
+    print("\n  本番（Y0）との差（24条件。％は上回った条件の割合）")
+    for k_, n_, sh_ in FLAT_RULES:
+        L_ = VARIANTS[n_]["label"]
+        if L_ not in pl.columns or L0 not in pl.columns:
+            print(f"    {k_} … 結果なし")
+            continue
+        d_ = (pl[L_] - pl[L0]).dropna()
+        dm_ = (pm[L_] - pm[L0]).dropna()
+        cat_ = flat_judge(d_, dm_, pl[L0], pl[L_], pm[L0], pm[L_]) if k_ != "Y4" else "参考（判定しない）"
+        res[k_] = cat_
+        print(f"    {k_} {sh_} … 平均 {d_.mean():+.2f}pt ／ いちばん悪い差 {d_.min():+.2f}pt ／ 上回った {float((d_ > 0).mean()) * 100:.0f}％"
+              f"（{len(d_)}条件） ／ 評価額 平均 {dm_.mean():+.2f}pt・上回った {float((dm_ > 0).mean()) * 100:.0f}％ → {cat_}")
+    print("\n  総合（結果を見る前に決めた基準）")
+    print("    " + " ／ ".join(f"{k_} {res.get(k_, '—')}" for k_, _, _ in FLAT_RULES[:3]))
+    print("  使い方（先に決めたこと）：Y1 か Y2 が「良い」なら、12月1日からの並走記録に足す（本番はすぐには変えない）。"
+          "それ以外は本番のまま")
+    print("  （9年分は1つの期間しかなく、ルールを決めてきた期間でもある。Tier の S・A は、いまの累進配当・DOE の一覧で決めている＝後出し）")
+    return res
 
 
 def long_windows(panel: pd.DataFrame, wl: int = 4):
@@ -15528,6 +15600,11 @@ def main() -> int:
     if (args.only or "").strip() == "luck_test":
         args.luck_test, args.liq_metric, args.grid = True, True, True
         args.only = "live_small1_pit"
+    # Tier を外した「全体の利回り順」（2026年11月13日に追加。計画はプロジェクトの tier_flat_plan_2026-11-13）
+    args.flat_test = False
+    if (args.only or "").strip() == "flat_test":
+        args.flat_test, args.liq_metric, args.grid = True, True, True
+        args.only = "lab_yield,tier_flat_y,tier_flat_eq,tier_y_eq,tier_y_np"
     args.near_test = False
     if (args.only or "").strip() == "near_test":
         args.near_test, args.liq_metric, args.grid = True, True, True
@@ -15699,6 +15776,7 @@ def main() -> int:
     _need_scale = (getattr(args, "live_check", False) or getattr(args, "rot_live", False)
                    or getattr(args, "cap_test", False) or getattr(args, "etf_test", False)
                    or getattr(args, "luck_test", False) or getattr(args, "near_test", False)
+                   or getattr(args, "flat_test", False)
                    or getattr(args, "sector_test", False)
                    or getattr(args, "long_any", False)
                    or getattr(args, "rev_lab1", False) or getattr(args, "rev_lab2", False) or getattr(args, "st_lab1", False))
@@ -17618,6 +17696,9 @@ def main() -> int:
                                 "ゆるめ買い": d_.get("rec_relaxed", 0),
                                 "売り/年": _n_sell / _yrs,
                                 "買い/年": _b_yr,
+                                # 受け取った配当（税引き後）の、元本に対する1年あたりの％（2026年11月13日に追加）
+                                "受取配当": d_.get("dividend", 0.0) / float(args.capital) / _yrs * 100.0,
+                                "平均保有銘柄": m_.get("平均保有銘柄", float("nan")),
                                 "売買のあった月": _m_act})
                             if ((a, b) == (d0_, d1_) and rp == min(ramps) and lb_ == lbs_[0]
                                     and mx_ == mxs_[0] and my == mys[0]):
@@ -17733,6 +17814,7 @@ def main() -> int:
                    or getattr(args, "live_check", False) or getattr(args, "rot_live", False)
                    or getattr(args, "cap_test", False) or getattr(args, "etf_test", False)
                    or getattr(args, "luck_test", False) or getattr(args, "near_test", False)
+                   or getattr(args, "flat_test", False)
                    or getattr(args, "sector_test", False)
                    or getattr(args, "long_any", False))
         _l10 = bool(getattr(args, "line_test", False))
@@ -17741,6 +17823,7 @@ def main() -> int:
                      or getattr(args, "live_check", False) or getattr(args, "rot_live", False)
                      or getattr(args, "cap_test", False) or getattr(args, "etf_test", False)
                      or getattr(args, "luck_test", False) or getattr(args, "near_test", False)
+                     or getattr(args, "flat_test", False)
                      or getattr(args, "sector_test", False)
                      or getattr(args, "long_any", False)):
             print("　 年率は「最後の月末に全部売って、約定のずれと税を払った後」（清算後）で出しています。\n")
@@ -17756,6 +17839,7 @@ def main() -> int:
                 or getattr(args, "live_check", False) or getattr(args, "rot_live", False)
                 or getattr(args, "cap_test", False) or getattr(args, "etf_test", False)
                 or getattr(args, "luck_test", False) or getattr(args, "near_test", False)
+                or getattr(args, "flat_test", False)
                 or getattr(args, "sector_test", False)
                 or getattr(args, "long_any", False)):
             # ── 1. 基準に勝った割合 ──
@@ -19507,6 +19591,10 @@ def main() -> int:
                     _s3.to_csv(OUTDIR / "luck_starts.csv", index=False, encoding="utf-8-sig")
             except Exception as e_:
                 log.warning("20回目の明細を書き出せませんでした: %s", e_)
+
+        # ── Tier を外した「全体の利回り順」（2026年11月13日に追加。計画は tier_flat_plan_2026-11-13。基準は結果を見る前に決めたもの）──
+        if getattr(args, "flat_test", False) and nm and nm[0] == "lab_yield":
+            flat_report(gf, cond_cols)
 
         # ── 21回目：近い設定でも同じくらい出るか（2026年10月17日に追加。基準は結果を見る前に決めたもの。年率は清算後）──
         #   いまの本番から1つずつずらす：PBRの範囲（安い側20％ → 10％・30％）、利回りの足切り（3％ → 3.5％・4％）、

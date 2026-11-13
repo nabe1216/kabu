@@ -467,7 +467,15 @@ td.al-name{white-space:normal;min-width:250px}
       <div><label>投資できる金額（円）</label>
         <input id="alAmt" inputmode="numeric" value="1,000,000"
                style="width:180px;text-align:right;font-size:17px;font-weight:600"></div>
-      <button class="btn" onclick="renderAlloc()">配分を出す</button>
+      <div><label>すでに持っている銘柄のコード（任意。カンマ区切り）</label>
+        <input id="alHeld" placeholder="例：8306, 9433" style="width:220px"
+               oninput="try{localStorage.setItem('dh_alloc_held',this.value)}catch(e){}"></div>
+      <div><label>買う単位</label>
+        <select id="alLot" onchange="try{localStorage.setItem('dh_alloc_lot',this.value)}catch(e){};renderAlloc()">
+          <option value="100">100株（ふつうの注文）</option>
+          <option value="1">1株（単元未満株）</option>
+        </select></div>
+      <button class="btn" onclick="renderAlloc()">注文を出す</button>
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-left:auto">
         <button class="pbtn-amt" data-v="300000">30万</button>
         <button class="pbtn-amt" data-v="500000">50万</button>
@@ -1129,12 +1137,14 @@ document.addEventListener('click',e=>{
 /* 候補を絞る。results.json には順位ではなく yield_q75（実際の利回り）が入っている */
 function alPick(){
   const minY=(S.data.thresholds&&S.data.thresholds.min_yield)||0;
-  const st={all:S.data.stocks.length,pass:0,buy:0,emg:0,lowY:0,lowQ:0};
+  const st={all:S.data.stocks.length,pass:0,buy:0,emg:0,lowY:0,lowQ:0,held:0};
+  const held=alHeldSet();
   const out=[];
   for(const r of S.data.stocks){
     if(!r.screening_pass)continue; st.pass++;
     if(String(r.signal||'').toUpperCase()!=='BUY')continue; st.buy++;
     if(r.emergency_exit){st.emg++;continue;}
+    if(held.has(String(r.code||'').slice(0,4).toUpperCase())){st.held++;continue;}
     if(!r.price||r.price<=0)continue;
     const cy=+r.current_yield||0,q75=+r.yield_q75||0;
     if(cy<minY){st.lowY++;continue;}                 // 足切り未満は買わない
@@ -1147,60 +1157,70 @@ function alPick(){
     (buyMode()==='pbr'?a._pbr-b._pbr:b._y-a._y));
   return [out,st,minY];
 }
+/* 持っている銘柄（入力欄）。4文字のコードで比べる。入力はこのブラウザにだけ残る */
+function alHeldSet(){
+  const v=(($('alHeld')||{}).value||'').toUpperCase();
+  return new Set((v.match(/[0-9][0-9A-Z]{3}/g)||[]).map(x=>x.slice(0,4)));
+}
 /* 金額が小さいときは目標銘柄数を下げる（分けすぎると1単元も買えない） */
+function alLot(){return +(($('alLot')||{}).value||100)===1?1:100;}
 function alFit(c,budget,target){
-  if(!c.length)return target;
+  if(!c.length||alLot()===1)return target;   // 1株単位なら、検証と同じ15銘柄の予算のまま
   const avg=(2.0+1.5+1.0)/3;
   target=Math.min(target,Math.max(c.length,1));
   const want=Math.min(c.length,target);
   for(let t=target;t>=1;t--){
-    let cash=budget,ok=0;
+    let cash=budget-Math.ceil(budget*0.02),ok=0;      // alAllocate と同じ決まり（2％を残す・減らして買わない）
     for(const x of c){
       const unit=budget/t*((AL_W[x.tier]||1)/avg);
-      const sh=Math.floor(Math.min(unit,cash)/x.price/100)*100;
-      if(sh>0){cash-=sh*x.price;ok++;}
+      const sh=Math.floor(unit/x.price/100)*100;
+      if(sh>0&&sh*x.price<=cash){cash-=sh*x.price;ok++;}
     }
     if(ok>=want)return t;
   }
   return 1;
 }
 function alAllocate(c,budget,target){
-  const avg=(2.0+1.5+1.0)/3; let cash=budget; const plan=[];
-  for(const x of c){
-    if(plan.length>=AL_MAX)break;
+  // 投資額の2％は、寄付きが前日の終値より高く始まったときに備えて、はじめから現金で残す
+  const avg=(2.0+1.5+1.0)/3, lot=alLot(), keep=Math.ceil(budget*0.02); let cash=budget-keep; const plan=[], skip=[];
+  c.forEach((x,i)=>{
+    if(plan.length>=AL_MAX)return;
     const unit=budget/target*((AL_W[x.tier]||1)/avg);
-    let sh=Math.floor(unit/x.price/100)*100;
-    if(sh<=0)continue;
-    let cost=sh*x.price;
-    if(cost>cash){sh=Math.floor(cash/x.price/100)*100;if(sh<=0)continue;cost=sh*x.price;}
-    cash-=cost; plan.push({...x,_sh:sh,_cost:cost});
-  }
-  // 1〜2銘柄しか買えないときは、1単元の安い順に組み直して数を増やす
+    let sh=Math.floor(unit/x.price/lot)*lot;
+    if(sh<=0){skip.push({...x,_rank:i+1,_unit:unit,_why:'lot'});return;}
+    const cost=sh*x.price;
+    // 検証と同じく、予算の分を買えないときは減らして買わずに見送る（残りは 1306 へ）
+    if(cost>cash){skip.push({...x,_rank:i+1,_unit:unit,_why:'cash'});return;}
+    cash-=cost; plan.push({...x,_sh:sh,_cost:cost,_rank:i+1});
+  });
+  // 順番どおりに買えなかった銘柄（最後に買う銘柄より上の順位のものだけ）
+  const lastRank=plan.length?plan[plan.length-1]._rank:0;
+  const skipped=skip.filter(x=>x._rank<lastRank);
+  // 1〜2銘柄しか買えないときは、1単元の安い順に組み直して数を増やす（100株単位のときだけ）
   let re=false;
-  if(plan.length<3&&c.length>plan.length){
-    const byPx=[...c].sort((a,b)=>a.price-b.price); let c2=budget; const alt=[];
+  if(lot===100&&plan.length<3&&c.length>plan.length){
+    const byPx=[...c].sort((a,b)=>a.price-b.price); let c2=budget-keep; const alt=[];
     for(const x of byPx){
       if(alt.length>=AL_MAX)break;
       const cost=x.price*100; if(cost>c2)continue;
       c2-=cost; alt.push({...x,_sh:100,_cost:cost});
     }
-    if(alt.length>plan.length){plan.length=0;plan.push(...alt);cash=c2;re=true;}
+    if(alt.length>plan.length){plan.length=0;plan.push(...alt);cash=c2;re=true;skipped.length=0;}
   }
-  // 端数を埋める。1銘柄が偏りすぎないよう上限を置く
-  if(plan.length&&cash>0){
-    let cap=budget/target*2;
-    if(plan.length<target)cap=Math.max(cap,Math.min(budget/plan.length,budget/3));
-    for(let i=0;i<60;i++){
-      let bought=false;
-      for(const x of plan){
-        const add=x.price*100;
-        if(x._cost+add>cap||add>cash)continue;
-        x._sh+=100; x._cost+=add; cash-=add; bought=true;
-      }
-      if(!bought)break;
-    }
+  // 余りは 1306（TOPIX 連動 ETF）で持つ。検証運用と同じ（端数を株で埋めると1銘柄に偏るため、2026年11月13日にやめた）。
+  const e=S.data.etf1306||{}, epx=+e.close>0?+e.close:0, unit=+e.unit||10;
+  let etf=null;
+  if(epx&&plan.length){
+    const q=Math.floor(Math.max(0,cash)/(epx*unit))*unit;
+    if(q>0){etf={qty:q,px:epx,cost:q*epx,date:e.date||'',name:e.name||'NEXT FUNDS TOPIX連動型上場投信',unit};cash-=q*epx;}
   }
-  return [plan,cash,re];
+  return [plan,cash+keep,re,etf,keep,skipped];
+}
+/* 注文の一覧をコピー */
+async function alCopy(){
+  const t=($('alOrderTxt')||{}).textContent||'', m=$('alCopyMsg');
+  try{await navigator.clipboard.writeText(t); if(m)m.textContent='コピーしました';}
+  catch(e){ if(m)m.textContent='コピーできませんでした。上の文字を選んでコピーしてください'; }
 }
 /* なぜこの銘柄なのかを一文で */
 function alWhy(x){
@@ -1229,6 +1249,8 @@ function alWhy(x){
 }
 function renderAlloc(){
   const out=$('alOut'); if(!S.data){out.innerHTML='';return;}
+  const hi=$('alHeld'); if(hi&&!hi.value){try{hi.value=localStorage.getItem('dh_alloc_held')||'';}catch(e){}}
+  const lo=$('alLot'); if(lo&&!lo.dataset.init){lo.dataset.init='1';try{const v=localStorage.getItem('dh_alloc_lot');if(v==='1'||v==='100')lo.value=v;}catch(e){}}
   const amt=alAmount();
   const sn=(S.data.stocks.find(x=>x.yield_sample_n)||{}).yield_sample_n;
   const minY0=(S.data.thresholds&&S.data.thresholds.min_yield);
@@ -1239,7 +1261,8 @@ function renderAlloc(){
 
   const [c,st,minY]=alPick();
   const target=alFit(c,amt,AL_TARGET);
-  const [plan,left,re]=alAllocate(c,amt,target);
+  const [plan,left,re,etf,keep,skipped]=alAllocate(c,amt,target);
+  const lot=alLot();
 
   let h='';
   // 絞り込みの経過
@@ -1249,6 +1272,7 @@ function renderAlloc(){
     +(st.emg?` ／ 減配などで除外 <b style="color:var(--text)">−${st.emg}</b>`:'')
     +(st.lowY?` ／ 利回り${minY}％未満 <b style="color:var(--text)">−${st.lowY}</b>`:'')
     +(st.lowQ?` ／ 割安でない <b style="color:var(--text)">−${st.lowQ}</b>`:'')
+    +(st.held?` ／ 持っている銘柄 <b style="color:var(--text)">−${st.held}</b>`:'')
     +` ／ <b style="color:var(--text)">買える候補 ${c.length}</b></div>`;
 
   if(!plan.length){
@@ -1257,22 +1281,27 @@ function renderAlloc(){
       ? `<b style="display:block;font-size:15px;color:var(--text);margin-bottom:6px">今日は買える銘柄がありません</b>
          条件に合う銘柄がないだけで、相場の良し悪しとは関係ありません。翌営業日にまた判定されます。`
       : `<b style="display:block;font-size:15px;color:var(--text);margin-bottom:6px">金額が足りません</b>
-         いちばん安い候補でも、100株で ${fmt.yen(cheap)} 必要です。`)+`</div>`;
+         いちばん安い候補でも、100株で ${fmt.yen(cheap)} 必要です。上の「買う単位」を「1株（単元未満株）」にすると買えます。`)+`</div>`;
     out.innerHTML=h; return;
   }
 
-  const used=amt-left, pct=used/amt*100;
+  const used=plan.reduce((a,x)=>a+x._cost,0), ecost=etf?etf.cost:0, pct=(used+ecost)/amt*100;
   h+=`<div class="card sec">`;
-  if(re)h+=`<div class="al-note" style="margin-bottom:12px">金額に対して銘柄を分けすぎると1単元も買えないため、<b>1単元の安い順</b>に組んで銘柄数を増やしました。</div>`;
+  if(re)h+=`<div class="al-note" style="margin-bottom:12px">金額に対して銘柄を分けすぎると1単元も買えないため、<b>1単元の安い順</b>に組んで銘柄数を増やしました。順番は検証とは違います。「買う単位」を「1株（単元未満株）」にすると、順番どおりに買えます。</div>`;
+  if(skipped.length&&lot===100)h+=`<div class="al-note" style="margin-bottom:12px;border-left:3px solid #D97706;padding-left:10px">
+    100株の金額が1銘柄の予算を超えるため、<b>順番の途中の ${skipped.length}銘柄を飛ばしています</b>（表の下に一覧）。そのぶん、株価の安い銘柄に寄ります。
+    「買う単位」を「1株（単元未満株）」にすると、順番どおりに買えます。</div>`;
+  h+=`<div style="font-size:12px;color:var(--text-2);margin-bottom:8px"><b>買う順番</b>：Tier（S → A → B）が先、同じ Tier の中は${buyMode()==='pbr'?'PBR の低い順':'利回りの高い順'}。全体を${buyMode()==='pbr'?'PBR':'利回り'}で並べた順ではありません（検証したのはこの順番です）。</div>`;
   h+=`<div class="al-sum"><span class="big mono">${fmt.yen(used)}</span>
-      <span style="color:var(--text-2)">を ${plan.length}銘柄に　残り ${fmt.yen(left)}</span></div>
-    <div class="al-bar"><i style="width:${pct.toFixed(1)}%"></i></div>
-    <div style="font-size:11.5px;color:var(--text-3)">${pct.toFixed(0)}％を使います</div>
+      <span style="color:var(--text-2)">を ${plan.length}銘柄に`+(etf?`　＋ 1306 に ${fmt.yen(ecost)}`:'')+`　現金で残す ${fmt.yen(left)}</span></div>
+    <div class="al-bar"><i style="width:${Math.min(100,pct).toFixed(1)}%"></i></div>
+    <div style="font-size:11.5px;color:var(--text-3)">${pct.toFixed(0)}％を使います（株と 1306）</div>
     <div class="tbl-wrap" style="margin-top:14px"><table>
-      <thead><tr><th>Tier</th><th>銘柄</th><th class="t-right">利回り</th><th class="t-right">${buyMode()==='pbr'?'PBR':'過去3年Q75'}</th><th class="t-right">${buyMode()==='pbr'?'PBRの安さ':'割安度'}</th><th class="t-right">株価</th><th class="t-right">株数</th><th class="t-right">金額</th></tr></thead><tbody>`;
-  for(const x of plan){
+      <thead><tr><th class="t-right">順</th><th>Tier</th><th>銘柄</th><th class="t-right">利回り</th><th class="t-right">${buyMode()==='pbr'?'PBR':'過去3年Q75'}</th><th class="t-right">${buyMode()==='pbr'?'PBRの安さ':'割安度'}</th><th class="t-right">前日終値</th><th class="t-right">株数</th><th class="t-right">金額（目安）</th></tr></thead><tbody>`;
+  plan.forEach((x,i)=>{
     const gap=x._q>0?(x._y/x._q-1)*100:0;
     h+=`<tr onclick="openDetail('${x.code}')">
+      <td class="t-right mono">${i+1}</td>
       <td>${tierChip(x)}</td>
       <td class="al-name"><span class="t-code">${x.code}</span>
         <span class="t-name" style="margin-left:6px">${esc(x.name)}</span>
@@ -1287,11 +1316,46 @@ function renderAlloc(){
       <td class="t-right mono">${fmt.yen(x.price)}</td>
       <td class="t-right mono">${x._sh.toLocaleString()}株</td>
       <td class="t-right mono" style="font-weight:600">${fmt.yen(x._cost)}</td></tr>`;
+  });
+  if(etf)h+=`<tr><td class="t-right mono">${plan.length+1}</td><td>—</td>
+      <td class="al-name"><span class="t-code">1306</span><span class="t-name" style="margin-left:6px">${esc(etf.name)}</span>
+        <small style="color:var(--text-3);font-size:11px;display:block">余りを TOPIX 連動 ETF で持つ（${etf.unit}口単位）</small></td>
+      <td class="t-right mono">—</td><td class="t-right mono">—</td><td class="t-right">—</td>
+      <td class="t-right mono">${etf.px.toLocaleString('ja-JP',{maximumFractionDigits:1})}円</td>
+      <td class="t-right mono">${etf.qty.toLocaleString()}口</td>
+      <td class="t-right mono" style="font-weight:600">${fmt.yen(etf.cost)}</td></tr>`;
+  h+=`</tbody></table></div>`;
+  if(skipped.length){
+    h+=`<div style="margin-top:14px;font-size:12.5px;font-weight:600">順番どおりに買えなかった銘柄（${skipped.length}）</div>
+    <div class="tbl-wrap" style="margin-top:6px"><table><thead><tr><th class="t-right">候補の順位</th><th>Tier</th><th>銘柄</th><th class="t-right">利回り</th><th class="t-right">${lot}株の金額</th><th class="t-right">1銘柄の予算</th><th>理由</th></tr></thead><tbody>`;
+    skipped.forEach(x=>{h+=`<tr onclick="openDetail('${x.code}')"><td class="t-right mono">${x._rank}</td><td>${tierChip(x)}</td>
+      <td><span class="t-code">${x.code}</span><span class="t-name" style="margin-left:6px">${esc(x.name)}</span></td>
+      <td class="t-right mono">${x._y.toFixed(2)}%</td><td class="t-right mono">${fmt.yen(x.price*lot)}</td><td class="t-right mono">${fmt.yen(x._unit)}</td>
+      <td style="font-size:12px;color:var(--text-2)">${x._why==='lot'?lot+'株で予算を超える':'お金が残っていない'}</td></tr>`;});
+    h+=`</tbody></table></div>`;
   }
-  h+=`</tbody></table></div>
-    <div style="font-size:11.5px;color:var(--text-3);margin-top:10px">${buyMode()==='pbr'
+  h+=`<div style="font-size:11.5px;color:var(--text-3);margin-top:10px">${buyMode()==='pbr'
       ?'PBRの安さは、全銘柄の中でPBRが安い側の何％に入るか。<b>安い側20％に入る銘柄だけを、Tier順・PBRの低い順に買います。</b>'
       :'割安度は、いまの利回りが過去3年のQ75を何％上回っているか。'+(buyMode()==='yield'?'<b>いまのルールでは買う条件に使っておらず、参考として出しています。</b>':'大きいほど、その銘柄にしては安い。')}</div></div>`;
+
+  // 注文票：この通りに注文すればよい形
+  const L=[];
+  plan.forEach((x,i)=>L.push(`${i+1}. ${x.code} ${x.name}　${x._sh.toLocaleString()}株　成行${lot===1?'・単元未満株':''}（前日終値 ${(+x.price).toLocaleString()}円・約${Math.round(x._cost).toLocaleString()}円）`));
+  if(etf)L.push(`${plan.length+1}. 1306 ${etf.name}　${etf.qty.toLocaleString()}口　成行（前日終値 ${etf.px.toLocaleString()}円・約${Math.round(etf.cost).toLocaleString()}円）`);
+  L.push(`現金で残す：約${Math.round(left).toLocaleString()}円`);
+  const asof=fmt.date(S.data.generated_at);
+  const txt=`【注文】${asof}の判定・投資額 ${amt.toLocaleString()}円\n`+L.join('\n');
+  h+=`<div class="card sec"><h4>注文のしかた（この通りに出せば検証と同じ買い方になります）</h4>
+    <div class="al-note">1. 次の営業日の朝、取引が始まる前に、下の順番どおり<b>「成行」で注文</b>します（検証は寄付きの値段で買う前提です）。</div>
+    <div class="al-note">2. 金額は前日の終値での目安です。寄付きが高く始まると少し増えるので、投資額の2％（約${Math.round(keep).toLocaleString()}円）を現金で残してあります。</div>
+    <div class="al-note">3. お金が足りずに買えなかった銘柄は、その日は見送ります。翌日、この画面で持っている銘柄を入れて出し直してください。</div>
+    <div class="al-note">4. 1306 は待機用です。あとで新しい買いの合図が出て現金が足りないときは、1306 を必要な分だけ売って買います。</div>
+    <div class="al-note">5. 買ったあとは売りません。売るのは、ツールで「緊急」（減配・業績の急変）が出たときだけです。配当が入ったら、月に1回、目標の金額をいちばん下回っている持ち株を${lot===1?'目標の金額との差の分だけ':'100株'}買い増します。</div>
+    <div class="al-note">6. 特定口座なら、12月15日以降に、買った値段から2％以上下がっている持ち株を売ってすぐ同じ株数を買い戻す（損出し）と、税が戻ります。NISA の場合は不要です（NISA で配当を非課税で受け取るには、証券会社で「株式数比例配分方式」を選んでおきます）。</div>
+    ${lot===1?`<div class="al-note">7. 単元未満株（SBI証券の S株・楽天証券のかぶミニなど）は、証券会社によって、約定するタイミング（寄付きかどうか）・手数料・NISA で買えるかが違います。注文の前に確かめてください。1306 は10口単位のふつうの注文です。</div>`:''}
+    <pre id="alOrderTxt" style="white-space:pre-wrap;font-size:12.5px;line-height:1.7;background:var(--bg-soft,#F6F7F9);border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-top:12px">${esc(txt)}</pre>
+    <button class="btn" style="margin-top:8px" onclick="alCopy()">注文の一覧をコピー</button>
+    <span id="alCopyMsg" style="font-size:12px;color:var(--text-3);margin-left:8px"></span></div>`;
 
   // 区分の意味
   h+=`<div class="card sec"><h4>この表の読み方</h4>
@@ -1301,10 +1365,9 @@ function renderAlloc(){
       累進配当か業界首位級の、片方だけに当てはまる会社。Sの次に厚く買います。</div></div>
     <div class="al-def"><span class="tier tier-B">B</span><div><b>そのどちらでもない</b>
       スクリーニングは通っているものの、上の2つには当たらない会社。いちばん薄く買います。</div></div>
-    <div class="al-note" style="margin-top:14px"><b>買う順番</b>　Sから順に、同じ区分のなかでは利回りの高い順。
-      1銘柄あたりの金額は、総額 ÷ 15銘柄 に区分ごとの重み（S 2.0 ／ A 1.5 ／ B 1.0）を掛けて決めます。</div>
-    <div class="al-note" style="margin-top:6px"><b>買う条件</b>　スクリーニング8条件を通り、
-      いまの利回りがその銘柄の過去3年のQ75以上であること。</div></div>`;
+    <div class="al-note" style="margin-top:14px"><b>買う順番</b>　Sから順に、同じ区分のなかでは${buyMode()==='pbr'?'PBRの低い順':'いまの利回りが高い順'}。
+      1銘柄あたりの金額は、総額 ÷ 15銘柄 に区分ごとの重み（S 2.0 ／ A 1.5 ／ B 1.0）を掛けて決めます（金額が少ないときは銘柄数を減らします）。</div>
+    <div class="al-note" style="margin-top:6px"><b>買う条件</b>　スクリーニング8条件を通り、いまの利回りが${(S.data.thresholds&&S.data.thresholds.min_yield)||3}％以上`+(buyMode()==='pbr'?'で、PBRが全銘柄の安い側20％に入ること。':buyMode()==='yield'?'であること。':'で、その銘柄の過去3年のQ75以上であること。')+`</div></div>`;
 
   // 業種の偏り
   const sec={};
@@ -1648,7 +1711,7 @@ function renderPf(){
    記録ファイルの形が少しずつ違っても表示できるよう、項目は緩く読む。 */
 const TRK=[
   {key:'main', name:'本番', color:'#3B5BFD',
-   desc:'いまの本番（検証運用）。8条件を通り利回り3%以上の銘柄から、PBRの安い側20%を、Tier順・PBRの低い順に買って持ち続ける。2026年11月から、配当で買い増し・12月の損出し・税（20.315%）あり'},
+   desc:'いまの本番（検証運用）。8条件を通り利回り3%以上の銘柄を、Tier順・利回りの高い順に買って持ち続ける（2026年11月13日から。それまでは低PBR順）。2026年11月から、配当で買い増し・12月の損出し・税（20.315%）・待機資金の1306あり'},
   {key:'rot', name:'入れ替え', color:'#D97706',
    desc:'より質の高い銘柄が出たら入れ替える（20年分の検証では、本番より良くならなかった）'},
   {key:'val', name:'低PBR順', color:'#7C3AED',
