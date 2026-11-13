@@ -1,5 +1,5 @@
 {
- "generated_at": "2026-11-13T04:33:42+09:00",
+ "generated_at": "2026-11-13T15:13:26+09:00",
  "date": "2026-11-13",
  "ok": false,
  "warnings": [
@@ -11,7 +11,7 @@
  "checks": {
   "counts": {
    "pass": 91,
-   "buy": 114,
+   "buy": 370,
    "emergency": 116,
    "cut": 39
   },
@@ -22,8 +22,8 @@
   },
   "latest_price_date": "2026-11-12",
   "prev_counts": {
-   "pass": 95,
-   "buy": 119,
+   "pass": 91,
+   "buy": 114,
    "emergency": 116,
    "cut": 39
   },
@@ -38,7 +38,7 @@
    "engine_version": 4
   },
   "overweight": [],
-  "run_minutes": 64.1,
+  "run_minutes": 67.6,
   "big_files": []
  }
 }
