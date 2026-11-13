@@ -328,6 +328,7 @@ td.al-name{white-space:normal;min-width:250px}
           <div class="lg-row"><span class="lg-k">買い増し</span><span class="lg-v">月に1回、配当などで残ったお金で、<b>目標の金額をいちばん下回っている持ち株</b>を100株ずつ目標まで買い増す（8条件を通り、減配・業績急変でない銘柄だけ）</span></div>
           <div class="lg-row"><span class="lg-k">12月</span><span class="lg-v">取得単価より2%以上下がっている持ち株を、<b>12月15日以降に売って同じ株数をすぐ買い戻す</b>（損出し。損が確定し、その年の配当にかかった税が戻る。特定口座のとき）</span></div>
           <div class="lg-note">配分案のタブでは、利回り<span class="lgMinY2">3</span>%未満の銘柄を除いています（検証と同じ条件にするため）。</div>
+          <div class="lg-note">なぜ全体の利回り順にしないか：Tier を外して利回りの高い順に買う形も確かめました（9年分・24通り・2026年11月13日）。受け取る配当は元本の年0.3%ほど多い一方、減配・業績急変で売る回数が約1.6倍、最大の下落が約2pt 深く、年率も上回りませんでした。利回りの高い株には、減配が見込まれて株価が下がった株が混じるためです。ただし検証の Tier は、いまの累進配当の一覧で決めている（後から見た有利さが入る）ので、Tier 順の効き目は検証の数字より小さいと見ておくのが安全です。</div>
         </div>
 
         <div class="lg-sec"><h5>売り方</h5>
@@ -1291,7 +1292,7 @@ function renderAlloc(){
   if(skipped.length&&lot===100)h+=`<div class="al-note" style="margin-bottom:12px;border-left:3px solid #D97706;padding-left:10px">
     100株の金額が1銘柄の予算を超えるため、<b>順番の途中の ${skipped.length}銘柄を飛ばしています</b>（表の下に一覧）。そのぶん、株価の安い銘柄に寄ります。
     「買う単位」を「1株（単元未満株）」にすると、順番どおりに買えます。</div>`;
-  h+=`<div style="font-size:12px;color:var(--text-2);margin-bottom:8px"><b>買う順番</b>：Tier（S → A → B）が先、同じ Tier の中は${buyMode()==='pbr'?'PBR の低い順':'利回りの高い順'}。全体を${buyMode()==='pbr'?'PBR':'利回り'}で並べた順ではありません（検証したのはこの順番です）。</div>`;
+  h+=`<div style="font-size:12px;color:var(--text-2);margin-bottom:8px"><b>買う順番</b>：Tier（S → A → B）が先、同じ Tier の中は${buyMode()==='pbr'?'PBR の低い順':'利回りの高い順'}。全体を${buyMode()==='pbr'?'PBR':'利回り'}で並べた順ではありません（検証したのはこの順番です）。${buyMode()==='yield'?'Tier を外した全体の利回り順も確かめましたが、配当は少し増える一方、減配で売る回数が約1.6倍になり、年率も上回りませんでした（2026年11月13日）。':''}</div>`;
   h+=`<div class="al-sum"><span class="big mono">${fmt.yen(used)}</span>
       <span style="color:var(--text-2)">を ${plan.length}銘柄に`+(etf?`　＋ 1306 に ${fmt.yen(ecost)}`:'')+`　現金で残す ${fmt.yen(left)}</span></div>
     <div class="al-bar"><i style="width:${Math.min(100,pct).toFixed(1)}%"></i></div>
