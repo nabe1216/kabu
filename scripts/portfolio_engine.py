@@ -929,7 +929,8 @@ def update_portfolio(stocks: list[dict[str, Any]], etf_px: float | None = None) 
 
         sell_reason = None
         if SELL_MODE != 'none':
-            if stock.get('emergency_exit'):
+            # 2026年11月14日：減配・業績急変でも、持ち続ける条件（generate.py の EMERGENCY_HOLD）に当たれば売らない
+            if stock.get('emergency_exit') and not stock.get('emergency_hold'):
                 reasons = stock.get('emergency_reasons', [])
                 sell_reason = 'EMERGENCY_EXIT: ' + \
                     (' / '.join(reasons) if reasons else 'unspecified')

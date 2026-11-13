@@ -102,6 +102,14 @@ YIELD_DISTRIBUTION_YEARS = 3         # 出口が来ないときは 2 に下げ�
 # --- 撤退判定（緊急シグナル） ---
 EMERGENCY_DPS_DROP = -0.10           # DPS 10%超減配
 EMERGENCY_OP_DROP = -0.20            # 営業利益YoY -20%以下
+# 減配・業績急変の印が立っても、条件に当たれば売らずに持ち続ける（2026年11月14日。ワタナベさんの方針「多少の差なら塩漬け」）
+#   いまの形：K1（浅い減配（−30％未満）は持つ）。検証はプロジェクトの hold2_plan_2026-11-14 / hold2_result_2026-11-14
+#   cut_min       … 減配で売るのは、年間配当がこの率以上減ったときだけ（それより浅い減配は持つ）
+#   op_hold_yield … 業績急変だけ（減配の印なし）で売るときは、利回りがこの値（％）以上なら持つ
+#   hold_yield    … 利回りがこの値以上なら持つ ／ hold_tiers … この Tier なら持つ
+#   always_red    … 営業利益が赤字に転落したら必ず売る ／ always_nodiv … 無配になったら必ず売る
+#   持っているあいだも、印のある銘柄は新しく買わない・買い増さない。条件から外れた日に売る
+EMERGENCY_HOLD: dict = {'cut_min': 0.30}
 
 # --- ユニバース ---
 MARKET_CODE_PRIME = '0111'           # 東証プライム
@@ -1099,6 +1107,39 @@ def check_emergency_exit(
     return bool(reasons), reasons
 
 
+def emergency_hold_decision(s: dict[str, Any], rule: dict | None = None) -> tuple[bool, str]:
+    """減配・業績急変の印が立った銘柄を、売らずに持ち続けるか（EMERGENCY_HOLD）。(持つか, 理由)"""
+    rule = EMERGENCY_HOLD if rule is None else rule
+    if not s.get('emergency_exit') or not rule:
+        return False, ''
+    dc, oc = s.get('emg_div_chg'), s.get('emg_op_chg')
+    cut = dc is not None and dc <= EMERGENCY_DPS_DROP
+    opd = oc is not None and oc <= EMERGENCY_OP_DROP
+    if not (cut or opd):
+        return False, ''          # 減配・業績急変以外（累進配当の撤回など）は、いままでどおり売る
+    yld = s.get('current_yield')
+    c_ok = cut and ('cut_min' not in rule or dc <= -float(rule['cut_min']))
+    o_ok = opd and ('op_min' not in rule or oc <= -float(rule['op_min']))
+    sell = c_ok or o_ok
+    why = ''
+    if not sell:
+        why = f'浅い減配（{dc * 100:.0f}%）' if cut else ''
+    if sell and rule.get('op_hold_yield') is not None and not c_ok and o_ok \
+            and yld is not None and yld >= float(rule['op_hold_yield']):
+        sell = False
+        why = (f'浅い減配（{dc * 100:.0f}%）・' if cut else '') + \
+            f'業績の悪化（営業利益{oc * 100:.0f}%）だけで利回り{yld:.1f}%'
+    if sell and rule.get('hold_yield') is not None and yld is not None and yld >= float(rule['hold_yield']):
+        sell, why = False, f'利回り{yld:.1f}%'
+    if sell and rule.get('hold_tiers') and s.get('tier') in set(rule['hold_tiers']):
+        sell, why = False, f'Tier {s.get("tier")}'
+    if rule.get('always_red') and opd and oc <= -1.0:
+        sell = True
+    if rule.get('always_nodiv') and cut and dc <= -0.995:
+        sell = True
+    return (False, '') if sell else (True, why or '持ち続ける条件に当たる')
+
+
 # ============================================================================
 # (12) バケット分類
 # ============================================================================
@@ -1828,6 +1869,11 @@ def process_stock(
 
     # --- 撤退判定 ---
     emergency, reasons = check_emergency_exit(code, div_annual, op_history)
+    # 持ち続ける条件（emergency_hold_decision）で使う、減り方の深さ
+    emg_div_chg = ((div_annual[-1] - div_annual[-2]) / div_annual[-2]
+                   if len(div_annual) >= 2 and div_annual[-2] > 0 else None)
+    emg_op_chg = ((op_history[-1] - op_history[-2]) / op_history[-2]
+                  if len(op_history) >= 2 and op_history[-2] > 0 else None)
 
     # --- 決算予定 ---
     next_earnings = announcement_map.get(code)
@@ -1886,6 +1932,8 @@ def process_stock(
         'is_box': box['is_box'] if box else False,
         'emergency_exit': emergency,
         'emergency_reasons': reasons,
+        'emg_div_chg': round(emg_div_chg, 4) if emg_div_chg is not None else None,
+        'emg_op_chg': round(emg_op_chg, 4) if emg_op_chg is not None else None,
         # 直近の株式分割・併合（毎日の点検で、分割と重なる「減配」がないかを見る）
         'last_split': ({'date': split_ev[-1][0].isoformat(), 'factor': split_ev[-1][1]} if split_ev else None),
         'earnings_imminent': earnings_imminent,
@@ -2141,6 +2189,10 @@ def main() -> int:
         tier, weight = classify_tier(code, industry_leaders)
         s['tier'] = tier
         s['tier_weight'] = weight
+        # 減配・業績急変でも持ち続けるか（Tier を使う形があるので、Tier を決めたあとに判定する）
+        _h, _hw = emergency_hold_decision(s)
+        s['emergency_hold'] = _h
+        s['emergency_hold_reason'] = _hw
         s['is_industry_leader'] = is_leader
         s['is_progressive_or_doe'] = is_qual
         # どこで「配当を守る会社」と判定したか（画面の詳細に出す）
@@ -2190,7 +2242,8 @@ def main() -> int:
         'processed_count': len(stocks),
         'failure_count': failures,
         'thresholds': {
-            'min_yield': MIN_YIELD_THRESHOLD, 'buy_mode': BUY_MODE, 'dividend_policy_checked': DIVIDEND_POLICY_CHECKED, 'edinet_policy_checked': EDINET_POLICY.get('checked_at'),
+            'min_yield': MIN_YIELD_THRESHOLD, 'buy_mode': BUY_MODE, 'emergency_hold_rule': {'name': 'K1 浅い減配（−30％未満）は持つ', 'rule': EMERGENCY_HOLD},
+            'dividend_policy_checked': DIVIDEND_POLICY_CHECKED, 'edinet_policy_checked': EDINET_POLICY.get('checked_at'),
             'edinet_policy_count': len(EDINET_DECLARED),
             'graham': GRAHAM_THRESHOLD,
             'payout_max': PAYOUT_RATIO_MAX,
