@@ -119,6 +119,20 @@ def run(prev_path: str | None = None, today: date | None = None) -> dict[str, An
         except ValueError:
             pass
 
+    # 1b. 「配当を守る会社」のリストの見直し時期（2026年11月13日に追加）。日経累進高配当株指数は毎年6月末に入れ替わるので、
+    #     その年の7月15日を過ぎても、確認日がその年の7月1日より前なら知らせる
+    pc_raw = (res.get('thresholds') or {}).get('dividend_policy_checked')
+    checks['dividend_policy_checked'] = pc_raw
+    if pc_raw:
+        try:
+            pcd = date.fromisoformat(pc_raw[:10])
+            due = date(today.year, 7, 1) if today >= date(today.year, 7, 15) else date(today.year - 1, 7, 1)
+            if pcd < due:
+                warn('div_policy_stale', f'「配当を守る会社」のリスト（Tier と減配の条件の免除に使う）の確認日が {pc_raw}。'
+                     f'日経累進高配当株指数の6月の入れ替えと、各社の配当方針を確かめ直す時期')
+        except ValueError:
+            pass
+
     # 2. 前回との比べ（減配の緊急の急な増え方）
     prev = _prev_results(prev_path)
     if prev:
