@@ -2226,6 +2226,15 @@ VARIANTS.update({
     "hd_half": _lab_rule("H7 半分だけ売り、残りは持つ", emg_frac=0.5, **_ST_BASE),
     "hd_fcsell": _lab_rule("H8 予想の減配（−10％）の段階で売る", emg_forecast=0.10, **_ST_BASE),
 })
+# ── 「多少の差なら塩漬け」の組み合わせ（2026年11月14日に追加。計画は hold2_plan_2026-11-14）──
+VARIANTS.update({
+    "k2_cut_y": _lab_rule("K2 浅い減配は持つ＋利回り3％以上なら持つ", emg_sell={"cut_min": 0.30, "hold_yield": 3.0}, **_ST_BASE),
+    "k3_cut_opy": _lab_rule("K3 浅い減配は持つ＋業績急変だけなら利回り3％以上で持つ",
+                            emg_sell={"cut_min": 0.30, "op_hold_yield": 3.0}, **_ST_BASE),
+    "k4_y_safe": _lab_rule("K4 利回り3％以上なら持つ＋赤字転落・無配は必ず売る",
+                           emg_sell={"hold_yield": 3.0, "always_red": True, "always_nodiv": True}, **_ST_BASE),
+    "k5_cut_tier": _lab_rule("K5 浅い減配は持つ＋Tier S・A は持つ", emg_sell={"cut_min": 0.30, "hold_tiers": ["S", "A"]}, **_ST_BASE),
+})
 # （記号, ルール名, 短い名前）
 LAB4_C = (("C1", "lab4_c_div", "「10期減配なし」を外す"), ("C2", "lab4_c_sales", "「売上の安定」を外す"),
           ("C3", "lab4_c_op", "「営業利益の安定」を外す"), ("C4", "lab4_c_np", "「純利益の安定」を外す"),
@@ -6314,6 +6323,7 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
             if emg_sell and _emg and emg_actual and exit_on_cut and st["lots"]:
                 # 2026年11月14日：持つ条件
                 _dcv, _ocv = row.get("div_chg"), row.get("op_chg")
+                _c_ok = _o_ok = False
                 if emg_sell.get("both"):
                     _sell = bool(_cut) and bool(_opd)
                 else:
@@ -6330,6 +6340,15 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                 if _sell and emg_sell.get("hold_fc") is not None and _num(row.get("fc_chg")) \
                         and float(row.get("fc_chg")) >= -float(emg_sell["hold_fc"]):
                     _sell = False
+                # 2026年11月14日（hold2_plan）：業績急変だけで売るときに限って、利回りが高ければ持つ ／ 赤字転落・無配は必ず売る
+                if _sell and emg_sell.get("op_hold_yield") is not None and not emg_sell.get("both") \
+                        and not _c_ok and _o_ok and _num(row.get("yield")) \
+                        and float(row.get("yield")) >= float(emg_sell["op_hold_yield"]):
+                    _sell = False
+                if emg_sell.get("always_red") and bool(_opd) and _num(_ocv) and float(_ocv) <= -1.0:
+                    _sell = True
+                if emg_sell.get("always_nodiv") and bool(_cut) and _num(_dcv) and float(_dcv) <= -0.995:
+                    _sell = True
                 if not _sell and not st.get("emg_held"):
                     st["emg_held"] = True
                     diag["emg_holds"] = diag.get("emg_holds", 0) + 1
@@ -9649,6 +9668,55 @@ def hold_event_study(store: dict, panel: pd.DataFrame) -> dict:
         print(f"    {k:>4}日{len(g):>8}{m:>+8.1f}{float(g[col].median()):>+8.1f}{('[' + format(lo, '+.1f') + ', ' + format(hi, '+.1f') + ']'):>18}"
               f"{h1:>+8.1f}{h2:>+8.1f}{ms:>+8.1f}  {jd}")
     print("  （予想の減配には、前の年の記念配当・特別配当がなくなっただけのものも混じる）")
+    return res
+
+K_ROWS = (("K1", "hd_cut30", "浅い減配（−30％未満）は持つ（H1）"),
+          ("K2", "k2_cut_y", "浅い減配は持つ＋利回り3％以上なら持つ"),
+          ("K3", "k3_cut_opy", "浅い減配は持つ＋業績急変だけなら利回り3％以上で持つ"),
+          ("K4", "k4_y_safe", "利回り3％以上なら持つ＋赤字転落・無配は必ず売る"),
+          ("K5", "k5_cut_tier", "浅い減配は持つ＋Tier S・A は持つ"),
+          ("E4", "st_never", "売らない（参考）"))
+
+
+def hold2_pass(d, dm) -> bool:
+    """「多少の差」の基準（hold2_plan_2026-11-14）。"""
+    return (len(d) > 0 and float(d.mean()) >= -0.3 and float(d.min()) >= -2.0 and float(dm.mean()) >= -0.3)
+
+
+def hold2_report(gf: pd.DataFrame, cond_cols: list) -> dict:
+    """K1〜K5 の結果と、本番に入れる形を出す。"""
+    pl = gf.pivot_table(index=cond_cols, columns="ルール", values="清算後年率")
+    pm = gf.pivot_table(index=cond_cols, columns="ルール", values="評価額年率")
+    L0 = VARIANTS["st_base"]["label"]
+    print("\n【「多少の差なら塩漬け」の組み合わせ】（9年分・24条件。基準は結果を見る前に決めたもの。計画は hold2_plan_2026-11-14）")
+    print("  多少の差 … E0 と比べて、平均の差 −0.3pt 以上・いちばん悪い差 −2.0pt 以上・評価額の平均の差 −0.3pt 以上。通った形のうち、持った回数がいちばん多い形を本番に入れる")
+    print("  予想 … K1 は前回と同じ。K2・K4 は最悪の差で通らない。K3 は境目。K5 は通らない。本番に入るのは K1 か K3")
+    print(f"\n  {'形':<40}{'清算後':>8}{'最悪':>8}{'最大下落':>9}{'売った/年':>9}{'持った/年':>9}{'平均の差':>9}{'最悪の差':>9}{'評価額の差':>10}{'上回った':>8}  多少の差")
+    res, ok = {}, []
+    for k_, n_, sh_ in K_ROWS:
+        L_ = VARIANTS[n_]["label"]
+        g_ = gf[gf["ルール"] == L_]
+        if g_.empty or L_ not in pl.columns or L0 not in pl.columns:
+            print(f"  {k_} {sh_} … 結果なし")
+            continue
+        yrs_ = g_["期間"].map(lambda sp: max((pd.Timestamp(sp.split("〜")[1]) - pd.Timestamp(sp.split("〜")[0])).days / 365.25, 0.5))
+        emg_ = float((g_["緊急売り"] / yrs_).mean())
+        held_ = float((g_["持った回数"] / yrs_).mean()) if "持った回数" in g_.columns else float("nan")
+        d_ = (pl[L_] - pl[L0]).dropna()
+        dm_ = (pm[L_] - pm[L0]).dropna()
+        p_ = hold2_pass(d_, dm_) if k_ != "E4" else None
+        res[k_] = p_
+        if p_:
+            ok.append((held_, float(d_.mean()), k_))
+        print(f"  {(k_ + ' ' + sh_):<40}{g_['清算後年率'].mean():>7.1f}％{g_['清算後年率'].min():>7.1f}％{g_['最大下落'].mean():>8.1f}％"
+              f"{emg_:>8.2f}回{held_:>8.2f}回{d_.mean():>+8.2f}{d_.min():>+9.2f}{dm_.mean():>+10.2f}{float((d_ > 0).mean()) * 100:>7.0f}％  "
+              + ("—（参考）" if p_ is None else ("通る" if p_ else "通らない")))
+    g0 = gf[gf["ルール"] == L0]
+    if not g0.empty:
+        print(f"  E0 土台（印の月末に売る） … 清算後 {g0['清算後年率'].mean():.1f}％・最悪 {g0['清算後年率'].min():.1f}％・最大下落 {g0['最大下落'].mean():.1f}％")
+    pick = max(ok)[2] if ok else "K1"
+    print(f"\n  本番に入れる形（先に決めたとおり） … {pick}" + ("" if ok else "（どれも通らなかったので K1）"))
+    res["pick"] = pick
     return res
 
 
@@ -16557,6 +16625,11 @@ def main() -> int:
     if (args.only or "").strip() == "hold_test":
         args.hold_test, args.liq_metric, args.grid = True, True, True
         args.only = "st_base,hd_cut30,hd_redop,hd_both,hd_yield,hd_tier,hd_fc,hd_half,hd_fcsell,st_never"
+    # 「多少の差なら塩漬け」の組み合わせ（2026年11月14日に追加。計画は hold2_plan_2026-11-14）
+    args.hold2_test = False
+    if (args.only or "").strip() == "hold2_test":
+        args.hold2_test, args.liq_metric, args.grid = True, True, True
+        args.only = "st_base,hd_cut30,k2_cut_y,k3_cut_opy,k4_y_safe,k5_cut_tier,st_never"
     args.near_test = False
     if (args.only or "").strip() == "near_test":
         args.near_test, args.liq_metric, args.grid = True, True, True
@@ -16698,7 +16771,7 @@ def main() -> int:
     if getattr(args, "etf_test", False) or getattr(args, "luck_test", False) or getattr(args, "near_test", False) \
             or getattr(args, "sector_test", False) or getattr(args, "long_any", False) \
             or getattr(args, "rev_lab1", False) or getattr(args, "rev_lab2", False) or getattr(args, "st_lab1", False) \
-            or getattr(args, "sell_test", False) or getattr(args, "hold_test", False):
+            or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False):
         _eq = store.setdefault("etf_quotes", {})
         key = os.environ.get("J_QUANTS_API_KEY")
         if key:
@@ -16735,7 +16808,7 @@ def main() -> int:
     _need_scale = (getattr(args, "live_check", False) or getattr(args, "rot_live", False)
                    or getattr(args, "cap_test", False) or getattr(args, "etf_test", False)
                    or getattr(args, "luck_test", False) or getattr(args, "near_test", False)
-                   or getattr(args, "flat_test", False) or getattr(args, "sell_test", False) or getattr(args, "hold_test", False)
+                   or getattr(args, "flat_test", False) or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False)
                    or getattr(args, "sector_test", False)
                    or getattr(args, "long_any", False)
                    or getattr(args, "rev_lab1", False) or getattr(args, "rev_lab2", False) or getattr(args, "st_lab1", False))
@@ -18780,7 +18853,7 @@ def main() -> int:
                    or getattr(args, "live_check", False) or getattr(args, "rot_live", False)
                    or getattr(args, "cap_test", False) or getattr(args, "etf_test", False)
                    or getattr(args, "luck_test", False) or getattr(args, "near_test", False)
-                   or getattr(args, "flat_test", False) or getattr(args, "sell_test", False) or getattr(args, "hold_test", False)
+                   or getattr(args, "flat_test", False) or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False)
                    or getattr(args, "sector_test", False)
                    or getattr(args, "long_any", False))
         _l10 = bool(getattr(args, "line_test", False))
@@ -18789,7 +18862,7 @@ def main() -> int:
                      or getattr(args, "live_check", False) or getattr(args, "rot_live", False)
                      or getattr(args, "cap_test", False) or getattr(args, "etf_test", False)
                      or getattr(args, "luck_test", False) or getattr(args, "near_test", False)
-                     or getattr(args, "flat_test", False) or getattr(args, "sell_test", False) or getattr(args, "hold_test", False)
+                     or getattr(args, "flat_test", False) or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False)
                      or getattr(args, "sector_test", False)
                      or getattr(args, "long_any", False)):
             print("　 年率は「最後の月末に全部売って、約定のずれと税を払った後」（清算後）で出しています。\n")
@@ -18805,7 +18878,7 @@ def main() -> int:
                 or getattr(args, "live_check", False) or getattr(args, "rot_live", False)
                 or getattr(args, "cap_test", False) or getattr(args, "etf_test", False)
                 or getattr(args, "luck_test", False) or getattr(args, "near_test", False)
-                or getattr(args, "flat_test", False) or getattr(args, "sell_test", False) or getattr(args, "hold_test", False)
+                or getattr(args, "flat_test", False) or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False)
                 or getattr(args, "sector_test", False)
                 or getattr(args, "long_any", False)):
             # ── 1. 基準に勝った割合 ──
@@ -20571,6 +20644,9 @@ def main() -> int:
                 log.exception("発表の前後の値動き（B1）を出せませんでした: %s", e_)
 
         # ── 減配・業績急変のあと「持ち続ける」（2026年11月14日に追加。計画は hold_test_plan_2026-11-14）──
+        if getattr(args, "hold2_test", False) and nm and nm[0] == "st_base":
+            hold2_report(gf, cond_cols)
+
         if getattr(args, "hold_test", False) and nm and nm[0] == "st_base":
             hold_report(gf, cond_cols)
             try:
