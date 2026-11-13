@@ -108,7 +108,10 @@ def ensure_cash(state: dict[str, Any], history: dict[str, Any], need: float, tod
     if state['cash'] >= need or not e.get('qty') or not px:
         return
     net = px * (1.0 - ETF_COST)
-    qty = min(int(e['qty']), int(math.ceil((need - state['cash']) / net)))
+    # 1306 に益があると、売った額から税が引かれる。税を引いたあとの手取りで足りるように売る口数を決める
+    # （11月13日に直した。前は税を見ていなかったので、益があると手取りが足りず、株を買えずに 1306 を売って買い戻していた）。
+    unit = net - max(0.0, net - float(e.get('cost') or 0.0)) * TAX_RATE
+    qty = min(int(e['qty']), int(math.ceil((need - state['cash']) / unit)) + 1)
     if qty <= 0:
         return
     pl = (net - e['cost']) * qty

@@ -4,8 +4,10 @@ variant_engine.py — 買う順番の並走記録（2026年11月10日。計画�
 本の検証（21〜34段目）で、両方の期間ででたらめより良かった形は、どれも「利益を出していて、現金が多く借金が少ない割安株」
 （ヘムの H0・山口揚平の保守的な安全域）だった。本番の「低PBR順」と「安全域順」を、2026年12月1日から同じ1,000万円で並べて記録する。
 
-  PBR  … 本番と同じ（8条件・利回りの足切り・PBR が全銘柄の安い側20％・Tier 順・同じ Tier の中は PBR の低い順）
-  SAFE … 足切りと順番だけを安全域に変える（安全域が全銘柄の大きい側20％・Tier 順・同じ Tier の中は安全域の大きい順）
+  PBR   … 2026年11月12日までの本番（8条件・利回りの足切り・PBR が全銘柄の安い側20％・Tier 順・同じ Tier の中は PBR の低い順）
+  SAFE  … 足切りと順番だけを安全域に変える（安全域が全銘柄の大きい側20％・Tier 順・同じ Tier の中は安全域の大きい順）
+  YIELD … 2026年11月13日からの本番（8条件・利回りの足切り・Tier 順・同じ Tier の中は利回りの高い順。PBR の足切りなし）
+          11月13日に足した。記録を始める12月1日より前なので、variant_forward_plan_2026-11-10 の決まりに書き足してある
 
 どちらも本番の portfolio_engine の決まり（予算・売り・配当・税・買い増し・損出し・待機資金の1306）をそのまま使う。
 本番の検証運用（portfolio_state.json）とは別のファイルに書き、本番の売買には影響しない。LINE には送らない。
@@ -25,12 +27,28 @@ log = logging.getLogger(__name__)
 DATA_DIR = Path(__file__).parent.parent / 'data'
 START = '2026-12-01'
 TOP_PCT = 20.0
-VARIANTS = ('PBR', 'SAFE')
+VARIANTS = ('PBR', 'SAFE', 'YIELD')
+PBR_TOP_PCT = 20.0   # PBR：全銘柄の中で PBR が安い側20％（generate.py の PBR_TOP_PCT=80 と同じ意味）
 
 
 def _prepare(stocks: list[dict[str, Any]], kind: str) -> list[dict[str, Any]]:
     out = copy.deepcopy(stocks)
-    if kind == 'PBR':
+    if kind == 'YIELD':      # 利回りの高い順・PBR の足切りなし（本番の BUY_MODE が何であっても、この形で作る）
+        for x in out:
+            x['buy_sort'] = -(x.get('current_yield') or 0)
+            x['signal'] = x.get('signal_pre_rank', x.get('signal'))
+        return out
+    if kind == 'PBR':        # 低PBR順・PBR が全銘柄の安い側20％（本番の BUY_MODE が何であっても、この形で作る）
+        pb = sorted([(x['code'], x['pbr']) for x in out if x.get('pbr') is not None and x['pbr'] > 0], key=lambda t: -t[1])
+        n = len(pb)
+        rank = {c: (i + 1) / n * 100 for i, (c, _v) in enumerate(pb)} if n else {}
+        for x in out:
+            x['buy_sort'] = x['pbr'] if x.get('pbr') else 99.0
+            pre = x.get('signal_pre_rank', x.get('signal'))
+            if pre == 'BUY':
+                x['signal'] = 'BUY' if rank.get(x['code'], 0.0) >= 100 - PBR_TOP_PCT else 'NEUTRAL'
+            elif x.get('signal') == 'BUY':
+                x['signal'] = 'NEUTRAL'
         return out
     sm = sorted([(x['code'], x['safety_y1']) for x in out if x.get('safety_y1') is not None], key=lambda t: t[1])
     n = len(sm)

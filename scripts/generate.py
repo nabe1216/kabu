@@ -67,7 +67,11 @@ MIN_YIELD_THRESHOLD = 3.0            # 最低利回り ≧ 3.0%
 #   yield    … スクリーニングを通り、利回りが足切り以上なら BUY（待たない）
 #   quantile … 利回りが過去3年の Q75 以上で BUY、Q25 以下で SELL（これまで）
 # 64条件の総当たりで yield が86%の条件で上回ったため、yield を採用。
-BUY_MODE = 'pbr'
+# 2026年9月に pbr（低PBR順）へ変えたが、11月13日に yield（利回りの高い順）へ戻した。
+#   20年分の検証（long_lab・long_lab2）：ルールを作るときに見ていない期間（2009〜2018年）で利回り順が全条件で上回り（+4.5pt）、
+#   17年通しでも 13.6％ 対 13.3％・最大下落 24.8％ 対 27.8％。低PBR順が上だったのは、それを選んだ最近の期間だけ。
+#   差は偶然と区別できない大きさ。低PBR順は variant_engine の並走記録（PBR）で12月から比べ続ける。
+BUY_MODE = 'yield'
 # 低PBR順のとき、全銘柄の中で PBR が安い側何％までを買うか。
 # 80 なら「安い側20％」。検証で 10/20/30％ いずれも崩れなかったので、
 # 最初に決めた 20％ を使う。
@@ -2097,6 +2101,20 @@ def main() -> int:
     for k, v in signal_counts.items():
         log.info('  signal %s: %d', k, v)
 
+    # 待機資金・配分案に使う 1306 のいちばん新しい終値（2026年11月10日。11月13日に results.json にも出すよう前へ移した）
+    etf_px, etf_date = None, None
+    try:
+        to_d = date.today()
+        q = client.get_daily_quotes('13060', (to_d - timedelta(days=14)).isoformat(), to_d.isoformat())
+        q = [x for x in q if safe_float(x.get('Close')) is not None]
+        if q:
+            q.sort(key=lambda x: x.get('Date', ''))
+            etf_px = safe_float(q[-1].get('Close'))
+            etf_date = str(q[-1].get('Date', ''))[:10]
+            log.info('1306 close %s (%s)', etf_px, etf_date)
+    except Exception as e:
+        log.warning('1306 の株価が取れませんでした（待機資金は前の値段で評価）: %s', e)
+
     # 出力
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -2116,6 +2134,8 @@ def main() -> int:
         # 株価の最後の日（毎日の点検で、データが古くなっていないかを見る）
         'latest_price_date': max(
             (s['price_history'][-1].get('d') for s in stocks if s.get('price_history')), default=None),
+        # 2026年11月13日：配分案で余りを 1306 に回すための値段（売買単位は10口。2026年4月1日に1口を10口に分割したあと）
+        'etf1306': {'code': '1306', 'name': 'NEXT FUNDS TOPIX連動型上場投信', 'close': etf_px, 'date': etf_date, 'unit': 10},
         'stocks': stocks,
     }
     # 2026年11月8日：履歴を data/history/ に分けて書く（results.json が67MBまで大きくなったため）。
@@ -2130,17 +2150,6 @@ def main() -> int:
     try:
         from portfolio_engine import update_portfolio
         log.info('Updating portfolio (forward test)...')
-        etf_px = None
-        try:      # 待機資金に使う 1306 のいちばん新しい終値（2026年11月10日）
-            to_d = date.today()
-            q = client.get_daily_quotes('13060', (to_d - timedelta(days=14)).isoformat(), to_d.isoformat())
-            q = [x for x in q if safe_float(x.get('Close')) is not None]
-            if q:
-                q.sort(key=lambda x: x.get('Date', ''))
-                etf_px = safe_float(q[-1].get('Close'))
-                log.info('1306 close %s (%s)', etf_px, q[-1].get('Date'))
-        except Exception as e:
-            log.warning('1306 の株価が取れませんでした（待機資金は前の値段で評価）: %s', e)
         portfolio_state = update_portfolio(stocks, etf_px)
         try:      # 2026年11月10日：買う順番の並走記録（12月1日から。本番の売買には影響しない）
             from variant_engine import update_variants
