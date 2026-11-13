@@ -313,7 +313,7 @@ td.al-name{white-space:normal;min-width:250px}
         </div>
 
         <div class="lg-sec"><h5>質の区分（Tier）</h5>
-          <div class="lg-row"><span class="lg-k">配当を守る</span><span class="lg-v">日経累進高配当株指数の構成銘柄（30社）と、会社の公式資料に「減配しない」（累進配当・維持または増配）と書いている会社（46社）。DOE だけ・「増配を目指す」だけの会社は入れません。<b>確認日 2026年11月13日</b>（毎年7月に見直し）。中小型の会社は、まだ確かめきれていません</span></div>
+          <div class="lg-row"><span class="lg-k">配当を守る</span><span class="lg-v">日経累進高配当株指数の構成銘柄（30社）と、会社の公式資料に「減配しない」（累進配当・維持または増配）と書いている会社。大型株の46社は手で確かめ（<b>確認日 2026年11月13日</b>・毎年7月に見直し）、ほかは有価証券報告書の【配当政策】を EDINET から毎月読み取って判定します（<span id="lgEdinet">—</span>）。DOE だけ・「増配を目指す」だけの会社は入れません。有価証券報告書で見つけた会社は、減配の条件の免除には使いません</span></div>
           <div class="lg-row"><span class="lg-k">業界トップ</span><span class="lg-v">同じ33業種のなかで時価総額上位3社</span></div>
           <div class="lg-row"><span class="tag tier-S" style="border-radius:99px;width:auto;padding:1px 9px">S</span><span class="lg-v">両方を満たす ／ 総資産の約8.9%</span></div>
           <div class="lg-row"><span class="tag tier-A" style="border-radius:99px;width:auto;padding:1px 9px">A</span><span class="lg-v">どちらか一方 ／ 約6.7%</span></div>
@@ -775,6 +775,7 @@ function fillLogic(){
   set('lgMinY',th.min_yield);
   document.querySelectorAll('.lgMinY2').forEach(e=>{if(th.min_yield!=null)e.textContent=th.min_yield;});
   const u=$('sigUniv'); if(u&&S.data.universe_count)u.textContent=S.data.universe_count.toLocaleString();
+  const le=$('lgEdinet'); if(le)le.textContent=th.edinet_policy_checked?`最後の読み取り ${th.edinet_policy_checked}・${th.edinet_policy_count??0}社`:'まだ動いていません（EDINET の API キーの登録待ち）';
   if(buyMode()==='pbr'){
     const b=$('lgBuy'); if(b)b.innerHTML=`スクリーニング8条件を通り、利回り${th.min_yield??4}%以上。そのうち<b>PBRが全銘柄の安い側20%に入る銘柄</b>を買います`;
     const r=$('lgSellRow'); if(r)r.innerHTML=`<span class="tag p-sell">SELL</span><span class="lg-v">いまのルールでは出しません（もともと売却には使っていません）</span>`;
@@ -999,6 +1000,11 @@ function openDetail(code){
   $('dCode').textContent=s.code; $('dName').textContent=s.name;
   $('dSub').textContent=`${s.sector||''} · 時価総額 ${fmt.oku(s.market_cap_oku)} · ${s.fiscal_month?s.fiscal_month+'月決算':''}${s.interim_month?`（権利月 ${s.fiscal_month}月/${s.interim_month}月）`:''}`;
   $('dBadges').innerHTML=[sigPill(s),s.is_box?'<span class="pill p-box">BOX</span>':'',`<span class="pill ${bucketClass(s)}">${bucketLabel(s)}</span>`,s.tier?`<span class="pill" style="background:var(--neutral-bg);color:var(--text-2)">Tier ${s.tier}（総資産の約${({S:'8.9',A:'6.7',B:'4.4'})[s.tier]||'—'}%）</span>`:'',s.is_industry_leader?'<span class="pill p-core">業界トップ級</span>':'',isCheap(s,'per')?'<span class="pill p-cheap">PER割安</span>':'',isCheap(s,'pbr')?'<span class="pill p-cheap">PBR割安</span>':''].filter(Boolean).join('');
+  // 「配当を守る会社」と判定した出どころ（2026年11月13日に追加）
+  const dp=s.div_policy;
+  $('dBadges').innerHTML+=dp?`<div style="flex-basis:100%;font-size:12px;color:var(--text-2);margin-top:6px;line-height:1.6">
+    <b>配当を守る会社</b>（${esc((dp.src||[]).join('・'))}）${dp.phrase?`：有価証券報告書の【配当政策】に「${esc(dp.phrase)}」の約束${dp.flags&&dp.flags.length?`（${esc(dp.flags.join('・'))}）`:''}`:''}
+    ${dp.snippet?`<div style="color:var(--text-3);margin-top:2px">「${esc(dp.snippet)}」（${esc(dp.submitted||'')} 提出。出典：EDINET）</div>`:''}</div>`:'';
   $('dPrice').innerHTML=`${fmt.yen(s.price)}<small>利回り ${fmt.pct(s.current_yield)} / 予想DPS ¥${fmt.num(s.forecast_dps,1)}</small>`;
   $('dLinks').innerHTML=s.links?Object.entries({minkabu:'みんかぶ',irbank:'IR BANK',tdnet:'TDnet'}).map(([k,l])=>s.links[k]?`<a href="${s.links[k]}" target="_blank" rel="noopener">${l} ↗</a>`:'').join(''):'';
   switchTab('overview');
