@@ -85,6 +85,11 @@ input:focus,select:focus{border-color:var(--primary)}
 .lg-row .tag{flex-shrink:0;font-size:11px;font-weight:600;padding:1px 9px;border-radius:99px;min-width:52px;text-align:center}
 .lg-k{flex-shrink:0;min-width:64px;font-size:11.5px;font-weight:600;color:var(--text)}
 .lg-note{font-size:11.5px;color:var(--text-3);line-height:1.6;margin-top:6px}
+.lg-flow{margin-bottom:22px;padding:14px 16px;border-radius:10px;background:var(--neutral-bg)}
+.lg-flow h5{font-size:12px;font-weight:600;color:var(--text);margin-bottom:8px}
+.lg-flow ol{margin:0;padding-left:20px;font-size:13px;color:var(--text-2);line-height:1.75}
+.lg-flow li{margin-bottom:4px}
+.lg-flow li b{color:var(--text)}
 
 /* ===== Filter bar ===== */
 .filters{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:12px 14px;margin-bottom:14px}
@@ -283,73 +288,99 @@ td.al-name{white-space:normal;min-width:250px}
         <svg class="chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>
       </div>
       <div class="logic-body">
+       <div class="lg-flow">
+        <h5>全体の流れ（毎日この順に判定します）</h5>
+        <ol>
+          <li><b>対象を決める</b>　東証プライムの大型〜中小型 <b id="lgUniv">—</b>社を毎日見ます。</li>
+          <li><b>買い候補を選ぶ</b>　「配当を減らしにくい会社か」を8つの条件で確かめ、全部満たし、利回りが<span class="lgMinY2">3</span>%以上の会社だけを買い候補にします（今日は <b id="lgCand">—</b>社）。</li>
+          <li><b>区分（Tier）をつける</b>　「配当を守ると約束している会社か」「業界の大手か」で S・A・B に分けます。</li>
+          <li><b>買う順番に並べる</b>　S → A → B の順。同じ区分の中は、利回りの高い順です。</li>
+          <li><b>上から予算の分だけ買う</b>　1銘柄の金額は区分で決まります（S が多め）。予算が尽きるか20銘柄になったら止めます（元本1,000万円なら今日は上から <b id="lgPlan10">—</b>銘柄）。余ったお金は TOPIX 連動ETF（1306）で持っておきます。</li>
+          <li><b>持ち続ける</b>　売るのは「減配した」「営業利益が大きく落ちた」ときだけ。値上がりしても、相場が下がっても売りません。配当は月1回の買い増しに回し、12月に税金を取り戻す売り買いをします。</li>
+        </ol>
+        <div class="lg-note">考え方：配当が減りにくい会社を、利回りが高いうちに買って、減配しない限り持ち続ける。売り買いで稼ぐのではなく、配当を受け取りながら持つ手法です。</div>
+       </div>
+
        <div class="lg-grid">
 
-        <div class="lg-sec"><h5>対象銘柄</h5>
+        <div class="lg-sec"><h5>① 対象の銘柄</h5>
           <div class="lg-row"><span class="lg-k">市場</span><span class="lg-v">東証プライム</span></div>
-          <div class="lg-row"><span class="lg-k">規模</span><span class="lg-v">TOPIX Core30・Large70・Mid400・Small 1（Small 2 は対象外）</span></div>
-          <div class="lg-row"><span class="lg-k">いま</span><span class="lg-v"><b id="lgUniv">—</b>社を毎日判定</span></div>
-          <div class="lg-note">時価総額では絞っていません。銘柄の一覧に時価総額が載っておらず、事前に絞れないためです。</div>
+          <div class="lg-row"><span class="lg-k">規模</span><span class="lg-v">TOPIX Core30・Large70・Mid400・Small 1。いちばん小さい Small 2 は入れません</span></div>
+          <div class="lg-note">時価総額の大きさでは絞っていません（銘柄の一覧に時価総額が載っておらず、前もって絞れないため）。</div>
         </div>
 
-        <div class="lg-sec"><h5>買う前提（8条件・すべて満たす）</h5>
-          <div class="lg-row"><span class="lg-k">減配</span><span class="lg-v">過去10期で減配していない（株式分割・併合は減配と数えない） ※</span></div>
-          <div class="lg-row"><span class="lg-k">売上</span><span class="lg-v">過去5期で、前期比−10%超の減少が2期続いていない</span></div>
-          <div class="lg-row"><span class="lg-k">営業利益</span><span class="lg-v">同上</span></div>
-          <div class="lg-row"><span class="lg-k">純利益</span><span class="lg-v">同上</span></div>
-          <div class="lg-row"><span class="lg-k">配当性向</span><span class="lg-v">50%以下</span></div>
-          <div class="lg-row"><span class="lg-k">自己資本</span><span class="lg-v">比率50%以上（建設・海運・卸売は33%、金融・不動産は対象外）</span></div>
-          <div class="lg-row"><span class="lg-k">割安</span><span class="lg-v">PER×PBR <b id="lgGraham">40</b> 以下</span></div>
-          <div class="lg-row"><span class="lg-k">利回り</span><span class="lg-v"><b id="lgMinY">3</b>%以上 ※</span></div>
-          <div class="lg-note">※ 「配当を守る会社」（下の質の区分を参照）は、減配と利回りの条件が免除されます。</div>
+        <div class="lg-sec"><h5>② 買い候補の条件（8つの条件＋緊急でないこと・全部満たす）</h5>
+          <div class="lg-row"><span class="lg-k">減配</span><span class="lg-v">過去10期、1株の配当を減らしていない（株式分割・併合で見かけ上減ったものは数えない） ※</span></div>
+          <div class="lg-row"><span class="lg-k">売上</span><span class="lg-v">過去5期で「前の期より10%超減った」が2期続いていない</span></div>
+          <div class="lg-row"><span class="lg-k">営業利益</span><span class="lg-v">同じ（本業のもうけが続けて大きく減っていない）</span></div>
+          <div class="lg-row"><span class="lg-k">純利益</span><span class="lg-v">同じ（最終的なもうけが続けて大きく減っていない）</span></div>
+          <div class="lg-row"><span class="lg-k">配当性向</span><span class="lg-v">もうけのうち配当に回す割合が50%以下（無理をして配当を出していない）</span></div>
+          <div class="lg-row"><span class="lg-k">自己資本</span><span class="lg-v">自己資本比率50%以上＝借金が少ない（建設・海運・卸売は33%以上。金融・不動産はこの条件なし）</span></div>
+          <div class="lg-row"><span class="lg-k">割安</span><span class="lg-v">PER×PBR が <b id="lgGraham">40</b> 以下（株価が利益と資産に比べて高すぎない）</span></div>
+          <div class="lg-row"><span class="lg-k">利回り</span><span class="lg-v">いまの配当利回りが <b id="lgMinY">3</b>%以上 ※</span></div>
+          <div class="lg-row"><span class="lg-k">緊急でない</span><span class="lg-v">直近の決算で減配・営業利益の急減（⑥の売る条件）に当たっていない</span></div>
+          <div class="lg-note">※「配当を守る会社」のうち、日経累進高配当株指数の30社と、手で確かめた46社は、減配と利回りの条件が免除されます（買いの合図は別に利回り3%以上が要ります）。<br>8つの条件の役割は成績を上げることではなく、配当を守る保険です（翌年に減配する銘柄が約12% → 約6%に減る）。</div>
         </div>
 
-        <div class="lg-sec"><h5>シグナル</h5>
-          <div class="lg-row"><span class="tag p-buy">BUY</span><span class="lg-v" id="lgBuy">いまの利回りが、過去3年の月次利回りの上位25%（Q75）以上</span></div>
-          <div class="lg-row" id="lgSellRow"><span class="tag p-sell">SELL</span><span class="lg-v">下位25%（Q25）以下。<b>表示のみで、売却には使いません</b></span></div>
-          <div class="lg-row"><span class="tag p-neu">中立</span><span class="lg-v">その間</span></div>
-          <div class="lg-row"><span class="tag p-box">BOX</span><span class="lg-v">横ばい相場（過去60日の値幅8〜20%・ADX 22未満）。参考表示。<b>検証では、ボックスの上下で売り買いしても成績は上がりませんでした</b></span></div>
-          <div class="lg-row"><span class="tag p-cheap">割安</span><span class="lg-v">PER・PBR が過去の中央値より低い。参考表示</span></div>
+        <div class="lg-sec"><h5>③ 区分（Tier）</h5>
+          <div class="lg-row"><span class="lg-k">配当を守る</span><span class="lg-v">会社が「配当を減らさない」と約束している。日経累進高配当株指数の構成銘柄（30社）か、会社の公式資料に「累進配当」「減配しない」「維持または増配」と書いている会社。大型株の46社は手で確かめ（<b>確認日 2026年11月13日</b>・毎年7月に見直し）、ほかは有価証券報告書の【配当政策】を EDINET から毎月読み取って判定します（<span id="lgEdinet">—</span>）。DOE だけ・「増配を目指す」だけの会社は入れません</span></div>
+          <div class="lg-row"><span class="lg-k">業界の大手</span><span class="lg-v">東証の33業種それぞれで時価総額の上位3社、または TOPIX Core30 の会社</span></div>
+          <div class="lg-row"><span class="tag tier-S" style="border-radius:99px;width:auto;padding:1px 9px">S</span><span class="lg-v">両方に当てはまる。1銘柄に総資産の約8.9%</span></div>
+          <div class="lg-row"><span class="tag tier-A" style="border-radius:99px;width:auto;padding:1px 9px">A</span><span class="lg-v">どちらか一方。約6.7%</span></div>
+          <div class="lg-row"><span class="tag tier-B" style="border-radius:99px;width:auto;padding:1px 9px">B</span><span class="lg-v">どちらでもない。約4.4%</span></div>
+          <div class="lg-note">区分は「どれを先に買うか」と「いくら買うか」だけに使います。区分で成績が上がるかは検証で確かめきれていません（S を厚くすると悪く、均等にすると少し良い程度。どちらも偶然と区別できない）。</div>
         </div>
 
-        <div class="lg-sec"><h5>質の区分（Tier）</h5>
-          <div class="lg-row"><span class="lg-k">配当を守る</span><span class="lg-v">日経累進高配当株指数の構成銘柄（30社）と、会社の公式資料に「減配しない」（累進配当・維持または増配）と書いている会社。大型株の46社は手で確かめ（<b>確認日 2026年11月13日</b>・毎年7月に見直し）、ほかは有価証券報告書の【配当政策】を EDINET から毎月読み取って判定します（<span id="lgEdinet">—</span>）。DOE だけ・「増配を目指す」だけの会社は入れません。有価証券報告書で見つけた会社は、減配の条件の免除には使いません</span></div>
-          <div class="lg-row"><span class="lg-k">業界トップ</span><span class="lg-v">同じ33業種のなかで時価総額上位3社</span></div>
-          <div class="lg-row"><span class="tag tier-S" style="border-radius:99px;width:auto;padding:1px 9px">S</span><span class="lg-v">両方を満たす ／ 総資産の約8.9%</span></div>
-          <div class="lg-row"><span class="tag tier-A" style="border-radius:99px;width:auto;padding:1px 9px">A</span><span class="lg-v">どちらか一方 ／ 約6.7%</span></div>
-          <div class="lg-row"><span class="tag tier-B" style="border-radius:99px;width:auto;padding:1px 9px">B</span><span class="lg-v">どちらでもない ／ 約4.4%</span></div>
-        </div>
-
-        <div class="lg-sec"><h5>買い方</h5>
-          <div class="lg-row"><span class="lg-k">条件</span><span class="lg-v">8条件を満たし、BUY が出ている</span></div>
+        <div class="lg-sec"><h5>④ 買う順番と金額</h5>
+          <div class="lg-row"><span class="lg-k">合図</span><span class="lg-v" id="lgBuy">②の条件を全部満たすと BUY</span></div>
           <div class="lg-row"><span class="lg-k">順番</span><span class="lg-v lg-buyorder">S → A → B。同じ区分なら利回りの高い順</span></div>
-          <div class="lg-row"><span class="lg-k">金額</span><span class="lg-v">総資産 ÷ 15銘柄 × 重み（S 2.0 ／ A 1.5 ／ B 1.0）</span></div>
-          <div class="lg-row"><span class="lg-k">上限</span><span class="lg-v">同時に20銘柄まで。100株単位</span></div>
-          <div class="lg-row"><span class="lg-k">買い増し</span><span class="lg-v">月に1回、配当などで残ったお金で、<b>目標の金額をいちばん下回っている持ち株</b>を100株ずつ目標まで買い増す（8条件を通り、減配・業績急変でない銘柄だけ）</span></div>
-          <div class="lg-row"><span class="lg-k">12月</span><span class="lg-v">取得単価より2%以上下がっている持ち株を、<b>12月15日以降に売って同じ株数をすぐ買い戻す</b>（損出し。損が確定し、その年の配当にかかった税が戻る。特定口座のとき）</span></div>
-          <div class="lg-note">配分案のタブでは、利回り<span class="lgMinY2">3</span>%未満の銘柄を除いています（検証と同じ条件にするため）。</div>
-          <div class="lg-note">なぜ全体の利回り順にしないか：Tier を外して利回りの高い順に買う形も確かめました（9年分・24通り・2026年11月13日）。受け取る配当は元本の年0.3%ほど多い一方、減配・業績急変で売る回数が約1.6倍、最大の下落が約2pt 深く、年率も上回りませんでした。利回りの高い株には、減配が見込まれて株価が下がった株が混じるためです。ただし検証の Tier は、いまの累進配当の一覧で決めている（後から見た有利さが入る）ので、Tier 順の効き目は検証の数字より小さいと見ておくのが安全です。</div>
+          <div class="lg-row"><span class="lg-k">金額</span><span class="lg-v">総資産 ÷ 15 ×（重み ÷ 1.5）。重みは S 2.0 ／ A 1.5 ／ B 1.0。<br>元本1,000万円なら S 約89万円・A 約67万円・B 約44万円</span></div>
+          <div class="lg-row"><span class="lg-k">株数</span><span class="lg-v">100株単位で、金額に収まるだけ（切り捨て）。例：株価1,500円の B なら 44万円 ÷ 15万円（100株）＝ 2.9 → 200株（30万円）。100株でも金額を超える銘柄は飛ばします</span></div>
+          <div class="lg-row"><span class="lg-k">止める</span><span class="lg-v">お金が足りなくなるか、持ち株が20銘柄になったら止めます。お金が足りない銘柄は、株数を減らして買わずに見送ります</span></div>
+          <div class="lg-row"><span class="lg-k">いつ</span><span class="lg-v">合図を見た次の取引日の寄付き（朝の取引開始）に成行で注文します</span></div>
+          <div class="lg-note">金額ごとの注文の一覧は「配分案」のタブで出せます（1株単位＝単元未満株で買う形も選べます）。<br>なぜ全体の利回り順にしないか：Tier を外して利回りの高い順に買う形も確かめました（9年分・24通り）。配当は元本の年0.3%ほど多い一方、減配・業績急変で売る回数が約1.6倍、最大の下落が約2pt 深く、年率も上回りませんでした。利回りの高い株には、減配が見込まれて株価が下がった株が混じるためです。</div>
         </div>
 
-        <div class="lg-sec"><h5>売り方</h5>
-          <div class="lg-row"><span class="tag p-warn">緊急</span><span class="lg-v">減配（年間配当の実績が前の期より10%超減った。株式分割・併合は除く）、または営業利益が前年比−20%以下</span></div>
-          <div class="lg-row"><span class="lg-k">それ以外</span><span class="lg-v"><b>売りません。</b>値上がりしても、SELL が出ても持ち続けます</span></div>
+        <div class="lg-sec"><h5>⑤ 余ったお金</h5>
+          <div class="lg-row"><span class="lg-k">1306</span><span class="lg-v">株を買って余ったお金は、TOPIX 連動ETF（1306・10口単位）で持っておきます。現金は10万円だけ残します</span></div>
+          <div class="lg-row"><span class="lg-k">使うとき</span><span class="lg-v">新しく株を買うときにお金が足りなければ、足りない分だけ 1306 を売って充てます</span></div>
+          <div class="lg-note">現金のまま待つと、上げ相場で取り残されるためです（検証で、条件で絞る手法が TOPIX に負けた大きな理由の1つ）。</div>
+        </div>
+
+        <div class="lg-sec"><h5>⑥ 売る条件（これだけ）</h5>
+          <div class="lg-row"><span class="tag p-warn">緊急</span><span class="lg-v">次のどれかが決算で出たら、次の取引日に売ります：<br>・減配（年間配当の実績が前の期より10%以上減った。株式分割・併合は除く）<br>・営業利益が前の年より20%以上減った<br>・累進配当の約束をやめた</span></div>
+          <div class="lg-row"><span class="lg-k">それ以外</span><span class="lg-v"><b>売りません。</b>値上がりしても、相場が下がっても、SELL が出ても持ち続けます</span></div>
           <div class="lg-note">20年分の検証では、利確・損切り・入れ替え・相場や市況（日経平均・金利・原油・為替）を見た売買のどれも、成績を上げませんでした。</div>
         </div>
 
-        <div class="lg-sec"><h5>検証でわかったこと（2009〜2026年の20年分）</h5>
+        <div class="lg-sec"><h5>⑦ 定期的にやること</h5>
+          <div class="lg-row"><span class="lg-k">毎月</span><span class="lg-v">配当などで残ったお金で、<b>目標の金額をいちばん下回っている持ち株</b>を100株ずつ目標まで買い増します（②の条件を満たし、緊急でない銘柄だけ）</span></div>
+          <div class="lg-row"><span class="lg-k">12月</span><span class="lg-v">取得単価より2%以上下がっている持ち株を、<b>12月15日以降に売って同じ株数をすぐ買い戻します</b>（損出し。損が確定して、その年の配当にかかった税金が戻る。特定口座のとき）</span></div>
+          <div class="lg-note">検証で「成績を削らずにできる売買」はこの2つだけでした。NISA の口座では、配当の受け取り方を「株式数比例配分方式」にしておくと配当に税金がかかりません。</div>
+        </div>
+
+        <div class="lg-sec"><h5>⑧ 画面の表示の意味</h5>
+          <div class="lg-row"><span class="tag p-buy">BUY</span><span class="lg-v">②の条件を全部満たした買い候補</span></div>
+          <div class="lg-row"><span class="tag p-neu">条件外</span><span class="lg-v">利回りは3%以上だが、②の8条件を満たさない（買わない）</span></div>
+          <div class="lg-row" id="lgSellRow"><span class="tag p-sell">SELL</span><span class="lg-v">表示だけで、売る判断には使いません</span></div>
+          <div class="lg-row"><span class="tag p-neu">中立</span><span class="lg-v">利回りが条件に届かない</span></div>
+          <div class="lg-row"><span class="tag p-box">BOX</span><span class="lg-v">横ばいの相場（過去60日の値幅8〜20%）。参考。上下で売り買いしても成績は上がりませんでした</span></div>
+          <div class="lg-row"><span class="tag p-cheap">割安</span><span class="lg-v">PER・PBR がその会社の過去の中央値より低い。参考</span></div>
+        </div>
+
+        <div class="lg-sec"><h5>⑨ 検証でわかったこと（2009〜2026年の20年分）</h5>
           <div class="lg-row"><span class="lg-k">成績</span><span class="lg-v">17年で年13.9%（TOPIX 9.8%）。ただし<b>差は偶然と区別できず</b>、2012年10月〜2023年10月の11年は TOPIX に負けていました。TOPIX に勝つ手法とは言えません</span></div>
           <div class="lg-row"><span class="lg-k">配当</span><span class="lg-v">減りにくい。1,000万円で配当を再投資すると、受け取る配当（税引き後）は2010年17万円 → 2025年172万円で、16年間すべて前の年より増えました</span></div>
-          <div class="lg-row"><span class="lg-k">8条件</span><span class="lg-v">減配する銘柄を半分にします（利回り3%以上で翌年に減配した割合 約12% → 約6%）。成績を上げる役ではなく、配当を守る保険です</span></div>
           <div class="lg-row"><span class="lg-k">下げ相場</span><span class="lg-v">買い続けます。止めて現金で待つと、成績が下がり、下げも浅くなりませんでした。暴落では TOPIX と同じだけ（2〜3割）下がります</span></div>
-          <div class="lg-row"><span class="lg-k">売買</span><span class="lg-v">成績を削らずに売買を増やせるのは、<b>配当で買い増す</b>と<b>12月の損出し</b>だけでした（始めた月をずらした161通りで、両方を合わせると85〜98%、買い増しだけでも81〜94%の回で、しない形を上回る）</span></div>
+          <div class="lg-row"><span class="lg-k">順番</span><span class="lg-v">買う順番（利回り順・PBR 順など）は成績をほとんど動かしません。成績を決めているのは②の条件で、どの銘柄が候補に入るかです</span></div>
           <div class="lg-note">過去のデータからの数字で、将来の成績を約束するものではありません。</div>
         </div>
 
-        <div class="lg-sec"><h5>データの更新</h5>
-          <div class="lg-row"><span class="lg-k">頻度</span><span class="lg-v">平日 19:30 に自動更新（土日は動きません）</span></div>
-          <div class="lg-row"><span class="lg-k">財務</span><span class="lg-v">7日ごとに取り直します。<b>決算の反映が最大7日遅れます</b></span></div>
+        <div class="lg-sec"><h5>⑩ データの更新</h5>
+          <div class="lg-row"><span class="lg-k">判定</span><span class="lg-v">平日の夜に自動で更新（土日は動きません）</span></div>
           <div class="lg-row"><span class="lg-k">株価</span><span class="lg-v">毎日。過去9年分を使います</span></div>
+          <div class="lg-row"><span class="lg-k">財務</span><span class="lg-v">7日ごとに取り直します。<b>決算の反映が最大7日遅れます</b></span></div>
+          <div class="lg-row"><span class="lg-k">配当方針</span><span class="lg-v">有価証券報告書は毎月、手で確かめたリストは毎年7月に見直します</span></div>
         </div>
 
        </div>
@@ -775,13 +806,15 @@ function fillLogic(){
   set('lgMinY',th.min_yield);
   document.querySelectorAll('.lgMinY2').forEach(e=>{if(th.min_yield!=null)e.textContent=th.min_yield;});
   const u=$('sigUniv'); if(u&&S.data.universe_count)u.textContent=S.data.universe_count.toLocaleString();
+  try{ const [c]=alPick(true); const e1=$('lgCand'); if(e1)e1.textContent=c.length;
+       const [pl]=alAllocate(c,10000000,alFit(c,10000000,AL_TARGET)); const e2=$('lgPlan10'); if(e2)e2.textContent=pl.length; }catch(e){}
   const le=$('lgEdinet'); if(le)le.textContent=th.edinet_policy_checked?`最後の読み取り ${th.edinet_policy_checked}・${th.edinet_policy_count??0}社`:'まだ動いていません（EDINET の API キーの登録待ち）';
   if(buyMode()==='pbr'){
     const b=$('lgBuy'); if(b)b.innerHTML=`スクリーニング8条件を通り、利回り${th.min_yield??4}%以上。そのうち<b>PBRが全銘柄の安い側20%に入る銘柄</b>を買います`;
     const r=$('lgSellRow'); if(r)r.innerHTML=`<span class="tag p-sell">SELL</span><span class="lg-v">いまのルールでは出しません（もともと売却には使っていません）</span>`;
     document.querySelectorAll('.lg-buyorder').forEach(e=>e.textContent='S → A → B。同じ区分なら、PBRの低い順');
   } else if(buyMode()==='yield'){
-    const b=$('lgBuy'); if(b)b.innerHTML=`スクリーニング8条件を通り、利回り${th.min_yield??4}%以上。<b>その銘柄の過去と比べて安くなるのを待たずに買います</b>`;
+    const b=$('lgBuy'); if(b)b.innerHTML=`②の条件を全部満たし、利回り${th.min_yield??3}%以上なら BUY。<b>その会社の過去の利回りと比べて安くなるのを待たずに買います</b>`;
     const r=$('lgSellRow'); if(r)r.innerHTML=`<span class="tag p-sell">SELL</span><span class="lg-v">いまのルールでは出しません（もともと売却には使っていません）</span>`;
     document.querySelectorAll('.lg-buyorder').forEach(e=>e.textContent='S → A → B。同じ区分なら、いまの利回りが高い順');
   }
