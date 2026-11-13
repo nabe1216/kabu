@@ -1,0 +1,86 @@
+name: edinet-policy
+
+# 有価証券報告書の【配当政策】から「減配しない」約束を読み取る（2026年11月13日に追加）。
+# - scripts/edinet_policy.py が EDINET（金融庁）の API で各社の最新の有価証券報告書を探し、data/dividend_policy.json を作る
+# - 毎日の判定（generate.py）は、このファイルを読んで Tier（配当を守る会社）に使う
+# - 毎月1回動かす。2回目からは、新しく出た有価証券報告書だけを読む（3月決算の会社は6月下旬に出る）
+# - API キーは GitHub の Secrets の EDINET_API_KEY（無料。EDINET で登録する）。ないときは何もせずに終わる
+on:
+  schedule:
+    - cron: "23 19 3 * *"      # 毎月4日 4:23（日本時間）
+  workflow_dispatch:
+    inputs:
+      codes:
+        description: "この銘柄だけ読む（カンマ区切り。空欄で全部）"
+        required: false
+        default: ""
+      max_docs:
+        description: "読む書類の上限（0で上限なし。試しに動かすとき用）"
+        required: false
+        default: "0"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: edinet-policy
+  cancel-in-progress: false
+
+jobs:
+  read:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 書類一覧の控えを復元
+        uses: actions/cache/restore@v4
+        with:
+          path: edinet_cache
+          key: edinet-lists-v1-
+          restore-keys: |
+            edinet-lists-v1-
+
+      - name: 有価証券報告書の配当政策を読む
+        env:
+          EDINET_API_KEY: ${{ secrets.EDINET_API_KEY }}
+          PYTHONUNBUFFERED: "1"
+        run: |
+          set -o pipefail
+          python scripts/edinet_policy.py --selftest
+          python scripts/edinet_policy.py --codes "${{ github.event.inputs.codes }}" --max-docs "${{ github.event.inputs.max_docs || '0' }}" 2>&1 | tee run.log
+          {
+            echo "## 有価証券報告書の配当政策（EDINET）"
+            echo '```'
+            tail -c 20000 run.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 書類一覧の控えを保存
+        if: ${{ always() && hashFiles('edinet_cache/lists/*.json') != '' }}
+        uses: actions/cache/save@v4
+        with:
+          path: edinet_cache
+          key: edinet-lists-v1-${{ github.run_id }}
+
+      - name: 結果を保存する
+        run: |
+          if [ ! -f data/dividend_policy.json ]; then echo "結果のファイルがありません（API キーが未登録の可能性）。"; exit 0; fi
+          git add data/dividend_policy.json
+          if git diff --cached --quiet; then echo "変更なし。"; exit 0; fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "有価証券報告書の配当政策（EDINET）"
+          for i in 1 2 3; do
+            git pull --rebase --autostash origin main && git push && exit 0
+            echo "送信に失敗しました（${i}回目）。少し待って送り直します。"
+            sleep $((i * 5))
+          done
+          echo "3回送り直しても保存できませんでした。"
+          exit 1
