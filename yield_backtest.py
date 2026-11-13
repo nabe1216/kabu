@@ -2215,6 +2215,17 @@ VARIANTS.update({
     "st_never": _lab_rule("E4 減配・業績急変でも売らない", exit_on_cut=False, exit_on_op=False, **_ST_BASE),
     "st_divonly": _lab_rule("E5 減配では売り、業績急変では売らない", exit_on_op=False, **_ST_BASE),
 })
+# ── 減配・業績急変のあと「持ち続ける」条件（2026年11月14日に追加。計画は hold_test_plan_2026-11-14）。土台は st_base ──
+VARIANTS.update({
+    "hd_cut30": _lab_rule("H1 浅い減配（−30％未満）は持つ", emg_sell={"cut_min": 0.30}, **_ST_BASE),
+    "hd_redop": _lab_rule("H2 業績急変は赤字転落のときだけ売る", emg_sell={"op_min": 1.0}, **_ST_BASE),
+    "hd_both": _lab_rule("H3 減配と業績急変が重なったときだけ売る", emg_sell={"both": True}, **_ST_BASE),
+    "hd_yield": _lab_rule("H4 発表後の利回りが3％以上なら持つ", emg_sell={"hold_yield": 3.0}, **_ST_BASE),
+    "hd_tier": _lab_rule("H5 Tier S・A は持つ", emg_sell={"hold_tiers": ["S", "A"]}, **_ST_BASE),
+    "hd_fc": _lab_rule("H6 配当予想が5％以上下がっていなければ持つ", emg_sell={"hold_fc": 0.05}, **_ST_BASE),
+    "hd_half": _lab_rule("H7 半分だけ売り、残りは持つ", emg_frac=0.5, **_ST_BASE),
+    "hd_fcsell": _lab_rule("H8 予想の減配（−10％）の段階で売る", emg_forecast=0.10, **_ST_BASE),
+})
 # （記号, ルール名, 短い名前）
 LAB4_C = (("C1", "lab4_c_div", "「10期減配なし」を外す"), ("C2", "lab4_c_sales", "「売上の安定」を外す"),
           ("C3", "lab4_c_op", "「営業利益の安定」を外す"), ("C4", "lab4_c_np", "「純利益の安定」を外す"),
@@ -5557,6 +5568,15 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
     emg_delay = int(cfg.get("emg_delay", 0) or 0)
     etf_idle = cfg.get("etf_idle")
     fill_mult = float(cfg.get("fill_mult", 0) or 0)
+    # 2026年11月14日（hold_test_plan_2026-11-14）：減配・業績急変の印が立っても、条件に当たれば売らない（売りの側だけ。買わない決まりは変えない）
+    #   emg_sell … {"cut_min": 0.30}  減配で売るのは、実績の年間配当が30％以上減ったときだけ
+    #               {"op_min": 1.0}   業績急変で売るのは、営業利益の変化が −100％以下（赤字転落）のときだけ
+    #               {"both": True}    減配と業績急変が重なったときだけ売る
+    #               {"hold_yield": 3.0} その月末の利回りが3％以上なら持つ ／ {"hold_tiers": ["S", "A"]} その Tier なら持つ
+    #               {"hold_fc": 0.05}  その月末の予想の年間配当が、直近の実績から5％以上下がっていなければ持つ
+    #   emg_frac … 印が立ったとき、この割合だけ売る（100株単位。半分にできないときは全部売る）。残りは持ち続ける
+    emg_sell = cfg.get("emg_sell") or {}
+    emg_frac = float(cfg.get("emg_frac", 1.0) or 1.0)
     # 部分利確。上がったら「一部だけ」売る。
     #   threshold … 何％上がったら売るか（前回売った値段からの上昇率）
     #   fraction  … そのとき何割を売るか
@@ -6291,12 +6311,50 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                     and level(row) < min(entry_for(row)):
                 _emg = True
                 diag["flip_exits"] = diag.get("flip_exits", 0) + 1
+            if emg_sell and _emg and emg_actual and exit_on_cut and st["lots"]:
+                # 2026年11月14日：持つ条件
+                _dcv, _ocv = row.get("div_chg"), row.get("op_chg")
+                if emg_sell.get("both"):
+                    _sell = bool(_cut) and bool(_opd)
+                else:
+                    _c_ok = bool(_cut) and ("cut_min" not in emg_sell
+                                            or (_num(_dcv) and float(_dcv) <= -float(emg_sell["cut_min"])))
+                    _o_ok = bool(exit_on_op) and bool(_opd) and ("op_min" not in emg_sell
+                                                                 or (_num(_ocv) and float(_ocv) <= -float(emg_sell["op_min"])))
+                    _sell = _c_ok or _o_ok
+                if _sell and emg_sell.get("hold_yield") is not None and _num(row.get("yield")) \
+                        and float(row.get("yield")) >= float(emg_sell["hold_yield"]):
+                    _sell = False
+                if _sell and emg_sell.get("hold_tiers") and str(row.get("tier", "B")) in set(emg_sell["hold_tiers"]):
+                    _sell = False
+                if _sell and emg_sell.get("hold_fc") is not None and _num(row.get("fc_chg")) \
+                        and float(row.get("fc_chg")) >= -float(emg_sell["hold_fc"]):
+                    _sell = False
+                if not _sell and not st.get("emg_held"):
+                    st["emg_held"] = True
+                    diag["emg_holds"] = diag.get("emg_holds", 0) + 1
+                _emg = _sell
             if emg_delay > 0 and exit_on_cut and st["lots"]:
                 # 2026年11月14日：印が立った月を覚えておき、emg_delay か月たった月末に売る（印が消えていても売る）
                 if _emg and "emg_since" not in st:
                     st["emg_since"] = mi
                     diag["emg_waits"] = diag.get("emg_waits", 0) + 1
                 _emg = ("emg_since" in st) and (mi - int(st["emg_since"])) >= emg_delay
+            if emg_frac < 1.0 and exit_on_cut and _emg and st["lots"]:
+                # 2026年11月14日：半分だけ売る（1回だけ。残りは持ち続ける）
+                if st.get("emg_half_done"):
+                    _emg = False
+                else:
+                    st["emg_half_done"] = True
+                    _sh_all = sum(s_ for s_, _ in st["lots"])
+                    _lot_h = 100 if tier_budget else 1
+                    _cut_sh = int(_sh_all * emg_frac // _lot_h) * _lot_h
+                    if 0 < _cut_sh < _sh_all:
+                        _sell_shares(code, st, _cut_sh, price, dt)
+                        diag["cut_exits"] = diag.get("cut_exits", 0) + 1
+                        diag["emg_half"] = diag.get("emg_half", 0) + 1
+                        diag.setdefault("cut_exit_dates", []).append((code, pd.Timestamp(dt)))
+                        _emg = False
             if exit_on_cut and _emg and st["lots"]:
                 for sh, pr in st["lots"]:
                     eff = price * (1 - slip) * (1 - fee)
@@ -9164,6 +9222,433 @@ def sell_event_study(store: dict, panel: pd.DataFrame) -> dict:
     print("\n  使い方（先に決めたこと）：E1〜E5 のどれかが「良い」で、B1 の同じくらいの待ち（E1 ≒ 20日・E2 ≒ 60日・E3 ≒ 120日）が"
           "「すぐ売るほうが良い」でなければ、本番の売り方を変える。それ以外はいまのまま（翌営業日に売る）")
     print("  （待つ k 日のあいだに上場をやめた銘柄は、その k から外した。配当は発表の後の予想配当の日割り。出来事は5月・11月などに固まる）")
+    return res
+
+
+# ══════════════════════════════════════════
+# 減配・業績急変のあと「持ち続ける」を細かく調べる（2026年11月14日に追加）
+#   計画はプロジェクトの hold_test_plan_2026-11-14（結果を見る前に決めたもの）
+#   C1 … 出来事ごと（日ごと）。区分ごとに、待つ・元に戻る・売ったあとの下げ・配当が戻るかを出す
+#   C2 … 予想の段階（期中の下方修正）の値動き
+#   C3 … 「持つ条件」をつけた売り方（H1〜H8）を、ポートフォリオ全体で E0 と比べる
+# ══════════════════════════════════════════
+HD_ROWS = (("E0", "st_base", "土台（印の月末に売る）"),
+           ("H1", "hd_cut30", "浅い減配（−30％未満）は持つ"),
+           ("H2", "hd_redop", "業績急変は赤字転落のときだけ売る"),
+           ("H3", "hd_both", "減配と業績急変が重なったときだけ売る"),
+           ("H4", "hd_yield", "発表後の利回りが3％以上なら持つ"),
+           ("H5", "hd_tier", "Tier S・A は持つ"),
+           ("H6", "hd_fc", "配当予想が下がっていなければ持つ"),
+           ("H7", "hd_half", "半分だけ売る"),
+           ("H8", "hd_fcsell", "予想の減配の段階で売る"),
+           ("E4", "st_never", "売らない（参考）"))
+HD_HORIZONS = (0, 5, 20, 60, 120, 250, 500)
+HD_JUDGE_K = 250
+HD_MIN_N = 40
+
+
+def hold_report(gf: pd.DataFrame, cond_cols: list) -> dict:
+    """C3 の結果を出す。戻り値は判定（確かめ用）。"""
+    pl = gf.pivot_table(index=cond_cols, columns="ルール", values="清算後年率")
+    pm = gf.pivot_table(index=cond_cols, columns="ルール", values="評価額年率")
+    print("\n【減配・業績急変のあと「持ち続ける」（C3・ポートフォリオ全体）】（9年分・24条件。基準は結果を見る前に決めたもの。"
+          "計画は hold_test_plan_2026-11-14）")
+    print("  予想 … H1〜H7 はどれも「決められない」か「同じくらい」。H8 は「決められない」")
+    print(f"\n  {'形':<36}{'清算後':>8}{'最悪':>8}{'評価額':>8}{'最大下落':>9}{'配当/年':>9}{'緊急/年':>9}{'持った':>7}{'持ち株':>7}{'売り/年':>8}")
+    for k_, n_, sh_ in HD_ROWS:
+        g_ = gf[gf["ルール"] == VARIANTS[n_]["label"]]
+        if g_.empty:
+            print(f"  {k_} {sh_} … 結果なし")
+            continue
+        yrs_ = g_["期間"].map(lambda sp: max((pd.Timestamp(sp.split("〜")[1]) - pd.Timestamp(sp.split("〜")[0])).days / 365.25, 0.5))
+        emg_ = float((g_["緊急売り"] / yrs_).mean()) if "緊急売り" in g_.columns else float("nan")
+        held_ = float((g_["持った回数"] / yrs_).mean()) if "持った回数" in g_.columns else float("nan")
+        hold_ = float(g_["平均保有銘柄"].mean()) if "平均保有銘柄" in g_.columns else float("nan")
+        div_ = float(g_["受取配当"].mean()) if "受取配当" in g_.columns else float("nan")
+        print(f"  {(k_ + ' ' + sh_):<36}{g_['清算後年率'].mean():>7.1f}％{g_['清算後年率'].min():>7.1f}％{g_['評価額年率'].mean():>7.1f}％"
+              f"{g_['最大下落'].mean():>8.1f}％{div_:>8.2f}％{emg_:>8.2f}回{held_:>6.2f}回"
+              + (f"{hold_:>7.1f}" if hold_ == hold_ else f"{'—':>7}") + f"{g_['売り/年'].mean():>8.1f}")
+    print("  緊急/年 … 減配・業績急変で売った回数（半分売りも1回）。持った … 印が立ったのに、持つ条件に当たって売らなかった銘柄の数（1年あたり）")
+    res = {}
+    print("\n  E0 と比べた結果（24条件。％は上回った条件の割合）")
+    L0 = VARIANTS["st_base"]["label"]
+    for k_, n_, sh_ in HD_ROWS[1:]:
+        L_ = VARIANTS[n_]["label"]
+        if L_ not in pl.columns or L0 not in pl.columns:
+            print(f"    {k_} … 結果なし")
+            continue
+        d_ = (pl[L_] - pl[L0]).dropna()
+        dm_ = (pm[L_] - pm[L0]).dropna()
+        cat_ = flat_judge(d_, dm_, pl[L0], pl[L_], pm[L0], pm[L_])
+        res[k_] = cat_
+        print(f"    {k_} {sh_} … 平均 {d_.mean():+.2f}pt ／ いちばん悪い差 {d_.min():+.2f}pt ／ 上回った {float((d_ > 0).mean()) * 100:.0f}％"
+              f"（{len(d_)}条件） ／ 評価額 平均 {dm_.mean():+.2f}pt・上回った {float((dm_ > 0).mean()) * 100:.0f}％ → {cat_}")
+    goods = [k for k, _, _ in HD_ROWS[1:9] if res.get(k) == "良い"]
+    sames = [k for k, _, _ in HD_ROWS[1:9] if res.get(k) == "同じくらい"]
+    print("\n  使い方（先に決めたこと）")
+    print("    「良い」 … " + ("・".join(goods) + " → 本番の売り方を変える（平均の差が大きい方）" if goods else "なし → 本番はいまのまま"))
+    print("    「同じくらい」 … " + ("・".join(sames) + " → 本番はいまのまま。手で塩漬けにするなら、この条件なら損はほぼない" if sames else "なし"))
+    print("  （9年分は1つの期間しかなく、ルールを決めてきた期間でもある。検証は月末にしか売買しないので、売りは発表から平均で半月ほど遅い）")
+    return res
+
+
+def _hd_ctx(store: dict, panel: pd.DataFrame) -> dict | None:
+    etf = _rev_px((store.get("etf_quotes") or {}).get("1306") or [])
+    if etf.empty:
+        return None
+    pn = panel.copy()
+    pn["date"] = pd.to_datetime(pn["date"])
+    for c_ in ("div_cut10", "op_cut20", "fc_chg"):
+        if c_ not in pn.columns:
+            pn[c_] = np.nan
+    return {"cal": etf["date"].to_numpy(dtype="datetime64[ns]"), "EO": etf["open"].to_numpy(dtype=float),
+            "EC": etf["close"].to_numpy(dtype=float),
+            "dist": [(np.datetime64(pd.Timestamp(d_)), float(a_) / 100.0) for d_, a_ in ETF_DIST.get("1306", ())],
+            "pn": pn, "pdates": np.array(sorted(pn["date"].unique()), dtype="datetime64[ns]"),
+            "pidx": pn.set_index(["code", "date"]).sort_index()}
+
+
+def _hd_row(ctx, code, d64):
+    pidx = ctx["pidx"]
+    key = (code, pd.Timestamp(d64))
+    if key not in pidx.index:
+        return None
+    r = pidx.loc[key]
+    return r.iloc[0] if isinstance(r, pd.DataFrame) else r
+
+
+def hold_events_actual(store: dict, ctx: dict) -> list:
+    """C1 の出来事：通期の決算短信で、減配（div_cut10）か業績急変（op_cut20）が初めて立った開示。配当が戻ったかもここで見る。"""
+    pn = ctx["pn"]
+    codes = pn.loc[(pd.to_numeric(pn["div_cut10"], errors="coerce") > 0.5)
+                   | (pd.to_numeric(pn["op_cut20"], errors="coerce") > 0.5), "code"].unique()
+    out = []
+    for code in codes:
+        stm = store.get("stmts", {}).get(code, []) or []
+        qd = quotes_to_df(store.get("quotes", {}).get(code, []))
+        if qd.empty or not stm:
+            continue
+        ft = fund_timeline(stm, qd)
+        if ft.empty or "div_cut10" not in ft.columns:
+            continue
+        ft = ft.sort_values("date").reset_index(drop=True)
+        data_end = pd.Timestamp(qd["date"].max())
+        tmap = {}
+        for s_ in stm:
+            if s_.get("CurPerType") in ("FY", "4Q"):
+                d_ = pdate(s_.get("DiscDate"))
+                if d_ is not None and s_.get("DiscTime"):
+                    tmap.setdefault(str(pd.Timestamp(d_).date()), s_.get("DiscTime"))
+        seen = set()
+        for i, r in ft.iterrows():
+            dc = _st_num(r.get("div_cut10"), 0.0) > 0.5
+            oc = _st_num(r.get("op_cut20"), 0.0) > 0.5
+            fy = str(r.get("fy") or "")
+            if not (dc or oc) or (fy and fy in seen):
+                continue
+            if fy:
+                seen.add(fy)
+            E = pd.Timestamp(r["date"]).normalize()
+            rec2 = rec3 = float("nan")
+            if dc:
+                prev = float("nan")
+                for j in range(i - 1, -1, -1):
+                    fj = str(ft.at[j, "fy"] or "")
+                    if fj and fy and fj < fy and _st_num(ft.at[j, "divann"], 0.0) > 0:
+                        prev = float(ft.at[j, "divann"])
+                        break
+                if prev == prev:
+                    later = ft[(ft["date"] > r["date"])]
+                    for yrs_, nm_ in ((2, "r2"), (3, "r3")):
+                        lim = E + pd.Timedelta(days=int(365.25 * yrs_))
+                        hit = bool(((later["date"] <= lim) & (pd.to_numeric(later["divann"], errors="coerce") >= prev * 0.995)).any())
+                        v_ = 1.0 if hit else (float("nan") if lim > data_end else 0.0)
+                        if nm_ == "r2":
+                            rec2 = v_
+                        else:
+                            rec3 = v_
+            out.append({"code": code, "E": E, "time": tmap.get(str(E.date())),
+                        "種類": "両方" if (dc and oc) else ("減配だけ" if dc else "業績急変だけ"),
+                        "div_chg": _st_num(r.get("div_chg")), "op_chg": _st_num(r.get("op_chg")),
+                        "配当戻2": rec2, "配当戻3": rec3, "fc_ok": None})
+    return out
+
+
+def hold_events_forecast(store: dict, ctx: dict) -> list:
+    """C2 の出来事：決算短信（四半期を含む）で、予想の年間配当が直近の実績より10％以上低いか、
+    予想の営業利益が直近の実績より20％以上低い、が初めて出た開示（同じ期は最初の1回だけ）。"""
+    out = []
+    in_uni = set(ctx["pn"]["code"].unique())
+    for code in in_uni:
+        stm = store.get("stmts", {}).get(code, []) or []
+        qd = quotes_to_df(store.get("quotes", {}).get(code, []))
+        if qd.empty or not stm:
+            continue
+        ev = _div_events(qd)
+        order = sorted(stm, key=lambda s_: (str(pdate(s_.get("DiscDate")) or ""), str(s_.get("DiscTime") or "")))
+        last_div = last_op = None
+        seen = set()
+        for s_ in order:
+            d_ = pdate(s_.get("DiscDate"))
+            if d_ is None:
+                continue
+            fac = _fac_from(ev, d_)
+            per = s_.get("CurPerType", "")
+            if per in ("FY", "4Q"):
+                a_ = fnum(s_.get("DivAnn"))
+                if a_ is not None and a_ > 0:
+                    last_div = a_ * fac
+                o_ = next((fnum(s_.get(k)) for k in ("OP", "OpPrf", "OpProfit", "OperatingProfit") if fnum(s_.get(k)) is not None), None)
+                if o_ is not None:
+                    last_op = o_
+                fd, fo = fnum(s_.get("NxFDivAnn")), fnum(s_.get("NxFOP"))
+                tgt = str(s_.get("NxtFYEn") or "")[:10] or ("nx" + str(s_.get("CurPerEn") or "")[:10])
+            else:
+                fd, fo = fnum(s_.get("FDivAnn")), fnum(s_.get("FOP"))
+                tgt = str(s_.get("CurFYEn") or "")[:10]
+            dcut = fd is not None and fd > 0 and last_div is not None and fd * fac <= 0.9 * last_div
+            ocut = fo is not None and last_op is not None and last_op > 0 and fo <= 0.8 * last_op
+            nd = dcut and (tgt, "d") not in seen
+            no = ocut and (tgt, "o") not in seen
+            if dcut:
+                seen.add((tgt, "d"))
+            if ocut:
+                seen.add((tgt, "o"))
+            if not (nd or no):
+                continue
+            E = pd.Timestamp(d_).normalize()
+            out.append({"code": code, "E": E, "time": s_.get("DiscTime"),
+                        "種類": "予想の両方" if (nd and no) else ("予想の減配" if nd else "予想の大幅減益"),
+                        "div_chg": (fd * fac / last_div - 1.0) if (nd and last_div) else float("nan"),
+                        "op_chg": (fo / last_op - 1.0) if (no and last_op) else float("nan"),
+                        "配当戻2": float("nan"), "配当戻3": float("nan"), "fc_ok": True})
+    return out
+
+
+def hold_measure(store: dict, ctx: dict, events: list, tax: float = 0.20315) -> pd.DataFrame:
+    """出来事ごとの値動き。値は％（1306 との差は pt）。"""
+    cal, EO, EC, dist = ctx["cal"], ctx["EO"], ctx["EC"], ctx["dist"]
+    pdates = ctx["pdates"]
+
+    def e_at(d):
+        i = int(np.searchsorted(cal, d, side="right")) - 1
+        return i if i >= 0 else None
+
+    def e_dist(i0, i1):
+        return sum(a for d, a in dist if cal[i0] < d <= cal[i1])
+
+    pxc = {}
+    rows = []
+    for e in events:
+        code, E = e["code"], e["E"]
+        e64 = np.datetime64(E)
+        j = int(np.searchsorted(pdates, e64, side="left")) - 1
+        if j < 0:
+            continue
+        pr = _hd_row(ctx, code, pdates[j])
+        if pr is None:
+            continue
+        if "in_uni_live" in pr.index and not _st_truthy(pr.get("in_uni_live")):
+            continue
+        if not (_st_num(pr.get("yield"), 0.0) >= 3.0):
+            continue
+        if _st_num(pr.get("div_cut10"), 0.0) > 0.5 or _st_num(pr.get("op_cut20"), 0.0) > 0.5:
+            continue
+        if e.get("fc_ok") and _st_num(pr.get("fc_chg"), 0.0) <= -0.10:
+            continue        # C2：すでに予想の減配が出ていた銘柄は外す
+        if code not in pxc:
+            pxc = {code: _rev_px(store.get("quotes", {}).get(code, []))}
+        px = pxc[code]
+        if px.empty:
+            continue
+        sd = px["date"].to_numpy(dtype="datetime64[ns]")
+        SO, SC = px["open"].to_numpy(dtype=float), px["close"].to_numpy(dtype=float)
+        iE = int(np.searchsorted(sd, e64, side="left"))
+        if iE >= len(sd) or iE < 1:
+            continue
+        tm = _st_minutes(e.get("time"))
+        if sd[iE] == e64:
+            intraday = tm is not None and tm < _st_close_min(E)
+            ipre, i1 = (iE - 1 if intraday else iE), iE + 1
+        else:
+            intraday, ipre, i1 = False, iE - 1, iE
+        if i1 >= len(sd) or (pd.Timestamp(sd[i1]) - E).days > 10:
+            continue
+        B, P = SO[i1], SC[ipre]
+        if not (B == B and B > 0 and P == P and P > 0):
+            continue
+        ep, e1 = e_at(sd[ipre]), e_at(sd[i1])
+        if ep is None or e1 is None or not (EO[e1] > 0 and EC[ep] > 0):
+            continue
+        jn = int(np.searchsorted(pdates, e64, side="left"))
+        y_post, fc_post = 0.0, float("nan")
+        if jn < len(pdates):
+            pr2 = _hd_row(ctx, code, pdates[jn])
+            if pr2 is not None:
+                y_post = max(0.0, _st_num(pr2.get("yield"), 0.0))
+                fc_post = _st_num(pr2.get("fc_chg")) * 100.0
+        tier = str(pr.get("tier_live_pit") if "tier_live_pit" in pr.index else pr.get("tier", "B"))
+        pre250 = float("nan")
+        if ipre >= 245 and SC[ipre - 245] > 0:
+            e2 = e_at(sd[ipre - 245])
+            if e2 is not None and EC[e2] > 0:
+                pre250 = (P / SC[ipre - 245] - 1.0) * 100.0 - (EC[ep] / EC[e2] - 1.0) * 100.0
+        rec = {"code": code, "開示日": E.date(), "売る日": pd.Timestamp(sd[i1]).date(),
+               "月": pd.Timestamp(sd[i1]).strftime("%Y-%m"), "種類": e["種類"], "ザラ場中": intraday,
+               "候補": _st_truthy(pr.get("screen_pass")), "Tier": tier,
+               "最初の下げ_差": (B / P - 1.0) * 100.0 - (EO[e1] / EC[ep] - 1.0) * 100.0,
+               "前250日_差": pre250, "利回り後": y_post, "予想後": fc_post,
+               "減配率": e["div_chg"] * 100.0, "営業利益の変化": e["op_chg"] * 100.0,
+               "配当戻2": e["配当戻2"], "配当戻3": e["配当戻3"]}
+        for k in HD_HORIZONS:
+            ik = i1 + k
+            val = float("nan")
+            if ik < len(sd) and SC[ik] == SC[ik] and SC[ik] > 0:
+                ek = e_at(sd[ik])
+                if ek is not None and ek >= e1 and EC[ek] > 0:
+                    stock = (SC[ik] / B - 1.0) * 100.0 + y_post * (k + 1) / 245.0 * (1.0 - tax)
+                    val = stock - ((EC[ek] + e_dist(e1, ek)) / EO[e1] - 1.0) * 100.0
+            rec[f"待つ{k}"] = val
+        # 元に戻ったか（発表前の最後の終値まで。待つあいだの配当込み）・売ったあとの最大の下げ
+        for N in (250, 500):
+            hi = min(len(sd) - 1, i1 + N)
+            seg = SC[i1:hi + 1]
+            acc = B * y_post / 100.0 * (np.arange(len(seg)) + 1) / 245.0 * (1.0 - tax)
+            hit = bool(np.nanmax(seg + acc) >= P) if len(seg) else False
+            rec[f"戻った{N}"] = 1.0 if hit else (float("nan") if i1 + N >= len(sd) else 0.0)
+        seg = SC[i1:min(len(sd), i1 + 251)]
+        rec["最大の下げ250"] = float((np.nanmin(seg) / B - 1.0) * 100.0) if len(seg) else float("nan")
+        rows.append(rec)
+    return pd.DataFrame(rows)
+
+
+def hold_bucket_judge(g: pd.DataFrame, col: str, split) -> tuple:
+    """区分の判定（250日）。(判定, 平均, 下限, 上限, 前半, 後半)"""
+    g = g[g[col].notna()]
+    n = len(g)
+    if n == 0:
+        return "—", float("nan"), float("nan"), float("nan"), float("nan"), float("nan")
+    m = float(g[col].mean())
+    lo, hi = _st_boot(g[col].to_numpy(), g["月"].to_numpy())
+    h1 = float(g[g["開示日"] <= split][col].mean()) if (g["開示日"] <= split).any() else float("nan")
+    h2 = float(g[g["開示日"] > split][col].mean()) if (g["開示日"] > split).any() else float("nan")
+    if n < HD_MIN_N or any(x != x for x in (lo, hi, h1, h2)):
+        return f"決められない（{n}件）" if n < HD_MIN_N else "決められない", m, lo, hi, h1, h2
+    if m >= 2.0 and lo > 0 and h1 > 0 and h2 > 0:
+        return "持ってよい", m, lo, hi, h1, h2
+    if m <= -2.0 and hi < 0 and h1 < 0 and h2 < 0:
+        return "早く売るべき", m, lo, hi, h1, h2
+    return "決められない", m, lo, hi, h1, h2
+
+
+def _hd_buckets(ev: pd.DataFrame) -> list:
+    """（分け方, 区分, 行の印）。境目は計画のとおり。"""
+    out = [("全体", "全体", pd.Series(True, index=ev.index))]
+    for t_ in ("減配だけ", "業績急変だけ", "両方"):
+        out.append(("種類", t_, ev["種類"] == t_))
+    dc = ev["減配率"]
+    out += [("減配の深さ", "−10〜−30％", (dc <= -10) & (dc > -30)),
+            ("減配の深さ", "−30％超（無配を除く）", (dc <= -30) & (dc > -99.5)),
+            ("減配の深さ", "無配", dc <= -99.5)]
+    oc = ev["営業利益の変化"]
+    out += [("営業利益", "−20〜−50％", (oc <= -20) & (oc > -50)),
+            ("営業利益", "−50％超（赤字を除く）", (oc <= -50) & (oc > -100)),
+            ("営業利益", "赤字転落", oc <= -100)]
+    yp = ev["利回り後"]
+    out += [("発表後の利回り", "3％未満", yp < 3), ("発表後の利回り", "3〜4.5％", (yp >= 3) & (yp < 4.5)),
+            ("発表後の利回り", "4.5％以上", yp >= 4.5)]
+    fp = ev["予想後"]
+    out += [("発表後の配当予想", "増配予想（+5％超）", fp > 5), ("発表後の配当予想", "同じくらい（±5％）", (fp >= -5) & (fp <= 5)),
+            ("発表後の配当予想", "さらに減配（−5％未満）", fp < -5)]
+    pre = ev["前250日_差"]
+    if pre.notna().sum() >= 3:
+        q1, q2 = pre.quantile(1 / 3), pre.quantile(2 / 3)
+        out += [("発表前1年の値動き", f"下から3分の1（{q1:+.0f}pt以下）", pre <= q1),
+                ("発表前1年の値動き", "真ん中", (pre > q1) & (pre <= q2)),
+                ("発表前1年の値動き", f"上3分の1（{q2:+.0f}pt超）", pre > q2)]
+    out += [("Tier", "S・A", ev["Tier"].isin(["S", "A"])), ("Tier", "B", ~ev["Tier"].isin(["S", "A"]))]
+    return out
+
+
+def hold_event_study(store: dict, panel: pd.DataFrame) -> dict:
+    """C1・C2 の結果を出す。戻り値は区分ごとの判定（確かめ用）。"""
+    print("\n【減配・業績急変のあと「持ち続ける」（C1・出来事ごと）】（計画は hold_test_plan_2026-11-14。基準は結果を見る前に決めたもの）")
+    print("  予想 … 全体では待つと平均マイナス。浅い減配・利回りが高い・Tier S・A は差が小さいが「持ってよい」には届かない。"
+          "赤字転落・さらに減配の予想は「早く売るべき」に近い。1年で元に戻る割合は4割前後")
+    ctx = _hd_ctx(store, panel)
+    if ctx is None:
+        print("  1306 の株価がないので出せません")
+        return {}
+    ev = hold_measure(store, ctx, hold_events_actual(store, ctx))
+    if ev.empty:
+        print("  出来事が見つかりませんでした")
+        return {}
+    try:
+        ev.to_csv(OUTDIR / "hold_events.csv", index=False, encoding="utf-8-sig")
+    except Exception as e_:
+        log.warning("出来事の一覧を書き出せませんでした: %s", e_)
+    split = pd.Timestamp(ST_SPLIT).date()
+    print(f"  出来事 … 主 {len(ev)}件（うち8条件も通っていた候補 {int(ev['候補'].sum())}件） ／ {ev['開示日'].min()}〜{ev['開示日'].max()}")
+    print("  値は「翌営業日の寄り付きで売る」と比べて、k 営業日持ち続けたときの差（1306 との差・配当込み。プラスなら持つほうが良かった）")
+    print(f"\n  {'分け方':<12}{'区分':<24}{'件数':>5}{'20日':>7}{'60日':>7}{'120日':>7}{'250日':>7}{'500日':>7}{'250中央':>8}{'プラス':>7}"
+          f"{'戻1年':>7}{'戻2年':>7}{'下げ':>7}{'配当戻3年':>9}  250日の判定［95％の幅・前半・後半］")
+    res = {}
+    for grp, lab, mask in _hd_buckets(ev):
+        g = ev[mask.fillna(False)]
+        if g.empty:
+            print(f"  {grp:<12}{lab:<24}{0:>5}")
+            continue
+        jd, m, lo, hi, h1, h2 = hold_bucket_judge(g, f"待つ{HD_JUDGE_K}", split)
+        res[(grp, lab)] = jd
+        means = [float(g[f"待つ{k}"].mean()) for k in (20, 60, 120, 250, 500)]
+        c250 = g["待つ250"].dropna()
+        r1, r2 = g["戻った250"].dropna(), g["戻った500"].dropna()
+        dr3 = g["配当戻3"].dropna()
+        print(f"  {grp:<12}{lab:<24}{len(g):>5}" + "".join(f"{x:>+7.1f}" for x in means)
+              + f"{(float(c250.median()) if len(c250) else float('nan')):>+8.1f}{(float((c250 > 0).mean()) * 100 if len(c250) else float('nan')):>6.0f}％"
+              + f"{(float(r1.mean()) * 100 if len(r1) else float('nan')):>6.0f}％{(float(r2.mean()) * 100 if len(r2) else float('nan')):>6.0f}％"
+              + f"{float(g['最大の下げ250'].median()):>+7.1f}{(format(float(dr3.mean()) * 100, '.0f') + '％（' + str(len(dr3)) + '）' if len(dr3) else '—'):>9}"
+              + f"  {jd}［{lo:+.1f}, {hi:+.1f}・{h1:+.1f}・{h2:+.1f}］")
+    print("  戻1年・戻2年 … 発表前の最後の終値まで（配当込み）、250日・500日以内に戻った割合 ／ 下げ … 寄り付きから250日のあいだの最大の下げ（中央値・％）"
+          " ／ 配当戻3年 … 減配した会社が3年以内に減配前の年間配当まで戻した割合（件数）")
+    print(f"  判定は250日（件数{HD_MIN_N}以上・平均 ±2.0pt・幅・前半後半）。区分は約20あるので、偶然の「持ってよい」もありうる。本番を変えるのは C3 の「良い」だけ")
+    goods = [f"{g}：{l}" for (g, l), j in res.items() if j == "持ってよい"]
+    bads = [f"{g}：{l}" for (g, l), j in res.items() if j == "早く売るべき"]
+    print("  持ってよい … " + ("・".join(goods) if goods else "なし") + " ／ 早く売るべき … " + ("・".join(bads) if bads else "なし"))
+
+    # ── C2：予想の段階 ──
+    print("\n【予想の段階（期中の下方修正）の値動き（C2）】")
+    print("  予想 … 予想の段階の最初の下げは、通期の結果のときより大きい（平均 −2〜−4pt）")
+    fv = hold_measure(store, ctx, hold_events_forecast(store, ctx))
+    if fv.empty:
+        print("  出来事が見つかりませんでした")
+        return res
+    try:
+        fv.to_csv(OUTDIR / "hold_forecast_events.csv", index=False, encoding="utf-8-sig")
+    except Exception as e_:
+        log.warning("予想の出来事の一覧を書き出せませんでした: %s", e_)
+    print(f"  出来事 … {len(fv)}件（うち候補 {int(fv['候補'].sum())}件） ／ " + " ／ ".join(f"{k} {v}件" for k, v in fv["種類"].value_counts().items()))
+    for t_, g in [("全体", fv)] + list(fv.groupby("種類")):
+        print(f"    {t_}（{len(g)}件） … 最初の下げ（1306 との差）平均 {g['最初の下げ_差'].mean():+.1f}pt・中央 {g['最初の下げ_差'].median():+.1f}pt・"
+              f"−5％より大きく下げた {float((g['最初の下げ_差'] <= -5).mean()) * 100:.0f}％ ／ 持ち続けたら "
+              + " ／ ".join(f"{k}日 {g[f'待つ{k}'].mean():+.1f}" for k in (20, 60, 120, 250)))
+    print(f"\n    {'待つ日数':<8}{'件数':>6}{'平均':>8}{'中央':>8}{'95％の幅':>18}{'前半':>8}{'後半':>8}{'確かめ':>8}  判定")
+    for k in (20, 60, 120):
+        col = f"待つ{k}"
+        g = fv[fv[col].notna()]
+        if g.empty:
+            continue
+        m = float(g[col].mean())
+        lo, hi = _st_boot(g[col].to_numpy(), g["月"].to_numpy())
+        h1 = float(g[g["開示日"] <= split][col].mean()) if (g["開示日"] <= split).any() else float("nan")
+        h2 = float(g[g["開示日"] > split][col].mean()) if (g["開示日"] > split).any() else float("nan")
+        gs = g[g["候補"]]
+        ms = float(gs[col].mean()) if not gs.empty else float("nan")
+        jd = sell_event_judge(m, lo, hi, h1, h2, ms)
+        res[("予想", k)] = jd
+        print(f"    {k:>4}日{len(g):>8}{m:>+8.1f}{float(g[col].median()):>+8.1f}{('[' + format(lo, '+.1f') + ', ' + format(hi, '+.1f') + ']'):>18}"
+              f"{h1:>+8.1f}{h2:>+8.1f}{ms:>+8.1f}  {jd}")
+    print("  （予想の減配には、前の年の記念配当・特別配当がなくなっただけのものも混じる）")
     return res
 
 
@@ -16067,6 +16552,11 @@ def main() -> int:
     if (args.only or "").strip() == "sell_test":
         args.sell_test, args.liq_metric, args.grid = True, True, True
         args.only = "st_base,st_etf,st_fill,st_d1,st_d3,st_d6,st_never,st_divonly"
+    # 減配・業績急変のあと「持ち続ける」（2026年11月14日に追加。計画は hold_test_plan_2026-11-14）
+    args.hold_test = False
+    if (args.only or "").strip() == "hold_test":
+        args.hold_test, args.liq_metric, args.grid = True, True, True
+        args.only = "st_base,hd_cut30,hd_redop,hd_both,hd_yield,hd_tier,hd_fc,hd_half,hd_fcsell,st_never"
     args.near_test = False
     if (args.only or "").strip() == "near_test":
         args.near_test, args.liq_metric, args.grid = True, True, True
@@ -16208,7 +16698,7 @@ def main() -> int:
     if getattr(args, "etf_test", False) or getattr(args, "luck_test", False) or getattr(args, "near_test", False) \
             or getattr(args, "sector_test", False) or getattr(args, "long_any", False) \
             or getattr(args, "rev_lab1", False) or getattr(args, "rev_lab2", False) or getattr(args, "st_lab1", False) \
-            or getattr(args, "sell_test", False):
+            or getattr(args, "sell_test", False) or getattr(args, "hold_test", False):
         _eq = store.setdefault("etf_quotes", {})
         key = os.environ.get("J_QUANTS_API_KEY")
         if key:
@@ -16245,7 +16735,7 @@ def main() -> int:
     _need_scale = (getattr(args, "live_check", False) or getattr(args, "rot_live", False)
                    or getattr(args, "cap_test", False) or getattr(args, "etf_test", False)
                    or getattr(args, "luck_test", False) or getattr(args, "near_test", False)
-                   or getattr(args, "flat_test", False) or getattr(args, "sell_test", False)
+                   or getattr(args, "flat_test", False) or getattr(args, "sell_test", False) or getattr(args, "hold_test", False)
                    or getattr(args, "sector_test", False)
                    or getattr(args, "long_any", False)
                    or getattr(args, "rev_lab1", False) or getattr(args, "rev_lab2", False) or getattr(args, "st_lab1", False))
@@ -18173,6 +18663,8 @@ def main() -> int:
                                              if len(d_.get("etf_share", [])) > 12 else float("nan")),
                                 "全額の買い増し": d_.get("fills", 0),
                                 "待った回数": d_.get("emg_waits", 0),
+                                "持った回数": d_.get("emg_holds", 0),
+                                "半分売り": d_.get("emg_half", 0),
                                 "売買のあった月": _m_act})
                             if ((a, b) == (d0_, d1_) and rp == min(ramps) and lb_ == lbs_[0]
                                     and mx_ == mxs_[0] and my == mys[0]):
@@ -18288,7 +18780,7 @@ def main() -> int:
                    or getattr(args, "live_check", False) or getattr(args, "rot_live", False)
                    or getattr(args, "cap_test", False) or getattr(args, "etf_test", False)
                    or getattr(args, "luck_test", False) or getattr(args, "near_test", False)
-                   or getattr(args, "flat_test", False) or getattr(args, "sell_test", False)
+                   or getattr(args, "flat_test", False) or getattr(args, "sell_test", False) or getattr(args, "hold_test", False)
                    or getattr(args, "sector_test", False)
                    or getattr(args, "long_any", False))
         _l10 = bool(getattr(args, "line_test", False))
@@ -18297,7 +18789,7 @@ def main() -> int:
                      or getattr(args, "live_check", False) or getattr(args, "rot_live", False)
                      or getattr(args, "cap_test", False) or getattr(args, "etf_test", False)
                      or getattr(args, "luck_test", False) or getattr(args, "near_test", False)
-                     or getattr(args, "flat_test", False) or getattr(args, "sell_test", False)
+                     or getattr(args, "flat_test", False) or getattr(args, "sell_test", False) or getattr(args, "hold_test", False)
                      or getattr(args, "sector_test", False)
                      or getattr(args, "long_any", False)):
             print("　 年率は「最後の月末に全部売って、約定のずれと税を払った後」（清算後）で出しています。\n")
@@ -18313,7 +18805,7 @@ def main() -> int:
                 or getattr(args, "live_check", False) or getattr(args, "rot_live", False)
                 or getattr(args, "cap_test", False) or getattr(args, "etf_test", False)
                 or getattr(args, "luck_test", False) or getattr(args, "near_test", False)
-                or getattr(args, "flat_test", False) or getattr(args, "sell_test", False)
+                or getattr(args, "flat_test", False) or getattr(args, "sell_test", False) or getattr(args, "hold_test", False)
                 or getattr(args, "sector_test", False)
                 or getattr(args, "long_any", False)):
             # ── 1. 基準に勝った割合 ──
@@ -20077,6 +20569,14 @@ def main() -> int:
                 sell_event_study(store, panel)
             except Exception as e_:
                 log.exception("発表の前後の値動き（B1）を出せませんでした: %s", e_)
+
+        # ── 減配・業績急変のあと「持ち続ける」（2026年11月14日に追加。計画は hold_test_plan_2026-11-14）──
+        if getattr(args, "hold_test", False) and nm and nm[0] == "st_base":
+            hold_report(gf, cond_cols)
+            try:
+                hold_event_study(store, panel)
+            except Exception as e_:
+                log.exception("出来事ごとの検証（C1・C2）を出せませんでした: %s", e_)
 
         # ── 21回目：近い設定でも同じくらい出るか（2026年10月17日に追加。基準は結果を見る前に決めたもの。年率は清算後）──
         #   いまの本番から1つずつずらす：PBRの範囲（安い側20％ → 10％・30％）、利回りの足切り（3％ → 3.5％・4％）、
