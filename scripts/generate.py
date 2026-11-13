@@ -230,7 +230,24 @@ PROGRESSIVE_DECLARED: set[str] = {
     '3382',  # セブン&アイ・ホールディングス
 }
 
-PROGRESSIVE_DIVIDEND_LIST: set[str] = NIKKEI_PROGRESSIVE_30 | PROGRESSIVE_DECLARED
+# ③ 有価証券報告書の【配当政策】に「減配しない」と書いている会社（2026年11月13日に追加）
+#   scripts/edinet_policy.py が EDINET（金融庁）から毎月読み取り、data/dividend_policy.json に出す。中小型も拾える
+#   - 「今期だけ」の約束（例：キヤノンの「2026年12月期は下げない」）は入れない
+#   - ③は Tier（配当を守る会社）にだけ使い、減配の条件の免除には使わない（免除をどうするかは未決のため。
+#     ①②の免除は、これまでどおり）
+def _load_edinet_policy() -> tuple[set[str], dict]:
+    try:
+        js = json.loads((Path(__file__).parent.parent / 'data' / 'dividend_policy.json').read_text(encoding='utf-8'))
+    except Exception:
+        return set(), {}
+    codes = {c for c, v in (js.get('companies') or {}).items()
+             if v.get('progressive') and '今期だけ' not in (v.get('flags') or [])}
+    return codes, js
+
+
+EDINET_DECLARED, EDINET_POLICY = _load_edinet_policy()
+
+PROGRESSIVE_DIVIDEND_LIST: set[str] = NIKKEI_PROGRESSIVE_30 | PROGRESSIVE_DECLARED | EDINET_DECLARED
 
 # DOE採用銘柄（2026年11月13日に空にした）
 # DOE は「純資産に対して何％を配当に回すか」の目安で、「減配しない」約束ではない。DOE を掲げる会社は600社ほどあり、
@@ -238,7 +255,7 @@ PROGRESSIVE_DIVIDEND_LIST: set[str] = NIKKEI_PROGRESSIVE_30 | PROGRESSIVE_DECLAR
 DOE_LIST: set[str] = set()
 
 # 「減配ゼロ判定 + 最低利回り」免除リスト
-DIVIDEND_CHECK_EXEMPT: set[str] = PROGRESSIVE_DIVIDEND_LIST | DOE_LIST
+DIVIDEND_CHECK_EXEMPT: set[str] = NIKKEI_PROGRESSIVE_30 | PROGRESSIVE_DECLARED | DOE_LIST   # ③は入れない
 
 # 自己資本比率チェック免除セクター（金融4業種+不動産業）
 EQUITY_RATIO_EXEMPT_SECTORS: set[str] = {
@@ -2126,6 +2143,14 @@ def main() -> int:
         s['tier_weight'] = weight
         s['is_industry_leader'] = is_leader
         s['is_progressive_or_doe'] = is_qual
+        # どこで「配当を守る会社」と判定したか（画面の詳細に出す）
+        _c4 = str(code)[:4]
+        _ep = (EDINET_POLICY.get('companies') or {}).get(_c4) or {}
+        _src = [n for n, ok in (('日経累進高配当株指数', _c4 in NIKKEI_PROGRESSIVE_30),
+                                ('会社の資料で確認', _c4 in PROGRESSIVE_DECLARED),
+                                ('有価証券報告書', _c4 in EDINET_DECLARED)) if ok]
+        s['div_policy'] = ({'src': _src, 'phrase': _ep.get('phrase'), 'flags': _ep.get('flags') or [],
+                            'snippet': _ep.get('snippet'), 'submitted': _ep.get('submitted')} if _src else None)
         # screening_pass の中だけで Tier 集計 (実際にBUY候補となるもの)
         if s.get('screening_pass'):
             tier_counts[tier] += 1
@@ -2165,7 +2190,8 @@ def main() -> int:
         'processed_count': len(stocks),
         'failure_count': failures,
         'thresholds': {
-            'min_yield': MIN_YIELD_THRESHOLD, 'buy_mode': BUY_MODE, 'dividend_policy_checked': DIVIDEND_POLICY_CHECKED,
+            'min_yield': MIN_YIELD_THRESHOLD, 'buy_mode': BUY_MODE, 'dividend_policy_checked': DIVIDEND_POLICY_CHECKED, 'edinet_policy_checked': EDINET_POLICY.get('checked_at'),
+            'edinet_policy_count': len(EDINET_DECLARED),
             'graham': GRAHAM_THRESHOLD,
             'payout_max': PAYOUT_RATIO_MAX,
             'equity_min': EQUITY_RATIO_MIN,

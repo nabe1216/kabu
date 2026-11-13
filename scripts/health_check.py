@@ -133,6 +133,18 @@ def run(prev_path: str | None = None, today: date | None = None) -> dict[str, An
         except ValueError:
             pass
 
+    # 1c. 有価証券報告書の配当方針（scripts/edinet_policy.py・毎月）の古さ（2026年11月13日に追加）
+    ep_raw = (res.get('thresholds') or {}).get('edinet_policy_checked')
+    checks['edinet_policy_checked'] = ep_raw
+    if ep_raw:
+        try:
+            age = (today - date.fromisoformat(ep_raw[:10])).days
+            if age > 45:
+                warn('edinet_stale', f'有価証券報告書の配当方針の読み取り（毎月）が {ep_raw} から止まっている（{age}日前）。'
+                     'Actions の edinet-policy と EDINET の API キーを確かめる')
+        except ValueError:
+            pass
+
     # 2. 前回との比べ（減配の緊急の急な増え方）
     prev = _prev_results(prev_path)
     if prev:
