@@ -9775,6 +9775,76 @@ def hold2_report(gf: pd.DataFrame, cond_cols: list) -> dict:
     res["pick"] = pick
     return res
 
+LH_ROWS = (("K1", "hd_cut30", "浅い減配（−30％未満）は持つ"), ("K4", "k4_y_safe", "利回り3％以上なら持つ＋赤字転落・無配は必ず売る"),
+           ("E4", "st_never", "売らない（参考）"))
+
+
+def long_hold_report(gf: pd.DataFrame, cond_cols: list, spans) -> dict:
+    """20年分で K1・K4 を確かめる（2026年11月14日。計画は long_hold_plan_2026-11-14）。判定は一度も見ていない期間の窓だけ。"""
+    os_, rs_ = spans
+    L0 = VARIANTS["st_base"]["label"]
+    print("\n【20年分で「多少の差なら塩漬け」を確かめる】（基準は結果を見る前に決めたもの。計画は long_hold_plan_2026-11-14）")
+    print("  判定は、一度も見ていない期間（〜2018年7月）の窓だけで出す。最近の窓は参考")
+    print("  多少の差 … E0（印の月末に売る）と比べて、平均の差 −0.3pt 以上・いちばん悪い差 −2.0pt 以上・評価額の平均の差 −0.3pt 以上")
+    print("  使い方 … K1 が通れば本番のまま。通らなければ、印の立った銘柄はすべて売る形（E0）に戻す。K4 が通れば、K4 に替えるかをワタナベさんに諮る")
+    print("  予想 … K1 は通る。K4 は通らない（悪い時期の負けが深い）")
+
+    def cat(x):
+        if x.empty:
+            return "—"
+        w, l, m = float((x > 0).mean()), float((x < 0).mean()), float(x.mean())
+        if w >= 0.85 and m >= 1.0:
+            return "良い"
+        if l >= 0.85:
+            return "悪い"
+        if m >= -0.5 and float(x.min()) >= -1.0 and l < 0.85:
+            return "同じくらい"
+        return "決められない"
+
+    res = {}
+    for title_, sp_list in (("一度も見ていない期間（判定に使う）", os_), ("最近の窓（参考）", rs_)):
+        g_all = gf[gf["期間"].isin(sp_list)]
+        print(f"\n  ■ {title_} … 窓 {len(sp_list)}・条件 {g_all[cond_cols].drop_duplicates().shape[0] if not g_all.empty else 0}")
+        if g_all.empty:
+            print("    結果なし")
+            continue
+        pl = g_all.pivot_table(index=cond_cols, columns="ルール", values="清算後年率")
+        pm = g_all.pivot_table(index=cond_cols, columns="ルール", values="評価額年率")
+        print(f"    {'形':<40}{'清算後':>8}{'最悪':>8}{'最大下落':>9}{'売った/年':>9}{'持った/年':>9}{'平均の差':>9}{'最悪の差':>9}{'評価額の差':>10}{'上回った':>8}  判定（参考）・多少の差")
+        g0 = g_all[g_all["ルール"] == L0]
+        if not g0.empty:
+            y0 = g0["期間"].map(lambda sp: max((pd.Timestamp(sp.split("〜")[1]) - pd.Timestamp(sp.split("〜")[0])).days / 365.25, 0.5))
+            print(f"    {'E0 印の月末に売る（比べる相手）':<40}{g0['清算後年率'].mean():>7.1f}％{g0['清算後年率'].min():>7.1f}％{g0['最大下落'].mean():>8.1f}％"
+                  f"{float((g0['緊急売り'] / y0).mean()):>8.2f}回")
+        for k_, n_, sh_ in LH_ROWS:
+            L_ = VARIANTS[n_]["label"]
+            g_ = g_all[g_all["ルール"] == L_]
+            if g_.empty or L_ not in pl.columns or L0 not in pl.columns:
+                print(f"    {k_} {sh_} … 結果なし")
+                continue
+            yrs_ = g_["期間"].map(lambda sp: max((pd.Timestamp(sp.split("〜")[1]) - pd.Timestamp(sp.split("〜")[0])).days / 365.25, 0.5))
+            emg_ = float((g_["緊急売り"] / yrs_).mean())
+            held_ = float((g_["持った回数"] / yrs_).mean()) if "持った回数" in g_.columns else float("nan")
+            d_ = (pl[L_] - pl[L0]).dropna()
+            dm_ = (pm[L_] - pm[L0]).dropna()
+            p_ = hold2_pass(d_, dm_)
+            j_, jm_ = cat(d_), cat(dm_)
+            jj = j_ if j_ == jm_ else f"決められない（清算後「{j_}」・評価額「{jm_}」）"
+            if sp_list is os_:
+                res[k_] = p_
+            print(f"    {(k_ + ' ' + sh_):<40}{g_['清算後年率'].mean():>7.1f}％{g_['清算後年率'].min():>7.1f}％{g_['最大下落'].mean():>8.1f}％"
+                  f"{emg_:>8.2f}回{held_:>8.2f}回{d_.mean():>+8.2f}{d_.min():>+9.2f}{dm_.mean():>+10.2f}{float((d_ > 0).mean()) * 100:>7.0f}％  {jj}・"
+                  + ("—（参考）" if k_ == "E4" else ("通る" if p_ else "通らない")))
+    print("\n  使い方（先に決めたこと）")
+    if "K1" in res:
+        print("    K1 … " + ("見ていない期間でも「多少の差」を通った → 本番のまま（浅い減配は持つ）" if res["K1"]
+                            else "見ていない期間で「多少の差」を通らなかった → 本番を E0（印の立った銘柄はすべて売る）に戻す"))
+    if "K4" in res:
+        print("    K4 … " + ("見ていない期間で「多少の差」を通った → 9年分の最悪の差（−2.11pt）とあわせて、K4 に替えるかをワタナベさんに諮る"
+                            if res["K4"] else "見ていない期間でも通らなかった → K4 は採らない"))
+    return res
+
+
 def exempt_report(gf: pd.DataFrame, cond_cols: list, pn: pd.DataFrame) -> dict:
     """減配の条件の免除をやめるか（2026年11月14日。計画は exempt_plan_2026-11-14）。"""
     pl = gf.pivot_table(index=cond_cols, columns="ルール", values="清算後年率")
@@ -16867,6 +16937,17 @@ def main() -> int:
         CACHE = LONG_CACHE
         PIT_FROM = LONG_PIT_FROM
         COMPUTE_START_LIMIT_MIN = min(COMPUTE_START_LIMIT_MIN, LONG_COMPUTE_START_MIN)
+    # 20年分で「多少の差なら塩漬け」と売るタイミングを確かめる（2026年11月14日に追加。計画は long_hold_plan_2026-11-14）
+    args.long_hold = (args.only or "").strip() == "long_hold"
+    if args.long_hold:
+        args.liq_metric, args.grid = True, True
+        args.only = "st_base,hd_cut30,k4_y_safe,st_never"
+        args.universe = "prime"
+        args.years = 20
+        LONG_MODE = True
+        CACHE = LONG_CACHE
+        PIT_FROM = LONG_PIT_FROM
+        COMPUTE_START_LIMIT_MIN = min(COMPUTE_START_LIMIT_MIN, LONG_COMPUTE_START_MIN)
     if (args.only or "").strip() == "long_test":
         args.long_test, args.liq_metric, args.grid = True, True, True
         args.only = "live_small1_pit,live_nobank"
@@ -16982,7 +17063,8 @@ def main() -> int:
                          or args.long_lab5 or args.long_lab6 or args.long_lab7 or args.long_lab8 or args.long_lab9
                          or args.long_lab10 or args.long_lab11 or args.long_lab12 or args.long_lab13 or args.long_lab14
                          or args.long_lab15 or args.long_lab16 or args.long_lab17 or args.long_lab18 or args.long_lab19 or args.long_lab20 or args.long_lab21 or args.long_lab22 or args.long_lab23 or args.long_lab24 or args.long_lab25
-                         or getattr(args, "long_rev2", False) or getattr(args, "long_mg1", False) or getattr(args, "long_c8live", False))
+                         or getattr(args, "long_rev2", False) or getattr(args, "long_mg1", False) or getattr(args, "long_c8live", False)
+                         or getattr(args, "long_hold", False))
     args.long_name = ("long_test" if args.long_test else "long_lab" if args.long_lab
                       else "long_lab2" if args.long_lab2 else "long_lab3" if args.long_lab3
                       else "long_lab4" if args.long_lab4 else "long_lab5" if args.long_lab5
@@ -16991,7 +17073,7 @@ def main() -> int:
                       else "long_lab10" if args.long_lab10 else "long_lab11" if args.long_lab11
                       else "long_lab12" if args.long_lab12 else "long_lab13" if args.long_lab13
                       else "long_lab14" if args.long_lab14 else "long_lab15" if args.long_lab15
-                      else "long_lab16" if args.long_lab16 else "long_lab17" if args.long_lab17 else "long_lab18" if args.long_lab18 else "long_lab19" if args.long_lab19 else "long_lab20" if args.long_lab20 else "long_lab21" if args.long_lab21 else "long_lab22" if args.long_lab22 else "long_lab23" if args.long_lab23 else "long_lab24" if args.long_lab24 else "long_lab25" if args.long_lab25 else "long_rev2" if getattr(args, "long_rev2", False) else "long_mg1" if getattr(args, "long_mg1", False) else "long_c8live" if getattr(args, "long_c8live", False) else "")
+                      else "long_lab16" if args.long_lab16 else "long_lab17" if args.long_lab17 else "long_lab18" if args.long_lab18 else "long_lab19" if args.long_lab19 else "long_lab20" if args.long_lab20 else "long_lab21" if args.long_lab21 else "long_lab22" if args.long_lab22 else "long_lab23" if args.long_lab23 else "long_lab24" if args.long_lab24 else "long_lab25" if args.long_lab25 else "long_rev2" if getattr(args, "long_rev2", False) else "long_mg1" if getattr(args, "long_mg1", False) else "long_c8live" if getattr(args, "long_c8live", False) else "long_hold" if getattr(args, "long_hold", False) else "")
 
     OUTDIR.mkdir(parents=True, exist_ok=True)
 
@@ -17083,7 +17165,8 @@ def main() -> int:
         if not _etf_px:
             log.warning("19回目：ETFの株価がひとつも取れませんでした。ETFとの比べは出せません")
         if getattr(args, "sell_test", False) or getattr(args, "hold_test", False) \
-                or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False) or getattr(args, "exempt_test", False):
+                or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False) or getattr(args, "exempt_test", False) \
+                or getattr(args, "long_hold", False):
             global ETF_IDLE_PX
             ETF_IDLE_PX = _etf_px.get("1306")
             if ETF_IDLE_PX is None:
@@ -20937,6 +21020,20 @@ def main() -> int:
                 bench_report(gf, cond_cols, panels[lbs_[0]], wins, store, _etf_px, args, (d0_, d1_))
             except Exception as e_:
                 log.exception("本番と高配当ETFの比べを出せませんでした: %s", e_)
+
+        if getattr(args, "long_hold", False) and nm and nm[0] == "st_base":
+            try:
+                long_hold_report(gf, cond_cols, _long_spans)
+            except Exception as e_:
+                log.exception("20年分の「持ち続ける」の比べを出せませんでした: %s", e_)
+            try:
+                sell_event_study(store, panel)
+            except Exception as e_:
+                log.exception("20年分の発表の前後の値動き（B1）を出せませんでした: %s", e_)
+            try:
+                hold_event_study(store, panel)
+            except Exception as e_:
+                log.exception("20年分の「持ち続ける」の発表の前後を出せませんでした: %s", e_)
 
         if getattr(args, "exempt_test", False) and nm and nm[0] == "ex_e1":
             try:
