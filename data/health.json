@@ -1,5 +1,5 @@
 {
- "generated_at": "2026-11-14T04:07:15+09:00",
+ "generated_at": "2026-11-14T11:49:35+09:00",
  "date": "2026-11-14",
  "ok": false,
  "warnings": [
@@ -40,7 +40,7 @@
    "engine_version": 4
   },
   "overweight": [],
-  "run_minutes": 70.3,
+  "run_minutes": 69.8,
   "big_files": []
  }
 }
