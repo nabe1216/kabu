@@ -13,6 +13,13 @@ on:
 permissions:
   contents: write
 
+# 2026年11月14日：手動の実行と定時の実行が重なると、あとから終わった方が保存できない
+# （同じ results.json・履歴ファイルを両方が書き換えて、取り込みでぶつかる。11月14日の #208 で起きた）。
+# 同時には1つだけ動かし、あとから来た方は前の実行が終わるまで待つ。
+concurrency:
+  group: daily-signals
+  cancel-in-progress: false
+
 jobs:
   generate:
     runs-on: ubuntu-latest
