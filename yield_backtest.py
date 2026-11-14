@@ -186,6 +186,20 @@ PROGRESSIVE = {
     "8766","8630","1605","5108","7203","7011","8801",
 }
 DOE = {"2502","7011","8595","6770"}
+# いまの本番の「配当を守る会社」（2026年11月14日に追加。exempt_test で使う。scripts/generate.py の 2026年11月13日のリスト）
+#   ① 日経累進高配当株指数の30社（2026年6月の入れ替えのあと）
+EX_NIKKEI30_NOW = {
+    "1719","1870","1928","2127","2379","3231","3861","4041","4042","4208","4502","4521","4540","4613",
+    "4633","5021","5602","5938","7164","7313","7458","7956","8130","8252","8439","8593","8725","8750",
+    "8803","9364",
+}
+#   ② 会社の公式資料で「減配しない」と書いている46社
+EX_DECLARED_NOW = {
+    "1605","1808","2502","2503","2768","2802","2871","3099","3289","3382","3402","3407","4151","4204",
+    "4528","4568","5019","5301","5706","7004","7011","7181","7182","7186","7269","7270","7741","7912",
+    "8001","8002","8015","8031","8053","8058","8306","8309","8316","8334","8411","8729","8801","8802",
+    "9007","9104","9503","9531",
+}
 
 
 # ══════════════════════════════════════════
@@ -2250,6 +2264,15 @@ VARIANTS.update({
     "bm_np": _lab_rule("P-np いまの本番・後出しなしの Tier", etf_idle={"keep": 100_000, "min": 200_000},
                        emg_sell={"cut_min": 0.30}, tier_col="tier_live_np", **_ST_BASE),
 })
+# ── 「配当を守る会社」の減配の条件の免除をやめるか（2026年11月14日に追加。計画は exempt_plan_2026-11-14）──
+_EX_BASE = dict(etf_idle={"keep": 100_000, "min": 200_000}, emg_sell={"cut_min": 0.30}, **_ST_BASE)
+VARIANTS.update({
+    "ex_e1": _lab_rule("E1 いまの本番の免除（①30社＋②46社）", screen_col="screen_pass_exnew", **_EX_BASE),
+    "ex_e2": _lab_rule("E2 ①だけ免除（②の免除をやめる）", screen_col="screen_pass_ex1", **_EX_BASE),
+    "ex_e3": _lab_rule("E3 免除なし", screen_col="screen_pass_np", **_EX_BASE),
+})
+EX_ROWS = (("E0", "bm_live", "検証のいままでの免除（もとの51社）"), ("E1", "ex_e1", "いまの本番の免除（①＋②）"),
+           ("E2", "ex_e2", "①だけ免除"), ("E3", "ex_e3", "免除なし"))
 # （記号, ルール名, 短い名前）
 LAB4_C = (("C1", "lab4_c_div", "「10期減配なし」を外す"), ("C2", "lab4_c_sales", "「売上の安定」を外す"),
           ("C3", "lab4_c_op", "「営業利益の安定」を外す"), ("C4", "lab4_c_np", "「純利益の安定」を外す"),
@@ -4080,6 +4103,10 @@ def add_fund_columns(store: dict, panel: pd.DataFrame) -> pd.DataFrame:
     # 条件ごとの通過（2026年10月11日に追加。条件を1つずつ外す検証で使う）。判定できないものは通過扱い
     per_check = {k: [] for k in SCREEN_KEYS}
     prog = panel["progressive"] if "progressive" in panel.columns else pd.Series(False, index=panel.index)
+    # 減配の条件の免除の形ごとの通過（2026年11月14日。exempt_test）
+    ex_new = panel["ex_new"] if "ex_new" in panel.columns else pd.Series(False, index=panel.index)
+    ex_n1 = panel["ex_n1"] if "ex_n1" in panel.columns else pd.Series(False, index=panel.index)
+    res_exnew, res_ex1 = [], []
     for i in panel.index:
         sec = panel.at[i, "sector"]
         div_ok = True if bool(prog.at[i]) else _tri(panel.at[i, "ok_div"])
@@ -4099,11 +4126,16 @@ def add_fund_columns(store: dict, panel: pd.DataFrame) -> pd.DataFrame:
                   _tri(panel.at[i, "ok_np"]), pay_ok, eq_ok, val_ok]
         res.append(all(c is None or c for c in checks))
         res_np.append(all(c is None or c for c in [_tri(panel.at[i, "ok_div"])] + checks[1:]))
+        _rd = _tri(panel.at[i, "ok_div"])
+        res_exnew.append(all(c is None or c for c in [True if bool(ex_new.at[i]) else _rd] + checks[1:]))
+        res_ex1.append(all(c is None or c for c in [True if bool(ex_n1.at[i]) else _rd] + checks[1:]))
         n_fail.append(sum(1 for c in checks if c is not None and not c))
         for k, c in zip(SCREEN_KEYS, checks):
             per_check[k].append(c is None or bool(c))
     panel["screen_pass"] = res
     panel["screen_pass_np"] = res_np
+    panel["screen_pass_exnew"] = res_exnew
+    panel["screen_pass_ex1"] = res_ex1
     panel["screen_fail"] = n_fail
     for k in SCREEN_KEYS:
         panel["scr_" + k] = per_check[k]
@@ -4496,6 +4528,9 @@ def build_panel(store: dict, years: int, lookback: int = 36) -> pd.DataFrame:
         # 累進配当・DOE銘柄は「減配しにくい」と宣言している。
         # 利確の扱いを変えるかどうかを試せるようにフラグを持たせる。
         f["progressive"] = (code in PROGRESSIVE) or (code in DOE)
+        # 減配の条件の免除の検証（exempt_test）：いまの本番のリスト（①＋②）と ①だけ
+        f["ex_new"] = (code in EX_NIKKEI30_NOW) or (code in EX_DECLARED_NOW)
+        f["ex_n1"] = code in EX_NIKKEI30_NOW
         # 減配の検知。直近1年の最高額を下回ったら減配とみなす。
         # 配当利回りで割安さを測る戦略では、減配は「買った根拠が消える」出来事。
         # 営業利益の急変。前回開示と比べて大きく落ちたか。
@@ -5541,6 +5576,12 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
         if _tc not in panel.columns:
             raise RuntimeError(f"{_tc} の列がありません。後出しなしの Tier が足されていません。")
         panel = panel.assign(tier=panel[_tc].to_numpy())
+    # 2026年11月14日：screen_col … 8条件の通過の列を差し替える（減配の条件の免除の検証 exempt_test）
+    if cfg.get("screen_col"):
+        _scn = cfg["screen_col"]
+        if _scn not in panel.columns:
+            raise RuntimeError(f"{_scn} の列がありません。免除の形ごとの通過が足されていません。")
+        panel = panel.assign(screen_pass=panel[_scn].to_numpy())
     # measure: "pct"（パーセンタイル）か "z"（平均から何σ離れているか）
     measure = cfg.get("measure", "pct")
     # Tierごとに買いの基準を変える。
@@ -9733,6 +9774,83 @@ def hold2_report(gf: pd.DataFrame, cond_cols: list) -> dict:
     print(f"\n  本番に入れる形（先に決めたとおり） … {pick}" + ("" if ok else "（どれも通らなかったので K1）"))
     res["pick"] = pick
     return res
+
+def exempt_report(gf: pd.DataFrame, cond_cols: list, pn: pd.DataFrame) -> dict:
+    """減配の条件の免除をやめるか（2026年11月14日。計画は exempt_plan_2026-11-14）。"""
+    pl = gf.pivot_table(index=cond_cols, columns="ルール", values="清算後年率")
+    pm = gf.pivot_table(index=cond_cols, columns="ルール", values="評価額年率")
+    L1 = VARIANTS["ex_e1"]["label"]
+    print("\n【「配当を守る会社」の減配の条件の免除をやめるか】（9年分・24条件。基準は結果を見る前に決めたもの。計画は exempt_plan_2026-11-14）")
+    print("  多少の差 … E1（いまの本番の免除）と比べて、平均の差 −0.3pt 以上・いちばん悪い差 −2.0pt 以上・評価額の平均の差 −0.3pt 以上")
+    print("  使い方 … E3 が通れば免除をすべてやめる。E3 が通らず E2 が通れば②の免除だけやめる。どちらも通らなければいまのまま")
+    print("  予想 … 免除で入る銘柄は少なく、E2・E3 とも通る → 免除をすべてやめる")
+
+    def cat(x):
+        if x.empty:
+            return "—"
+        w, l, m = float((x > 0).mean()), float((x < 0).mean()), float(x.mean())
+        if w >= 0.85 and m >= 1.0:
+            return "良い"
+        if l >= 0.85:
+            return "悪い"
+        if m >= -0.5 and float(x.min()) >= -1.0 and l < 0.85:
+            return "同じくらい"
+        return "決められない"
+
+    # 1. 免除で候補に入った銘柄（利回り3％以上で、免除がなければ落ちる 銘柄×月）
+    print("\n  1. 免除で候補に入った「銘柄×月」（利回り3％以上・8条件の通過。免除がなければ落ちるもの）")
+    try:
+        y3 = pn["yield"] >= 3.0
+        base = (pn["screen_pass_np"].astype(bool) & y3)
+        n_base = int(base.sum())
+        for k_, col_ in (("E0", "screen_pass"), ("E1", "screen_pass_exnew"), ("E2", "screen_pass_ex1")):
+            add = pn[pn[col_].astype(bool) & y3 & ~pn["screen_pass_np"].astype(bool)]
+            top = add.groupby("code").size().sort_values(ascending=False).head(8)
+            nm_ = add.drop_duplicates("code").set_index("code")["name"] if "name" in add.columns else {}
+            print(f"    {k_} … {len(add)} 件（免除なしの候補 {n_base} 件の {len(add) / max(n_base, 1) * 100:.1f}％）・{add['code'].nunique()} 社"
+                  + ("：" + "・".join(f"{nm_.get(c, c)} {int(v)}" for c, v in top.items()) if len(top) else ""))
+    except Exception as e_:
+        print(f"    数えられませんでした（{e_}）")
+
+    print(f"\n  2. 24条件の平均と、E1 との差")
+    print(f"  {'形':<36}{'清算後':>8}{'最悪':>8}{'評価額':>8}{'最大下落':>9}{'緊急売り/年':>11}{'平均の差':>9}{'最悪の差':>9}{'評価額の差':>10}{'上回った':>8}  判定（参考）・多少の差")
+    res = {}
+    for k_, n_, sh_ in EX_ROWS:
+        L_ = VARIANTS[n_]["label"]
+        g_ = gf[gf["ルール"] == L_]
+        if g_.empty or L_ not in pl.columns:
+            print(f"  {k_} {sh_} … 結果なし")
+            continue
+        yrs_ = g_["期間"].map(lambda sp: max((pd.Timestamp(sp.split("〜")[1]) - pd.Timestamp(sp.split("〜")[0])).days / 365.25, 0.5))
+        emg_ = float((g_["緊急売り"] / yrs_).mean()) if "緊急売り" in g_.columns else float("nan")
+        head = (f"  {(k_ + ' ' + sh_):<36}{g_['清算後年率'].mean():>7.1f}％{g_['清算後年率'].min():>7.1f}％{g_['評価額年率'].mean():>7.1f}％"
+                f"{g_['最大下落'].mean():>8.1f}％{emg_:>10.2f}回")
+        if k_ == "E1" or L1 not in pl.columns:
+            print(head + "  （比べる相手）")
+            continue
+        d_ = (pl[L_] - pl[L1]).dropna()
+        dm_ = (pm[L_] - pm[L1]).dropna()
+        p_ = hold2_pass(d_, dm_)
+        j_ = cat(d_)
+        jm_ = cat(dm_)
+        jj = j_ if j_ == jm_ else f"決められない（清算後「{j_}」・評価額「{jm_}」）"
+        res[k_] = p_
+        print(head + f"{d_.mean():>+8.2f}{d_.min():>+9.2f}{dm_.mean():>+10.2f}{float((d_ > 0).mean()) * 100:>7.0f}％  {jj}・"
+              + ("—（参考）" if k_ == "E0" else ("通る" if p_ else "通らない")))
+    print("\n  使い方（先に決めたこと）")
+    if res.get("E3"):
+        print("    E3 が「多少の差」を通った → 免除をすべてやめる（本番の DIVIDEND_CHECK_EXEMPT を空にする）")
+        res["pick"] = "E3"
+    elif res.get("E2"):
+        print("    E3 は通らず E2 が通った → ②の免除だけやめる（免除は①だけ）")
+        res["pick"] = "E2"
+    else:
+        print("    E2・E3 とも通らない → いまのまま（①②を免除）")
+        res["pick"] = "E1"
+    print("  （リストはどれも「いまのリスト」を過去に当てはめた後出し。後出しは免除のある形を良く見せる向きにだけ働く。"
+          "9年分は1つの期間で、ルールを決めてきた期間でもある）")
+    return res
+
 
 BM_ETF = (("1306", "TOPIX（1306）"), ("1489", "日経高配当株50（1489）"), ("1478", "MSCI高配当（1478）"))
 
@@ -16794,6 +16912,11 @@ def main() -> int:
     if (args.only or "").strip() == "bench_test":
         args.bench_test, args.liq_metric, args.grid = True, True, True
         args.only = "bm_live,bm_np"
+    # 「配当を守る会社」の減配の条件の免除をやめるか（2026年11月14日に追加。計画は exempt_plan_2026-11-14）
+    args.exempt_test = False
+    if (args.only or "").strip() == "exempt_test":
+        args.exempt_test, args.liq_metric, args.grid = True, True, True
+        args.only = "ex_e1,bm_live,ex_e2,ex_e3"
     args.near_test = False
     if (args.only or "").strip() == "near_test":
         args.near_test, args.liq_metric, args.grid = True, True, True
@@ -16935,7 +17058,7 @@ def main() -> int:
     if getattr(args, "etf_test", False) or getattr(args, "luck_test", False) or getattr(args, "near_test", False) \
             or getattr(args, "sector_test", False) or getattr(args, "long_any", False) \
             or getattr(args, "rev_lab1", False) or getattr(args, "rev_lab2", False) or getattr(args, "st_lab1", False) \
-            or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False):
+            or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False) or getattr(args, "exempt_test", False):
         _eq = store.setdefault("etf_quotes", {})
         key = os.environ.get("J_QUANTS_API_KEY")
         if key:
@@ -16960,7 +17083,7 @@ def main() -> int:
         if not _etf_px:
             log.warning("19回目：ETFの株価がひとつも取れませんでした。ETFとの比べは出せません")
         if getattr(args, "sell_test", False) or getattr(args, "hold_test", False) \
-                or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False):
+                or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False) or getattr(args, "exempt_test", False):
             global ETF_IDLE_PX
             ETF_IDLE_PX = _etf_px.get("1306")
             if ETF_IDLE_PX is None:
@@ -16973,7 +17096,7 @@ def main() -> int:
     _need_scale = (getattr(args, "live_check", False) or getattr(args, "rot_live", False)
                    or getattr(args, "cap_test", False) or getattr(args, "etf_test", False)
                    or getattr(args, "luck_test", False) or getattr(args, "near_test", False)
-                   or getattr(args, "flat_test", False) or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False)
+                   or getattr(args, "flat_test", False) or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False) or getattr(args, "exempt_test", False)
                    or getattr(args, "sector_test", False)
                    or getattr(args, "long_any", False)
                    or getattr(args, "rev_lab1", False) or getattr(args, "rev_lab2", False) or getattr(args, "st_lab1", False))
@@ -19018,7 +19141,7 @@ def main() -> int:
                    or getattr(args, "live_check", False) or getattr(args, "rot_live", False)
                    or getattr(args, "cap_test", False) or getattr(args, "etf_test", False)
                    or getattr(args, "luck_test", False) or getattr(args, "near_test", False)
-                   or getattr(args, "flat_test", False) or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False)
+                   or getattr(args, "flat_test", False) or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False) or getattr(args, "exempt_test", False)
                    or getattr(args, "sector_test", False)
                    or getattr(args, "long_any", False))
         _l10 = bool(getattr(args, "line_test", False))
@@ -19027,7 +19150,7 @@ def main() -> int:
                      or getattr(args, "live_check", False) or getattr(args, "rot_live", False)
                      or getattr(args, "cap_test", False) or getattr(args, "etf_test", False)
                      or getattr(args, "luck_test", False) or getattr(args, "near_test", False)
-                     or getattr(args, "flat_test", False) or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False)
+                     or getattr(args, "flat_test", False) or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False) or getattr(args, "exempt_test", False)
                      or getattr(args, "sector_test", False)
                      or getattr(args, "long_any", False)):
             print("　 年率は「最後の月末に全部売って、約定のずれと税を払った後」（清算後）で出しています。\n")
@@ -19043,7 +19166,7 @@ def main() -> int:
                 or getattr(args, "live_check", False) or getattr(args, "rot_live", False)
                 or getattr(args, "cap_test", False) or getattr(args, "etf_test", False)
                 or getattr(args, "luck_test", False) or getattr(args, "near_test", False)
-                or getattr(args, "flat_test", False) or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False)
+                or getattr(args, "flat_test", False) or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False) or getattr(args, "exempt_test", False)
                 or getattr(args, "sector_test", False)
                 or getattr(args, "long_any", False)):
             # ── 1. 基準に勝った割合 ──
@@ -20814,6 +20937,12 @@ def main() -> int:
                 bench_report(gf, cond_cols, panels[lbs_[0]], wins, store, _etf_px, args, (d0_, d1_))
             except Exception as e_:
                 log.exception("本番と高配当ETFの比べを出せませんでした: %s", e_)
+
+        if getattr(args, "exempt_test", False) and nm and nm[0] == "ex_e1":
+            try:
+                exempt_report(gf, cond_cols, panels[lbs_[0]])
+            except Exception as e_:
+                log.exception("減配の条件の免除の比べを出せませんでした: %s", e_)
 
         if getattr(args, "hold2_test", False) and nm and nm[0] == "st_base":
             hold2_report(gf, cond_cols)
