@@ -2307,6 +2307,13 @@ VARIANTS.update({
 })
 RB2_ROWS = (("B3", "rb_b3", "6月・1.25倍（前回推した形）"), ("C1", "rb_c1", "6月・1.1倍"), ("C2", "rb_c2", "6月と12月・1.25倍"),
             ("C3", "rb_c3", "6月と12月・1.1倍"), ("C4", "rb_c4", "毎月・1.1倍"))
+# ── 値上がりで利回りが下がった銘柄を売る（2026年11月14日に追加。計画は yexit_plan_2026-11-14）──
+VARIANTS.update({
+    "ye_y1": _lab_rule("Y1 ＋利回り2.5％割れで全部売る", yield_exit=2.5, **_EX_BASE),
+    "ye_y2": _lab_rule("Y2 ＋利回り2.0％割れで全部売る", yield_exit=2.0, **_EX_BASE),
+    "ye_y3": _lab_rule("Y3 ＋取得単価から+50％で半分売る", tp_gain=0.50, tp_frac=0.5, **_EX_BASE),
+})
+YE_ROWS = (("Y1", "ye_y1", "利回り2.5％割れで売る"), ("Y2", "ye_y2", "利回り2.0％割れで売る"), ("Y3", "ye_y3", "+50％で半分売る"))
 RB_ROWS = (("B1", "rb_b1", "12月・1.5倍"), ("B2", "rb_b2", "12月・1.25倍"), ("B3", "rb_b3", "6月・1.25倍"))
 RG_ROWS = (("R4", "sc_r4", "いつも回転を上げる"), ("G1", "rg_g1", "横ばいの時期だけ"), ("G2", "rg_g2", "上げ相場でない時期だけ"))
 SC_ROWS = (("R1", "sc_r1", "条件なし"), ("R2", "sc_r2", "権利月が近いときは降りない"),
@@ -10089,7 +10096,7 @@ def rebal_report(gf: pd.DataFrame, cond_cols: list, rows=None, plan: str = "reba
         y_ = g_["期間"].map(lambda sp: max((pd.Timestamp(sp.split("〜")[1]) - pd.Timestamp(sp.split("〜")[0])).days / 365.25, 0.5))
         return float((g_[c] / y_).mean())
 
-    print(f"\n  {'形':<40}{'清算後':>8}{'最悪':>8}{'評価額':>8}{'最大下落':>9}{'受取配当':>9}{'売り/年':>8}{'買い/年':>8}{'揃え直し/年':>11}")
+    print(f"\n  {'形':<40}{'清算後':>8}{'最悪':>8}{'評価額':>8}{'最大下落':>9}{'受取配当':>9}{'売り/年':>8}{'買い/年':>8}{'揃え直し/年':>11}{'利確・利回り割れ/年':>16}")
     for k_, n_, sh_ in (("B0", "bm_live", "いまの本番の形"),) + tuple(rows):
         g_ = gf[gf["ルール"] == VARIANTS[n_]["label"]]
         if g_.empty:
@@ -10097,7 +10104,7 @@ def rebal_report(gf: pd.DataFrame, cond_cols: list, rows=None, plan: str = "reba
             continue
         print(f"  {(k_ + ' ' + sh_):<40}{g_['清算後年率'].mean():>7.1f}％{g_['清算後年率'].min():>7.1f}％{g_['評価額年率'].mean():>7.1f}％"
               f"{g_['最大下落'].mean():>8.1f}％{g_['受取配当'].mean() if '受取配当' in g_.columns else float('nan'):>8.2f}％"
-              f"{g_['売り/年'].mean():>8.1f}{g_['買い/年'].mean():>8.1f}{per_y(g_, '揃え直し'):>11.2f}")
+              f"{g_['売り/年'].mean():>8.1f}{g_['買い/年'].mean():>8.1f}{per_y(g_, '揃え直し'):>11.2f}{per_y(g_, '利確・利回り割れ'):>16.2f}")
     print(f"\n  B0 との差 … {'形':<36}{'平均の差':>9}{'最悪の差':>9}{'評価額の差':>10}{'上回った':>8}  判定・多少の差")
     res = {}
     for k_, n_, sh_ in rows:
@@ -17358,6 +17365,10 @@ def main() -> int:
     # 「配当を守る会社」の減配の条件の免除をやめるか（2026年11月14日に追加。計画は exempt_plan_2026-11-14）
     # 条件つきのレンジ売買（2026年11月14日に追加。計画は swing_cond_plan_2026-11-14）
     # 定期的な揃え直し（2026年11月14日に追加。計画は rebal_plan_2026-11-14）
+    args.yexit_test = False
+    if (args.only or "").strip() == "yexit_test":
+        args.yexit_test, args.liq_metric, args.grid = True, True, True
+        args.only = "bm_live,ye_y1,ye_y2,ye_y3"
     args.rebal_test2 = False
     if (args.only or "").strip() == "rebal_test2":
         args.rebal_test2, args.liq_metric, args.grid = True, True, True
@@ -17516,7 +17527,7 @@ def main() -> int:
     if getattr(args, "etf_test", False) or getattr(args, "luck_test", False) or getattr(args, "near_test", False) \
             or getattr(args, "sector_test", False) or getattr(args, "long_any", False) \
             or getattr(args, "rev_lab1", False) or getattr(args, "rev_lab2", False) or getattr(args, "st_lab1", False) \
-            or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False) or getattr(args, "exempt_test", False) or getattr(args, "swing_cond", False) or getattr(args, "rebal_test", False) or getattr(args, "rebal_test2", False):
+            or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False) or getattr(args, "exempt_test", False) or getattr(args, "swing_cond", False) or getattr(args, "rebal_test", False) or getattr(args, "rebal_test2", False) or getattr(args, "yexit_test", False):
         _eq = store.setdefault("etf_quotes", {})
         key = os.environ.get("J_QUANTS_API_KEY")
         if key:
@@ -17541,7 +17552,7 @@ def main() -> int:
         if not _etf_px:
             log.warning("19回目：ETFの株価がひとつも取れませんでした。ETFとの比べは出せません")
         if getattr(args, "sell_test", False) or getattr(args, "hold_test", False) \
-                or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False) or getattr(args, "exempt_test", False) or getattr(args, "swing_cond", False) or getattr(args, "rebal_test", False) or getattr(args, "rebal_test2", False) \
+                or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False) or getattr(args, "exempt_test", False) or getattr(args, "swing_cond", False) or getattr(args, "rebal_test", False) or getattr(args, "rebal_test2", False) or getattr(args, "yexit_test", False) \
                 or getattr(args, "long_hold", False) or getattr(args, "long_regime", False):
             global ETF_IDLE_PX
             ETF_IDLE_PX = _etf_px.get("1306")
@@ -17555,7 +17566,7 @@ def main() -> int:
     _need_scale = (getattr(args, "live_check", False) or getattr(args, "rot_live", False)
                    or getattr(args, "cap_test", False) or getattr(args, "etf_test", False)
                    or getattr(args, "luck_test", False) or getattr(args, "near_test", False)
-                   or getattr(args, "flat_test", False) or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False) or getattr(args, "exempt_test", False) or getattr(args, "swing_cond", False) or getattr(args, "rebal_test", False) or getattr(args, "rebal_test2", False)
+                   or getattr(args, "flat_test", False) or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False) or getattr(args, "exempt_test", False) or getattr(args, "swing_cond", False) or getattr(args, "rebal_test", False) or getattr(args, "rebal_test2", False) or getattr(args, "yexit_test", False)
                    or getattr(args, "sector_test", False)
                    or getattr(args, "long_any", False)
                    or getattr(args, "rev_lab1", False) or getattr(args, "rev_lab2", False) or getattr(args, "st_lab1", False))
@@ -19606,7 +19617,7 @@ def main() -> int:
                    or getattr(args, "live_check", False) or getattr(args, "rot_live", False)
                    or getattr(args, "cap_test", False) or getattr(args, "etf_test", False)
                    or getattr(args, "luck_test", False) or getattr(args, "near_test", False)
-                   or getattr(args, "flat_test", False) or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False) or getattr(args, "exempt_test", False) or getattr(args, "swing_cond", False) or getattr(args, "rebal_test", False) or getattr(args, "rebal_test2", False)
+                   or getattr(args, "flat_test", False) or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False) or getattr(args, "exempt_test", False) or getattr(args, "swing_cond", False) or getattr(args, "rebal_test", False) or getattr(args, "rebal_test2", False) or getattr(args, "yexit_test", False)
                    or getattr(args, "sector_test", False)
                    or getattr(args, "long_any", False))
         _l10 = bool(getattr(args, "line_test", False))
@@ -19615,7 +19626,7 @@ def main() -> int:
                      or getattr(args, "live_check", False) or getattr(args, "rot_live", False)
                      or getattr(args, "cap_test", False) or getattr(args, "etf_test", False)
                      or getattr(args, "luck_test", False) or getattr(args, "near_test", False)
-                     or getattr(args, "flat_test", False) or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False) or getattr(args, "exempt_test", False) or getattr(args, "swing_cond", False) or getattr(args, "rebal_test", False) or getattr(args, "rebal_test2", False)
+                     or getattr(args, "flat_test", False) or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False) or getattr(args, "exempt_test", False) or getattr(args, "swing_cond", False) or getattr(args, "rebal_test", False) or getattr(args, "rebal_test2", False) or getattr(args, "yexit_test", False)
                      or getattr(args, "sector_test", False)
                      or getattr(args, "long_any", False)):
             print("　 年率は「最後の月末に全部売って、約定のずれと税を払った後」（清算後）で出しています。\n")
@@ -19631,7 +19642,7 @@ def main() -> int:
                 or getattr(args, "live_check", False) or getattr(args, "rot_live", False)
                 or getattr(args, "cap_test", False) or getattr(args, "etf_test", False)
                 or getattr(args, "luck_test", False) or getattr(args, "near_test", False)
-                or getattr(args, "flat_test", False) or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False) or getattr(args, "exempt_test", False) or getattr(args, "swing_cond", False) or getattr(args, "rebal_test", False) or getattr(args, "rebal_test2", False)
+                or getattr(args, "flat_test", False) or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False) or getattr(args, "exempt_test", False) or getattr(args, "swing_cond", False) or getattr(args, "rebal_test", False) or getattr(args, "rebal_test2", False) or getattr(args, "yexit_test", False)
                 or getattr(args, "sector_test", False)
                 or getattr(args, "long_any", False)):
             # ── 1. 基準に勝った割合 ──
@@ -21422,6 +21433,13 @@ def main() -> int:
                 hold_event_study(store, panel)
             except Exception as e_:
                 log.exception("20年分の「持ち続ける」の発表の前後を出せませんでした: %s", e_)
+
+        if getattr(args, "yexit_test", False) and nm and nm[0] == "bm_live":
+            try:
+                rebal_report(gf, cond_cols, rows=YE_ROWS, plan="yexit_plan_2026-11-14", title="値上がりで利回りが下がった銘柄を売る",
+                             expect="Y1 は決められない（多少の差は境目）。Y2 は同じくらいで通る。Y3 は決められないか悪い。どれも良いにはならない")
+            except Exception as e_:
+                log.exception("利回り割れで売る形の比べを出せませんでした: %s", e_)
 
         if getattr(args, "rebal_test2", False) and nm and nm[0] == "bm_live":
             try:
