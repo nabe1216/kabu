@@ -2768,12 +2768,19 @@ class RateLimited(Exception):
     """
 
 
+# 2026年11月14日：キャッシュだけで回す（「比較するルール」の最後に :cache を付けたとき）。
+#   J-Quants には一度も問い合わせない。20年分のキャッシュは J-Quants の許可（文面）を得て、プランを下げたあとも残している
+CACHE_ONLY = False
+
+
 class JQ:
     def __init__(self, key: str):
         self.key = key
         self.s = requests.Session()
 
     def get(self, path: str, params: dict | None = None) -> list[dict]:
+        if CACHE_ONLY:
+            raise NotAllowed("キャッシュだけで回す設定なので、J-Quants には問い合わせません")
         rows, pk = [], None
         while True:
             p = dict(params or {})
@@ -3166,6 +3173,8 @@ def fetch_bars(jq: JQ, code: str, want_years: int) -> list[dict]:
     どこまで遡れるかを実際に試して見つけます。
     """
     global _ok_years
+    if CACHE_ONLY:
+        raise NotAllowed("キャッシュだけで回す設定なので、J-Quants には問い合わせません")
     today = date.today()
     if LONG_MODE:
         cands = [_ok_years] if _ok_years else list(LONG_YEARS)
@@ -17212,6 +17221,12 @@ def main() -> int:
                     help="同時に持つ最大銘柄数。未指定なら通常15・実運用モードで20")
     ap.add_argument("--refetch", action="store_true", help="キャッシュを無視して取り直す")
     args = ap.parse_args()
+    # 2026年11月14日：「比較するルール」の最後に :cache → キャッシュだけで回す（J-Quants に問い合わせない）
+    global CACHE_ONLY
+    if (args.only or "").strip().endswith(":cache"):
+        CACHE_ONLY = True
+        args.only = args.only.strip()[:-len(":cache")]
+        log.info("キャッシュだけで回します（J-Quants には問い合わせません）")
     # 入力欄が上限（25個）に達しているので、新しいモードは
     # 「比較するルール」の欄に特別な言葉を入れて動かす。
     if (args.only or "").strip() == "random_test":
@@ -17508,6 +17523,9 @@ def main() -> int:
             store = None              # 取り終えたデータを捨てて、最初から取り直す
         else:
             log.info("キャッシュから読み込みます（取り直すなら --refetch）")
+    if CACHE_ONLY and (store is None or store.get("complete") is False):
+        log.error("キャッシュだけで回す設定ですが、使えるキャッシュがありません（%s）。取り直すにはプレミアムが要ります", CACHE)
+        return 2
     if store is None or store.get("complete") is False:
         key = os.environ.get("J_QUANTS_API_KEY")
         if not key:
