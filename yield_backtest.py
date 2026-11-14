@@ -2283,6 +2283,16 @@ VARIANTS.update({
     "sc_r4": _lab_rule("R4 ＋レンジ上限で降りる・権利月が近いときは降りない・ほかに買える銘柄があるときだけ",
                        range_exit=dict(_RX, avoid_div_months=2, need_candidate=True), **_SC_BASE),
 })
+# ── 横ばいの年だけ回転を上げる（2026年11月14日に追加。計画は long_regime_plan_2026-11-14）──
+VARIANTS.update({
+    "rg_g1": _lab_rule("G1 R4 を横ばいの時期だけ（前の12か月の TOPIX が±10％以内）",
+                       range_exit=dict(_RX, avoid_div_months=2, need_candidate=True, regime={"type": "band", "band": 0.10}),
+                       **_SC_BASE),
+    "rg_g2": _lab_rule("G2 R4 を上げ相場でない時期だけ（前の12か月の TOPIX が+10％以下）",
+                       range_exit=dict(_RX, avoid_div_months=2, need_candidate=True, regime={"type": "notup", "band": 0.10}),
+                       **_SC_BASE),
+})
+RG_ROWS = (("R4", "sc_r4", "いつも回転を上げる"), ("G1", "rg_g1", "横ばいの時期だけ"), ("G2", "rg_g2", "上げ相場でない時期だけ"))
 SC_ROWS = (("R1", "sc_r1", "条件なし"), ("R2", "sc_r2", "権利月が近いときは降りない"),
            ("R3", "sc_r3", "ほかに買える銘柄があるときだけ"), ("R4", "sc_r4", "両方（ワタナベさんの案）"))
 EX_ROWS = (("E0", "bm_live", "検証のいままでの免除（もとの51社）"), ("E1", "ex_e1", "いまの本番の免除（①＋②）"),
@@ -5453,6 +5463,30 @@ def required_pct(base: float, row: pd.Series, dynamic: bool) -> float:
     return float(np.clip(p, PCT_FLOOR, PCT_CEIL))
 
 
+def regime_ret12(dt, px=None) -> float | None:
+    """前の月末までの12か月の 1306 の値動き（2026年11月14日。long_regime）。前の月末の終値 ÷ その12か月前の終値 − 1。"""
+    px = ETF_IDLE_PX if px is None else px
+    if px is None or len(px) == 0:
+        return None
+    pe = (pd.Timestamp(dt) + pd.offsets.MonthEnd(0)) - pd.offsets.MonthEnd(1)
+    p1 = px[px.index <= pe]
+    p0 = px[px.index <= pe - pd.DateOffset(months=12)]
+    if p1.empty or p0.empty or float(p0.iloc[-1]) <= 0:
+        return None
+    if (pe - p0.index[-1]).days > 400:
+        return None
+    return float(p1.iloc[-1]) / float(p0.iloc[-1]) - 1.0
+
+
+def regime_on(dt, rg: dict) -> bool:
+    """回転を上げる時期か。band … 値動きが ±b 以内（横ばい）／ notup … +b 以下（上げ相場でない）。分からなければ上げない。"""
+    r = regime_ret12(dt)
+    if r is None:
+        return False
+    b = float(rg.get("band", 0.10))
+    return abs(r) <= b if rg.get("type", "band") == "band" else r <= b
+
+
 def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
              max_names: int = 15, tier_budget: bool = False,
              dividends: bool = False, slip_bps: float = 0.0,
@@ -5667,6 +5701,7 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
     # 外れてレンジを割っても、ただ持ち続けるだけで損失にはならない。
     range_exit = cfg.get("range_exit")
     _rx_cand_mi: dict = {}          # swing_cond：その月の「ほかに買える銘柄」（月に1回だけ数える）
+    _rx_rg_mi: dict = {}            # long_regime：その月の合図（月に1回だけ決める）
     # 外部要因が逆風の業種を、どう扱うか。
     #   skip  … 買わない
     #   thin  … 薄く買う（倍率を指定）
@@ -6569,7 +6604,15 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                 # 2026年11月14日（swing_cond）：権利月が近いときは降りない（avoid_div_months）・
                 #   ほかに買える銘柄があるときだけ降りる（need_candidate）
                 _rx_skip = False
-                if sell_px > cost0 * (1 + range_exit.get("min_gain", 0.0)):
+                if sell_px > cost0 * (1 + range_exit.get("min_gain", 0.0)) and range_exit.get("regime"):
+                    # 2026年11月14日（long_regime）：回転を上げる時期（前の月末までの 1306 の値動き）だけ降りる
+                    if _rx_rg_mi.get("mi") != mi:
+                        _rx_rg_mi.update(mi=mi, on=regime_on(dt, range_exit["regime"]))
+                        diag.setdefault("rg_months", {})[mi] = bool(_rx_rg_mi["on"])
+                    if not _rx_rg_mi["on"]:
+                        _rx_skip = True
+                        diag["rx_skip_regime"] = diag.get("rx_skip_regime", 0) + 1
+                if sell_px > cost0 * (1 + range_exit.get("min_gain", 0.0)) and not _rx_skip:
                     _rx_av = int(range_exit.get("avoid_div_months", -1))
                     if _rx_av >= 0:
                         _fm_r = int(row.get("fiscal_month", 0) or 0)
@@ -9818,6 +9861,118 @@ def hold2_report(gf: pd.DataFrame, cond_cols: list) -> dict:
 
 LH_ROWS = (("K1", "hd_cut30", "浅い減配（−30％未満）は持つ"), ("K4", "k4_y_safe", "利回り3％以上なら持つ＋赤字転落・無配は必ず売る"),
            ("E4", "st_never", "売らない（参考）"))
+
+
+def regime_years(pn: pd.DataFrame, start, args, rules=("bm_live", "sc_r4")) -> pd.DataFrame:
+    """通しで回した各ルールの暦年ごとの年率（評価額）と、その年の初めの合図（前の年の12か月の 1306 の値動き）。"""
+    sub = pn[pn["date"] >= pd.Timestamp(start)]
+    out = {}
+    for n_ in rules:
+        r_ = simulate(sub, VARIANTS[n_], args.capital, 20, tier_budget=args.realistic, dividends=args.realistic,
+                      slip_bps=args.slip_bps, fee_bps=args.fee_bps, tax_rate=args.tax / 100.0, ramp=0,
+                      min_yield_override=3.0)
+        cv = r_["curve"].set_index("date")["value"]
+        ye = cv.groupby(cv.index.year).last()
+        out[n_] = (ye / ye.shift(1) - 1.0) * 100.0
+    df = pd.DataFrame(out).dropna()
+    df["合図"] = [regime_ret12(pd.Timestamp(f"{y}-01-31")) for y in df.index]
+    return df
+
+
+def long_regime_report(gf: pd.DataFrame, cond_cols: list, spans, pn: pd.DataFrame, args) -> dict:
+    """横ばいの年だけ回転を上げる形（2026年11月14日。計画は long_regime_plan_2026-11-14）。"""
+    os_, rs_ = spans
+    L0 = VARIANTS["bm_live"]["label"]
+    print("\n【横ばいの年だけ回転を上げる形（20年分）】（基準は結果を見る前に決めたもの。計画は long_regime_plan_2026-11-14）")
+    print("  比べる相手 … R0 いまの本番の形。判定は一度も見ていない期間（〜2018年7月）の窓。最近の窓は参考")
+    print("  使い方 … G1 か G2 が「良い」で最近も「悪い」でなければ並走記録の候補。「多少の差」なら売買を増やす形としてワタナベさんに諮る。どちらでもなければ終わり")
+    print("  予想 … G1・G2 とも決められないか悪い。R4 より負けは小さい。多少の差は G1 が境目")
+
+    def cat(x):
+        if x.empty:
+            return "—"
+        w, l, m = float((x > 0).mean()), float((x < 0).mean()), float(x.mean())
+        if w >= 0.85 and m >= 1.0:
+            return "良い"
+        if l >= 0.85:
+            return "悪い"
+        if m >= -0.5 and float(x.min()) >= -1.0 and l < 0.85:
+            return "同じくらい"
+        return "決められない"
+
+    res = {}
+    for title_, sp_list in (("一度も見ていない期間（判定に使う）", os_), ("最近の窓（参考）", rs_)):
+        g_all = gf[gf["期間"].isin(sp_list)]
+        print(f"\n  ■ {title_} … 窓 {len(sp_list)}")
+        if g_all.empty:
+            print("    結果なし")
+            continue
+        pl = g_all.pivot_table(index=cond_cols, columns="ルール", values="清算後年率")
+        pm = g_all.pivot_table(index=cond_cols, columns="ルール", values="評価額年率")
+        print(f"    {'形':<34}{'清算後':>8}{'最悪':>8}{'最大下落':>9}{'売り/年':>8}{'回転を上げた月':>12}{'平均の差':>9}{'最悪の差':>9}{'評価額の差':>10}{'上回った':>8}  判定・多少の差")
+        g0 = g_all[g_all["ルール"] == L0]
+        if not g0.empty:
+            print(f"    {'R0 いまの本番の形（比べる相手）':<34}{g0['清算後年率'].mean():>7.1f}％{g0['清算後年率'].min():>7.1f}％{g0['最大下落'].mean():>8.1f}％{g0['売り/年'].mean():>8.1f}")
+        for k_, n_, sh_ in RG_ROWS:
+            L_ = VARIANTS[n_]["label"]
+            g_ = g_all[g_all["ルール"] == L_]
+            if g_.empty or L_ not in pl.columns or L0 not in pl.columns:
+                print(f"    {k_} {sh_} … 結果なし")
+                continue
+            d_ = (pl[L_] - pl[L0]).dropna()
+            dm_ = (pm[L_] - pm[L0]).dropna()
+            j_, jm_ = cat(d_), cat(dm_)
+            jj = j_ if j_ == jm_ else "決められない"
+            p_ = hold2_pass(d_, dm_)
+            rg_ = float(g_["回転を上げた月"].mean()) if "回転を上げた月" in g_.columns else float("nan")
+            if sp_list is os_:
+                res[k_] = (jj, p_)
+            elif k_ in res:
+                res[k_ + "_recent"] = (jj, p_)
+            print(f"    {(k_ + ' ' + sh_):<34}{g_['清算後年率'].mean():>7.1f}％{g_['清算後年率'].min():>7.1f}％{g_['最大下落'].mean():>8.1f}％{g_['売り/年'].mean():>8.1f}"
+                  + (f"{rg_:>11.0f}％" if rg_ == rg_ else f"{'—':>12}")
+                  + f"{d_.mean():>+9.2f}{d_.min():>+9.2f}{dm_.mean():>+10.2f}{float((d_ > 0).mean()) * 100:>7.0f}％  "
+                  + (jj if j_ == jm_ else f"決められない（清算後「{j_}」・評価額「{jm_}」）") + "・" + ("通る" if p_ else "通らない"))
+
+    # 暦年ごと（後から見た分かれ方）
+    try:
+        start = sorted(os_, key=lambda sp: sp.split("〜")[0])[0].split("〜")[0]
+        yy = regime_years(pn, start, args)
+        print(f"\n  ■ 暦年ごと（{start} から通しで回した評価額の年率。後から見た分かれ方。判定には使わない）")
+        print(f"    {'年':<6}{'R0':>8}{'R4':>8}{'差':>8}{'合図（前の12か月の TOPIX）':>22}  横ばい？ 上げ相場でない？")
+        for y_, r_ in yy.iterrows():
+            sg = r_["合図"]
+            print(f"    {y_:<6}{r_['bm_live']:>7.1f}％{r_['sc_r4']:>7.1f}％{r_['sc_r4'] - r_['bm_live']:>+8.1f}"
+                  + (f"{sg * 100:>+21.1f}％" if sg == sg and sg is not None else f"{'—':>22}")
+                  + ("  " + ("はい" if (sg is not None and sg == sg and abs(sg) <= 0.10) else "—") + "      "
+                     + ("はい" if (sg is not None and sg == sg and sg <= 0.10) else "—")))
+        win = (yy["sc_r4"] > yy["bm_live"])
+        sg_ = yy["合図"].astype(float)
+        f1 = sg_.abs() <= 0.10
+        f2 = sg_ <= 0.10
+        print(f"    R4 が R0 に勝った年 … {int(win.sum())} / {len(yy)} 年（{float(win.mean()) * 100:.0f}％）")
+        for nm_, f_ in (("横ばい（±10％以内）", f1), ("上げ相場でない（+10％以下）", f2)):
+            a_, b_ = win[f_], win[~f_ & sg_.notna()]
+            print(f"    合図が「{nm_}」の年 {int(f_.sum())} 年のうち R4 が勝った割合 {float(a_.mean()) * 100 if len(a_) else float('nan'):.0f}％"
+                  f" ／ そうでない年 {len(b_)} 年では {float(b_.mean()) * 100 if len(b_) else float('nan'):.0f}％")
+    except Exception as e_:
+        print(f"    暦年ごとの比べを出せませんでした（{e_}）")
+
+    print("\n  使い方（先に決めたこと）")
+    picked = None
+    for k_ in ("G1", "G2"):
+        j_, p_ = res.get(k_, ("—", False))
+        jr_, _pr = res.get(k_ + "_recent", ("—", False))
+        if j_ == "良い" and jr_ != "悪い":
+            print(f"    {k_} … 見ていない期間で「良い」・最近も「悪い」でない → 並走記録の候補（本番は変えない）")
+            picked = picked or k_
+        elif p_:
+            print(f"    {k_} … 「良い」ではないが「多少の差」を通った → 売買を増やす形として、入れるかをワタナベさんに諮る")
+        else:
+            print(f"    {k_} … 「良い」でも「多少の差」でもない")
+    if not picked and not any(res.get(k_, ("", False))[1] for k_ in ("G1", "G2")):
+        print("    → 市況で回転率を切り替える形は、前もって当てられないので効かない")
+    return res
 
 
 def long_hold_report(gf: pd.DataFrame, cond_cols: list, spans) -> dict:
@@ -17049,6 +17204,17 @@ def main() -> int:
         PIT_FROM = LONG_PIT_FROM
         COMPUTE_START_LIMIT_MIN = min(COMPUTE_START_LIMIT_MIN, LONG_COMPUTE_START_MIN)
     # 20年分で「多少の差なら塩漬け」と売るタイミングを確かめる（2026年11月14日に追加。計画は long_hold_plan_2026-11-14）
+    # 横ばいの年だけ回転を上げる形を20年分で（2026年11月14日に追加。計画は long_regime_plan_2026-11-14）
+    args.long_regime = (args.only or "").strip() == "long_regime"
+    if args.long_regime:
+        args.liq_metric, args.grid = True, True
+        args.only = "bm_live,sc_r4,rg_g1,rg_g2"
+        args.universe = "prime"
+        args.years = 20
+        LONG_MODE = True
+        CACHE = LONG_CACHE
+        PIT_FROM = LONG_PIT_FROM
+        COMPUTE_START_LIMIT_MIN = min(COMPUTE_START_LIMIT_MIN, LONG_COMPUTE_START_MIN)
     args.long_hold = (args.only or "").strip() == "long_hold"
     if args.long_hold:
         args.liq_metric, args.grid = True, True
@@ -17180,7 +17346,7 @@ def main() -> int:
                          or args.long_lab10 or args.long_lab11 or args.long_lab12 or args.long_lab13 or args.long_lab14
                          or args.long_lab15 or args.long_lab16 or args.long_lab17 or args.long_lab18 or args.long_lab19 or args.long_lab20 or args.long_lab21 or args.long_lab22 or args.long_lab23 or args.long_lab24 or args.long_lab25
                          or getattr(args, "long_rev2", False) or getattr(args, "long_mg1", False) or getattr(args, "long_c8live", False)
-                         or getattr(args, "long_hold", False))
+                         or getattr(args, "long_hold", False) or getattr(args, "long_regime", False))
     args.long_name = ("long_test" if args.long_test else "long_lab" if args.long_lab
                       else "long_lab2" if args.long_lab2 else "long_lab3" if args.long_lab3
                       else "long_lab4" if args.long_lab4 else "long_lab5" if args.long_lab5
@@ -17189,7 +17355,7 @@ def main() -> int:
                       else "long_lab10" if args.long_lab10 else "long_lab11" if args.long_lab11
                       else "long_lab12" if args.long_lab12 else "long_lab13" if args.long_lab13
                       else "long_lab14" if args.long_lab14 else "long_lab15" if args.long_lab15
-                      else "long_lab16" if args.long_lab16 else "long_lab17" if args.long_lab17 else "long_lab18" if args.long_lab18 else "long_lab19" if args.long_lab19 else "long_lab20" if args.long_lab20 else "long_lab21" if args.long_lab21 else "long_lab22" if args.long_lab22 else "long_lab23" if args.long_lab23 else "long_lab24" if args.long_lab24 else "long_lab25" if args.long_lab25 else "long_rev2" if getattr(args, "long_rev2", False) else "long_mg1" if getattr(args, "long_mg1", False) else "long_c8live" if getattr(args, "long_c8live", False) else "long_hold" if getattr(args, "long_hold", False) else "")
+                      else "long_lab16" if args.long_lab16 else "long_lab17" if args.long_lab17 else "long_lab18" if args.long_lab18 else "long_lab19" if args.long_lab19 else "long_lab20" if args.long_lab20 else "long_lab21" if args.long_lab21 else "long_lab22" if args.long_lab22 else "long_lab23" if args.long_lab23 else "long_lab24" if args.long_lab24 else "long_lab25" if args.long_lab25 else "long_rev2" if getattr(args, "long_rev2", False) else "long_mg1" if getattr(args, "long_mg1", False) else "long_c8live" if getattr(args, "long_c8live", False) else "long_hold" if getattr(args, "long_hold", False) else "long_regime" if getattr(args, "long_regime", False) else "")
 
     OUTDIR.mkdir(parents=True, exist_ok=True)
 
@@ -17282,7 +17448,7 @@ def main() -> int:
             log.warning("19回目：ETFの株価がひとつも取れませんでした。ETFとの比べは出せません")
         if getattr(args, "sell_test", False) or getattr(args, "hold_test", False) \
                 or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False) or getattr(args, "exempt_test", False) or getattr(args, "swing_cond", False) \
-                or getattr(args, "long_hold", False):
+                or getattr(args, "long_hold", False) or getattr(args, "long_regime", False):
             global ETF_IDLE_PX
             ETF_IDLE_PX = _etf_px.get("1306")
             if ETF_IDLE_PX is None:
@@ -19205,6 +19371,9 @@ def main() -> int:
                                 "うねり売り": d_.get("range_sells", 0),
                                 "うねり見送り_権利": d_.get("rx_skip_div", 0),
                                 "うねり見送り_候補": d_.get("rx_skip_cand", 0),
+                                "うねり見送り_市況": d_.get("rx_skip_regime", 0),
+                                "回転を上げた月": (float(np.mean(list(d_["rg_months"].values()))) * 100.0
+                                                if d_.get("rg_months") else float("nan")),
                                 "底で買い": d_.get("swing_buys", 0),
                                 "うねり1回の益": (d_.get("swing_gain_sum", 0.0) / d_["range_sells"]
                                               if d_.get("range_sells") else float("nan")),
@@ -21138,6 +21307,12 @@ def main() -> int:
                 bench_report(gf, cond_cols, panels[lbs_[0]], wins, store, _etf_px, args, (d0_, d1_))
             except Exception as e_:
                 log.exception("本番と高配当ETFの比べを出せませんでした: %s", e_)
+
+        if getattr(args, "long_regime", False) and nm and nm[0] == "bm_live":
+            try:
+                long_regime_report(gf, cond_cols, _long_spans, panels[lbs_[0]], args)
+            except Exception as e_:
+                log.exception("横ばいの年だけ回転を上げる形の比べを出せませんでした: %s", e_)
 
         if getattr(args, "long_hold", False) and nm and nm[0] == "st_base":
             try:
