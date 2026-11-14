@@ -2236,6 +2236,27 @@ def main() -> int:
             log.info('1306 close %s (%s)', etf_px, etf_date)
     except Exception as e:
         log.warning('1306 の株価が取れませんでした（待機資金は前の値段で評価）: %s', e)
+    # 2026年11月15日：前の月末までの12か月の 1306 の値動き（並走記録 YH が使う。分割を直した終値で数える）
+    etf_ret12, etf_ret12_asof = None, None
+    try:
+        to_d = date.today()
+        pe_d = to_d.replace(day=1) - timedelta(days=1)                       # 前の月末
+        p0_d = (pe_d.replace(day=1) - timedelta(days=1)).replace(day=1)      # 12か月前の月末を探す起点
+        for _ in range(10):
+            p0_d = (p0_d.replace(day=1) - timedelta(days=1)).replace(day=1)
+        p0_d = p0_d - timedelta(days=1)                                      # 12か月前の月末
+        q = client.get_daily_quotes('13060', (p0_d - timedelta(days=20)).isoformat(), pe_d.isoformat())
+        rows = sorted([(str(x.get('Date', ''))[:10], safe_float(x.get('AdjustmentClose') or x.get('Close'))) for x in q],
+                      key=lambda t: t[0])
+        rows = [r for r in rows if r[1]]
+        p1 = [r for r in rows if r[0] <= pe_d.isoformat()]
+        p0 = [r for r in rows if r[0] <= p0_d.isoformat()]
+        if p1 and p0 and p0[-1][1] > 0:
+            etf_ret12 = p1[-1][1] / p0[-1][1] - 1.0
+            etf_ret12_asof = p1[-1][0]
+            log.info('1306 12か月の値動き %+.1f%%（%s〜%s）', etf_ret12 * 100, p0[-1][0], p1[-1][0])
+    except Exception as e:
+        log.warning('1306 の12か月の値動きが取れませんでした（並走記録 YH はその日売らない）: %s', e)
 
     # 出力
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -2259,7 +2280,8 @@ def main() -> int:
         'latest_price_date': max(
             (s['price_history'][-1].get('d') for s in stocks if s.get('price_history')), default=None),
         # 2026年11月13日：配分案で余りを 1306 に回すための値段（売買単位は10口。2026年4月1日に1口を10口に分割したあと）
-        'etf1306': {'code': '1306', 'name': 'NEXT FUNDS TOPIX連動型上場投信', 'close': etf_px, 'date': etf_date, 'unit': 10},
+        'etf1306': {'code': '1306', 'name': 'NEXT FUNDS TOPIX連動型上場投信', 'close': etf_px, 'date': etf_date, 'unit': 10,
+                    'ret12': etf_ret12, 'ret12_asof': etf_ret12_asof},
         'stocks': stocks,
     }
     # 2026年11月8日：履歴を data/history/ に分けて書く（results.json が67MBまで大きくなったため）。
@@ -2277,7 +2299,7 @@ def main() -> int:
         portfolio_state = update_portfolio(stocks, etf_px)
         try:      # 2026年11月10日：買う順番の並走記録（12月1日から。本番の売買には影響しない）
             from variant_engine import update_variants
-            update_variants(stocks, etf_px)
+            update_variants(stocks, etf_px, etf_ret12)
         except Exception as e:
             log.error('Variant tracks failed: %s', e, exc_info=True)
         total_return = portfolio_state['total_value'] - portfolio_state['initial_cash']

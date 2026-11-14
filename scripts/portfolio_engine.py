@@ -81,6 +81,16 @@ HARVEST = True              # 12月の損出し（検証の R6。161通りで「
 HARVEST_MIN_LOSS = 0.02     # 取得単価より2％以上下がっている持ち株だけ（検証と同じ）
 HARVEST_FROM_DAY = 15       # 12月15日以降の最初の実行日（年内に受け渡しが終わるように）
 SPLIT_TOL = 0.03            # 株価の記録が3％以上ずれたら、株式分割・併合とみなす
+# 2026年11月15日：6月と12月の揃え直し（検証の C2。9年分の rebal2 と20年分の long_trade の両方で「多少の差」を通り、
+# 一度も見ていない2009〜2018年も平均 +0.16pt。計画・結果はプロジェクトの long_trade_result_2026-11-14・rebal_live_plan_2026-11-15）
+REBALANCE = True
+REBAL_MONTHS = (6, 12)
+REBAL_BAND = 0.25           # 目標の大きさの1.25倍を超えた持ち株だけ、超えた分を目標まで売る（100株単位・最低100株は残す）
+REBAL_FROM_DAY = 15         # その月の15日以降の最初の実行日（12月は損出しのあと）
+# 2026年11月15日：並走記録（variant_engine の D1・YH）だけで使う決まり。本番では None のまま（働かない）
+RAISE_BUY: dict[str, Any] | None = None    # D1 {"min": 0.05, "cap": 1.5, "trim": True}：増配の発表で買い増す
+YIELD_EXIT: dict[str, Any] | None = None   # YH {"below": 2.0, "hot": 0.20}：大きく上がったあとだけ利回り割れで売る
+_MKT: dict[str, Any] = {'ret12': None}     # 前の月末までの12か月の 1306 の値動き（generate.py が渡す）
 # 2026年11月10日：待機中の現金を TOPIX 連動ETF（1306）で持つ（本の検証の結論。tool_update_2026-11-10）。
 # 買い付けや買い増しで現金が足りないときは、必要な分だけ 1306 を売る。分配金は数えない（控えめ）。
 ETF_SLEEVE = True
@@ -657,6 +667,146 @@ def topup_holdings(state: dict[str, Any], history: dict[str, Any], stocks_by_cod
     return done
 
 
+def rebalance_holdings(state: dict[str, Any], history: dict[str, Any], stocks_by_code: dict[str, dict], today: date) -> list:
+    """6月と12月の揃え直し（検証の C2）。目標の大きさ（総資産 ÷ 15 × Tier の重み）の1.25倍を超えた持ち株を、
+    超えた分だけ目標まで売る（100株単位・最低100株は残す）。税は通常どおり。売ったお金は、その日の待機資金（1306）を経て、
+    次の買い付け・毎月の買い増しに回る。"""
+    done = []
+    update_valuations(state, stocks_by_code)
+    for h in state['holdings']:
+        st = stocks_by_code.get(h['code'])
+        if not st:
+            continue
+        px = get_today_open_price(st) or h.get('current_price')
+        if not px or px <= 0:
+            continue
+        tgt = _target_value(state, st.get('tier') or h.get('tier', 'B'))
+        val = h['qty'] * px
+        if tgt <= 0 or val <= tgt * (1.0 + REBAL_BAND):
+            continue
+        cut = int(((val - tgt) / px) // 100) * 100
+        cut = min(cut, h['qty'] - 100)
+        if cut <= 0:
+            continue
+        amount = px * cut
+        pl = (px - h['buy_price']) * cut
+        tax = gain_tax(state, pl, today)
+        state['cash'] += amount - tax
+        state['realized_pl'] += pl
+        rec = {'date': today.isoformat(), 'action': 'SELL', 'code': h['code'], 'name': h.get('name', ''),
+               'tier': h.get('tier', 'B'), 'qty': cut, 'price': px, 'amount': amount,
+               'buy_price': h['buy_price'], 'buy_date': h['buy_date'],
+               'holding_days': (today - date.fromisoformat(h['buy_date'])).days,
+               'realized_pl': pl, 'realized_pl_pct': round((px - h['buy_price']) / h['buy_price'] * 100, 2),
+               'tax': tax, 'reason': f'揃え直し（目標の{1 + REBAL_BAND:.2f}倍を超えた分を目標まで売る。6月・12月）'}
+        history['trades'].append(rec)
+        done.append(rec)
+        log.info('REBALANCE %s (%s) %d -> %d shares', h['code'], h.get('name', ''), h['qty'], h['qty'] - cut)
+        h['qty'] -= cut
+    update_valuations(state, stocks_by_code)
+    return done
+
+
+def yield_exit_hot(state: dict[str, Any], history: dict[str, Any], stocks_by_code: dict[str, dict], today: date) -> list:
+    """並走記録 YH だけ：前の月末までの12か月の 1306 の値動きが +20％以上のとき、利回り（予想配当 ÷ 株価）が
+    2.0％を下回った持ち株を全部売る。月に1回（その月の最初の実行日）。"""
+    cfg = YIELD_EXIT or {}
+    r = _MKT.get('ret12')
+    if r is None or r < float(cfg.get('hot', 0.20)):
+        return []
+    done, keep = [], []
+    for h in state['holdings']:
+        st = stocks_by_code.get(h['code'])
+        y = (st or {}).get('current_yield')
+        if st is None or y is None or y >= float(cfg.get('below', 2.0)):
+            keep.append(h)
+            continue
+        px = get_today_open_price(st) or h['current_price']
+        n0 = len(history['trades'])
+        sell_holding(state, history, h, px, today,
+                     f"大きく上がったあとの利回り割れ（TOPIX 12か月 {r * 100:+.1f}％・利回り {y:.2f}％）")
+        done += history['trades'][n0:]
+        log.info('YIELD_EXIT %s (%s) yield=%.2f ret12=%.3f', h['code'], h.get('name', ''), y, r)
+    state['holdings'] = keep
+    return done
+
+
+def raise_buy_holdings(state: dict[str, Any], history: dict[str, Any], stocks: list[dict[str, Any]],
+                       stocks_by_code: dict[str, dict], today: date) -> list:
+    """並走記録 D1 だけ：予想配当が前の月の記録より5％以上増えた持ち株を、目標の1.5倍まで買い増す。
+    お金が足りないときは、目標をいちばん上回っている持ち株（その月に増配していないもの）を目標まで売って回す。
+    月に1回（その月の最初の実行日）。前の月の予想配当は state['dps_ref'] に全銘柄分を残す。"""
+    cfg = RAISE_BUY or {}
+    ref = state.get('dps_ref') or {}
+    done = []
+    up = []
+    for h in state['holdings']:
+        st = stocks_by_code.get(h['code'])
+        d0, d1 = ref.get(h['code']), (st or {}).get('forecast_dps')
+        if st and d0 and d1 and d0 > 0 and d1 >= d0 * (1.0 + float(cfg.get('min', 0.05))) \
+                and not st.get('emergency_exit'):     # 検証と同じく 8条件は問わない（減配・業績急変の印だけ除く）
+            up.append(h)
+    up_codes = {h['code'] for h in up}
+    for h in up:
+        st = stocks_by_code[h['code']]
+        px = get_today_open_price(st)
+        if not px or px <= 0:
+            continue
+        tgt = _target_value(state, st.get('tier') or h.get('tier', 'B'))
+        need = int((tgt * float(cfg.get('cap', 1.5)) - h['qty'] * px) // (100 * px)) * 100
+        if need <= 0:
+            continue
+        avail = state['cash'] + etf_value(state) * (1.0 - ETF_COST) * 0.995
+        if cfg.get('trim') and avail < need * px:
+            cand = []
+            for h2 in state['holdings']:
+                st2 = stocks_by_code.get(h2['code'])
+                if h2['code'] in up_codes or not st2:
+                    continue
+                p2 = get_today_open_price(st2) or h2.get('current_price')
+                t2 = _target_value(state, st2.get('tier') or h2.get('tier', 'B'))
+                if p2 and p2 > 0 and t2 > 0 and h2['qty'] * p2 > t2:
+                    cand.append((h2['qty'] * p2 / t2, h2['code'], h2, p2, h2['qty'] * p2 - t2))
+            if cand:
+                _r, _c, h2, p2, ex2 = max(cand)
+                cut = min(int(math.ceil((need * px - avail) / p2 / 100)) * 100, int(ex2 // (p2 * 100)) * 100, h2['qty'] - 100)
+                if cut > 0:
+                    pl = (p2 - h2['buy_price']) * cut
+                    tax = gain_tax(state, pl, today)
+                    state['cash'] += p2 * cut - tax
+                    state['realized_pl'] += pl
+                    rec = {'date': today.isoformat(), 'action': 'SELL', 'code': h2['code'], 'name': h2.get('name', ''),
+                           'tier': h2.get('tier', 'B'), 'qty': cut, 'price': p2, 'amount': p2 * cut,
+                           'buy_price': h2['buy_price'], 'buy_date': h2['buy_date'],
+                           'holding_days': (today - date.fromisoformat(h2['buy_date'])).days,
+                           'realized_pl': pl, 'realized_pl_pct': round((p2 - h2['buy_price']) / h2['buy_price'] * 100, 2),
+                           'tax': tax, 'reason': '増配の買い増しのために、目標を上回っている分を売る'}
+                    history['trades'].append(rec)
+                    done.append(rec)
+                    h2['qty'] -= cut
+        avail = state['cash'] + etf_value(state) * (1.0 - ETF_COST) * 0.995
+        lots = int(min(need // 100, avail // (100 * px)))
+        if lots <= 0:
+            continue
+        qty = lots * 100
+        amount = qty * px
+        ensure_cash(state, history, amount, today)
+        if amount > state['cash']:
+            continue
+        state['cash'] -= amount
+        state['total_invested'] += amount
+        h['buy_price'] = (h['buy_price'] * h['qty'] + amount) / (h['qty'] + qty)
+        h['qty'] += qty
+        rec = {'date': today.isoformat(), 'action': 'BUY', 'code': h['code'], 'name': h.get('name', ''),
+               'tier': h.get('tier', 'B'), 'qty': qty, 'price': px, 'amount': amount,
+               'reason': f"増配の発表で買い増し（予想配当 {ref.get(h['code'])} → {st.get('forecast_dps')}円・目標の{cfg.get('cap', 1.5)}倍まで）"}
+        history['trades'].append(rec)
+        done.append(rec)
+        log.info('RAISE_BUY %s (%s) %d shares', h['code'], h.get('name', ''), qty)
+    state['dps_ref'] = {s['code']: s['forecast_dps'] for s in stocks if s.get('forecast_dps')}
+    return done
+
+
 def harvest_losses(state: dict[str, Any], history: dict[str, Any], stocks_by_code: dict[str, dict], today: date) -> list:
     """12月の損出し（検証の R6）。取得単価より2％以上下がっている持ち株を売って損を確定させ、同じ株数をすぐ買い戻す。"""
     done = []
@@ -876,10 +1026,13 @@ def migrate_v4(state: dict[str, Any], history: dict[str, Any], stocks_by_code: d
              ', '.join(f"{h['code']} {b}->{k}" for h, b, k in trimmed) or 'none')
 
 
-def update_portfolio(stocks: list[dict[str, Any]], etf_px: float | None = None) -> dict[str, Any]:
-    """メイン処理: 毎日のポートフォリオ更新。etf_px は 1306 のいちばん新しい終値（待機資金に使う）。"""
+def update_portfolio(stocks: list[dict[str, Any]], etf_px: float | None = None,
+                     etf_ret12: float | None = None) -> dict[str, Any]:
+    """メイン処理: 毎日のポートフォリオ更新。etf_px は 1306 のいちばん新しい終値（待機資金に使う）。
+    etf_ret12 は前の月末までの12か月の 1306 の値動き（並走記録 YH だけが使う）。"""
     today_jst = datetime.now(timezone(timedelta(hours=9))).date()
     _ETF_PX['price'] = etf_px if (etf_px and etf_px > 0) else None
+    _MKT['ret12'] = etf_ret12
 
     # 既存データ読み込み
     state = load_json(STATE_PATH, init_state())
@@ -952,6 +1105,12 @@ def update_portfolio(stocks: list[dict[str, Any]], etf_px: float | None = None) 
     for i in reversed(holdings_to_remove):
         del state['holdings'][i]
 
+    # ステップ3b：並走記録 YH だけ（本番では YIELD_EXIT が None なので働かない）。月に1回
+    ym = today_jst.strftime('%Y-%m')
+    if YIELD_EXIT and state.get('last_yexit_month') != ym:
+        new_sells += yield_exit_hot(state, history, stocks_by_code, today_jst)
+        state['last_yexit_month'] = ym
+
     # ステップ4: 購入判定
     existing_codes = {h['code'] for h in state['holdings']}
     buy_candidates = [
@@ -983,8 +1142,15 @@ def update_portfolio(stocks: list[dict[str, Any]], etf_px: float | None = None) 
                 new_buys.append(history['trades'][-1])
             log.info('BUY %s (%s)', stock['code'], stock.get('name', ''))
 
+    # ステップ4a：並走記録 D1 だけ（本番では RAISE_BUY が None なので働かない）。月に1回、買い増しの前に
+    if RAISE_BUY and state.get('last_raise_month') != ym:
+        update_valuations(state, stocks_by_code)
+        rb = raise_buy_holdings(state, history, stocks, stocks_by_code, today_jst)
+        new_buys += [t for t in rb if t['action'] == 'BUY']
+        new_sells += [t for t in rb if t['action'] == 'SELL']
+        state['last_raise_month'] = ym
+
     # ステップ4b: 配当で比率の下がった持ち株を買い増す（月に1回。検証の X8）
-    ym = today_jst.strftime('%Y-%m')
     if TOPUP and state.get('last_topup_month') != ym:
         update_valuations(state, stocks_by_code)
         new_buys += topup_holdings(state, history, stocks_by_code, today_jst)
@@ -996,6 +1162,12 @@ def update_portfolio(stocks: list[dict[str, Any]], etf_px: float | None = None) 
         hv = harvest_losses(state, history, stocks_by_code, today_jst)
         new_sells += [t for t in hv if t['action'] == 'SELL']
         state['last_harvest_year'] = today_jst.year
+
+    # ステップ4c2：6月と12月の揃え直し（その月の15日以降の最初の実行日に1回。検証の C2。2026年11月15日から）
+    if REBALANCE and today_jst.month in REBAL_MONTHS and today_jst.day >= REBAL_FROM_DAY \
+            and state.get('last_rebal_month') != ym:
+        new_sells += rebalance_holdings(state, history, stocks_by_code, today_jst)
+        state['last_rebal_month'] = ym
 
     # ステップ4d: 余った現金を 1306 で持つ（2026年11月10日）
     invest_idle(state, history, today_jst)
