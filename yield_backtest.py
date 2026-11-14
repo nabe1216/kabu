@@ -9941,6 +9941,72 @@ def regime_years(pn: pd.DataFrame, start, args, rules=("bm_live", "sc_r4")) -> p
     return df
 
 
+def long_yexit_report(gf: pd.DataFrame, cond_cols: list, spans) -> dict:
+    """利回り割れで売る形を20年分で（2026年11月14日。計画は long_yexit_plan_2026-11-14）。R0＝いまの本番の形と比べる。"""
+    os_, rs_ = spans
+    L0 = VARIANTS["bm_live"]["label"]
+    rows = (("Y2", "ye_y2", "利回り2.0％割れで売る"), ("O2", "ry_o2", "過去3年平均の6割未満で売る"))
+    print("\n【利回り割れで売る形を20年分で確かめる】（基準は結果を見る前に決めたもの。計画は long_yexit_plan_2026-11-14）")
+    print("  使い方 … 見ていない期間で平均の差 0 以上かつ「多少の差」を通り、最近の窓でも「多少の差」を通れば勧める（Y2 を先に見る）。どちらも満たさなければ入れない")
+    print("  予想 … Y2 は見ていない期間で平均 0 以上かは五分五分・多少の差は通る。O2 は見ていない期間でマイナス")
+
+    def cat(x):
+        if x.empty:
+            return "—"
+        w, l, m = float((x > 0).mean()), float((x < 0).mean()), float(x.mean())
+        if w >= 0.85 and m >= 1.0:
+            return "良い"
+        if l >= 0.85:
+            return "悪い"
+        if m >= -0.5 and float(x.min()) >= -1.0 and l < 0.85:
+            return "同じくらい"
+        return "決められない"
+
+    res = {}
+    for title_, sp_list, key_ in (("一度も見ていない期間（判定に使う）", os_, "os"), ("最近の窓", rs_, "rs")):
+        g_all = gf[gf["期間"].isin(sp_list)]
+        print(f"\n  ■ {title_} … 窓 {len(sp_list)}")
+        if g_all.empty:
+            print("    結果なし")
+            continue
+        pl = g_all.pivot_table(index=cond_cols, columns="ルール", values="清算後年率")
+        pm = g_all.pivot_table(index=cond_cols, columns="ルール", values="評価額年率")
+        g0 = g_all[g_all["ルール"] == L0]
+        print(f"    {'形':<30}{'清算後':>8}{'最悪':>8}{'最大下落':>9}{'受取配当':>9}{'売り/年':>8}{'平均の差':>9}{'最悪の差':>9}{'評価額の差':>10}{'上回った':>8}  判定・多少の差")
+        print(f"    {'R0 いまの本番の形（比べる相手）':<30}{g0['清算後年率'].mean():>7.1f}％{g0['清算後年率'].min():>7.1f}％{g0['最大下落'].mean():>8.1f}％"
+              f"{g0['受取配当'].mean() if '受取配当' in g0.columns else float('nan'):>8.2f}％{g0['売り/年'].mean():>8.1f}")
+        for k_, n_, sh_ in rows:
+            L_ = VARIANTS[n_]["label"]
+            g_ = g_all[g_all["ルール"] == L_]
+            if g_.empty or L_ not in pl.columns or L0 not in pl.columns:
+                print(f"    {k_} {sh_} … 結果なし")
+                continue
+            d_ = (pl[L_] - pl[L0]).dropna()
+            dm_ = (pm[L_] - pm[L0]).dropna()
+            j_, jm_ = cat(d_), cat(dm_)
+            p_ = hold2_pass(d_, dm_)
+            res[(k_, key_)] = (float(d_.mean()), p_)
+            print(f"    {(k_ + ' ' + sh_):<30}{g_['清算後年率'].mean():>7.1f}％{g_['清算後年率'].min():>7.1f}％{g_['最大下落'].mean():>8.1f}％"
+                  f"{g_['受取配当'].mean() if '受取配当' in g_.columns else float('nan'):>8.2f}％{g_['売り/年'].mean():>8.1f}"
+                  f"{d_.mean():>+9.2f}{d_.min():>+9.2f}{dm_.mean():>+10.2f}{float((d_ > 0).mean()) * 100:>7.0f}％  "
+                  + (j_ if j_ == jm_ else f"決められない（清算後「{j_}」・評価額「{jm_}」）") + "・" + ("通る" if p_ else "通らない"))
+    print("\n  使い方（先に決めたこと）")
+    pick = None
+    for k_ in ("Y2", "O2"):
+        m_os, p_os = res.get((k_, "os"), (float("nan"), False))
+        _m, p_rs = res.get((k_, "rs"), (float("nan"), False))
+        ok_ = (m_os == m_os) and m_os >= 0 and p_os and p_rs
+        print(f"    {k_} … 見ていない期間 平均 {m_os:+.2f}pt・多少の差 {'通る' if p_os else '通らない'} ／ 最近 多少の差 {'通る' if p_rs else '通らない'} → "
+              + ("条件を満たす" if ok_ else "条件を満たさない"))
+        if ok_ and pick is None:
+            pick = k_
+    if pick:
+        print(f"    → {pick} を本番に入れることを勧める（入れるかはワタナベさんが決める）")
+    else:
+        print("    → 入れない。利回り割れで売る形は、9年分では良く見えたが20年分では確かめられなかった")
+    return res
+
+
 def long_regime_report(gf: pd.DataFrame, cond_cols: list, spans, pn: pd.DataFrame, args) -> dict:
     """横ばいの年だけ回転を上げる形（2026年11月14日。計画は long_regime_plan_2026-11-14）。"""
     os_, rs_ = spans
@@ -17341,6 +17407,17 @@ def main() -> int:
         COMPUTE_START_LIMIT_MIN = min(COMPUTE_START_LIMIT_MIN, LONG_COMPUTE_START_MIN)
     # 20年分で「多少の差なら塩漬け」と売るタイミングを確かめる（2026年11月14日に追加。計画は long_hold_plan_2026-11-14）
     # 横ばいの年だけ回転を上げる形を20年分で（2026年11月14日に追加。計画は long_regime_plan_2026-11-14）
+    # 利回り割れで売る形を20年分で（2026年11月14日に追加。計画は long_yexit_plan_2026-11-14）
+    args.long_yexit = (args.only or "").strip() == "long_yexit"
+    if args.long_yexit:
+        args.liq_metric, args.grid = True, True
+        args.only = "bm_live,ye_y2,ry_o2"
+        args.universe = "prime"
+        args.years = 20
+        LONG_MODE = True
+        CACHE = LONG_CACHE
+        PIT_FROM = LONG_PIT_FROM
+        COMPUTE_START_LIMIT_MIN = min(COMPUTE_START_LIMIT_MIN, LONG_COMPUTE_START_MIN)
     args.long_regime = (args.only or "").strip() == "long_regime"
     if args.long_regime:
         args.liq_metric, args.grid = True, True
@@ -17499,7 +17576,8 @@ def main() -> int:
                          or args.long_lab10 or args.long_lab11 or args.long_lab12 or args.long_lab13 or args.long_lab14
                          or args.long_lab15 or args.long_lab16 or args.long_lab17 or args.long_lab18 or args.long_lab19 or args.long_lab20 or args.long_lab21 or args.long_lab22 or args.long_lab23 or args.long_lab24 or args.long_lab25
                          or getattr(args, "long_rev2", False) or getattr(args, "long_mg1", False) or getattr(args, "long_c8live", False)
-                         or getattr(args, "long_hold", False) or getattr(args, "long_regime", False))
+                         or getattr(args, "long_hold", False) or getattr(args, "long_regime", False)
+                         or getattr(args, "long_yexit", False))
     args.long_name = ("long_test" if args.long_test else "long_lab" if args.long_lab
                       else "long_lab2" if args.long_lab2 else "long_lab3" if args.long_lab3
                       else "long_lab4" if args.long_lab4 else "long_lab5" if args.long_lab5
@@ -17508,7 +17586,7 @@ def main() -> int:
                       else "long_lab10" if args.long_lab10 else "long_lab11" if args.long_lab11
                       else "long_lab12" if args.long_lab12 else "long_lab13" if args.long_lab13
                       else "long_lab14" if args.long_lab14 else "long_lab15" if args.long_lab15
-                      else "long_lab16" if args.long_lab16 else "long_lab17" if args.long_lab17 else "long_lab18" if args.long_lab18 else "long_lab19" if args.long_lab19 else "long_lab20" if args.long_lab20 else "long_lab21" if args.long_lab21 else "long_lab22" if args.long_lab22 else "long_lab23" if args.long_lab23 else "long_lab24" if args.long_lab24 else "long_lab25" if args.long_lab25 else "long_rev2" if getattr(args, "long_rev2", False) else "long_mg1" if getattr(args, "long_mg1", False) else "long_c8live" if getattr(args, "long_c8live", False) else "long_hold" if getattr(args, "long_hold", False) else "long_regime" if getattr(args, "long_regime", False) else "")
+                      else "long_lab16" if args.long_lab16 else "long_lab17" if args.long_lab17 else "long_lab18" if args.long_lab18 else "long_lab19" if args.long_lab19 else "long_lab20" if args.long_lab20 else "long_lab21" if args.long_lab21 else "long_lab22" if args.long_lab22 else "long_lab23" if args.long_lab23 else "long_lab24" if args.long_lab24 else "long_lab25" if args.long_lab25 else "long_rev2" if getattr(args, "long_rev2", False) else "long_mg1" if getattr(args, "long_mg1", False) else "long_c8live" if getattr(args, "long_c8live", False) else "long_hold" if getattr(args, "long_hold", False) else "long_regime" if getattr(args, "long_regime", False) else "long_yexit" if getattr(args, "long_yexit", False) else "")
 
     OUTDIR.mkdir(parents=True, exist_ok=True)
 
@@ -17604,7 +17682,7 @@ def main() -> int:
             log.warning("19回目：ETFの株価がひとつも取れませんでした。ETFとの比べは出せません")
         if getattr(args, "sell_test", False) or getattr(args, "hold_test", False) \
                 or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False) or getattr(args, "exempt_test", False) or getattr(args, "swing_cond", False) or getattr(args, "rebal_test", False) or getattr(args, "rebal_test2", False) or getattr(args, "yexit_test", False) or getattr(args, "ryexit_test", False) \
-                or getattr(args, "long_hold", False) or getattr(args, "long_regime", False):
+                or getattr(args, "long_hold", False) or getattr(args, "long_regime", False) or getattr(args, "long_yexit", False):
             global ETF_IDLE_PX
             ETF_IDLE_PX = _etf_px.get("1306")
             if ETF_IDLE_PX is None:
@@ -21464,6 +21542,12 @@ def main() -> int:
                 bench_report(gf, cond_cols, panels[lbs_[0]], wins, store, _etf_px, args, (d0_, d1_))
             except Exception as e_:
                 log.exception("本番と高配当ETFの比べを出せませんでした: %s", e_)
+
+        if getattr(args, "long_yexit", False) and nm and nm[0] == "bm_live":
+            try:
+                long_yexit_report(gf, cond_cols, _long_spans)
+            except Exception as e_:
+                log.exception("20年分の利回り割れで売る形の比べを出せませんでした: %s", e_)
 
         if getattr(args, "long_regime", False) and nm and nm[0] == "bm_live":
             try:
