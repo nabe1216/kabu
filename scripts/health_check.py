@@ -128,7 +128,7 @@ def run(prev_path: str | None = None, today: date | None = None) -> dict[str, An
             pcd = date.fromisoformat(pc_raw[:10])
             due = date(today.year, 7, 1) if today >= date(today.year, 7, 15) else date(today.year - 1, 7, 1)
             if pcd < due:
-                warn('div_policy_stale', f'「配当を守る会社」のリスト（Tier と減配の条件の免除に使う）の確認日が {pc_raw}。'
+                warn('div_policy_stale', f'「配当を守る会社」のリスト（Tier に使う）の確認日が {pc_raw}。'
                      f'日経累進高配当株指数の6月の入れ替えと、各社の配当方針を確かめ直す時期')
         except ValueError:
             pass

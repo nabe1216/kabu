@@ -241,8 +241,7 @@ PROGRESSIVE_DECLARED: set[str] = {
 # ③ 有価証券報告書の【配当政策】に「減配しない」と書いている会社（2026年11月13日に追加）
 #   scripts/edinet_policy.py が EDINET（金融庁）から毎月読み取り、data/dividend_policy.json に出す。中小型も拾える
 #   - 「今期だけ」の約束（例：キヤノンの「2026年12月期は下げない」）は入れない
-#   - ③は Tier（配当を守る会社）にだけ使い、減配の条件の免除には使わない（免除をどうするかは未決のため。
-#     ①②の免除は、これまでどおり）
+#   - ③は Tier（配当を守る会社）にだけ使う。減配の条件の免除には使わない（①②の免除も2026年11月14日にやめた。下の DIVIDEND_CHECK_EXEMPT）
 def _load_edinet_policy() -> tuple[set[str], dict]:
     try:
         js = json.loads((Path(__file__).parent.parent / 'data' / 'dividend_policy.json').read_text(encoding='utf-8'))
@@ -263,7 +262,11 @@ PROGRESSIVE_DIVIDEND_LIST: set[str] = NIKKEI_PROGRESSIVE_30 | PROGRESSIVE_DECLAR
 DOE_LIST: set[str] = set()
 
 # 「減配ゼロ判定 + 最低利回り」免除リスト
-DIVIDEND_CHECK_EXEMPT: set[str] = NIKKEI_PROGRESSIVE_30 | PROGRESSIVE_DECLARED | DOE_LIST   # ③は入れない
+# 2026年11月14日に空にした（それまでは ①＋②＋DOE）。どの会社も実際の配当で「過去10期で減配していない」を判定する。
+#   検証（exempt_plan / exempt_result_2026-11-14、yield-backtest #208）：免除をやめても、いまの免除と比べて年率の差は平均 −0.16pt・
+#   いちばん悪い条件で −1.25pt（決めておいた「多少の差」に収まる）。リストは後出しで免除のある形を良く見せる向きにしか働かないので、
+#   決まりの簡単な・後出しのない形にした。「配当を守る会社」のリストは Tier（S・A）にだけ使う
+DIVIDEND_CHECK_EXEMPT: set[str] = set()
 
 # 自己資本比率チェック免除セクター（金融4業種+不動産業）
 EQUITY_RATIO_EXEMPT_SECTORS: set[str] = {
