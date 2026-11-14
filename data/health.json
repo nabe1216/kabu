@@ -1,5 +1,5 @@
 {
- "generated_at": "2026-11-14T11:49:35+09:00",
+ "generated_at": "2026-11-14T13:49:56+09:00",
  "date": "2026-11-14",
  "ok": false,
  "warnings": [
@@ -10,7 +10,7 @@
  ],
  "checks": {
   "counts": {
-   "pass": 99,
+   "pass": 79,
    "buy": 372,
    "emergency": 116,
    "cut": 39
@@ -40,7 +40,7 @@
    "engine_version": 4
   },
   "overweight": [],
-  "run_minutes": 69.8,
+  "run_minutes": 60.4,
   "big_files": []
  }
 }
