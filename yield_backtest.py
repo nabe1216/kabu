@@ -2298,6 +2298,15 @@ VARIANTS.update({
     "rb_b2": _lab_rule("B2 ＋12月に揃え直し（目標の1.25倍を超えたら目標まで売る）", rebalance={"month": 12, "band": 0.25}, **_EX_BASE),
     "rb_b3": _lab_rule("B3 ＋6月に揃え直し（目標の1.25倍を超えたら目標まで売る）", rebalance={"month": 6, "band": 0.25}, **_EX_BASE),
 })
+# ── 揃え直しで売買の量を増やす（2026年11月14日に追加。計画は rebal2_plan_2026-11-14）──
+VARIANTS.update({
+    "rb_c1": _lab_rule("C1 ＋6月に揃え直し（目標の1.1倍を超えたら目標まで売る）", rebalance={"months": [6], "band": 0.10}, **_EX_BASE),
+    "rb_c2": _lab_rule("C2 ＋6月と12月に揃え直し（1.25倍）", rebalance={"months": [6, 12], "band": 0.25}, **_EX_BASE),
+    "rb_c3": _lab_rule("C3 ＋6月と12月に揃え直し（1.1倍）", rebalance={"months": [6, 12], "band": 0.10}, **_EX_BASE),
+    "rb_c4": _lab_rule("C4 ＋毎月揃え直し（1.1倍）", rebalance={"months": list(range(1, 13)), "band": 0.10}, **_EX_BASE),
+})
+RB2_ROWS = (("B3", "rb_b3", "6月・1.25倍（前回推した形）"), ("C1", "rb_c1", "6月・1.1倍"), ("C2", "rb_c2", "6月と12月・1.25倍"),
+            ("C3", "rb_c3", "6月と12月・1.1倍"), ("C4", "rb_c4", "毎月・1.1倍"))
 RB_ROWS = (("B1", "rb_b1", "12月・1.5倍"), ("B2", "rb_b2", "12月・1.25倍"), ("B3", "rb_b3", "6月・1.25倍"))
 RG_ROWS = (("R4", "sc_r4", "いつも回転を上げる"), ("G1", "rg_g1", "横ばいの時期だけ"), ("G2", "rg_g2", "上げ相場でない時期だけ"))
 SC_ROWS = (("R1", "sc_r1", "条件なし"), ("R2", "sc_r2", "権利月が近いときは降りない"),
@@ -7268,7 +7277,8 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                     _close(c_, st_, mi, "比率の上限で全部売却")
 
         # ── 年1回の揃え直し（20年分の追加検証6）：目標の大きさの (1＋band) 倍を超えた持ち株を、目標まで売る ──
-        _rb_now = bool(rebalance) and pd.Timestamp(dt).month == int(rebalance.get("month", 12))
+        # 2026年11月14日：months（月のリスト）でも指定できる（rebal_test2）
+        _rb_now = bool(rebalance) and pd.Timestamp(dt).month in [int(m_) for m_ in rebalance.get("months", [rebalance.get("month", 12)])]
         if _rb_now and pos:
             _tot = value_of(day)
             _avg_w_rb = sum(tw.values()) / len(tw)
@@ -10048,15 +10058,18 @@ def long_hold_report(gf: pd.DataFrame, cond_cols: list, spans) -> dict:
     return res
 
 
-def rebal_report(gf: pd.DataFrame, cond_cols: list) -> dict:
+def rebal_report(gf: pd.DataFrame, cond_cols: list, rows=None, plan: str = "rebal_plan_2026-11-14",
+                 title: str = "定期的な揃え直し（上がりすぎた銘柄を利確して、ほかに回す）",
+                 expect: str = "3つとも決められないか同じくらい。B1 は多少の差を通る。B2 は境目。B3 は B2 と同じくらい") -> dict:
     """定期的な揃え直し（2026年11月14日。計画は rebal_plan_2026-11-14）。B0＝いまの本番の形と比べる。"""
     pl = gf.pivot_table(index=cond_cols, columns="ルール", values="清算後年率")
     pm = gf.pivot_table(index=cond_cols, columns="ルール", values="評価額年率")
     L0 = VARIANTS["bm_live"]["label"]
-    print("\n【定期的な揃え直し（上がりすぎた銘柄を利確して、ほかに回す）】（9年分・24条件。計画は rebal_plan_2026-11-14）")
+    rows = RB_ROWS if rows is None else rows
+    print(f"\n【{title}】（9年分・24条件。計画は {plan}）")
     print("  比べる相手 … B0 いまの本番の形")
     print("  使い方 … 「良い」があれば20年分でも確かめる。なければ「多少の差」を通った形のうち売り/年がいちばん多いものを「見せる売買」として推す（決めるのはワタナベさん）。どれも通らなければ入れない")
-    print("  予想 … 3つとも決められないか同じくらい。B1 は多少の差を通る。B2 は境目。B3 は B2 と同じくらい")
+    print(f"  予想 … {expect}")
 
     def cat(x):
         if x.empty:
@@ -10077,7 +10090,7 @@ def rebal_report(gf: pd.DataFrame, cond_cols: list) -> dict:
         return float((g_[c] / y_).mean())
 
     print(f"\n  {'形':<40}{'清算後':>8}{'最悪':>8}{'評価額':>8}{'最大下落':>9}{'受取配当':>9}{'売り/年':>8}{'買い/年':>8}{'揃え直し/年':>11}")
-    for k_, n_, sh_ in (("B0", "bm_live", "いまの本番の形"),) + RB_ROWS:
+    for k_, n_, sh_ in (("B0", "bm_live", "いまの本番の形"),) + tuple(rows):
         g_ = gf[gf["ルール"] == VARIANTS[n_]["label"]]
         if g_.empty:
             print(f"  {k_} {sh_} … 結果なし")
@@ -10087,7 +10100,7 @@ def rebal_report(gf: pd.DataFrame, cond_cols: list) -> dict:
               f"{g_['売り/年'].mean():>8.1f}{g_['買い/年'].mean():>8.1f}{per_y(g_, '揃え直し'):>11.2f}")
     print(f"\n  B0 との差 … {'形':<36}{'平均の差':>9}{'最悪の差':>9}{'評価額の差':>10}{'上回った':>8}  判定・多少の差")
     res = {}
-    for k_, n_, sh_ in RB_ROWS:
+    for k_, n_, sh_ in rows:
         L_ = VARIANTS[n_]["label"]
         if L_ not in pl.columns or L0 not in pl.columns:
             continue
@@ -17345,6 +17358,10 @@ def main() -> int:
     # 「配当を守る会社」の減配の条件の免除をやめるか（2026年11月14日に追加。計画は exempt_plan_2026-11-14）
     # 条件つきのレンジ売買（2026年11月14日に追加。計画は swing_cond_plan_2026-11-14）
     # 定期的な揃え直し（2026年11月14日に追加。計画は rebal_plan_2026-11-14）
+    args.rebal_test2 = False
+    if (args.only or "").strip() == "rebal_test2":
+        args.rebal_test2, args.liq_metric, args.grid = True, True, True
+        args.only = "bm_live,rb_b3,rb_c1,rb_c2,rb_c3,rb_c4"
     args.rebal_test = False
     if (args.only or "").strip() == "rebal_test":
         args.rebal_test, args.liq_metric, args.grid = True, True, True
@@ -17499,7 +17516,7 @@ def main() -> int:
     if getattr(args, "etf_test", False) or getattr(args, "luck_test", False) or getattr(args, "near_test", False) \
             or getattr(args, "sector_test", False) or getattr(args, "long_any", False) \
             or getattr(args, "rev_lab1", False) or getattr(args, "rev_lab2", False) or getattr(args, "st_lab1", False) \
-            or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False) or getattr(args, "exempt_test", False) or getattr(args, "swing_cond", False) or getattr(args, "rebal_test", False):
+            or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False) or getattr(args, "exempt_test", False) or getattr(args, "swing_cond", False) or getattr(args, "rebal_test", False) or getattr(args, "rebal_test2", False):
         _eq = store.setdefault("etf_quotes", {})
         key = os.environ.get("J_QUANTS_API_KEY")
         if key:
@@ -17524,7 +17541,7 @@ def main() -> int:
         if not _etf_px:
             log.warning("19回目：ETFの株価がひとつも取れませんでした。ETFとの比べは出せません")
         if getattr(args, "sell_test", False) or getattr(args, "hold_test", False) \
-                or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False) or getattr(args, "exempt_test", False) or getattr(args, "swing_cond", False) or getattr(args, "rebal_test", False) \
+                or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False) or getattr(args, "exempt_test", False) or getattr(args, "swing_cond", False) or getattr(args, "rebal_test", False) or getattr(args, "rebal_test2", False) \
                 or getattr(args, "long_hold", False) or getattr(args, "long_regime", False):
             global ETF_IDLE_PX
             ETF_IDLE_PX = _etf_px.get("1306")
@@ -17538,7 +17555,7 @@ def main() -> int:
     _need_scale = (getattr(args, "live_check", False) or getattr(args, "rot_live", False)
                    or getattr(args, "cap_test", False) or getattr(args, "etf_test", False)
                    or getattr(args, "luck_test", False) or getattr(args, "near_test", False)
-                   or getattr(args, "flat_test", False) or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False) or getattr(args, "exempt_test", False) or getattr(args, "swing_cond", False) or getattr(args, "rebal_test", False)
+                   or getattr(args, "flat_test", False) or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False) or getattr(args, "exempt_test", False) or getattr(args, "swing_cond", False) or getattr(args, "rebal_test", False) or getattr(args, "rebal_test2", False)
                    or getattr(args, "sector_test", False)
                    or getattr(args, "long_any", False)
                    or getattr(args, "rev_lab1", False) or getattr(args, "rev_lab2", False) or getattr(args, "st_lab1", False))
@@ -19589,7 +19606,7 @@ def main() -> int:
                    or getattr(args, "live_check", False) or getattr(args, "rot_live", False)
                    or getattr(args, "cap_test", False) or getattr(args, "etf_test", False)
                    or getattr(args, "luck_test", False) or getattr(args, "near_test", False)
-                   or getattr(args, "flat_test", False) or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False) or getattr(args, "exempt_test", False) or getattr(args, "swing_cond", False) or getattr(args, "rebal_test", False)
+                   or getattr(args, "flat_test", False) or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False) or getattr(args, "exempt_test", False) or getattr(args, "swing_cond", False) or getattr(args, "rebal_test", False) or getattr(args, "rebal_test2", False)
                    or getattr(args, "sector_test", False)
                    or getattr(args, "long_any", False))
         _l10 = bool(getattr(args, "line_test", False))
@@ -19598,7 +19615,7 @@ def main() -> int:
                      or getattr(args, "live_check", False) or getattr(args, "rot_live", False)
                      or getattr(args, "cap_test", False) or getattr(args, "etf_test", False)
                      or getattr(args, "luck_test", False) or getattr(args, "near_test", False)
-                     or getattr(args, "flat_test", False) or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False) or getattr(args, "exempt_test", False) or getattr(args, "swing_cond", False) or getattr(args, "rebal_test", False)
+                     or getattr(args, "flat_test", False) or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False) or getattr(args, "exempt_test", False) or getattr(args, "swing_cond", False) or getattr(args, "rebal_test", False) or getattr(args, "rebal_test2", False)
                      or getattr(args, "sector_test", False)
                      or getattr(args, "long_any", False)):
             print("　 年率は「最後の月末に全部売って、約定のずれと税を払った後」（清算後）で出しています。\n")
@@ -19614,7 +19631,7 @@ def main() -> int:
                 or getattr(args, "live_check", False) or getattr(args, "rot_live", False)
                 or getattr(args, "cap_test", False) or getattr(args, "etf_test", False)
                 or getattr(args, "luck_test", False) or getattr(args, "near_test", False)
-                or getattr(args, "flat_test", False) or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False) or getattr(args, "exempt_test", False) or getattr(args, "swing_cond", False) or getattr(args, "rebal_test", False)
+                or getattr(args, "flat_test", False) or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False) or getattr(args, "exempt_test", False) or getattr(args, "swing_cond", False) or getattr(args, "rebal_test", False) or getattr(args, "rebal_test2", False)
                 or getattr(args, "sector_test", False)
                 or getattr(args, "long_any", False)):
             # ── 1. 基準に勝った割合 ──
@@ -21405,6 +21422,13 @@ def main() -> int:
                 hold_event_study(store, panel)
             except Exception as e_:
                 log.exception("20年分の「持ち続ける」の発表の前後を出せませんでした: %s", e_)
+
+        if getattr(args, "rebal_test2", False) and nm and nm[0] == "bm_live":
+            try:
+                rebal_report(gf, cond_cols, rows=RB2_ROWS, plan="rebal2_plan_2026-11-14", title="揃え直しで売買の量を増やす",
+                             expect="C1・C2・C3 は通る。C4 は境目。どれも良いにはならない")
+            except Exception as e_:
+                log.exception("揃え直しの比べ（2）を出せませんでした: %s", e_)
 
         if getattr(args, "rebal_test", False) and nm and nm[0] == "bm_live":
             try:
