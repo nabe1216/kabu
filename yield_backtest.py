@@ -92,6 +92,14 @@ UNI_SCALE = None                 # 各月の規模区分 {"YYYY-MM": {code: Scal
 #   2005〜2016年の分（長い期間の検証で使う）も、同じページの表から写した（2026年10月18日。2回取って同じ値を確認）。
 ETF_LIST = (("1306", "TOPIX（1306）"), ("1321", "日経225（1321）"), ("1489", "日経高配当株50（1489）"))
 ETF_DIST = {
+    # 1478 iシェアーズ MSCI ジャパン高配当利回り ETF（2026年11月14日に追加。bench_test で使う）
+    #   決算日（2月9日・8月9日）と1口あたりの分配金 × 100。出どころ：ブラックロックのファクトシート（2026年9月30日時点、
+    #   2024-08〜2026-08 の5回）と配当株ドットコム（haitoukabu.com/etf/1478.html、それより前）。受益権の分割はない
+    "1478": (("2016-08-09", 1400), ("2017-02-09", 3000), ("2017-08-09", 2100), ("2018-02-09", 2400), ("2018-08-09", 2900),
+             ("2019-02-09", 3100), ("2019-08-09", 3700), ("2020-02-09", 2600), ("2020-08-09", 3100), ("2021-02-09", 2800),
+             ("2021-08-09", 2900), ("2022-02-09", 2700), ("2022-08-09", 4900), ("2023-02-09", 3100), ("2023-08-09", 3800),
+             ("2024-02-09", 4400), ("2024-08-09", 4500), ("2025-02-09", 5200), ("2025-08-09", 5200), ("2026-02-09", 5800),
+             ("2026-08-09", 8800)),
     "1306": (("2005-07-10", 151.4), ("2006-07-10", 140.5), ("2007-07-10", 160), ("2008-07-10", 194.4),
              ("2009-07-10", 188), ("2010-07-10", 161), ("2011-07-10", 207), ("2012-07-10", 151),
              ("2013-07-10", 194), ("2014-07-10", 206), ("2015-07-10", 230), ("2016-07-10", 273),
@@ -2234,6 +2242,13 @@ VARIANTS.update({
     "k4_y_safe": _lab_rule("K4 利回り3％以上なら持つ＋赤字転落・無配は必ず売る",
                            emg_sell={"hold_yield": 3.0, "always_red": True, "always_nodiv": True}, **_ST_BASE),
     "k5_cut_tier": _lab_rule("K5 浅い減配は持つ＋Tier S・A は持つ", emg_sell={"cut_min": 0.30, "hold_tiers": ["S", "A"]}, **_ST_BASE),
+})
+# ── 本番を高配当ETFと比べる（2026年11月14日に追加。計画は bench_plan_2026-11-14）──
+VARIANTS.update({
+    "bm_live": _lab_rule("P いまの本番（利回り順＋買い増し＋損出し＋余りは1306＋浅い減配は持つ）",
+                         etf_idle={"keep": 100_000, "min": 200_000}, emg_sell={"cut_min": 0.30}, **_ST_BASE),
+    "bm_np": _lab_rule("P-np いまの本番・後出しなしの Tier", etf_idle={"keep": 100_000, "min": 200_000},
+                       emg_sell={"cut_min": 0.30}, tier_col="tier_live_np", **_ST_BASE),
 })
 # （記号, ルール名, 短い名前）
 LAB4_C = (("C1", "lab4_c_div", "「10期減配なし」を外す"), ("C2", "lab4_c_sales", "「売上の安定」を外す"),
@@ -9719,6 +9734,149 @@ def hold2_report(gf: pd.DataFrame, cond_cols: list) -> dict:
     res["pick"] = pick
     return res
 
+BM_ETF = (("1306", "TOPIX（1306）"), ("1489", "日経高配当株50（1489）"), ("1478", "MSCI高配当（1478）"))
+
+
+def bench_report(gf: pd.DataFrame, cond_cols: list, pn: pd.DataFrame, wins, store: dict, etf_px: dict, args, span) -> dict:
+    """本番（P・P-np）を、同じ条件で ETF を持ち続けた場合と比べる（2026年11月14日。計画は bench_plan_2026-11-14）。"""
+    LP, LN = VARIANTS["bm_live"]["label"], VARIANTS["bm_np"]["label"]
+    print("\n【本番を高配当ETFと比べる】（9年分・24条件。基準は結果を見る前に決めたもの。計画は bench_plan_2026-11-14）")
+    print("  予想 … 一括の全期間は P が TOPIX より +5pt 前後、高配当ETF との差は ±2pt。24条件では TOPIX に「良い」、"
+          "高配当50・MSCI高配当には「決められない」か「同じくらい」。P-np は P とほぼ同じ")
+    d0_, d1_ = span
+    spans = {f"{a_.date()}〜{b_.date()}": (a_, b_) for a_, b_ in wins}
+    dts_of = {sp_: sorted(pn[(pn["date"] >= a_) & (pn["date"] <= b_)]["date"].unique()) for sp_, (a_, b_) in spans.items()}
+    qlast = max((pd.Timestamp(q_last_date(v)) for v in list(store["quotes"].values())[:200] if q_last_date(v)),
+                default=pd.Timestamp(d1_))
+    use = []
+    print("\n  0. ETF のデータ（株価は J-Quants の分割調整後の終値、分配金は運用会社の公表値）")
+    for c_, n_ in BM_ETF:
+        px_ = etf_px.get(c_)
+        if px_ is not None and not px_.empty:
+            px_ = px_[px_.index <= qlast]
+        if px_ is None or px_.empty:
+            print(f"    {n_:<18} … 株価が取れず、比べない")
+            continue
+        ok_, med_, by_ = etf_yield_check(px_, ETF_DIST.get(c_, ()))
+        if not ok_:
+            print(f"    {n_:<18} … 1年の分配金利回りの中央値 {med_:.2f}％ が範囲の外。分配金と株価の基準が合っていないとみて、比べない")
+            continue
+        if px_.index.min() > pd.Timestamp(pn["date"].min()) + pd.Timedelta(days=10):
+            print(f"    {n_:<18} … 株価が {px_.index.min().date()} からしかなく、期間の初めに足りない。比べない")
+            continue
+        ys_ = "・".join(f"{y_} {v_:.1f}" for y_, v_ in sorted(by_.items()) if y_ >= 2018)
+        print(f"    {n_:<18} … 株価 {px_.index.min().date()}〜{px_.index.max().date()} ／ 1年の分配金利回り（％） {ys_}")
+        use.append((c_, n_, px_))
+    kwe = dict(tax_rate=args.tax / 100.0, slip_bps=args.slip_bps, fee_bps=args.fee_bps)
+    pl = gf.pivot_table(index=cond_cols, columns="ルール", values="清算後年率")
+    pm = gf.pivot_table(index=cond_cols, columns="ルール", values="評価額年率")
+    pd_ = gf.pivot_table(index=cond_cols, columns="ルール", values="最大下落")
+    rows = {}
+    for c_, n_, px_ in use:
+        for idx_ in pl.index:
+            sp_ = idx_[cond_cols.index("期間")]
+            rp_ = int(idx_[cond_cols.index("資金投入")])
+            if sp_ not in dts_of:
+                continue
+            r_ = etf_hold(px_, dts_of[sp_], args.capital, rp_, dist=ETF_DIST[c_], **kwe)
+            if r_:
+                rows[(c_, idx_)] = r_
+    full_sp = f"{pd.Timestamp(d0_).date()}〜{pd.Timestamp(d1_).date()}"
+
+    def one(idx_):
+        sp_ = idx_[cond_cols.index("期間")]
+        rp_ = int(idx_[cond_cols.index("資金投入")])
+        return sp_ == full_sp and rp_ == 0
+
+    full_idx = [i_ for i_ in pl.index if one(i_)]
+    print(f"\n  1. 一括で全期間持った1本の数字（{full_sp}・資金投入0か月）")
+    print(f"    {'形':<40}{'清算後':>9}{'評価額':>9}{'最大下落':>10}")
+    res = {"full": {}}
+    for L_, nm_ in ((LP, "P いまの本番"), (LN, "P-np 後出しなしの Tier")):
+        if full_idx and L_ in pl.columns:
+            i_ = full_idx[0]
+            res["full"][nm_] = float(pl.at[i_, L_])
+            print(f"    {nm_:<40}{pl.at[i_, L_]:>8.1f}％{pm.at[i_, L_]:>8.1f}％{pd_.at[i_, L_]:>9.1f}％")
+    for c_, n_, _ in use:
+        r_ = rows.get((c_, full_idx[0])) if full_idx else None
+        if r_:
+            res["full"][n_] = float(r_["清算後年率"])
+            print(f"    {(n_ + 'を持ち続ける'):<40}{r_['清算後年率']:>8.1f}％{r_['年率']:>8.1f}％{r_['最大下落']:>9.1f}％")
+    print("    （ETF は分配金を税引き後に買い増し、最後に売って税を払った後。本番も同じ税）")
+
+    def judge(d, dm):
+        def cat(x):
+            if x.empty:
+                return "—"
+            w, l, m = float((x > 0).mean()), float((x < 0).mean()), float(x.mean())
+            if w >= 0.85 and m >= 1.0:
+                return "良い"
+            if l >= 0.85:
+                return "悪い"
+            if m >= -0.5 and float(x.min()) >= -1.0 and l < 0.85:
+                return "同じくらい"
+            return "決められない"
+        a, b = cat(d), cat(dm)
+        return a if a == b else f"決められない（清算後「{a}」・評価額「{b}」）"
+
+    print(f"\n  2. 24条件の平均")
+    for L_, nm_ in ((LP, "P いまの本番"), (LN, "P-np 後出しなしの Tier")):
+        g_ = gf[gf["ルール"] == L_]
+        if not g_.empty:
+            print(f"    {nm_:<40} 清算後 {g_['清算後年率'].mean():.1f}％（最悪 {g_['清算後年率'].min():.1f}％）・評価額 {g_['評価額年率'].mean():.1f}％"
+                  f"・最大下落 {g_['最大下落'].mean():.1f}％")
+    etf_l, etf_m = {}, {}
+    for c_, n_, _ in use:
+        el = pd.Series({i_: rows[(c_, i_)]["清算後年率"] for i_ in pl.index if (c_, i_) in rows})
+        em = pd.Series({i_: rows[(c_, i_)]["年率"] for i_ in pl.index if (c_, i_) in rows})
+        ed = pd.Series({i_: rows[(c_, i_)]["最大下落"] for i_ in pl.index if (c_, i_) in rows})
+        etf_l[c_], etf_m[c_] = el, em
+        if not el.empty:
+            print(f"    {(n_ + 'を持ち続ける'):<40} 清算後 {el.mean():.1f}％（最悪 {el.min():.1f}％）・評価額 {em.mean():.1f}％・最大下落 {ed.mean():.1f}％")
+    print("\n  3. 差（24条件。％は上回った条件の割合）")
+    for L_, nm_ in ((LP, "P"), (LN, "P-np")):
+        if L_ not in pl.columns:
+            continue
+        for c_, n_, _ in use:
+            el, em = etf_l.get(c_), etf_m.get(c_)
+            if el is None or el.empty:
+                continue
+            d = (pl[L_] - el.reindex(pl.index)).dropna()
+            dm = (pm[L_] - em.reindex(pm.index)).dropna()
+            j_ = judge(d, dm)
+            res[(nm_, c_)] = j_
+            print(f"    {nm_} − {n_:<20} … 平均 {d.mean():+.2f}pt ／ いちばん悪い差 {d.min():+.2f}pt ／ 上回った {float((d > 0).mean()) * 100:.0f}％"
+                  f"（{len(d)}条件） ／ 評価額 平均 {dm.mean():+.2f}pt・上回った {float((dm > 0).mean()) * 100:.0f}％ → {j_}")
+    if LP in pl.columns and LN in pl.columns:
+        dn = (pl[LN] - pl[LP]).dropna()
+        res["np"] = float(dn.mean())
+        print(f"    P-np − P … 平均 {dn.mean():+.2f}pt ／ いちばん悪い差 {dn.min():+.2f}pt ／ 上回った {float((dn > 0).mean()) * 100:.0f}％")
+    print("\n  4. 期間ごと（資金投入4通りの平均・清算後の年率）")
+    print("    " + f"{'期間':<24}{'P':>8}{'P-np':>8}" + "".join(f"{n_[:6]:>10}" for _, n_, _ in use))
+    for sp_ in spans:
+        line_ = "    " + f"{sp_:<24}"
+        for L_ in (LP, LN):
+            x_ = gf[(gf["ルール"] == L_) & (gf["期間"] == sp_)]["清算後年率"]
+            line_ += f"{x_.mean():>7.1f}％" if not x_.empty else f"{'—':>8}"
+        for c_, n_, _ in use:
+            el = etf_l.get(c_)
+            x_ = [v for i_, v in el.items() if i_[cond_cols.index("期間")] == sp_] if el is not None else []
+            line_ += f"{np.mean(x_):>9.1f}％" if x_ else f"{'—':>10}"
+        print(line_)
+    hi = [k for k in ("1489", "1478") if any(c_ == k for c_, _, _ in use)]
+    good = [k for k in hi if res.get(("P", k)) == "良い"]
+    print("\n  使い方（先に決めたこと）")
+    if hi and len(good) == len(hi):
+        print("    P は高配当ETF（" + "・".join(hi) + "）のすべてに「良い」 → 手法そのものに、高配当ETFを持つ以上の上乗せがあった（この9年では）")
+    else:
+        print("    P は高配当ETFのすべてには「良い」でない → 成績の上乗せは、高配当ETFを持つのと区別できない。"
+              "手法の価値は成績ではなく、減配の少なさ・中身が分かること")
+    if "np" in res:
+        print("    後出しの Tier … " + ("P-np が P より平均1.0pt 以上低い → Tier の後出しが成績を良く見せている"
+                                  if res["np"] <= -1.0 else "P-np と P の差は1.0pt 未満 → 後出しの影響は小さい"))
+    print("  （9年分は1つの期間で、2022年からの日本の高配当・バリュー株の強い相場が大きく効く。本番の決まりは変えない）")
+    return res
+
 
 FLAT_RULES = (("Y1", "tier_flat_y", "全体の利回り順・重み S2/A1.5/B1"), ("Y2", "tier_flat_eq", "全体の利回り順・重み均等"),
               ("Y3", "tier_y_eq", "Tier順・重み均等"), ("Y4", "tier_y_np", "Tier順・後出しなしのTier（参考・判定しない）"))
@@ -15205,7 +15363,8 @@ def rev2_report(R, ST, MS, verdict, v6, d6, dd6, vm, v1, corr, dates, ev_dates, 
 ETF_LAB = (("2513", "外国株"), ("2511", "外国債券"), ("2510", "国内債券"), ("1328", "金"), ("1343", "J-REIT"),
            ("2514", "外国株・ヘッジあり"), ("2512", "外国債券・ヘッジあり"), ("1540", "金（確かめ用）"))
 ETF_LAB_MAIN = ("2513", "2511", "2510", "1328", "1343")
-ETF_GOLD = (("1328", "金"),)   # 部品箱（rev_lab2・long_rev2）の M6（本番＋金。計画は rev_lab_plan_2026-11-03 の6）で使う
+ETF_GOLD = (("1328", "金"),)
+ETF_BENCH = (("1478", "MSCI高配当（1478）"),)   # 2026年11月14日：bench_test で比べる高配当ETF（ETF_LIST の 1306・1489 に足す）   # 部品箱（rev_lab2・long_rev2）の M6（本番＋金。計画は rev_lab_plan_2026-11-03 の6）で使う
 ETF_LAB_DIST = {
     "2513": (("2018-03-07", 140), ("2018-09-07", 980), ("2019-03-07", 800), ("2019-09-07", 730), ("2020-03-07", 550), ("2020-09-07", 590),
              ("2021-03-07", 470), ("2021-09-07", 880), ("2022-03-07", 710), ("2022-09-07", 1430), ("2023-03-07", 1090), ("2023-09-07", 1790),
@@ -16630,6 +16789,11 @@ def main() -> int:
     if (args.only or "").strip() == "hold2_test":
         args.hold2_test, args.liq_metric, args.grid = True, True, True
         args.only = "st_base,hd_cut30,k2_cut_y,k3_cut_opy,k4_y_safe,k5_cut_tier,st_never"
+    # 本番を高配当ETFと比べる（2026年11月14日に追加。計画は bench_plan_2026-11-14）
+    args.bench_test = False
+    if (args.only or "").strip() == "bench_test":
+        args.bench_test, args.liq_metric, args.grid = True, True, True
+        args.only = "bm_live,bm_np"
     args.near_test = False
     if (args.only or "").strip() == "near_test":
         args.near_test, args.liq_metric, args.grid = True, True, True
@@ -16771,12 +16935,12 @@ def main() -> int:
     if getattr(args, "etf_test", False) or getattr(args, "luck_test", False) or getattr(args, "near_test", False) \
             or getattr(args, "sector_test", False) or getattr(args, "long_any", False) \
             or getattr(args, "rev_lab1", False) or getattr(args, "rev_lab2", False) or getattr(args, "st_lab1", False) \
-            or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False):
+            or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False):
         _eq = store.setdefault("etf_quotes", {})
         key = os.environ.get("J_QUANTS_API_KEY")
         if key:
             _jq = JQ(key)
-            for c_, n_ in ETF_LIST + (ETF_LAB if getattr(args, "etf_lab1", False) else ETF_GOLD if getattr(args, "rev_lab2", False) else ()):
+            for c_, n_ in ETF_LIST + (ETF_LAB if getattr(args, "etf_lab1", False) else ETF_GOLD if getattr(args, "rev_lab2", False) else ()) + (ETF_BENCH if getattr(args, "bench_test", False) else ()):
                 try:
                     time.sleep(API_SLEEP)
                     _rw = fetch_bars(_jq, c_, 9)
@@ -16788,14 +16952,15 @@ def main() -> int:
                 else:
                     log.warning("19回目：%s の株価が空でした（J-Quants にない可能性）", n_)
             save_store(store)
-        for c_, n_ in ETF_LIST + (ETF_LAB if getattr(args, "etf_lab1", False) else ETF_GOLD if getattr(args, "rev_lab2", False) else ()):
+        for c_, n_ in ETF_LIST + (ETF_LAB if getattr(args, "etf_lab1", False) else ETF_GOLD if getattr(args, "rev_lab2", False) else ()) + (ETF_BENCH if getattr(args, "bench_test", False) else ()):
             _s = etf_series(_eq.get(c_, []))
             if not _s.empty:
                 _etf_px[c_] = _s
                 log.info("19回目：%s の株価 … %d日分（%s〜%s）", n_, len(_s), _s.index.min().date(), _s.index.max().date())
         if not _etf_px:
             log.warning("19回目：ETFの株価がひとつも取れませんでした。ETFとの比べは出せません")
-        if getattr(args, "sell_test", False):
+        if getattr(args, "sell_test", False) or getattr(args, "hold_test", False) \
+                or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False):
             global ETF_IDLE_PX
             ETF_IDLE_PX = _etf_px.get("1306")
             if ETF_IDLE_PX is None:
@@ -16808,7 +16973,7 @@ def main() -> int:
     _need_scale = (getattr(args, "live_check", False) or getattr(args, "rot_live", False)
                    or getattr(args, "cap_test", False) or getattr(args, "etf_test", False)
                    or getattr(args, "luck_test", False) or getattr(args, "near_test", False)
-                   or getattr(args, "flat_test", False) or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False)
+                   or getattr(args, "flat_test", False) or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False)
                    or getattr(args, "sector_test", False)
                    or getattr(args, "long_any", False)
                    or getattr(args, "rev_lab1", False) or getattr(args, "rev_lab2", False) or getattr(args, "st_lab1", False))
@@ -18853,7 +19018,7 @@ def main() -> int:
                    or getattr(args, "live_check", False) or getattr(args, "rot_live", False)
                    or getattr(args, "cap_test", False) or getattr(args, "etf_test", False)
                    or getattr(args, "luck_test", False) or getattr(args, "near_test", False)
-                   or getattr(args, "flat_test", False) or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False)
+                   or getattr(args, "flat_test", False) or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False)
                    or getattr(args, "sector_test", False)
                    or getattr(args, "long_any", False))
         _l10 = bool(getattr(args, "line_test", False))
@@ -18862,7 +19027,7 @@ def main() -> int:
                      or getattr(args, "live_check", False) or getattr(args, "rot_live", False)
                      or getattr(args, "cap_test", False) or getattr(args, "etf_test", False)
                      or getattr(args, "luck_test", False) or getattr(args, "near_test", False)
-                     or getattr(args, "flat_test", False) or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False)
+                     or getattr(args, "flat_test", False) or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False)
                      or getattr(args, "sector_test", False)
                      or getattr(args, "long_any", False)):
             print("　 年率は「最後の月末に全部売って、約定のずれと税を払った後」（清算後）で出しています。\n")
@@ -18878,7 +19043,7 @@ def main() -> int:
                 or getattr(args, "live_check", False) or getattr(args, "rot_live", False)
                 or getattr(args, "cap_test", False) or getattr(args, "etf_test", False)
                 or getattr(args, "luck_test", False) or getattr(args, "near_test", False)
-                or getattr(args, "flat_test", False) or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False)
+                or getattr(args, "flat_test", False) or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False)
                 or getattr(args, "sector_test", False)
                 or getattr(args, "long_any", False)):
             # ── 1. 基準に勝った割合 ──
@@ -20644,6 +20809,12 @@ def main() -> int:
                 log.exception("発表の前後の値動き（B1）を出せませんでした: %s", e_)
 
         # ── 減配・業績急変のあと「持ち続ける」（2026年11月14日に追加。計画は hold_test_plan_2026-11-14）──
+        if getattr(args, "bench_test", False) and nm and nm[0] == "bm_live":
+            try:
+                bench_report(gf, cond_cols, panels[lbs_[0]], wins, store, _etf_px, args, (d0_, d1_))
+            except Exception as e_:
+                log.exception("本番と高配当ETFの比べを出せませんでした: %s", e_)
+
         if getattr(args, "hold2_test", False) and nm and nm[0] == "st_base":
             hold2_report(gf, cond_cols)
 
