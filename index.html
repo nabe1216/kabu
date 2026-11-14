@@ -351,14 +351,15 @@ td.al-name{white-space:normal;min-width:250px}
           <div class="lg-row"><span class="tag p-warn">緊急</span><span class="lg-v">次のどれかが決算で出たら「印」が立ちます：<br>・減配（年間配当の実績が前の期より10%以上減った。株式分割・併合は除く）<br>・営業利益が前の年より20%以上減った<br>・累進配当の約束をやめた</span></div>
           <div class="lg-row"><span class="tag p-neu">印・持つ</span><span class="lg-v">印が立っても、次に当たれば<b>売らずに持ち続けます</b>（2026年11月14日から。ワタナベさんの方針「多少の差なら塩漬け」）：<br>・減配が30%未満（浅い減配）で、営業利益は20%以上減っていない<br>当たらなければ、次の取引日に売ります。持っているあいだは買い増さず、条件から外れた日に売ります（深い減配になった・利回りが下がったなど）</span></div>
           <div class="lg-note">9年分の検証で、この持ち方はいまの売り方と年率の差が平均0.3pt以内・いちばん悪い条件でも2pt以内（「多少の差」）でした。成績を上げる形ではありません。持つと、悪い時期の落ち込みが少し深くなります。</div>
-          <div class="lg-row"><span class="lg-k">それ以外</span><span class="lg-v"><b>売りません。</b>値上がりしても、相場が下がっても、SELL が出ても持ち続けます</span></div>
+          <div class="lg-row"><span class="lg-k">それ以外</span><span class="lg-v"><b>売りません。</b>値上がりしても、相場が下がっても、SELL が出ても持ち続けます（6月と12月に、目標の1.25倍を超えた分だけを売る揃え直しは⑦）</span></div>
           <div class="lg-note">20年分の検証では、利確・損切り・入れ替え・相場や市況（日経平均・金利・原油・為替）を見た売買のどれも、成績を上げませんでした。</div>
         </div>
 
         <div class="lg-sec"><h5>⑦ 定期的にやること</h5>
           <div class="lg-row"><span class="lg-k">毎月</span><span class="lg-v">配当などで残ったお金で、<b>目標の金額をいちばん下回っている持ち株</b>を100株ずつ目標まで買い増します（②の条件を満たし、緊急でない銘柄だけ）</span></div>
           <div class="lg-row"><span class="lg-k">12月</span><span class="lg-v">取得単価より2%以上下がっている持ち株を、<b>12月15日以降に売って同じ株数をすぐ買い戻します</b>（損出し。損が確定して、その年の配当にかかった税金が戻る。特定口座のとき）</span></div>
-          <div class="lg-note">検証で「成績を削らずにできる売買」はこの2つだけでした。NISA の口座では、配当の受け取り方を「株式数比例配分方式」にしておくと配当に税金がかかりません。</div>
+          <div class="lg-row"><span class="lg-k">6月・12月</span><span class="lg-v">値上がりで<b>目標の金額の1.25倍を超えた持ち株</b>を、15日以降の最初の日に、超えた分だけ目標まで売ります（揃え直し。100株単位・最低100株は残す。2026年11月15日から）。売ったお金は、次の買い付けと毎月の買い増しに回ります</span></div>
+          <div class="lg-note">検証で「成績を削らずにできる売買」はこの3つだけでした（揃え直しは、9年分と20年分の両方で成績がほぼ同じ〈20年分の一度も見ていない期間で年率 +0.16pt〉。年に1〜2回）。NISA の口座では、配当の受け取り方を「株式数比例配分方式」にしておくと配当に税金がかかりません。</div>
         </div>
 
         <div class="lg-sec"><h5>⑧ 画面の表示の意味</h5>
@@ -417,7 +418,7 @@ td.al-name{white-space:normal;min-width:250px}
 
   <!-- ===== 検証運用 ===== -->
   <section id="view-fwd" style="display:none">
-    <div class="page-head"><h1>検証運用</h1><div class="meta">自動売買シミュレーション（フォワードテスト）· 開始 <b id="fxStart">—</b> · 税 20.315%（損は配当と相殺）· 配当で買い増し · 12月の損出し</div></div>
+    <div class="page-head"><h1>検証運用</h1><div class="meta">自動売買シミュレーション（フォワードテスト）· 開始 <b id="fxStart">—</b> · 税 20.315%（損は配当と相殺）· 配当で買い増し · 12月の損出し · 6月と12月の揃え直し</div></div>
     <div class="fx-grid">
       <div class="card kpi"><div class="k-lbl">元本</div><div class="k-val" id="fxInit">—</div></div>
       <div class="card kpi"><div class="k-lbl">評価総額</div><div class="k-val" id="fxTotal">—</div></div>
@@ -1777,7 +1778,7 @@ function renderPf(){
    記録ファイルの形が少しずつ違っても表示できるよう、項目は緩く読む。 */
 const TRK=[
   {key:'main', name:'本番', color:'#3B5BFD',
-   desc:'いまの本番（検証運用）。8条件を通り利回り3%以上の銘柄を、Tier順・利回りの高い順に買って持ち続ける（2026年11月13日から。それまでは低PBR順）。2026年11月から、配当で買い増し・12月の損出し・税（20.315%）・待機資金の1306あり'},
+   desc:'いまの本番（検証運用）。8条件を通り利回り3%以上の銘柄を、Tier順・利回りの高い順に買って持ち続ける（2026年11月13日から。それまでは低PBR順）。2026年11月から、配当で買い増し・12月の損出し・税（20.315%）・待機資金の1306あり。11月15日から6月と12月の揃え直し（目標の1.25倍を超えた分を売る）'},
   {key:'rot', name:'入れ替え', color:'#D97706',
    desc:'より質の高い銘柄が出たら入れ替える（20年分の検証では、本番より良くならなかった）'},
   {key:'val', name:'低PBR順', color:'#7C3AED',
