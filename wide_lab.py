@@ -8710,6 +8710,106 @@ def lab37(store: dict) -> int:
     return 0
 
 
+# ───────────────────────── 38段目：戸松信博 監修『どんな相場でも勝ち続けられる 投資手法大全』（池田書店、2025年9月11日）の数値の決まり ─────────────────────────
+# 計画は wide_lab_plan38_2026-11-15（結果を見る前に決めたもの）。24段目と同じ月末の運用の形。
+Z_PUB = pd.Timestamp("2025-09-30")
+Z_TYPES = (
+    ("G1", "3期連続の増収増益の近い形：直近2期の売上の伸び10％超・営業利益（直近）と経常利益（前の期）の伸び10％超・営業CF が前の期より増えた（予想 PER の低い順）"),
+    ("G3", "成長株のスクリーニング：売上の伸び15％以上・ROE15％以上・純利益の伸び15％以上・株価が200日線より上（売上の伸びの大きい順）"),
+    ("V1", "優良割安株：PBR1倍未満・ROE10％以上・営業CF がプラス（PBR の低い順）"),
+    ("V3", "ネットキャッシュ倍率2倍以下：（現預金 − 負債の合計）÷ 時価総額 0.5以上・自己資本比率50％以上・金融を除く（倍率の低い順）"),
+    ("D1", "DOE 8％以上：予想配当利回り × PBR が8％以上・黒字（DOE の高い順）"),
+)
+
+
+def z_cfo(store: dict, D: dict) -> tuple:
+    """月末ごとの営業CF（直近の通期・その前の通期）。開示は月末の最後の営業日より前のものだけ（g_panel と同じ）。"""
+    codes, me_idx, cal = D["codes"], D["me_idx"], D["cal"]
+    cal_i = cal.astype("datetime64[D]")
+    S, M = len(codes), len(me_idx)
+    c1, c0 = np.full((S, M), np.nan), np.full((S, M), np.nan)
+    for i, c in enumerate(codes):
+        fy = []
+        seen = set()
+        for r in fin_timeline(store["fins"].get(c)):
+            if not is_fy(r):
+                continue
+            e = str(r.get("CurFYEn") or "")[:10]
+            v = num(r.get("CFO"))
+            if v is None or e in seen:
+                continue
+            seen.add(e)
+            fy.append((np.datetime64(str(r["DiscDate"])[:10]), e, v))
+        if not fy:
+            continue
+        dd = np.array([x[0] for x in fy])
+        for j in range(M):
+            k = int(np.searchsorted(dd, cal_i[me_idx[j]], side="left")) - 1
+            if k < 0:
+                continue
+            by_end = {}
+            for x in fy[:k + 1]:
+                by_end[x[1]] = x[2]
+            ends = sorted(by_end)
+            c1[i, j] = by_end[ends[-1]]
+            if len(ends) >= 2:
+                c0[i, j] = by_end[ends[-2]]
+    return c1, c0
+
+
+def z_scores(store: dict, D: dict) -> dict:
+    P = g_panel(store, D)
+    MC, CF, me_idx = D["MCAP"], D["CF"], D["me_idx"]
+    fin = np.array([D["sector"].get(c, "") in yb.FIN_SECTORS for c in D["codes"]])[:, None]
+    c1, c0 = z_cfo(store, D)
+    ma200 = pd.DataFrame(CF.T).rolling(200, min_periods=200).mean().to_numpy().T
+    above = np.stack([CF[:, t] > ma200[:, t] for t in me_idx], axis=1)
+    out = {}
+    with np.errstate(invalid="ignore", divide="ignore"):
+        g1 = (P["gs1"] > 0.10) & (P["gs0"] > 0.10) & (P["gop1"] > 0.10) & (P["gp0"] > 0.10) & (c1 > c0) & (P["per_f"] > 0)
+        out["G1"] = np.where(g1, -P["per_f"], np.nan)
+        g3 = (P["gs1"] >= 0.15) & (P["roe"] >= 0.15) & (P["np_g1"] >= 0.15) & above
+        out["G3"] = np.where(g3, P["gs1"], np.nan)
+        v1 = (P["pbr"] > 0) & (P["pbr"] < 1.0) & (P["roe"] >= 0.10) & (c1 > 0)
+        out["V1"] = np.where(v1, -P["pbr"], np.nan)
+        v3 = (P["netcash"] >= 0.5) & (P["eqr"] >= 0.50) & ~fin
+        out["V3"] = np.where(v3, P["netcash"], np.nan)
+        doe = P["dy"] * P["pbr"]
+        d1 = (doe >= 0.08) & (P["np_a"] > 0) & (P["pbr"] > 0)
+        out["D1"] = np.where(d1, doe, np.nan)
+    return out
+
+
+def lab38(store: dict) -> int:
+    """38段目：戸松信博 監修『投資手法大全』の数値の決まり。24段目と同じ形で回し、出版のあとの期間の成績を別に出す（判定には使わない）。"""
+    global LAB_TITLE, LAB_PLAN, LAB_NOTE, PUB_FROM
+    LAB_TITLE, LAB_PLAN = "38段目（戸松信博 監修『どんな相場でも勝ち続けられる 投資手法大全』2025年9月の数値の決まり）", "wide_lab_plan38_2026-11-15"
+    LAB_NOTE = ("38段目：24段目と同じく、条件に合う銘柄だけに点数をつけ、合う銘柄が20より少ない月は現金。条件に合わなくなった銘柄は、その月末に売る。"
+                "保留は「合格した銘柄が1か月あたり平均5未満」。9年分はほぼすべて本の出版（2025年9月11日）より前。出版後（2025年10月〜）は別に出し、判定はしない。"
+                "G1 の3期連続は2期の伸びで、V3 の有利子負債は負債の合計で、G3 の前年同期比は通期の前年比で代える。PEG（23段目）・短期売買（6段目）・暦（2・17段目）は確かめ済みなので回さない")
+    PUB_FROM = Z_PUB
+    cache: dict = {}
+
+    def mk(name):
+        def fn(D):
+            if "sc" not in cache:
+                log("  基礎の値（売上と利益の伸び・ROE・PBR・営業CF・200日線・ネットキャッシュ・DOE）を作っています…")
+                cache["sc"] = z_scores(store, D)
+            return cache["sc"][name]
+        return fn
+    rc = lab1(store, extra={nm: (mk(nm), lab) for nm, lab in Z_TYPES}, filt=True)
+    if rc == 0 and LAST_LAB1:
+        print("\n  3. 出版のあと（2025年10月〜。判定はしない。年率％） … A ／ B ／ TOPIX（税あり） ／ でたらめな20銘柄の平均 A")
+        for k, r in LAST_LAB1.items():
+            if "出版後" not in r["A"]:
+                continue
+            ra = [x["出版後"]["ann"] for x in r["rnd"]["A"] if "出版後" in x]
+            print(f"     {k:<4} {r['A']['出版後']['ann']:6.1f} ／ {r['B']['出版後']['ann']:6.1f} ／ {r['tx']['出版後']['ann']:6.1f} ／ "
+                  f"{np.mean(ra) if ra else float('nan'):6.1f}（上回った回数 {sum(1 for x in ra if r['A']['出版後']['ann'] > x)}）")
+    PUB_FROM = None
+    return rc
+
+
 def run_mode(mode: str, store: dict, args) -> int:
     """1つの mode を回す（データはそろっている前提で、足りなければ取る）。14段目の lab14 は、これを続けて呼ぶ。"""
     global LAB_TITLE, LAB_PLAN, LAB_NOTE
@@ -8750,6 +8850,8 @@ def run_mode(mode: str, store: dict, args) -> int:
         return lab36(store)
     if mode == "lab37":
         return lab37(store)
+    if mode == "lab38":
+        return lab38(store)
     if mode == "lab35":
         # 35段目：信用取引の週末残高（スタンダード）を週ごとに取り、21段目と同じ別のファイル（data/wide_k.pkl）に持つ
         xs = k_xs_load()
@@ -9022,7 +9124,7 @@ def lab14(store: dict, args) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab5", "lab6", "lab7", "lab8", "lab9", "lab10", "lab11", "lab12", "lab13", "lab14", "lab15", "lab16", "lab17", "lab18", "lab19", "lab20", "lab21", "lab22", "lab23", "lab24", "lab25", "lab26", "lab27", "lab28", "lab29", "lab32", "lab33", "lab34", "lab35", "lab36", "lab37", "htrack", "xfetch"], default="lab1")
+    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab5", "lab6", "lab7", "lab8", "lab9", "lab10", "lab11", "lab12", "lab13", "lab14", "lab15", "lab16", "lab17", "lab18", "lab19", "lab20", "lab21", "lab22", "lab23", "lab24", "lab25", "lab26", "lab27", "lab28", "lab29", "lab32", "lab33", "lab34", "lab35", "lab36", "lab37", "lab38", "htrack", "xfetch"], default="lab1")
     ap.add_argument("--combo", default="", help="3回目：1回目で「範囲の中では効く」以上だった型の記号（カンマ区切り）。2つ以上なら SEL として回す")
     ap.add_argument("--only", default="", help="回す型の記号（カンマ区切り。空欄なら全部）。確かめる段階で候補だけを回すとき")
     ap.add_argument("--cfg", default="", help="7段目の確かめる段階で回す組み立て（例: VQM/TOP500/20/Q,NXG/TOP500/20/Q）")
