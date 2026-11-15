@@ -8264,6 +8264,452 @@ def htrack(store: dict) -> int:
     return 0
 
 
+# ───────────────────────── 37段目：黒川葵『AIで株式投資って、本当に儲かるの？』（2026年11月5日）の3つの作戦 ─────────────────────────
+# 計画は wide_lab_plan37_2026-11-15（結果を見る前に決めたもの）。本と同じく1株未満も買える形（株数を小数で持つ）・費用は cost=S1（片道0.1％）で回す。
+L37_CAP = 3e6             # 本と同じ300万円（株数は小数なので、金額の大きさは結果に効かない）
+L37_START = pd.Timestamp("2018-07-01")
+L37_END_START = pd.Timestamp("2022-10-31")
+
+
+def l37_prime(store: dict, D: dict) -> np.ndarray:
+    """月末ごとの範囲：共通の範囲のうち、東証一部（0101）かプライム（0111）。"""
+    MK = k_market_codes(store, D)
+    return D["UNI"] & np.isin(MK.astype(str), ["0101", "0111"])
+
+
+def l37_jm(D: dict) -> np.ndarray:
+    T = len(D["cal"])
+    return np.searchsorted(np.array(D["me_idx"]), np.arange(T), side="left") - 1      # その日より前の最後の月末
+
+
+def l37_topix(D: dict, j0: int) -> tuple:
+    v, liq = topix_taxed(D, j0)
+    return v / CAP * L37_CAP, liq / CAP * L37_CAP
+
+
+def l37_hsim(sel: dict, D: dict, j0: int, cap: float = L37_CAP, slip: float = SLIP, tax: float = TAX):
+    """H（年1回の入れ替え）。sel … {月末の番号: 買う銘柄の並び}。入れ替えの月末に、並びにない株を売り、
+    残った株と新しい株を同じ額に揃える（並びが20社に届かなければ、ある社数で全額を分ける）。配当は税を引いてその株を買い足す。"""
+    PXM, DIV = D["PXM"], D["DIV"]
+    M = PXM.shape[1]
+    cash, loss = float(cap), 0.0
+    pos: dict = {}            # 銘柄 → [株数, 取得の総額]
+    vals, n_hold, n_trade = [], [], 0
+
+    def p_(i, j):
+        v = PXM[i, j]
+        return float(v) if (v == v and v > 0) else 0.0
+
+    def realize(g):
+        nonlocal cash, loss
+        if g > 0:
+            tx = max(0.0, g - loss) * tax
+            loss = max(0.0, loss - g)
+            cash -= tx
+        else:
+            loss += -g
+
+    def sell(i, j, sh):
+        nonlocal cash, n_trade
+        p = pos[i]
+        eff = p_(i, j) * (1.0 - slip)
+        avg = p[1] / p[0]
+        cash += sh * eff
+        realize(sh * (eff - avg))
+        p[0] -= sh
+        p[1] -= sh * avg
+        if p[0] <= 1e-12:
+            pos.pop(i)
+        n_trade += 1
+
+    for j in range(j0, M):
+        for i in list(pos):
+            d = DIV[i, j]
+            px = p_(i, j)
+            if d > 0 and px > 0:
+                net = pos[i][0] * d * (1.0 - tax)
+                add = net / (px * (1.0 + slip))
+                pos[i][0] += add
+                pos[i][1] += net
+        lst = sel.get(j)
+        if lst is not None:
+            keep = [i for i in lst[:NMAX] if p_(i, j) > 0]
+            ks = set(keep)
+            for i in list(pos):
+                if i not in ks:
+                    sell(i, j, pos[i][0])
+            value = cash + sum(p[0] * p_(i, j) for i, p in pos.items())
+            if keep:
+                tgt = value / len(keep)
+                for i in keep:                      # まず額が大きすぎる株を売って現金を作る
+                    if i in pos and pos[i][0] * p_(i, j) > tgt:
+                        sell(i, j, (pos[i][0] * p_(i, j) - tgt) / p_(i, j))
+                for i in keep:
+                    cur = pos[i][0] * p_(i, j) if i in pos else 0.0
+                    need = tgt - cur
+                    if need <= 0 or cash <= 0:
+                        continue
+                    amt = min(need, cash)
+                    sh = amt / (p_(i, j) * (1.0 + slip))
+                    cash -= amt
+                    if i in pos:
+                        pos[i][0] += sh
+                        pos[i][1] += amt
+                    else:
+                        pos[i] = [sh, amt]
+                    n_trade += 1
+        vals.append(cash + sum(p[0] * p_(i, j) for i, p in pos.items()))
+        n_hold.append(len(pos))
+    liq, gain = cash, 0.0
+    for i, p in pos.items():
+        eff = p_(i, M - 1) * (1.0 - slip)
+        liq += p[0] * eff
+        gain += p[0] * eff - p[1]
+    liq -= tax * max(0.0, gain - loss)
+    return np.array(vals), liq, {"hold": n_hold, "trades": n_trade}
+
+
+def l37_dsim(cands: dict, D: dict, divpay: dict, t0: int, kind: str, MA: np.ndarray, last_t: np.ndarray,
+             cap: float = L37_CAP, slip: float = SLIP, tax: float = TAX, slots: int = 10):
+    """W・B（毎日）。cands … {合図の日: [銘柄, …]（優先の順）}。合図はその日の終値、売り買いは次の営業日の終値。
+    W：終値が75日線の1.2倍以上、または買値（平均）の −8％以下で売る。B：終値が25日線を下回る、または −10％以下で売る。
+    1社は資産の10分の1・10社まで。配当は税を引いてその株を買い足す。"""
+    CF, me_idx = D["CF"], D["me_idx"]
+    T = CF.shape[1]
+    me_set = set(me_idx)
+    stop = 0.08 if kind == "W" else 0.10
+    cash, loss = float(cap), 0.0
+    pos: dict = {}
+    pend_buy: list = []
+    pend_sell: set = set()
+    vals, inv = [], []
+    st = {"n_buy": 0, "closed": []}
+
+    def px(i, t):
+        v = CF[i, t]
+        return float(v) if (v == v and v > 0) else 0.0
+
+    def close_pos(i, t, price):
+        nonlocal cash, loss
+        p = pos.pop(i)
+        eff = price * (1.0 - slip)
+        cash += p["sh"] * eff
+        g = p["sh"] * eff - p["cost"]
+        if g > 0:
+            tx = max(0.0, g - loss) * tax
+            loss = max(0.0, loss - g)
+            cash -= tx
+        else:
+            loss += -g
+        st["closed"].append((p["t"], t, p["sh"] * eff / p["cost"] - 1.0))
+
+    for t in range(t0, T):
+        for i in [k for k in pos if last_t[k] < t - 5]:
+            close_pos(i, t, px(i, last_t[i]))
+            pend_sell.discard(i)
+        for i in sorted(pend_sell):
+            if i in pos and px(i, t) > 0 and D["C"][i, t] == D["C"][i, t]:
+                close_pos(i, t, px(i, t))
+                pend_sell.discard(i)
+            elif i not in pos:
+                pend_sell.discard(i)
+        if pend_buy:
+            value = cash + sum(p["sh"] * px(k, t) for k, p in pos.items())
+            for i in pend_buy:
+                v = D["C"][i, t]
+                if not (v == v and v > 0) or i in pos or len(pos) >= slots or cash <= 0:
+                    continue
+                amt = min(value / slots, cash)
+                pb = float(v) * (1.0 + slip)
+                pos[i] = {"sh": amt / pb, "cost": amt, "t": t}
+                cash -= amt
+                st["n_buy"] += 1
+            pend_buy = []
+        for i, amt in divpay.get(t, ()):
+            if i in pos and px(i, t) > 0:
+                net = pos[i]["sh"] * amt * (1.0 - tax)
+                pos[i]["sh"] += net / (px(i, t) * (1.0 + slip))
+                pos[i]["cost"] += net
+        if t in me_set:
+            value = cash + sum(p["sh"] * px(k, t) for k, p in pos.items())
+            vals.append(value)
+            inv.append(1.0 - cash / value if value > 0 else 0.0)
+        if t >= T - 1:
+            break
+        for i, p in pos.items():
+            v = D["C"][i, t]
+            if not (v == v and v > 0) or i in pend_sell:
+                continue
+            avg = p["cost"] / p["sh"]
+            m = MA[i, t]
+            if v <= avg * (1.0 - stop):
+                pend_sell.add(i)
+            elif m == m and ((kind == "W" and v >= m * 1.20) or (kind == "B" and v < m)):
+                pend_sell.add(i)
+        for i in cands.get(t, ()):
+            if i not in pos and i not in pend_sell:
+                pend_buy.append(i)
+    liq, gain = cash, 0.0
+    for k, p in pos.items():
+        eff = px(k, T - 1) * (1.0 - slip)
+        liq += p["sh"] * eff
+        gain += p["sh"] * eff - p["cost"]
+    liq -= tax * max(0.0, gain - loss)
+    st["inv"] = float(np.mean(inv)) if inv else 0.0
+    return np.array(vals), liq, st
+
+
+def l37_bfin(rows: list) -> list:
+    """開示ごとの B の業績の判定：[(開示日, 最新の四半期の営業利益が前年同期より増えた, 会社予想に対する進み具合が足りている)]。
+    四半期の値は同じ年度の累計の差。進み具合は累計の営業利益 ÷ その開示の通期の営業利益の予想（1Q 25％・2Q 50％・3Q 75％）。本決算の開示では問わない。"""
+    tl = [r for r in fin_timeline(rows) if "FinancialStatements" in str(r.get("DocType") or "")
+          and str(r.get("CurPerType") or "") in ("1Q", "2Q", "3Q", "FY")]
+    qn = {"1Q": 1, "2Q": 2, "3Q": 3, "FY": 4}
+    cum: dict = {}
+    out = []
+    for r in tl:
+        fy = str(r.get("CurFYEn") or "")[:7]
+        if len(fy) != 7:
+            continue
+        q = qn[r["CurPerType"]]
+        cum[(fy, q)] = num(r.get("OP"))
+
+        def qv(f, k):
+            a = cum.get((f, k))
+            if a is None:
+                return None
+            if k == 1:
+                return a
+            b = cum.get((f, k - 1))
+            return (a - b) if b is not None else None
+        p1, p0 = qv(fy, q), qv(d_fy_back(fy), q)
+        up = (p1 is not None and p0 is not None and p0 > 0 and p1 > p0)
+        if q == 4:
+            prog = True
+        else:
+            fop = num(r.get("FOP"))
+            c = cum.get((fy, q))
+            prog = bool(fop and fop > 0 and c is not None and c / fop >= 0.25 * q)
+        out.append((str(r.get("DiscDate"))[:10], up, prog))
+    return out
+
+
+def lab37(store: dict) -> int:
+    """37段目：黒川葵『AIで株式投資って、本当に儲かるの？』の3つの作戦。計画は wide_lab_plan37_2026-11-15。"""
+    log("37段目（AIで株式投資って、本当に儲かるの？）を回します（指標を作っています）…")
+    D = build(store)
+    dates, me_idx, cal, codes = D["dates"], D["me_idx"], D["cal"], D["codes"]
+    C, CF, MC, VA = D["C"], D["CF"], D["MCAP"], D["VA"]
+    S, T = C.shape
+    M = len(me_idx)
+    PR = l37_prime(store, D)
+    jm = l37_jm(D)
+    E = ev_extract(store, D)
+    traded = np.isfinite(C) & (C > 0)
+    last_t = np.array([int(np.nonzero(traded[i])[0][-1]) if traded[i].any() else -1 for i in range(S)])
+    fin = np.array([D["sector"].get(c, "") in yb.FIN_SECTORS for c in codes])
+    log("  基礎の値（PBR・配当利回り・自己資本比率・PER・PEG）を作っています…")
+    P = g_panel(store, D)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        h_ok = PR & (P["pbr"] > 0) & (P["pbr"] < 1.0) & (P["dy"] >= 0.035) & (P["eqr"] >= 0.50) & (MC >= 1e11) & ~fin[:, None]
+        h_pool = PR & (MC >= 1e11) & ~fin[:, None]
+        per = np.where(np.isfinite(P["per_f"]), P["per_f"], P["per_a"])
+        peg = P["per_f"] / (P["ge_f"] * 100.0)
+        b_fund = (P["gop1"] > 0) & (per > 0) & (per < 20) & (P["per_f"] > 0) & (P["ge_f"] > 0) & (peg < 1.0)
+    log("  移動平均・RSI・年初来高値を作っています…")
+    df = pd.DataFrame(CF.T)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        ma5 = df.rolling(5, min_periods=5).mean().to_numpy().T
+        ma25 = df.rolling(25, min_periods=25).mean().to_numpy().T
+        ma75 = df.rolling(75, min_periods=75).mean().to_numpy().T
+        ma200 = df.rolling(200, min_periods=200).mean().to_numpy().T
+        R = rsi(CF, 14)
+        lag63 = np.full_like(CF, np.nan)
+        lag63[:, 63:] = CF[:, :-63]
+        r3 = CF / lag63 - 1.0
+        yrs_ = pd.DatetimeIndex(cal).year.to_numpy()
+        ytd = np.full_like(CF, np.nan)
+        for y in np.unique(yrs_):
+            cols = np.nonzero(yrs_ == y)[0]
+            blk = np.where(np.isfinite(CF[:, cols]), CF[:, cols], -np.inf)
+            acc = np.maximum.accumulate(blk, axis=1)
+            ytd[:, cols] = np.where(np.isfinite(acc), acc, np.nan)
+        hi21 = df.rolling(21, min_periods=1).max().to_numpy().T
+        newhi = hi21 >= ytd * (1.0 - 1e-9)
+        ma75_up = np.zeros_like(traded)
+        ma75_up[:, 1:] = ma75[:, 1:] > ma75[:, :-1]
+        x5 = np.zeros_like(traded)
+        x5[:, 1:] = (ma5[:, 1:] > ma25[:, 1:]) & (ma5[:, :-1] <= ma25[:, :-1])
+        va_up = np.zeros_like(traded)
+        va_up[:, 1:] = (VA[:, 1:] > VA[:, :-1]) & (VA[:, :-1] > 0)
+    top500 = np.zeros_like(PR)
+    for j in range(M):
+        idx = np.nonzero(PR[:, j] & np.isfinite(MC[:, j]))[0]
+        if len(idx):
+            top500[idx[np.argsort(-MC[idx, j], kind="stable")[:500]], j] = True
+    calS = [str(pd.Timestamp(d).date()) for d in cal]
+    bfs = {}
+    for i, c in enumerate(codes):
+        s_ = l37_bfin(store["fins"].get(c))
+        if s_:
+            bfs[i] = ([x[0] for x in s_], s_)
+    log("  毎日の合図を作っています…")
+    w_cond_day = np.zeros_like(traded)
+    T0 = int(next(t for t in me_idx if t >= 260))
+    for t in range(1, T):
+        j = jm[t]
+        if j < 0:
+            continue
+        w_cond_day[:, t] = (r3[:, t] >= 0.20) & newhi[:, t] & (R[:, t] >= 50) & top500[:, j] & traded[:, t]
+    cs = np.cumsum(w_cond_day, axis=1)
+    watch = cs.copy()
+    watch[:, 63:] = cs[:, 63:] - cs[:, :-63]
+    watch = watch > 0
+    W_c, B_c, W_pool, B_pool = {}, {}, {}, {}
+    for t in range(T0, T - 1):
+        j = jm[t]
+        if j < 0:
+            continue
+        with np.errstate(invalid="ignore"):
+            w = watch[:, t] & ma75_up[:, t] & (CF[:, t] >= ma75[:, t]) & (CF[:, t] <= ma75[:, t] * 1.05) & traded[:, t] & top500[:, j]
+        ids = np.nonzero(w)[0]
+        if len(ids):
+            W_c[t] = [int(i) for i in ids[np.argsort(-r3[ids, t], kind="stable")]]
+            W_pool[t] = np.nonzero(top500[:, j] & traded[:, t])[0]
+        with np.errstate(invalid="ignore"):
+            b = (PR[:, j] & b_fund[:, j] & traded[:, t] & (CF[:, t] < ma200[:, t]) & x5[:, t]
+                 & (ma5[:, t] / ma25[:, t] - 1.0 <= 0.05) & va_up[:, t] & (R[:, t] <= 75))
+        ids = [int(i) for i in np.nonzero(b)[0]]
+        sel = []
+        for i in ids:
+            f = bfs.get(i)
+            if not f:
+                continue
+            k = bisect.bisect_left(f[0], calS[t]) - 1
+            if k >= 0 and f[1][k][1] and f[1][k][2]:
+                sel.append(i)
+        if sel:
+            B_c[t] = sorted(sel, key=lambda i: per[i, j])
+            B_pool[t] = np.nonzero(PR[:, j] & traded[:, t])[0]
+
+    def h_sel(j_start, month):
+        out = {}
+        for j in range(j_start, M):
+            if j == j_start or dates[j].month == month:
+                idx = np.nonzero(h_ok[:, j] & np.isfinite(P["dy"][:, j]))[0]
+                out[j] = [int(i) for i in idx[np.argsort(-P["dy"][idx, j], kind="stable")]]
+        return out
+
+    def run(kind, j_start, sel=None):
+        if kind == "H":
+            return l37_hsim(sel if sel is not None else h_sel(j_start, 6), D, j_start)
+        cd = W_c if kind == "W" else B_c
+        return l37_dsim(cd, D, E["divpay"], me_idx[j_start], kind, ma75 if kind == "W" else ma25, last_t)
+
+    def cagr(liq, j0):
+        yrs = max((dates[-1] - dates[j0]).days / 365.25, 0.5)
+        return ((liq / L37_CAP) ** (1 / yrs) - 1.0) * 100
+
+    def mdd(v):
+        v = np.asarray(v, dtype=float)
+        pk = np.maximum.accumulate(v)
+        return float(np.max(1.0 - v / pk)) * 100 if len(v) else float("nan")
+
+    jH = next(j for j in range(M) if dates[j].month == 6 and me_idx[j] >= 0)
+    jD = next(j for j in range(M) if me_idx[j] >= T0)
+    print("\n" + "=" * 100)
+    print("【日本株の手法・37段目（黒川葵『AIで株式投資って、本当に儲かるの？』2026年11月5日）（wide_lab）：東証一部・プライム】")
+    print("  （基準は結果を見る前に決めたもの。計画はプロジェクトの wide_lab_plan37_2026-11-15。9年分はすべて本が出る前）")
+    print(f"  費用と税 {COST}：株 片道{SLIP * 100:.1f}％・{TAX_TXT}（損は同じ運用の中で繰り越す）。1株未満も買える形。元本300万円。合図の次の営業日の終値で売り買い")
+    print(f"  合図の数：W {sum(len(v) for v in W_c.values())}（{len(W_c)}日） ／ B {sum(len(v) for v in B_c.values())}（{len(B_c)}日）・H の条件に合う社数（6月末） "
+          + "・".join(f"{dates[j].year}:{int(h_ok[:, j].sum())}" for j in range(M) if dates[j].month == 6))
+    print("\n  1. 本の結論の再現（最初の始める日から最後まで。清算後の手取り・年率・最大下落〈月末〉）")
+    res = {}
+    for kind, j0, lab in (("H", jH, "高配当ながもち"), ("W", jD, "波のり"), ("B", jD, "底ひろい")):
+        v, liq, s_ = run(kind, j0)
+        tv, tliq = l37_topix(D, j0)
+        res[kind] = (j0, v, liq, s_, tv, tliq)
+        extra = (f"・持った社数の平均 {np.mean(s_['hold']):.1f}" if kind == "H" else
+                 f"・買い {s_['n_buy']}回・勝ち {np.mean([c[2] > 0 for c in s_['closed']]) * 100 if s_['closed'] else float('nan'):.0f}％・株の割合の平均 {s_['inv'] * 100:.0f}％")
+        print(f"     {kind} {lab}（{dates[j0].date()}〜）: {liq / 1e4:,.0f}万円（年率 {cagr(liq, j0):.1f}％・最大下落 {mdd(v):.0f}％）"
+              f" ／ TOPIX {tliq / 1e4:,.0f}万円（{cagr(tliq, j0):.1f}％・{mdd(tv):.0f}％） … 差 年率 {cagr(liq, j0) - cagr(tliq, j0):+.1f}pt{extra}")
+    print("\n  2. でたらめ（20回・同じ数・同じ売りの決まり。清算後の年率）")
+    for kind in ("H", "W", "B"):
+        j0, v, liq, s_, tv, tliq = res[kind]
+        rr = []
+        for k in range(N_RAND):
+            rg = np.random.default_rng(37000 + k)
+            if kind == "H":
+                sl = {}
+                for j, lst in h_sel(j0, 6).items():
+                    pool = np.nonzero(h_pool[:, j] & np.isfinite(D["PXM"][:, j]))[0]
+                    n = min(len(lst), NMAX)
+                    sl[j] = [int(i) for i in rg.choice(pool, size=min(n, len(pool)), replace=False)] if len(pool) and n else []
+                _v, l_, _s = l37_hsim(sl, D, j0)
+            else:
+                cd, pools = (W_c, W_pool) if kind == "W" else (B_c, B_pool)
+                pl = {t: [int(i) for i in rg.choice(pools[t], size=min(len(cl), len(pools[t])), replace=False)] for t, cl in cd.items() if len(pools[t])}
+                _v, l_, _s = l37_dsim(pl, D, E["divpay"], me_idx[j0], kind, ma75 if kind == "W" else ma25, last_t)
+            rr.append(cagr(l_, j0))
+        me = cagr(liq, j0)
+        print(f"     {kind}: 本の作戦 {me:.1f}％ ／ でたらめの平均 {np.mean(rr):.1f}％（幅 {np.min(rr):.1f}〜{np.max(rr):.1f}）・上回った回数 {sum(1 for x in rr if me > x)}／{N_RAND}")
+        res[kind] = res[kind] + (rr,)
+    print("\n  3. 始める月末を変える（2018年7月〜2022年10月の各月末に始め、最後まで持つ。清算後の年率の差＝作戦 − TOPIX）")
+    starts = [j for j in range(M) if L37_START <= dates[j] <= L37_END_START]
+    share = {}
+    for kind in ("H", "W", "B"):
+        dif = []
+        for j in starts:
+            if kind != "H" and me_idx[j] < T0:
+                continue
+            _v, liq, _s = run(kind, j)
+            _tv, tliq = l37_topix(D, j)
+            dif.append((dates[j], cagr(liq, j) - cagr(tliq, j)))
+        d_ = np.array([x[1] for x in dif])
+        share[kind] = float(np.mean(d_ > 0)) if len(d_) else float("nan")
+        print(f"     {kind}: {len(d_)}通り・TOPIX を上回った {np.sum(d_ > 0)}（{share[kind] * 100:.0f}％）・差の平均 {np.mean(d_):+.1f}pt・中央 {np.median(d_):+.1f}pt・最悪 {np.min(d_):+.1f}pt・最良 {np.max(d_):+.1f}pt")
+        print("        始めた年ごとの差の平均：" + "・".join(f"{y}年 {np.mean([x[1] for x in dif if x[0].year == y]):+.1f}" for y in sorted({x[0].year for x in dif})))
+    print("\n  4. H の入れ替えの月を変える（それぞれ2018年1月以降の最初のその月末に始める。清算後の年率の差）")
+    n_win = 0
+    for m in range(1, 13):
+        js = next((j for j in range(M) if dates[j] >= pd.Timestamp("2018-01-01") and dates[j].month == m), None)
+        if js is None:
+            continue
+        _v, liq, _s = l37_hsim(h_sel(js, m), D, js)
+        _tv, tliq = l37_topix(D, js)
+        d1 = cagr(liq, js) - cagr(tliq, js)
+        n_win += d1 > 0
+        print(f"     {m:2d}月（{dates[js].date()}〜）: 作戦 {cagr(liq, js):.1f}％ ／ TOPIX {cagr(tliq, js):.1f}％ … {d1:+.1f}pt")
+    print(f"     TOPIX を上回った月：{n_win}／12")
+    print("\n  5. H の暦年ごとの成績（％。作戦 ／ TOPIX ／ 差。月末の評価額から）")
+    j0, v, liq, s_, tv, tliq, _rr = res["H"]
+    ser = pd.Series(v, index=pd.DatetimeIndex(dates[j0:]))
+    tser = pd.Series(tv, index=pd.DatetimeIndex(dates[j0:]))
+    for y in sorted(set(ser.index.year)):
+        a = ser[ser.index.year <= y]
+        b = tser[tser.index.year <= y]
+        a0 = ser[ser.index.year < y]
+        b0 = tser[tser.index.year < y]
+        if not len(a0):
+            continue
+        ra, rb = (a.iloc[-1] / a0.iloc[-1] - 1) * 100, (b.iloc[-1] / b0.iloc[-1] - 1) * 100
+        print(f"     {y}: {ra:+6.1f} ／ {rb:+6.1f} ／ {ra - rb:+6.1f}")
+    print("\n  6. 判定（計画の3）")
+    rrH = res["H"][6]
+    meH = cagr(res["H"][2], res["H"][0])
+    nb = sum(1 for x in rrH if meH > x)
+    if share["H"] >= 0.8 and n_win >= 10 and nb >= 18:
+        vH = "時期によらず勝つ"
+    elif share["H"] >= 0.5:
+        vH = "時期しだい"
+    else:
+        vH = "勝ったのは始めた時期のおかげに近い"
+    print(f"     H … {vH}（始める月末で上回った {share['H'] * 100:.0f}％・入れ替えの月 {n_win}／12・でたらめ {nb}／20）")
+    for kind in ("W", "B"):
+        print(f"     {kind} … 始める月末で TOPIX を上回った {share[kind] * 100:.0f}％" + ("（本の結論〈負け〉と同じ）" if share[kind] < 0.5 else "（本の結論と違う）"))
+    return 0
+
+
 def run_mode(mode: str, store: dict, args) -> int:
     """1つの mode を回す（データはそろっている前提で、足りなければ取る）。14段目の lab14 は、これを続けて呼ぶ。"""
     global LAB_TITLE, LAB_PLAN, LAB_NOTE
@@ -8302,6 +8748,8 @@ def run_mode(mode: str, store: dict, args) -> int:
         return lab34(store)
     if mode == "lab36":
         return lab36(store)
+    if mode == "lab37":
+        return lab37(store)
     if mode == "lab35":
         # 35段目：信用取引の週末残高（スタンダード）を週ごとに取り、21段目と同じ別のファイル（data/wide_k.pkl）に持つ
         xs = k_xs_load()
@@ -8574,7 +9022,7 @@ def lab14(store: dict, args) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab5", "lab6", "lab7", "lab8", "lab9", "lab10", "lab11", "lab12", "lab13", "lab14", "lab15", "lab16", "lab17", "lab18", "lab19", "lab20", "lab21", "lab22", "lab23", "lab24", "lab25", "lab26", "lab27", "lab28", "lab29", "lab32", "lab33", "lab34", "lab35", "lab36", "htrack", "xfetch"], default="lab1")
+    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab5", "lab6", "lab7", "lab8", "lab9", "lab10", "lab11", "lab12", "lab13", "lab14", "lab15", "lab16", "lab17", "lab18", "lab19", "lab20", "lab21", "lab22", "lab23", "lab24", "lab25", "lab26", "lab27", "lab28", "lab29", "lab32", "lab33", "lab34", "lab35", "lab36", "lab37", "htrack", "xfetch"], default="lab1")
     ap.add_argument("--combo", default="", help="3回目：1回目で「範囲の中では効く」以上だった型の記号（カンマ区切り）。2つ以上なら SEL として回す")
     ap.add_argument("--only", default="", help="回す型の記号（カンマ区切り。空欄なら全部）。確かめる段階で候補だけを回すとき")
     ap.add_argument("--cfg", default="", help="7段目の確かめる段階で回す組み立て（例: VQM/TOP500/20/Q,NXG/TOP500/20/Q）")
