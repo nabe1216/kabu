@@ -9505,6 +9505,97 @@ def lab42(store: dict) -> int:
     return 0
 
 
+# ───────────────────────── 43段目：田口れん太『カブ先生の「銘柄選び」の法則』（ディスカヴァー・トゥエンティワン、2025年4月18日）の4つの指標 ─────────────────────────
+# 計画は wide_lab_plan43_2026-11-15（結果を見る前に決めたもの）。23〜26段目と同じ月末の運用の形（条件に合う銘柄だけに点数・20銘柄・売る決まり A・B）。
+C43_PUB = pd.Timestamp("2025-04-30")     # 出版（2025年4月18日）のあとの最初の月末
+C43_CYC = {"鉄鋼", "海運業", "化学", "石油・石炭製品", "非鉄金属", "鉱業"}      # 景気・市況に左右される業種（配当利回り5％以上を求める）
+C43_TYPES = (
+    ("C1", "本の基本：配当利回り4％以上（景気敏感の業種は5％以上）・8％以下・PBR1倍未満・益利回り4％以上（黒字で PER25倍以下）・時価総額1,000億円以上（利回りの高い順）"),
+    ("C2", "低ROE（宝の山）：C1 に ROE8％以下を足す（利回りの高い順）"),
+    ("C3", "高ROE：C1 に ROE8％超を足す（利回りの高い順）"),
+    ("C4", "人気株を避ける：C1 から、過去1年で株価2倍以上・3か月で30％以上上げた銘柄を除く（利回りの高い順）"),
+    ("C1K", "参考：C1 で買い、本の売りに近い形（PBR1倍に届くか赤字になるまで持つ。36か月以内に C1 に合ったことがある銘柄）"),
+)
+
+
+def c43_rise(D: dict) -> tuple:
+    """月末ごとの株価の上昇（12か月前・3か月前の月末の終値と比べた倍率）。"""
+    CF, me_idx = D["CF"], D["me_idx"]
+    S, M = CF.shape[0], len(me_idx)
+    r12, r3 = np.full((S, M), np.nan), np.full((S, M), np.nan)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        for j, t in enumerate(me_idx):
+            if j >= 12:
+                r12[:, j] = CF[:, t] / CF[:, me_idx[j - 12]]
+            if j >= 3:
+                r3[:, j] = CF[:, t] / CF[:, me_idx[j - 3]]
+    return r12, r3
+
+
+def c43_scores_from(P: dict, MC: np.ndarray, cyc: np.ndarray, r12: np.ndarray, r3: np.ndarray) -> dict:
+    per = np.where(np.isfinite(P["per_f"]), P["per_f"], P["per_a"])
+    npb = np.where(np.isfinite(P["np_f"]), P["np_f"], P["np_a"])
+    out = {}
+    with np.errstate(invalid="ignore", divide="ignore"):
+        dy, pbr = P["dy"], P["pbr"]
+        roe = npb / P["eq"]
+        dmin = np.where(cyc, 0.05, 0.04)
+        c1 = (dy >= dmin) & (dy <= 0.08) & (pbr > 0) & (pbr < 1.0) & (per > 0) & (per <= 25.0) & (MC >= 1e11)
+        out["C1"] = np.where(c1, dy, np.nan)
+        out["C2"] = np.where(c1 & (roe <= 0.08), dy, np.nan)
+        out["C3"] = np.where(c1 & (roe > 0.08), dy, np.nan)
+        hot = (r12 >= 2.0) | (r3 >= 1.30)
+        out["C4"] = np.where(c1 & ~hot, dy, np.nan)
+        keep = (pbr > 0) & (pbr < 1.0) & (P["np_a"] > 0)
+        held = np.zeros_like(c1)
+        last = np.full(c1.shape[0], -10 ** 6)
+        for j in range(c1.shape[1]):
+            last = np.where(c1[:, j], j, last)
+            held[:, j] = (j - last) <= 36
+        out["C1K"] = np.where(c1, dy, np.where(held & keep, np.where(np.isfinite(dy), dy, 0.0) - 1.0, np.nan))
+    return out
+
+
+def c43_scores(store: dict, D: dict) -> dict:
+    P = g_panel(store, D)
+    cyc = np.array([D["sector"].get(c, "") in C43_CYC for c in D["codes"]])[:, None]
+    r12, r3 = c43_rise(D)
+    return c43_scores_from(P, D["MCAP"], cyc, r12, r3)
+
+
+def lab43(store: dict) -> int:
+    """43段目：田口れん太の4つの指標。出版のあとの期間（2025年5月〜）の成績を別に出す（判定には使わない）。"""
+    global LAB_TITLE, LAB_PLAN, LAB_NOTE, PUB_FROM
+    LAB_TITLE, LAB_PLAN = "43段目（田口れん太『カブ先生の「銘柄選び」の法則』2025年4月の4つの指標）", "wide_lab_plan43_2026-11-15"
+    LAB_NOTE = ("43段目：24〜26段目と同じく、条件に合う銘柄だけに点数をつけ、合う銘柄が20より少ない月は現金。条件に合わなくなった銘柄は、その月末に売る（C1K だけ本の売りに近い形）。"
+                "保留は「合格した銘柄が1か月あたり平均5未満」。前半・後半とも出版より前。出版後（2025年5月〜）は別に出す（判定はしない）。"
+                "10年債利回りのデータがないので益利回りの下限は4％で固定。損切り10％・2倍で半分売る・分割買いは入れない")
+    PUB_FROM = C43_PUB
+    cache: dict = {}
+
+    def mk(name):
+        def fn(D):
+            if "sc" not in cache:
+                log("  基礎の値（配当利回り・PBR・PER・ROE・時価総額・株価の上昇）を作っています…")
+                cache["sc"] = c43_scores(store, D)
+            return cache["sc"][name]
+        return fn
+    rc = lab1(store, extra={nm: (mk(nm), lab) for nm, lab in C43_TYPES}, filt=True)
+    if rc == 0 and LAST_LAB1:
+        print("\n  3. 出版のあと（2025年5月〜。判定はしない。年率％） … A ／ B ／ TOPIX（税あり） ／ でたらめな20銘柄の平均 A ／ でたらめ（同じ数・A）の平均")
+        for k, r in LAST_LAB1.items():
+            if "出版後" not in r["A"]:
+                continue
+            ra = [x["出版後"]["ann"] for x in r["rnd"]["A"] if "出版後" in x]
+            rn = [x["出版後"]["ann"] for x in r.get("rnd_n", []) if "出版後" in x]
+            print(f"     {k:<4} {r['A']['出版後']['ann']:6.1f} ／ {r['B']['出版後']['ann']:6.1f} ／ {r['tx']['出版後']['ann']:6.1f} ／ "
+                  f"{np.mean(ra) if ra else float('nan'):6.1f}（上回った回数 {sum(1 for x in ra if r['A']['出版後']['ann'] > x)}） ／ "
+                  f"{np.mean(rn) if rn else float('nan'):6.1f}（{sum(1 for x in rn if r['A']['出版後']['ann'] > x)}）"
+                  f" ・ 最大下落 A {r['A']['出版後']['mdd']:.0f}％")
+    PUB_FROM = None
+    return rc
+
+
 def run_mode(mode: str, store: dict, args) -> int:
     """1つの mode を回す（データはそろっている前提で、足りなければ取る）。14段目の lab14 は、これを続けて呼ぶ。"""
     global LAB_TITLE, LAB_PLAN, LAB_NOTE
@@ -9529,6 +9620,8 @@ def run_mode(mode: str, store: dict, args) -> int:
         return lab25(store)
     if mode == "lab26":
         return lab26(store)
+    if mode == "lab43":
+        return lab43(store)
     if mode == "lab27":
         return lab27(store)
     if mode == "lab28":
@@ -9842,7 +9935,7 @@ def lab14(store: dict, args) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab5", "lab6", "lab7", "lab8", "lab9", "lab10", "lab11", "lab12", "lab13", "lab14", "lab15", "lab16", "lab17", "lab18", "lab19", "lab20", "lab21", "lab22", "lab23", "lab24", "lab25", "lab26", "lab27", "lab28", "lab29", "lab32", "lab33", "lab34", "lab35", "lab36", "lab37", "lab38", "lab39", "lab40", "lab41", "lab42", "htrack", "xfetch"], default="lab1")
+    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab5", "lab6", "lab7", "lab8", "lab9", "lab10", "lab11", "lab12", "lab13", "lab14", "lab15", "lab16", "lab17", "lab18", "lab19", "lab20", "lab21", "lab22", "lab23", "lab24", "lab25", "lab26", "lab27", "lab28", "lab29", "lab32", "lab33", "lab34", "lab35", "lab36", "lab37", "lab38", "lab39", "lab40", "lab41", "lab42", "lab43", "htrack", "xfetch"], default="lab1")
     ap.add_argument("--combo", default="", help="3回目：1回目で「範囲の中では効く」以上だった型の記号（カンマ区切り）。2つ以上なら SEL として回す")
     ap.add_argument("--only", default="", help="回す型の記号（カンマ区切り。空欄なら全部）。確かめる段階で候補だけを回すとき")
     ap.add_argument("--cfg", default="", help="7段目の確かめる段階で回す組み立て（例: VQM/TOP500/20/Q,NXG/TOP500/20/Q）")
