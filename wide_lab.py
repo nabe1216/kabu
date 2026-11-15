@@ -9596,6 +9596,176 @@ def lab43(store: dict) -> int:
     return rc
 
 
+# ───────────────────────── 44段目：日本個別株デューデリジェンスセンター『機関投資家には「締め切り」がある』（2026年8月5日）の資金カレンダー ─────────────────────────
+# 計画は wide_lab_plan44_2026-11-15（結果を見る前に決めたもの）。本に数値の決まりがないので、本の仕組みの説明からこちらで数値にした。
+# TOPIX の型は2回目の暦の型と同じ道具（cal_sim・でたらめは spells_placebo）。個別株の型は2回目の出来事の道具（ev_sim・でたらめは同じ日に同じ数だけ上位500社から）。
+A44_TH = 0.05           # 四半期の TOPIX の上昇率の境（±5％）
+A44_N = 20              # 個別株の型で買う数
+A44_Q2_MIN = 3          # Q2：前半・後半のどちらかで買いがこれ未満なら保留
+
+
+def a44_qends(cal: np.ndarray) -> list:
+    """四半期末（3・6・9・12月の最後の営業日）の番号。"""
+    mon = (cal.astype("datetime64[M]").astype(int) % 12) + 1
+    mb = month_bounds(cal)
+    # 最後の月は途中で終わっているかもしれないので、次の月が始まっている月だけを使う
+    return [e for (_s, e) in mb[:-1] if mon[e] in (3, 6, 9, 12)]
+
+
+def a44_q_masks(TPc: np.ndarray, qe: list, T: int, N: int, th: float = A44_TH) -> tuple:
+    """Q1（上昇率が +th 以上の四半期は、末の N 日前に売って末に買い戻す）と Q2（−th 以下なら N 日前に買って末に売る）の「その日の終わりに持つ」印。"""
+    q1 = np.ones(T, dtype=bool)
+    q2 = np.zeros(T, dtype=bool)
+    for k in range(1, len(qe)):
+        e, p = qe[k], qe[k - 1]
+        s = e - N
+        if s <= p:
+            continue
+        r = TPc[s] / TPc[p] - 1.0
+        if r >= th:
+            q1[s:e] = False
+        elif r <= -th:
+            q2[s:e] = True
+    return q1, q2
+
+
+def a44_cands(D: dict, qe: list, top: np.ndarray, jm: np.ndarray, t0: int) -> dict:
+    """個別株の型の候補 {型: {買う日: [(優先度, 銘柄, 売る日), …]}}。"""
+    CF, C, cal = D["CF"], D["C"], D["cal"]
+    T = CF.shape[1]
+    mon = (cal.astype("datetime64[M]").astype(int) % 12) + 1
+
+    def pool(t):
+        j = jm[t]
+        if j < 0:
+            return np.zeros(0, dtype=int)
+        v = C[:, t]
+        return np.nonzero(top[:, j] & np.isfinite(v) & (v > 0))[0]
+
+    def pick(t, base, best: bool):
+        ids = pool(t)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            r = CF[ids, t] / CF[ids, base] - 1.0
+        ok = np.isfinite(r)
+        ids, r = ids[ok], r[ok]
+        order = np.argsort(-r if best else r, kind="stable")[:A44_N]
+        return [(float(r[k]) if best else float(-r[k]), int(ids[k])) for k in order]
+
+    out = {"D1A": {}, "D1B": {}, "D2A": {}, "D2B": {}, "Y1A": {}, "Y1B": {}}
+    for k in range(1, len(qe)):
+        e, p = qe[k], qe[k - 1]
+        for nm, n in (("D1A", 10), ("D1B", 5)):
+            s = e - n
+            if s > p and s >= t0:
+                out[nm][s] = [(pr, i, e) for pr, i in pick(s, p, True)]
+        if e >= t0:
+            for nm, h in (("D2A", 10), ("D2B", 20)):
+                if e + h < T:
+                    out[nm][e] = [(pr, i, e + h) for pr, i in pick(e, p, False)]
+            if mon[e] == 12 and e >= 250:
+                for nm, h in (("Y1A", 20), ("Y1B", 10)):
+                    if e + h < T:
+                        out[nm][e] = [(pr, i, e + h) for pr, i in pick(e, e - 250, False)]
+    return out, pool
+
+
+def lab44(store: dict) -> int:
+    log("44段目（『機関投資家には「締め切り」がある』の資金カレンダー）を回します（指標を作っています）…")
+    D = build(store)
+    dates, me_idx, cal = D["dates"], D["me_idx"], D["cal"]
+    M, T = len(dates), len(cal)
+    TPc = D["tp"]["c"].astype(float)
+    j0 = next((j for j, t in enumerate(me_idx) if t >= 252), None)
+    if j0 is None or M - j0 < 36:
+        print("\n■ 比べる期間が短すぎます。")
+        return 1
+    t0 = me_idx[j0]
+    ev = dates[j0:]
+    yrs = max((ev[-1] - ev[0]).days / 365.25, 0.5)
+    E = ev_extract(store, D)
+    jm = np.searchsorted(np.array(me_idx), np.arange(T), side="left") - 1
+    TXv, TXliq = topix_taxed(D, j0)
+    ST_TX = half_stats(TXv, ev)
+    qe = a44_qends(cal)
+    top = topn_mask(D, 500)
+
+    def nb_of(s_):
+        return {"前半": sum(1 for t in s_["buy_t"] if pd.Timestamp(cal[t]) < SPLIT),
+                "後半": sum(1 for t in s_["buy_t"] if pd.Timestamp(cal[t]) >= SPLIT)}
+
+    res = {}
+    # TOPIX の型
+    qm = {n: a44_q_masks(TPc, qe, T, n) for n in (5, 10)}
+    for key, lab, idx, short in (("Q1", "リバランス売りを避ける（四半期の TOPIX が +5％以上なら、末の N 日前に売って末に買い戻す）", 0, lambda x: False),
+                                 ("Q2", "リバランス買いに乗る（四半期の TOPIX が −5％以下なら、末の N 日前に買って末に売る）", 1,
+                                  lambda x: min(x["nb"].values()) < A44_Q2_MIN)):
+        r = {"lab": lab, "var": {}}
+        for nm, n in (("A", 5), ("B", 10)):
+            x = qm[n][idx]
+            v, liq, s_ = cal_sim(x, D, t0)
+            rnd = [half_stats(cal_sim(spells_placebo(x, t0, 44000 + k), D, t0)[0], ev) for k in range(N_RAND)]
+            r["var"][nm] = {"st": half_stats(v, ev), "liq": liq, "s": s_, "rnd": rnd, "vlab": f"N＝{n}", "nb": nb_of(s_),
+                            "held": float(x[t0:].mean()), "n_cand": int(x[t0:].sum())}
+        r["verdict"], r["detail"] = judge2(r["var"], ST_TX, short)
+        res[key] = r
+        log(f"  {key} … {r['verdict']}")
+    # 個別株の型
+    CD, pool = a44_cands(D, qe, top, jm, t0)
+
+    def placebo(cands, seed):
+        rng = np.random.default_rng(seed)
+        out = {}
+        for t, cl in cands.items():
+            pl = pool(t)
+            if len(pl) == 0:
+                continue
+            pk = rng.choice(pl, size=min(len(cl), len(pl)), replace=False)
+            out[t] = [(float(rng.random()), int(i), t_out) for i, (_p, _i, t_out) in zip(pk, cl)]
+        return out
+
+    def run(cands, vlab):
+        v, liq, s_ = ev_sim(cands, D, E["divpay"], t0)
+        rnd, rnd_nb = [], []
+        for k in range(N_RAND):
+            pv, _l, ps_ = ev_sim(placebo(cands, 44100 + k), D, E["divpay"], t0)
+            rnd.append(half_stats(pv, ev))
+            rnd_nb.append(ps_["n_buy"])
+        return {"st": half_stats(v, ev), "liq": liq, "s": s_, "rnd": rnd, "nb": nb_of(s_), "vlab": vlab,
+                "held": float(np.mean(s_["held"])) if s_["held"] else 0.0, "fill": float(np.mean(rnd_nb)) / max(1, s_["n_buy"]),
+                "n_cand": sum(len(c) for c in cands.values())}
+
+    for key, lab, va in (("D1", "ドレッシング買いの先回り（四半期末の N 日前に、四半期の上昇率の上位20を買い、末に売る）", (("A", "D1A", "N＝10"), ("B", "D1B", "N＝5"))),
+                         ("D2", "ドレッシング売りの反動（四半期末に、四半期の上昇率の下位20を買い、H 日後に売る）", (("A", "D2A", "H＝10"), ("B", "D2B", "H＝20"))),
+                         ("Y1", "年末の損失確定売りの反動（12月の最後の日に、250日の上昇率の下位20を買い、H 日後に売る）", (("A", "Y1A", "H＝20"), ("B", "Y1B", "H＝10")))):
+        r = {"lab": lab, "var": {nm: run(CD[ck], vl) for nm, ck, vl in va}}
+        r["verdict"], r["detail"] = judge2(r["var"], ST_TX, lambda x: min(x["nb"].values()) < EV_MIN_BUYS or x["fill"] < RND_FILL_MIN)
+        res[key] = r
+        log(f"  {key} … {r['verdict']}")
+    HH = ("前半", "後半")
+    print("\n" + "=" * 100)
+    print("【日本株の手法・44段目（日本個別株デューデリジェンスセンター『機関投資家には「締め切り」がある』2026年8月の資金カレンダー）（wide_lab）】")
+    print("  （基準は結果を見る前に決めたもの。計画はプロジェクトの wide_lab_plan44_2026-11-15。本に数値の決まりがないので、日数・境はこちらで決めたもの）")
+    print(f"  比べる期間 {ev[0].date()}〜{ev[-1].date()}（{len(ev) - 1}か月）。前半＝〜{(SPLIT - pd.Timedelta(days=1)).date()}・後半＝{SPLIT.date()}〜。四半期末 {len(qe)}回")
+    print(f"  費用と税 {COST}：株 片道{SLIP * 100:.1f}％・1306 片道{ETF_SLIP * 100:.2f}％・{TAX_TXT}。元本{CAP / 1e4:,.0f}万円。個別株は20銘柄まで・上位500社")
+    print(f"  TOPIX（税あり）：{ST_TX['前半']['ann']:.1f} ／ {ST_TX['後半']['ann']:.1f}（清算後の通し {((TXliq / CAP) ** (1 / yrs) - 1) * 100:.1f}％）")
+    print("\n  1. 型ごとの成績（年率％「前半 ／ 後半」。［TOPIX との差 ／ でたらめの平均との差・でたらめを上回った回数］）")
+    for key, r in res.items():
+        print(f"\n  {key} {r['lab']} … {r['verdict']}")
+        for nm, x in r["var"].items():
+            rn = {h: float(np.mean([y[h]['ann'] for y in x['rnd']])) for h in HH}
+            dd = " ".join(f"{r['detail'][(nm, h)][0]:+.1f}/{r['detail'][(nm, h)][1]:+.1f}・{r['detail'][(nm, h)][2]}回" for h in HH)
+            extra = (f"持っていた日の割合 {x['held'] * 100:.0f}％" if key in ("Q1", "Q2")
+                     else f"平均の持ち数 {x['held']:.1f}銘柄・でたらめの買いの回数 {x['fill'] * 100:.0f}％")
+            print(f"     {nm}（{x['vlab']}） {x['st']['前半']['ann']:6.1f} ／ {x['st']['後半']['ann']:6.1f}（最大下落 {x['st']['通し']['mdd']:.0f}％）［{dd}］"
+                  f" でたらめ {rn['前半']:.1f} ／ {rn['後半']:.1f}・買い 前半 {x['nb']['前半']}回・後半 {x['nb']['後半']}回・{extra}・"
+                  f"清算後の通し {((x['liq'] / CAP) ** (1 / yrs) - 1) * 100:.1f}％")
+    print("\n  2. 判定のまとめ")
+    for vv in ("候補", "範囲の中では効く", "効かない", "保留（データ不足）"):
+        ks = [k for k, r in res.items() if r["verdict"] == vv]
+        print(f"     {vv} … " + ("・".join(ks) if ks else "なし"))
+    return 0
+
+
 def run_mode(mode: str, store: dict, args) -> int:
     """1つの mode を回す（データはそろっている前提で、足りなければ取る）。14段目の lab14 は、これを続けて呼ぶ。"""
     global LAB_TITLE, LAB_PLAN, LAB_NOTE
@@ -9622,6 +9792,8 @@ def run_mode(mode: str, store: dict, args) -> int:
         return lab26(store)
     if mode == "lab43":
         return lab43(store)
+    if mode == "lab44":
+        return lab44(store)
     if mode == "lab27":
         return lab27(store)
     if mode == "lab28":
@@ -9935,7 +10107,7 @@ def lab14(store: dict, args) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab5", "lab6", "lab7", "lab8", "lab9", "lab10", "lab11", "lab12", "lab13", "lab14", "lab15", "lab16", "lab17", "lab18", "lab19", "lab20", "lab21", "lab22", "lab23", "lab24", "lab25", "lab26", "lab27", "lab28", "lab29", "lab32", "lab33", "lab34", "lab35", "lab36", "lab37", "lab38", "lab39", "lab40", "lab41", "lab42", "lab43", "htrack", "xfetch"], default="lab1")
+    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab5", "lab6", "lab7", "lab8", "lab9", "lab10", "lab11", "lab12", "lab13", "lab14", "lab15", "lab16", "lab17", "lab18", "lab19", "lab20", "lab21", "lab22", "lab23", "lab24", "lab25", "lab26", "lab27", "lab28", "lab29", "lab32", "lab33", "lab34", "lab35", "lab36", "lab37", "lab38", "lab39", "lab40", "lab41", "lab42", "lab43", "lab44", "htrack", "xfetch"], default="lab1")
     ap.add_argument("--combo", default="", help="3回目：1回目で「範囲の中では効く」以上だった型の記号（カンマ区切り）。2つ以上なら SEL として回す")
     ap.add_argument("--only", default="", help="回す型の記号（カンマ区切り。空欄なら全部）。確かめる段階で候補だけを回すとき")
     ap.add_argument("--cfg", default="", help="7段目の確かめる段階で回す組み立て（例: VQM/TOP500/20/Q,NXG/TOP500/20/Q）")
