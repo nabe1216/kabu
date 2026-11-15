@@ -9349,6 +9349,162 @@ def lab41(store: dict, xs: dict) -> int:
     return 0
 
 
+# ───────────────────────── 42段目：かまーん『一目均衡表スイングトレード入門』（2025年11月）の一目均衡表シグナル ─────────────────────────
+# 計画は wide_lab_plan42_2026-11-15（結果を見る前に決めたもの）。買いだけ・毎日の売り買い。40段目の a40_sim を使う。
+# 9年分には高値・安値がないので、期間の高値・安値は終値の高値・安値で代える。
+A42_FORMS = (
+    ("K1", "三役好転（日足だけ）で買い、基準線割れで売る", "k1", "s_kj"),
+    ("K2", "三役好転＋週足の条件（週足の雲の上・週足の基準線が上向き・週足の三役好転）で買い、基準線割れで売る", "k2", "s_kj"),
+    ("K3", "押し目買い（週足の条件・雲の上・遅行スパン好転・基準線の0〜2％上まで押して陽線）で買い、基準線の98％割れで売る", "k3", "s_kj98"),
+    ("K4", "もみ合い放れ（52日の高値÷安値1.25以下を上抜け・雲の上）で買い、基準線割れで売る", "k4", "s_kj"),
+)
+
+
+def a42_lines(X: np.ndarray) -> dict:
+    """行＝銘柄・列＝時点の終値から、一目均衡表の線（高値・安値は終値で代える）。"""
+    df = pd.DataFrame(X.T)
+
+    def mid(n):
+        return ((df.rolling(n, min_periods=n).max() + df.rolling(n, min_periods=n).min()) / 2.0)
+    tk, kj, s2 = mid(9), mid(26), mid(52)
+    s1 = (tk + kj) / 2.0
+    ctop = np.fmax(s1.shift(26).to_numpy(), s2.shift(26).to_numpy()).T
+    both = np.isfinite(s1.shift(26).to_numpy()) & np.isfinite(s2.shift(26).to_numpy())
+    ctop = np.where(both.T, ctop, np.nan)
+    c26 = df.shift(26).to_numpy().T
+    with np.errstate(invalid="ignore"):
+        san = (tk.to_numpy().T > kj.to_numpy().T) & (X > c26) & (X > ctop)
+    return {"tk": tk.to_numpy().T, "kj": kj.to_numpy().T, "ctop": ctop, "c26": c26, "san": san}
+
+
+def a42_weekly(D: dict) -> np.ndarray:
+    """営業日ごとに、前の週までに確定した週足で「週足の条件」がそろっているか。"""
+    CF, cal = D["CF"], D["cal"]
+    S, T = CF.shape
+    cd = pd.DatetimeIndex(cal)
+    wk = (cd - pd.to_timedelta(cd.weekday, unit="D")).normalize().to_numpy()
+    _, wid = np.unique(wk, return_inverse=True)
+    W = int(wid.max()) + 1
+    last = np.zeros(W, dtype=int)
+    for t in range(T):
+        last[wid[t]] = t
+    WX = CF[:, last].astype(np.float64)
+    L = a42_lines(WX)
+    with np.errstate(invalid="ignore"):
+        kj_prev = np.full_like(L["kj"], np.nan)
+        kj_prev[:, 1:] = L["kj"][:, :-1]
+        ok_w = (WX > L["ctop"]) & (L["kj"] > kj_prev) & L["san"]
+    out = np.zeros((S, T), dtype=bool)
+    for t in range(T):
+        w = wid[t] - 1
+        if w >= 0:
+            out[:, t] = ok_w[:, w]
+    return out
+
+
+def a42_signals(D: dict, wk_ok: np.ndarray) -> dict:
+    CF = D["CF"].astype(np.float64)
+    L = a42_lines(CF)
+    df = pd.DataFrame(CF.T)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        san = L["san"]
+        sanp = np.zeros_like(san)
+        sanp[:, 1:] = san[:, :-1]
+        k1 = san & ~sanp
+        k2 = k1 & wk_ok
+        p1 = np.full_like(CF, np.nan)
+        p1[:, 1:] = CF[:, :-1]
+        above5 = (CF >= 1.05 * L["kj"]).astype(float)
+        rec = pd.DataFrame(above5.T).shift(1).rolling(10, min_periods=1).max().to_numpy().T > 0
+        k3 = (wk_ok & (CF > L["ctop"]) & (CF > L["c26"]) & rec & (CF >= L["kj"]) & (CF <= 1.02 * L["kj"]) & (CF > p1))
+        hi52 = df.shift(1).rolling(52, min_periods=52).max().to_numpy().T
+        lo52 = df.shift(1).rolling(52, min_periods=52).min().to_numpy().T
+        k4 = (hi52 / lo52 <= 1.25) & (CF > hi52) & (CF > L["ctop"])
+        s_kj = CF < L["kj"]
+        s_kj98 = CF < 0.98 * L["kj"]
+    return {"k1": k1, "k2": k2, "k3": k3, "k4": k4, "s_kj": s_kj, "s_kj98": s_kj98}
+
+
+def lab42(store: dict) -> int:
+    """42段目：一目均衡表シグナル。計画は wide_lab_plan42_2026-11-15。"""
+    log("42段目（かまーん『一目均衡表スイングトレード入門』）を回します（指標を作っています）…")
+    D = build(store)
+    dates, UNI, me_idx, MC = D["dates"], D["UNI"], D["me_idx"], D["MCAP"]
+    C = D["C"]
+    S, T = C.shape
+    j0 = next((j for j, t in enumerate(me_idx) if t >= 260), None)
+    t0 = me_idx[j0]
+    ev = dates[j0:]
+    yrs = max((ev[-1] - ev[0]).days / 365.25, 0.5)
+    E = ev_extract(store, D)
+    TXv, TXliq = topix_taxed(D, j0)
+    ST_TX = half_stats(TXv, ev)
+    traded = np.isfinite(C) & (C > 0)
+    last_t = np.array([int(np.nonzero(traded[i])[0][-1]) if traded[i].any() else -1 for i in range(S)])
+    top = topn_mask(D, 500)
+    jm = np.searchsorted(np.array(me_idx), np.arange(T), side="left") - 1
+    WK = a42_weekly(D)
+    SG = a42_signals(D, WK)
+
+    def cg(liq):
+        return ((liq / CAP) ** (1 / yrs) - 1.0) * 100
+
+    print("\n" + "=" * 100)
+    print("【日本株の手法・42段目（かまーん『一目均衡表スイングトレード入門』2025年11月の一目均衡表シグナル）（wide_lab）：時価総額の上位500社】")
+    print("  （基準は結果を見る前に決めたもの。計画はプロジェクトの wide_lab_plan42_2026-11-15。一目均衡表は昔から知られた手法）")
+    print(f"  比べる期間 {ev[0].date()}〜{ev[-1].date()}（{len(ev) - 1}か月）。前半＝〜{(SPLIT - pd.Timedelta(days=1)).date()}・後半＝{SPLIT.date()}〜")
+    print(f"  費用と税 {COST}：株 片道{SLIP * 100:.1f}％・{TAX_TXT}。元本{CAP / 1e4:,.0f}万円・10銘柄・1株単位。合図の次の営業日の終値で売り買い。高値・安値は終値で代える")
+    tw = [float(np.mean(WK[top[:, jm[t]], t])) for t in me_idx[j0:] if top[:, jm[t]].any()]
+    print(f"  上位500社のうち週足の条件がそろっていた割合（月末ごと）：中央値 {np.median(tw) * 100:.0f}％・最小 {min(tw) * 100:.0f}％・最大 {max(tw) * 100:.0f}％")
+    print(f"  TOPIX（税あり）：{ST_TX['前半']['ann']:.1f} ／ {ST_TX['後半']['ann']:.1f}（清算後の通し {cg(TXliq):.1f}％）")
+    print("\n  1. 結果（年率％「前半 ／ 後半」・清算後の通し・TOPIX との差 ／ でたらめとの差・上回った回数）")
+    out = {}
+    for key, lab, bk, sk in A42_FORMS:
+        cands, pools = {}, {}
+        for t in range(t0, T - 1):
+            j = jm[t]
+            if j < 0:
+                continue
+            pool_ok = top[:, j] & traded[:, t]
+            ids = np.nonzero(SG[bk][:, t] & pool_ok)[0]
+            if len(ids):
+                cands[t] = [int(i) for i in ids[np.argsort(-MC[ids, j], kind="stable")]]
+                pools[t] = np.nonzero(pool_ok)[0]
+        nsig = sum(len(x) for x in cands.values()) / yrs
+        v, liq, s_ = a40_sim(cands, SG[sk], D, E["divpay"], t0, last_t)
+        h = half_stats(v, ev)
+        rr = []
+        for k in range(N_RAND):
+            rg = np.random.default_rng(42000 + k)
+            pl = {t: [int(i) for i in rg.choice(pools[t], size=min(len(cl), len(pools[t])), replace=False)] for t, cl in cands.items()}
+            rv, rl, _r = a40_sim(pl, SG[sk], D, E["divpay"], t0, last_t)
+            rr.append(half_stats(rv, ev))
+        res = {}
+        for hh in ("前半", "後半"):
+            a = h[hh]["ann"]
+            ra = [x[hh]["ann"] for x in rr]
+            res[hh] = (a - ST_TX[hh]["ann"], a - np.mean(ra), sum(1 for x in ra if a > x))
+        cand = all(res[hh][0] >= 2 and res[hh][1] >= 2 and res[hh][2] >= 18 for hh in res)
+        sel = all(res[hh][1] >= 2 and res[hh][2] >= 18 for hh in res)
+        vd = "候補" if cand else ("範囲の中では効く" if sel else "効かない")
+        if nsig < 20:
+            vd = "保留（合図が少ない）"
+        cl = s_["closed"]
+        win = np.mean([c[2] > 0 for c in cl]) * 100 if cl else float("nan")
+        hold = np.median([c[1] - c[0] for c in cl]) if cl else float("nan")
+        out[key] = vd
+        print(f"\n  {key} {lab}")
+        print(f"     {h['前半']['ann']:6.1f} ／ {h['後半']['ann']:6.1f}（最大下落 {h['通し']['mdd']:.0f}％・清算後の通し {cg(liq):.1f}％）"
+              f"［{res['前半'][0]:+.1f}／{res['前半'][1]:+.1f}・{res['前半'][2]} ｜ {res['後半'][0]:+.1f}／{res['後半'][1]:+.1f}・{res['後半'][2]}］ … {vd}")
+        print(f"     合図 {nsig:.0f}回／年・買い {s_['n_buy'] / yrs:.0f}回／年・勝ち {win:.0f}％・持った日数の中央 {hold:.0f}日・"
+              f"でたらめの平均 {np.mean([x['前半']['ann'] for x in rr]):.1f} ／ {np.mean([x['後半']['ann'] for x in rr]):.1f}")
+    print("\n  2. 判定のまとめ")
+    for vv in ("候補", "範囲の中では効く", "効かない", "保留（合図が少ない）"):
+        ks = [k for k, x in out.items() if x == vv]
+        print(f"     {vv} … " + ("・".join(ks) if ks else "なし"))
+    return 0
+
+
 def run_mode(mode: str, store: dict, args) -> int:
     """1つの mode を回す（データはそろっている前提で、足りなければ取る）。14段目の lab14 は、これを続けて呼ぶ。"""
     global LAB_TITLE, LAB_PLAN, LAB_NOTE
@@ -9412,6 +9568,8 @@ def run_mode(mode: str, store: dict, args) -> int:
         if st.get("bad"):
             print("\n■ 信用取引の週末残高が取れなかったので、Q3・Q6 は保留になります")
         return lab35(store, xs)
+    if mode == "lab42":
+        return lab42(store)
     if mode == "lab41":
         # 41段目：35段目と同じ信用取引の週末残高（data/wide_k.pkl）を使う。なければ取る
         xs = k_xs_load()
@@ -9684,7 +9842,7 @@ def lab14(store: dict, args) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab5", "lab6", "lab7", "lab8", "lab9", "lab10", "lab11", "lab12", "lab13", "lab14", "lab15", "lab16", "lab17", "lab18", "lab19", "lab20", "lab21", "lab22", "lab23", "lab24", "lab25", "lab26", "lab27", "lab28", "lab29", "lab32", "lab33", "lab34", "lab35", "lab36", "lab37", "lab38", "lab39", "lab40", "lab41", "htrack", "xfetch"], default="lab1")
+    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab5", "lab6", "lab7", "lab8", "lab9", "lab10", "lab11", "lab12", "lab13", "lab14", "lab15", "lab16", "lab17", "lab18", "lab19", "lab20", "lab21", "lab22", "lab23", "lab24", "lab25", "lab26", "lab27", "lab28", "lab29", "lab32", "lab33", "lab34", "lab35", "lab36", "lab37", "lab38", "lab39", "lab40", "lab41", "lab42", "htrack", "xfetch"], default="lab1")
     ap.add_argument("--combo", default="", help="3回目：1回目で「範囲の中では効く」以上だった型の記号（カンマ区切り）。2つ以上なら SEL として回す")
     ap.add_argument("--only", default="", help="回す型の記号（カンマ区切り。空欄なら全部）。確かめる段階で候補だけを回すとき")
     ap.add_argument("--cfg", default="", help="7段目の確かめる段階で回す組み立て（例: VQM/TOP500/20/Q,NXG/TOP500/20/Q）")
