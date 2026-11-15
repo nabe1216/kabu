@@ -8810,6 +8810,196 @@ def lab38(store: dict) -> int:
     return rc
 
 
+# ───────────────────────── 39段目：『「売り時」の教科書』の売りの決まり ─────────────────────────
+# 計画は wide_lab_plan39_2026-11-15（結果を見る前に決めたもの）。買い方は同じで、売り方だけ変える。
+X39_FORMS = (
+    ("X0", "売りの決まりなし（持ち続ける）", {}),
+    ("X1", "損切り：平均の買値から −8％で全部売る", {"stop": 0.08}),
+    ("X2", "分割利確：+20％で3分の1を売り、そのあと +10％を割ったら残りを売る", {"part": (0.20, 1 / 3, 0.10)}),
+    ("X3", "トレイリングストップ：買ったあとの終値の高値から −10％で全部売る", {"trail": 0.10}),
+    ("X4", "本のフレーム：X1・X2・X3 をすべて使う", {"stop": 0.08, "part": (0.20, 1 / 3, 0.10), "trail": 0.10}),
+)
+
+
+def x39_sim(picks: dict, D: dict, divpay: dict, t0: int, cfg: dict, last_t: np.ndarray, slots: int = NMAX,
+            cap: float = CAP, slip: float = SLIP, tax: float = TAX):
+    """picks … {月末の日の番号: 買う順の銘柄の並び}。月末に空いている枠を順に埋める（1銘柄は資産の slots 分の1・1株単位）。
+    売りの合図はその日の終値で決め、次の営業日の終値で売る。売った銘柄も次の月末に選ばれれば買える。"""
+    C, CF = D["C"], D["CF"]
+    T = C.shape[1]
+    me_set = set(D["me_idx"])
+    cash, loss = float(cap), 0.0
+    pos: dict = {}
+    pend: dict = {}           # 銘柄 → 売る株数の割合（1.0＝全部）
+    vals = []
+    st = {"n_buy": 0, "n_sell": 0, "n_part": 0, "why": {"損切り": 0, "利確の残り": 0, "トレイリング": 0}}
+
+    def px(i, t):
+        v = CF[i, t]
+        return float(v) if (v == v and v > 0) else 0.0
+
+    def sell(i, t, sh, price):
+        nonlocal cash, loss
+        p = pos[i]
+        eff = price * (1.0 - slip)
+        avg = p["cost"] / p["sh"]
+        cash += sh * eff
+        g = sh * (eff - avg)
+        if g > 0:
+            tx = max(0.0, g - loss) * tax
+            loss = max(0.0, loss - g)
+            cash -= tx
+        else:
+            loss += -g
+        p["sh"] -= sh
+        p["cost"] -= sh * avg
+        if p["sh"] <= 0:
+            pos.pop(i)
+
+    for t in range(t0, T):
+        for i in [k for k in pos if last_t[k] < t - 5]:
+            sell(i, t, pos[i]["sh"], px(i, last_t[i]))
+            pend.pop(i, None)
+        for i in sorted(pend):
+            v = C[i, t]
+            if i not in pos:
+                pend.pop(i)
+            elif v == v and v > 0:
+                fr = pend.pop(i)
+                sh = pos[i]["sh"] if fr >= 1.0 else int(pos[i]["sh"] * fr)
+                if sh > 0:
+                    sell(i, t, sh, float(v))
+                    st["n_sell"] += 1
+        for i, amt in divpay.get(t, ()):
+            if i in pos:
+                cash += pos[i]["sh"] * amt * (1.0 - tax)
+        if t in me_set:
+            lst = picks.get(t)
+            if lst is not None:
+                value = cash + sum(p["sh"] * px(k, t) for k, p in pos.items())
+                for i in lst:
+                    if len(pos) >= slots:
+                        break
+                    if i in pos or i in pend or px(i, t) <= 0:
+                        continue
+                    pb = px(i, t) * (1.0 + slip)
+                    sh = int(min(value / slots, cash) / pb)
+                    if sh < 1:
+                        continue
+                    cash -= sh * pb
+                    pos[i] = {"sh": sh, "cost": sh * pb, "hi": px(i, t), "done": False}
+                    st["n_buy"] += 1
+            vals.append(cash + sum(p["sh"] * px(k, t) for k, p in pos.items()))
+        if t >= T - 1:
+            break
+        for i, p in pos.items():
+            v = C[i, t]
+            if not (v == v and v > 0) or i in pend:
+                continue
+            v = float(v)
+            avg = p["cost"] / p["sh"]
+            p["hi"] = max(p["hi"], v)
+            if "stop" in cfg and v <= avg * (1.0 - cfg["stop"]):
+                pend[i] = 1.0
+                st["why"]["損切り"] += 1
+                continue
+            if "trail" in cfg and v <= p["hi"] * (1.0 - cfg["trail"]):
+                pend[i] = 1.0
+                st["why"]["トレイリング"] += 1
+                continue
+            if "part" in cfg:
+                up, fr, keep = cfg["part"]
+                if not p["done"] and v >= avg * (1.0 + up):
+                    p["done"] = True            # 平均の買値は一部を売っても変わらない
+                    pend[i] = fr
+                    st["n_part"] += 1
+                elif p["done"] and v < avg * (1.0 + keep):
+                    pend[i] = 1.0
+                    st["why"]["利確の残り"] += 1
+    liq, gain = cash, 0.0
+    for k, p in pos.items():
+        eff = px(k, T - 1) * (1.0 - slip)
+        liq += p["sh"] * eff
+        gain += p["sh"] * eff - p["cost"]
+    liq -= tax * max(0.0, gain - loss)
+    return np.array(vals), liq, st
+
+
+def lab39(store: dict) -> int:
+    """39段目：『「売り時」の教科書』の売りの決まり。計画は wide_lab_plan39_2026-11-15。"""
+    log("39段目（「売り時」の教科書）を回します（指標を作っています）…")
+    D = build(store)
+    dates, UNI, me_idx, cal = D["dates"], D["UNI"], D["me_idx"], D["cal"]
+    C = D["C"]
+    S, T = C.shape
+    M = len(me_idx)
+    j0 = next((j for j, t in enumerate(me_idx) if t >= 260), None)
+    t0 = me_idx[j0]
+    ev = dates[j0:]
+    yrs = max((ev[-1] - ev[0]).days / 365.25, 0.5)
+    E = ev_extract(store, D)
+    TXv, TXliq = topix_taxed(D, j0)
+    traded = np.isfinite(C) & (C > 0)
+    last_t = np.array([int(np.nonzero(traded[i])[0][-1]) if traded[i].any() else -1 for i in range(S)])
+    log("  V の買い方（38段目の V1）を作っています…")
+    V1 = z_scores(store, D)["V1"]
+    picksV = {}
+    for j in range(j0, M):
+        idx = np.nonzero(UNI[:, j] & np.isfinite(V1[:, j]))[0]
+        picksV[me_idx[j]] = [int(i) for i in idx[np.argsort(-V1[idx, j], kind="stable")]]
+
+    def stats(v):
+        h = half_stats(v, ev)
+        return h["前半"]["ann"], h["後半"]["ann"], h["通し"]["mdd"]
+
+    def cg(liq):
+        return ((liq / CAP) ** (1 / yrs) - 1.0) * 100
+
+    print("\n" + "=" * 100)
+    print("【日本株の手法・39段目（日本個別株デューデリジェンスセンター『「売り時」の教科書』の売りの決まり）（wide_lab）：東証全銘柄】")
+    print("  （基準は結果を見る前に決めたもの。計画はプロジェクトの wide_lab_plan39_2026-11-15）")
+    print(f"  比べる期間 {ev[0].date()}〜{ev[-1].date()}（{len(ev) - 1}か月）。前半＝〜{(SPLIT - pd.Timedelta(days=1)).date()}・後半＝{SPLIT.date()}〜")
+    print(f"  費用と税 {COST}：株 片道{SLIP * 100:.1f}％・{TAX_TXT}。元本{CAP / 1e4:,.0f}万円・20銘柄・1株単位。合図の次の営業日の終値で売る")
+    ht = half_stats(TXv, ev)
+    print(f"  TOPIX（税あり）：{ht['前半']['ann']:.1f} ／ {ht['後半']['ann']:.1f}（清算後の通し {cg(TXliq):.1f}％）")
+    print("\n  1. V（38段目の V1：PBR1倍未満・ROE10％以上・営業CF プラス）に売りの決まりを足す（年率％「前半 ／ 後半」・最大下落・清算後の通し）")
+    resV = {}
+    for key, lab, cfg in X39_FORMS:
+        v, liq, s_ = x39_sim(picksV, D, E["divpay"], t0, cfg, last_t)
+        a, b, m = stats(v)
+        resV[key] = (a, b, cg(liq))
+        print(f"     {key} {lab}: {a:6.1f} ／ {b:6.1f}（最大下落 {m:.0f}％・清算後の通し {cg(liq):.1f}％）・買い {s_['n_buy'] / yrs:.0f}回／年・"
+              f"売り {s_['n_sell'] / yrs:.0f}回／年（" + "・".join(f"{k}{n}" for k, n in s_["why"].items() if n) + (f"・分割 {s_['n_part']}" if s_["n_part"] else "") + "）")
+    print("\n  2. R（範囲からでたらめに選ぶ・20回。年率％の平均「前半 ／ 後半」・清算後の通しの平均・X0 を上回った回数）")
+    resR = {k: [] for k, _l, _c in X39_FORMS}
+    for k in range(N_RAND):
+        rg = np.random.default_rng(39000 + k)
+        picksR = {}
+        for j in range(j0, M):
+            idx = np.nonzero(UNI[:, j] & traded[:, me_idx[j]])[0]
+            picksR[me_idx[j]] = [int(i) for i in rg.permutation(idx)[:60]]
+        for key, _lab, cfg in X39_FORMS:
+            v, liq, s_ = x39_sim(picksR, D, E["divpay"], t0, cfg, last_t)
+            a, b, m = stats(v)
+            resR[key].append((a, b, cg(liq), m))
+    base = resR["X0"]
+    verdict = {}
+    for key, lab, _cfg in X39_FORMS:
+        r = resR[key]
+        win = sum(1 for x, y in zip(r, base) if x[2] > y[2])
+        print(f"     {key}: {np.mean([x[0] for x in r]):6.1f} ／ {np.mean([x[1] for x in r]):6.1f}（清算後の通し {np.mean([x[2] for x in r]):.1f}％・最大下落 {np.mean([x[3] for x in r]):.0f}％）"
+              + ("" if key == "X0" else f"・X0 との差 {np.mean([x[2] - y[2] for x, y in zip(r, base)]):+.1f}pt・上回った {win}／{N_RAND}"))
+        if key != "X0":
+            vv = resV[key]
+            v0 = resV["X0"]
+            ok = win >= 16 and vv[0] > v0[0] and vv[1] > v0[1]
+            verdict[key] = ("効く" if ok else "効かない", win, vv[0] - v0[0], vv[1] - v0[1])
+    print("\n  3. 判定（計画の2：R で20回のうち16回以上 X0 を上回り、かつ V で前半・後半とも X0 を上回る → 効く）")
+    for key, (vd, win, da, db) in verdict.items():
+        print(f"     {key} … {vd}（R で上回った {win}／20・V の差 前半 {da:+.1f}pt ／ 後半 {db:+.1f}pt）")
+    return 0
+
+
 def run_mode(mode: str, store: dict, args) -> int:
     """1つの mode を回す（データはそろっている前提で、足りなければ取る）。14段目の lab14 は、これを続けて呼ぶ。"""
     global LAB_TITLE, LAB_PLAN, LAB_NOTE
@@ -8852,6 +9042,8 @@ def run_mode(mode: str, store: dict, args) -> int:
         return lab37(store)
     if mode == "lab38":
         return lab38(store)
+    if mode == "lab39":
+        return lab39(store)
     if mode == "lab35":
         # 35段目：信用取引の週末残高（スタンダード）を週ごとに取り、21段目と同じ別のファイル（data/wide_k.pkl）に持つ
         xs = k_xs_load()
@@ -9124,7 +9316,7 @@ def lab14(store: dict, args) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab5", "lab6", "lab7", "lab8", "lab9", "lab10", "lab11", "lab12", "lab13", "lab14", "lab15", "lab16", "lab17", "lab18", "lab19", "lab20", "lab21", "lab22", "lab23", "lab24", "lab25", "lab26", "lab27", "lab28", "lab29", "lab32", "lab33", "lab34", "lab35", "lab36", "lab37", "lab38", "htrack", "xfetch"], default="lab1")
+    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab5", "lab6", "lab7", "lab8", "lab9", "lab10", "lab11", "lab12", "lab13", "lab14", "lab15", "lab16", "lab17", "lab18", "lab19", "lab20", "lab21", "lab22", "lab23", "lab24", "lab25", "lab26", "lab27", "lab28", "lab29", "lab32", "lab33", "lab34", "lab35", "lab36", "lab37", "lab38", "lab39", "htrack", "xfetch"], default="lab1")
     ap.add_argument("--combo", default="", help="3回目：1回目で「範囲の中では効く」以上だった型の記号（カンマ区切り）。2つ以上なら SEL として回す")
     ap.add_argument("--only", default="", help="回す型の記号（カンマ区切り。空欄なら全部）。確かめる段階で候補だけを回すとき")
     ap.add_argument("--cfg", default="", help="7段目の確かめる段階で回す組み立て（例: VQM/TOP500/20/Q,NXG/TOP500/20/Q）")
