@@ -9766,6 +9766,294 @@ def lab44(store: dict) -> int:
     return 0
 
 
+# ───────────────────────── 45段目：唯ひかる『超解説「敗者のゲーム」負けない投資の実践法』（2025年7月10日）の資産配分・リバランス・積立 ─────────────────────────
+# 計画は wide_lab_plan45_2026-11-15（結果を見る前に決めたもの）。東証の ETF（1306・2513・2511・2510）を月末で回す。
+A45_CODES = ("1306", "2513", "2510", "2511")
+A45_NAMES = {"1306": "TOPIX", "2513": "外国株", "2510": "国内債券", "2511": "外国債券"}
+A45_START = pd.Timestamp("2018-10-31")
+A45_MONTHLY = 100_000.0       # 積立の毎月の額
+A45_BAND = 0.05               # ±5％
+A45_DD = 0.20                 # 暴落の境（高値から20％）
+
+
+def a45_w(stock: float) -> np.ndarray:
+    """株 stock・債券 1−stock の目標（株は TOPIX と外国株を半分ずつ、債券は国内と外国を半分ずつ）。"""
+    return np.array([stock / 2, stock / 2, (1 - stock) / 2, (1 - stock) / 2])
+
+
+class A45Port:
+    """月末で回す ETF の組み合わせ（口数は小数でよい）。売った益と分配金に税、損は繰り越す。"""
+
+    def __init__(self, slip: float, tax: float):
+        self.u = np.zeros(4)
+        self.basis = np.zeros(4)
+        self.cash = 0.0
+        self.loss = 0.0
+        self.slip, self.tax = slip, tax
+        self.n_sell = 0
+        self.tax_paid = 0.0
+
+    def value(self, P):
+        return self.cash + float((self.u * P).sum())
+
+    def buy(self, a, yen, P):
+        yen = min(yen, self.cash)
+        if yen <= 0 or not P[a] > 0:
+            return
+        self.u[a] += yen / (P[a] * (1 + self.slip))
+        self.basis[a] += yen
+        self.cash -= yen
+
+    def sell(self, a, yen, P):
+        if yen <= 0 or self.u[a] <= 0:
+            return
+        uu = min(self.u[a], yen / P[a])
+        proc = uu * P[a] * (1 - self.slip)
+        b = self.basis[a] * uu / self.u[a]
+        self.u[a] -= uu
+        self.basis[a] -= b
+        g = proc - b
+        tx = 0.0
+        if g > 0:
+            tx = max(0.0, g - self.loss) * self.tax
+            self.loss = max(0.0, self.loss - g)
+        else:
+            self.loss += -g
+        self.cash += proc - tx
+        self.tax_paid += tx
+        self.n_sell += 1
+
+    def dist(self, a, dps, P):
+        if self.u[a] <= 0 or dps <= 0:
+            return
+        g = self.u[a] * dps
+        tx = g * self.tax
+        self.tax_paid += tx
+        self.cash += g - tx
+        self.buy(a, g - tx, P)
+
+    def to_target(self, W, P):
+        V = self.value(P)
+        cur = self.u * P
+        for a in range(4):
+            if cur[a] > W[a] * V:
+                self.sell(a, cur[a] - W[a] * V, P)
+        V = self.value(P)
+        cur = self.u * P
+        need = np.maximum(W * V - cur, 0.0)
+        tot = need.sum()
+        if tot > 0:
+            c0 = self.cash
+            for a in range(4):
+                self.buy(a, c0 * need[a] / tot, P)
+
+    def liquidate(self, P):
+        for a in range(4):
+            if self.u[a] > 0:
+                self.sell(a, self.u[a] * P[a], P)
+        return self.cash
+
+
+def a45_run(P: np.ndarray, DPS: np.ndarray, dts: list, plan: dict, slip: float, tax: float) -> dict:
+    """P・DPS：行＝4つの ETF・列＝月末（最初の列が始まり）。plan の中身で一括・積立・暴落の行動を決める。"""
+    M = P.shape[1]
+    W = plan["w"]
+    pf = A45Port(slip, tax)
+    vals, flows = [], []
+    stock_idx = np.ones(M)
+    for j in range(1, M):
+        r = (P[0, j] + DPS[0, j]) / P[0, j - 1] * 0.5 + (P[1, j] + DPS[1, j]) / P[1, j - 1] * 0.5
+        stock_idx[j] = stock_idx[j - 1] * r
+    peak = 1.0
+    halted, panic = False, False
+    mon = [pd.Timestamp(d).month for d in dts]
+    for j in range(M):
+        Pj = P[:, j]
+        if j > 0:
+            for a in range(4):
+                pf.dist(a, DPS[a, j], Pj)
+        peak = max(peak, stock_idx[j])
+        dd = stock_idx[j] / peak - 1.0
+        flow = 0.0
+        if j == 0 and plan.get("lump"):
+            pf.cash += plan["lump"]
+            flow = plan["lump"]
+            pf.to_target(W, Pj)
+        if plan.get("monthly"):
+            pf.cash += A45_MONTHLY
+            flow += A45_MONTHLY
+            beh = plan.get("crash", "K0")
+            if beh == "K1":
+                if dd <= -A45_DD:
+                    halted = True
+                elif halted and dd >= 0:
+                    halted = False
+            if beh == "K2":
+                if not panic and dd <= -A45_DD:
+                    panic = True
+                    for a in range(4):
+                        pf.sell(a, pf.u[a] * Pj[a], Pj)
+                elif panic and dd >= 0:
+                    panic = False
+            if not halted and not panic:
+                mode = plan.get("contrib", "target")
+                if mode == "nosell":
+                    V = pf.value(Pj)
+                    cur = pf.u * Pj
+                    need = np.maximum(W * V - cur, 0.0)
+                    tot = need.sum()
+                    c0 = pf.cash
+                    if tot > 0:
+                        for a in range(4):
+                            pf.buy(a, min(c0, tot) * need[a] / tot, Pj)
+                    rest = pf.cash
+                    if rest > 0:
+                        for a in range(4):
+                            pf.buy(a, rest * W[a], Pj)
+                else:
+                    c0 = pf.cash
+                    for a in range(4):
+                        pf.buy(a, c0 * W[a], Pj)
+        rb = plan.get("rebal", "none")
+        if j > 0 and not panic and not halted:
+            if rb == "annual" and mon[j] == 12:
+                pf.to_target(W, Pj)
+            elif rb == "band":
+                V = pf.value(Pj)
+                s = float((pf.u[:2] * Pj[:2]).sum()) / V if V > 0 else 0.0
+                tgt = W[:2].sum()
+                if abs(s - tgt) > A45_BAND:
+                    pf.to_target(W, Pj)
+        vals.append(pf.value(Pj))
+        flows.append(flow)
+    final_pre = vals[-1]
+    n_sell = pf.n_sell                    # 最後の清算の売りは数えない
+    liq = pf.liquidate(P[:, -1].copy())
+    return {"vals": np.array(vals), "flows": np.array(flows), "liq": liq, "final": final_pre, "n_sell": n_sell, "tax": pf.tax_paid}
+
+
+def a45_irr(flows: np.ndarray, final: float) -> float:
+    """毎月末の入金 flows と、最後の月末の額 final から、年率の金額加重の利回り。"""
+    cf = -flows.astype(float).copy()
+    cf[-1] += final
+    lo, hi = -0.99, 1.0
+    f = lambda r: sum(c / (1 + r) ** k for k, c in enumerate(cf))
+    if f(lo) * f(hi) > 0:
+        return float("nan")
+    for _ in range(200):
+        mid = (lo + hi) / 2
+        if f(lo) * f(mid) <= 0:
+            hi = mid
+        else:
+            lo = mid
+    return ((1 + (lo + hi) / 2) ** 12 - 1) * 100
+
+
+A45_LUMP = (("T0", "TOPIX（1306）だけ・リバランスなし", {"w": np.array([1.0, 0, 0, 0]), "rebal": "none"}),
+            ("A100", "株100・年1回", {"w": a45_w(1.0), "rebal": "annual"}),
+            ("R0", "株50・債50・リバランスなし", {"w": a45_w(0.5), "rebal": "none"}),
+            ("R1", "株50・債50・年1回（12月末）", {"w": a45_w(0.5), "rebal": "annual"}),
+            ("R2", "株50・債50・±5％を超えたら", {"w": a45_w(0.5), "rebal": "band"}),
+            ("A70", "株70・債30（30歳）・年1回", {"w": a45_w(0.7), "rebal": "annual"}),
+            ("A30", "株30・債70（70歳）・年1回", {"w": a45_w(0.3), "rebal": "annual"}))
+A45_SIP = (("S0", "株50・債50・ノーセル（積立を比率の下がった側へ）", {"w": a45_w(0.5), "monthly": True, "contrib": "nosell"}),
+           ("S1", "株50・債50・積立を目標の比率で＋年1回売買で戻す", {"w": a45_w(0.5), "monthly": True, "rebal": "annual"}),
+           ("S2", "株50・債50・積立を目標の比率で・リバランスなし", {"w": a45_w(0.5), "monthly": True}),
+           ("K0", "株100・暴落でもいつも通り積み立てる", {"w": a45_w(1.0), "monthly": True, "rebal": "annual", "crash": "K0"}),
+           ("K1", "株100・高値から20％下げたら積立を止め、高値を取り戻したら入れる", {"w": a45_w(1.0), "monthly": True, "rebal": "annual", "crash": "K1"}),
+           ("K2", "株100・高値から20％下げたら全部売り、高値を取り戻したら買い戻す", {"w": a45_w(1.0), "monthly": True, "rebal": "annual", "crash": "K2"}))
+
+
+def a45_panel(store: dict, D: dict) -> tuple:
+    """月末の終値と、その月の中の分配金（1口あたり）。行＝A45_CODES。"""
+    dts = [d for d in D["dates"] if d >= A45_START]
+    P = np.full((4, len(dts)), np.nan)
+    DPS = np.zeros((4, len(dts)))
+    distmap = dict(yb.ETF_LAB_DIST)
+    distmap["1306"] = yb.ETF_DIST.get("1306", ())
+    for a, c in enumerate(A45_CODES):
+        b = store["etf1306"] if c == "1306" else (store.get("etf_x") or {}).get(c)
+        if not b:
+            continue
+        s = pd.Series(np.asarray(b["c"], dtype=float), index=pd.DatetimeIndex(b["d"])).dropna()
+        s = s[s > 0]
+        P[a] = s.reindex(pd.DatetimeIndex(dts), method="ffill").to_numpy()
+        for j in range(1, len(dts)):
+            d0, d1 = pd.Timestamp(dts[j - 1]), pd.Timestamp(dts[j])
+            DPS[a, j] = sum(float(x) / 100.0 for d_, x in distmap.get(c, ()) if d0 < pd.Timestamp(d_) <= d1)
+    return P, DPS, dts
+
+
+def lab45(store: dict) -> int:
+    log("45段目（『超解説「敗者のゲーム」』の資産配分・リバランス・積立）を回します…")
+    xs = store.setdefault("etf_x", {})
+    miss = [c for c in A45_CODES[1:] if c not in xs]
+    if miss:
+        key = os.environ.get("J_QUANTS_API_KEY")
+        if not key:
+            print("J_QUANTS_API_KEY が設定されていません")
+            return 2
+        jq = yb.JQ(key)
+        for c in miss:
+            time.sleep(yb.API_SLEEP)
+            b = pack_bars(yb.fetch_bars(jq, c, YEARS))
+            if b:
+                xs[c] = b
+                log(f"  {c} を取りました（{len(b['d'])}日）")
+        save(store)
+    D = build(store)
+    P, DPS, dts = a45_panel(store, D)
+    print("\n" + "=" * 100)
+    print("【日本株の手法・45段目（唯ひかる『超解説「敗者のゲーム」負けない投資の実践法』2025年7月の資産配分・リバランス・積立）（wide_lab）】")
+    print("  （基準は結果を見る前に決めたもの。計画はプロジェクトの wide_lab_plan45_2026-11-15）")
+    ok = np.isfinite(P).all()
+    for a, c in enumerate(A45_CODES):
+        r = P[a]
+        jmp = np.nanmax(np.abs(np.diff(r) / r[:-1])) if np.isfinite(r).sum() > 2 else float("nan")
+        print(f"  {c} {A45_NAMES[c]}：月末 {np.isfinite(r).sum()}／{len(r)}・最初 {r[0]:.1f}・最後 {r[-1]:.1f}・"
+              f"分配金 {int((DPS[a] > 0).sum())}回・1か月の値動きの最大 {jmp * 100:.0f}％")
+    if not ok:
+        print("\n■ ETF の株価がそろっていないので、計算しません。")
+        return 1
+    print(f"  期間 {pd.Timestamp(dts[0]).date()}〜{pd.Timestamp(dts[-1]).date()}（{len(dts) - 1}か月）。前半＝〜{(SPLIT - pd.Timedelta(days=1)).date()}・後半＝{SPLIT.date()}〜。"
+          f"ETF 片道{ETF_SLIP * 100:.2f}％・{TAX_TXT}（売った益と分配金。損は繰り越す）")
+    yrs = (pd.Timestamp(dts[-1]) - pd.Timestamp(dts[0])).days / 365.25
+    out = {}
+    print("\n  A. 一括（1,000万円）… 年率％「前半 ／ 後半」・年率のばらつき（通し）・最大下落（通し）・清算後の通し（税あり）・参考 税なし・売り/年")
+    for key, lab, pl in A45_LUMP:
+        p2 = dict(pl, lump=CAP)
+        r = a45_run(P, DPS, dts, p2, ETF_SLIP, TAX)
+        r0 = a45_run(P, DPS, dts, p2, ETF_SLIP, 0.0)
+        st = half_stats(r["vals"], dts)
+        out[key] = (r, st)
+        print(f"     {key:<4} {lab}：{st['前半']['ann']:6.1f} ／ {st['後半']['ann']:6.1f}・ばらつき {st['通し']['vol']:.1f}・最大下落 {st['通し']['mdd']:.0f}％・"
+              f"清算後 {((r['liq'] / CAP) ** (1 / yrs) - 1) * 100:.1f}％・税なし {((r0['liq'] / CAP) ** (1 / yrs) - 1) * 100:.1f}％・売り {r['n_sell'] / yrs:.1f}回")
+    print("\n  B・C. 積立（毎月末10万円）… 入れた額・清算後の最終額（税あり）・金額加重の年率・参考 税なしの最終額・売り/年")
+    for key, lab, pl in A45_SIP:
+        r = a45_run(P, DPS, dts, pl, ETF_SLIP, TAX)
+        r0 = a45_run(P, DPS, dts, pl, ETF_SLIP, 0.0)
+        out[key] = (r, None)
+        print(f"     {key:<3} {lab}：入れた額 {r['flows'].sum() / 1e4:,.0f}万円・最終 {r['liq'] / 1e4:,.0f}万円・年率 {a45_irr(r['flows'], r['liq']):.1f}％・"
+              f"税なし {r0['liq'] / 1e4:,.0f}万円・売り {r['n_sell'] / yrs:.1f}回")
+    print("\n  判定（計画で決めたもの）")
+    st0 = out["R0"][1]
+    for k in ("R1", "R2"):
+        st = out[k][1]
+        d = [st[h]["ann"] - st0[h]["ann"] for h in ("前半", "後半")]
+        va = "成績も良い" if all(x >= 0.5 for x in d) else ("成績は悪い" if all(x <= -0.5 for x in d) else "成績は同じくらい")
+        dmdd = st0["通し"]["mdd"] - st["通し"]["mdd"]
+        dvol = st0["通し"]["vol"] - st["通し"]["vol"]
+        vr = "リスクは下がる" if (dmdd >= 2.0 or dvol >= 1.0) else "リスクは変わらない"
+        print(f"     1. {k} 対 R0：年率の差 {d[0]:+.1f} ／ {d[1]:+.1f}（{va}）・最大下落 {dmdd:+.1f}pt 浅い・ばらつき {dvol:+.1f}pt 小さい（{vr}）")
+    a, b = out["S0"][0]["liq"], out["S1"][0]["liq"]
+    rr = a / b - 1
+    print(f"     2. S0 対 S1：最終額 {rr * 100:+.1f}％（{'有利' if rr >= 0.01 else ('不利' if rr <= -0.01 else '同じくらい')}）")
+    for k in ("K1", "K2"):
+        a, b = out["K0"][0]["liq"], out[k][0]["liq"]
+        print(f"     3. K0 対 {k}：K0 の最終額が {a / b * 100 - 100:+.1f}％（{'本のとおり' if a > b else '本のとおりではない'}）")
+    return 0
+
+
 def run_mode(mode: str, store: dict, args) -> int:
     """1つの mode を回す（データはそろっている前提で、足りなければ取る）。14段目の lab14 は、これを続けて呼ぶ。"""
     global LAB_TITLE, LAB_PLAN, LAB_NOTE
@@ -9794,6 +10082,8 @@ def run_mode(mode: str, store: dict, args) -> int:
         return lab43(store)
     if mode == "lab44":
         return lab44(store)
+    if mode == "lab45":
+        return lab45(store)
     if mode == "lab27":
         return lab27(store)
     if mode == "lab28":
@@ -10107,7 +10397,7 @@ def lab14(store: dict, args) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab5", "lab6", "lab7", "lab8", "lab9", "lab10", "lab11", "lab12", "lab13", "lab14", "lab15", "lab16", "lab17", "lab18", "lab19", "lab20", "lab21", "lab22", "lab23", "lab24", "lab25", "lab26", "lab27", "lab28", "lab29", "lab32", "lab33", "lab34", "lab35", "lab36", "lab37", "lab38", "lab39", "lab40", "lab41", "lab42", "lab43", "lab44", "htrack", "xfetch"], default="lab1")
+    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab5", "lab6", "lab7", "lab8", "lab9", "lab10", "lab11", "lab12", "lab13", "lab14", "lab15", "lab16", "lab17", "lab18", "lab19", "lab20", "lab21", "lab22", "lab23", "lab24", "lab25", "lab26", "lab27", "lab28", "lab29", "lab32", "lab33", "lab34", "lab35", "lab36", "lab37", "lab38", "lab39", "lab40", "lab41", "lab42", "lab43", "lab44", "lab45", "htrack", "xfetch"], default="lab1")
     ap.add_argument("--combo", default="", help="3回目：1回目で「範囲の中では効く」以上だった型の記号（カンマ区切り）。2つ以上なら SEL として回す")
     ap.add_argument("--only", default="", help="回す型の記号（カンマ区切り。空欄なら全部）。確かめる段階で候補だけを回すとき")
     ap.add_argument("--cfg", default="", help="7段目の確かめる段階で回す組み立て（例: VQM/TOP500/20/Q,NXG/TOP500/20/Q）")
