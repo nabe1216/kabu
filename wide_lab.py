@@ -9191,6 +9191,164 @@ def lab40(store: dict) -> int:
     return 0
 
 
+# ───────────────────────── 41段目：日本個別株デューデリジェンスセンター『需給が9割』（2026年6月）の需給シグナル ─────────────────────────
+# 計画は wide_lab_plan41_2026-11-15（結果を見る前に決めたもの）。買いだけ・毎日の売り買い。40段目の a40_sim を使う。
+A41_FORMS = (
+    ("J1", "急騰初動（40日のもみ合い〈高値÷安値1.20以下〉を、売買代金が60日平均の3倍以上で上に抜けた）", "j1"),
+    ("J2", "急騰初動＋需給の確認（J1 かつ 買い残日数5日以下・信用買い残が4週前より増えていない）", "j2"),
+    ("J3", "底値圏の需給改善（250日安値の1.2倍以下・下値を更新しない・信用買い残が8週前より20％以上減・25日線を上抜け・売買代金が増え始め）", "j3"),
+    ("J4", "長期上昇の需給（250日高値の更新・売買代金の20日平均が前60日の1.5倍以上・買い残日数5日以下）", "j4"),
+)
+A41_LAG_DAYS = 7          # 信用残は、その日の7日前までの日付の週だけを使う（公表は翌週の2営業日目ごろ）
+A41_MAX_AGE = 37          # それより古い週しかなければ使わない
+
+
+def a41_margin(store: dict, xs: dict, D: dict) -> dict:
+    """営業日ごとの信用買い残（株数・分割を直したもの）と、その4週前・8週前の買い残。"""
+    codes, cal = D["codes"], D["cal"]
+    S, T = len(codes), len(cal)
+    ci = {c: i for i, c in enumerate(codes)}
+    by = {}
+    for r in x_rows(xs, "mi"):
+        c = yb.norm_code(r.get("code") or "")
+        lv = num(r.get("long"))
+        d = str(r.get("date") or "")[:10]
+        if c in ci and lv is not None and d:
+            by.setdefault(c, {})[d] = lv
+    out = {k: np.full((S, T), np.nan) for k in ("lb", "lb4", "lb8")}
+    cal_d = cal.astype("datetime64[D]")
+    for c, mp_ in by.items():
+        b = store["bars"].get(c)
+        if b is None:
+            continue
+        lst = sorted(mp_.items())
+        ds = np.array([np.datetime64(x[0]) for x in lst])
+        adj = np.array([x[1] / fac_after(b["fd"], b["ff"], x[0]) for x in lst])
+        i = ci[c]
+        for key, back in (("lb", 0), ("lb4", 28), ("lb8", 56)):
+            hi = cal_d - np.timedelta64(A41_LAG_DAYS + back, "D")
+            k = np.searchsorted(ds, hi, side="right") - 1
+            ok = k >= 0
+            kk = np.where(ok, k, 0)
+            ok &= (hi - ds[kk]).astype(int) <= A41_MAX_AGE
+            out[key][i] = np.where(ok, adj[kk], np.nan)
+    return out
+
+
+def a41_signals(D: dict, MG: dict) -> dict:
+    CF, VA = D["CF"], D["VA"].astype(np.float64)
+    S, T = CF.shape
+    df = pd.DataFrame(CF.T)
+    va = pd.DataFrame(VA.T)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        ma25 = df.rolling(25, min_periods=25).mean().to_numpy().T
+        hi40 = df.shift(1).rolling(40, min_periods=40).max().to_numpy().T
+        lo40 = df.shift(1).rolling(40, min_periods=40).min().to_numpy().T
+        hi250p = df.shift(1).rolling(249, min_periods=249).max().to_numpy().T
+        lo250 = df.rolling(250, min_periods=250).min().to_numpy().T
+        lo20 = df.rolling(20, min_periods=20).min().to_numpy().T
+        lo40b = df.shift(20).rolling(40, min_periods=40).min().to_numpy().T
+        va60p = va.shift(1).rolling(60, min_periods=60).mean().to_numpy().T
+        va20 = va.rolling(20, min_periods=20).mean().to_numpy().T
+        va60b = va.shift(20).rolling(60, min_periods=60).mean().to_numpy().T
+        p1 = np.full_like(CF, np.nan)
+        p1[:, 1:] = CF[:, :-1]
+        m1 = np.full_like(ma25, np.nan)
+        m1[:, 1:] = ma25[:, :-1]
+        bd = MG["lb"] * CF / va20                   # 買い残日数
+        j1 = (hi40 / lo40 <= 1.20) & (CF > hi40) & (VA >= 3.0 * va60p) & (va60p > 0)
+        j2 = j1 & (bd <= 5.0) & (MG["lb"] <= MG["lb4"])
+        j3 = ((CF <= 1.2 * lo250) & (lo20 >= lo40b) & (MG["lb"] <= 0.8 * MG["lb8"]) & (MG["lb8"] > 0)
+              & (CF > ma25) & (p1 <= m1) & (va20 >= va60b) & (va60b > 0))
+        j4 = (CF > hi250p) & (va20 >= 1.5 * va60b) & (va60b > 0) & (bd <= 5.0)
+        sell = CF < ma25
+    return {"j1": j1, "j2": j2, "j3": j3, "j4": j4, "sell": sell, "bd": bd}
+
+
+def lab41(store: dict, xs: dict) -> int:
+    """41段目：『需給が9割』の需給シグナル。計画は wide_lab_plan41_2026-11-15。"""
+    log("41段目（『需給が9割』）を回します（指標を作っています）…")
+    D = build(store)
+    dates, UNI, me_idx, MC = D["dates"], D["UNI"], D["me_idx"], D["MCAP"]
+    C = D["C"]
+    S, T = C.shape
+    j0 = next((j for j, t in enumerate(me_idx) if t >= 260), None)
+    t0 = me_idx[j0]
+    ev = dates[j0:]
+    yrs = max((ev[-1] - ev[0]).days / 365.25, 0.5)
+    E = ev_extract(store, D)
+    TXv, TXliq = topix_taxed(D, j0)
+    ST_TX = half_stats(TXv, ev)
+    traded = np.isfinite(C) & (C > 0)
+    last_t = np.array([int(np.nonzero(traded[i])[0][-1]) if traded[i].any() else -1 for i in range(S)])
+    jm = np.searchsorted(np.array(me_idx), np.arange(T), side="left") - 1
+    MG = a41_margin(store, xs, D)
+    SG = a41_signals(D, MG)
+    cov = []
+    for j in range(j0, len(me_idx)):
+        u = UNI[:, j]
+        if u.any():
+            cov.append(float(np.mean(np.isfinite(SG["bd"][u, me_idx[j]]))))
+
+    def cg(liq):
+        return ((liq / CAP) ** (1 / yrs) - 1.0) * 100
+
+    print("\n" + "=" * 100)
+    print("【日本株の手法・41段目（日本個別株デューデリジェンスセンター『需給が9割』2026年6月の需給シグナル）（wide_lab）：共通の範囲】")
+    print("  （基準は結果を見る前に決めたもの。計画はプロジェクトの wide_lab_plan41_2026-11-15。9年分はほぼすべて本が出る前）")
+    print(f"  比べる期間 {ev[0].date()}〜{ev[-1].date()}（{len(ev) - 1}か月）。前半＝〜{(SPLIT - pd.Timedelta(days=1)).date()}・後半＝{SPLIT.date()}〜")
+    print(f"  費用と税 {COST}：株 片道{SLIP * 100:.1f}％・{TAX_TXT}。元本{CAP / 1e4:,.0f}万円・10銘柄・1株単位。合図の次の営業日の終値で売り買い。売り＝終値が25日線を下回った日")
+    print(f"  範囲の中で買い残日数が出せた割合（月末ごと）：中央値 {np.median(cov) * 100:.0f}％・最小 {min(cov) * 100:.0f}％")
+    print(f"  TOPIX（税あり）：{ST_TX['前半']['ann']:.1f} ／ {ST_TX['後半']['ann']:.1f}（清算後の通し {cg(TXliq):.1f}％）")
+    print("\n  1. 結果（年率％「前半 ／ 後半」・清算後の通し・TOPIX との差 ／ でたらめとの差・上回った回数）")
+    out = {}
+    for key, lab, bk in A41_FORMS:
+        cands, pools = {}, {}
+        for t in range(t0, T - 1):
+            j = jm[t]
+            if j < 0:
+                continue
+            pool_ok = UNI[:, j] & traded[:, t]
+            ok = SG[bk][:, t] & pool_ok
+            ids = np.nonzero(ok)[0]
+            if len(ids):
+                cands[t] = [int(i) for i in ids[np.argsort(-MC[ids, j], kind="stable")]]
+                pools[t] = np.nonzero(pool_ok)[0]
+        nsig = sum(len(x) for x in cands.values()) / yrs
+        v, liq, s_ = a40_sim(cands, SG["sell"], D, E["divpay"], t0, last_t)
+        h = half_stats(v, ev)
+        rr = []
+        for k in range(N_RAND):
+            rg = np.random.default_rng(41000 + k)
+            pl = {t: [int(i) for i in rg.choice(pools[t], size=min(len(cl), len(pools[t])), replace=False)] for t, cl in cands.items()}
+            rv, rl, _r = a40_sim(pl, SG["sell"], D, E["divpay"], t0, last_t)
+            rr.append(half_stats(rv, ev))
+        res = {}
+        for hh in ("前半", "後半"):
+            a = h[hh]["ann"]
+            ra = [x[hh]["ann"] for x in rr]
+            res[hh] = (a - ST_TX[hh]["ann"], a - np.mean(ra), sum(1 for x in ra if a > x))
+        cand = all(res[hh][0] >= 2 and res[hh][1] >= 2 and res[hh][2] >= 18 for hh in res)
+        sel = all(res[hh][1] >= 2 and res[hh][2] >= 18 for hh in res)
+        vd = "候補" if cand else ("範囲の中では効く" if sel else "効かない")
+        if nsig < 20:
+            vd = "保留（合図が少ない）"
+        cl = s_["closed"]
+        win = np.mean([c[2] > 0 for c in cl]) * 100 if cl else float("nan")
+        hold = np.median([c[1] - c[0] for c in cl]) if cl else float("nan")
+        out[key] = vd
+        print(f"\n  {key} {lab}")
+        print(f"     {h['前半']['ann']:6.1f} ／ {h['後半']['ann']:6.1f}（最大下落 {h['通し']['mdd']:.0f}％・清算後の通し {cg(liq):.1f}％）"
+              f"［{res['前半'][0]:+.1f}／{res['前半'][1]:+.1f}・{res['前半'][2]} ｜ {res['後半'][0]:+.1f}／{res['後半'][1]:+.1f}・{res['後半'][2]}］ … {vd}")
+        print(f"     合図 {nsig:.0f}回／年・買い {s_['n_buy'] / yrs:.0f}回／年・勝ち {win:.0f}％・持った日数の中央 {hold:.0f}日・"
+              f"でたらめの平均 {np.mean([x['前半']['ann'] for x in rr]):.1f} ／ {np.mean([x['後半']['ann'] for x in rr]):.1f}")
+    print("\n  2. 判定のまとめ")
+    for vv in ("候補", "範囲の中では効く", "効かない", "保留（合図が少ない）"):
+        ks = [k for k, x in out.items() if x == vv]
+        print(f"     {vv} … " + ("・".join(ks) if ks else "なし"))
+    return 0
+
+
 def run_mode(mode: str, store: dict, args) -> int:
     """1つの mode を回す（データはそろっている前提で、足りなければ取る）。14段目の lab14 は、これを続けて呼ぶ。"""
     global LAB_TITLE, LAB_PLAN, LAB_NOTE
@@ -9254,6 +9412,23 @@ def run_mode(mode: str, store: dict, args) -> int:
         if st.get("bad"):
             print("\n■ 信用取引の週末残高が取れなかったので、Q3・Q6 は保留になります")
         return lab35(store, xs)
+    if mode == "lab41":
+        # 41段目：35段目と同じ信用取引の週末残高（data/wide_k.pkl）を使う。なければ取る
+        xs = k_xs_load()
+        if not x_complete(store, xs, ("mi",)):
+            key = os.environ.get("J_QUANTS_API_KEY")
+            if not key:
+                print("J_QUANTS_API_KEY が設定されていません")
+                return 2
+            if not fetch_x(yb.JQ(key), store, xs, ("mi",)):
+                print("\n■ まだ終わっていません（信用取引の週末残高を取っている途中です）。同じ設定のまま、もう一度押してください。")
+                return EXIT_UNFINISHED
+        st = xs.get("mi", {})
+        log(f"  信用取引の週末残高 … {len(st.get('rows', [])):,}件・取れた週 {len(st.get('done', ())):,}・取れなかった週 {len(st.get('fail', ()))}")
+        if st.get("bad"):
+            print("\n■ 信用取引の週末残高が取れなかったので、41段目は回しません")
+            return 2
+        return lab41(store, xs)
     if mode == "lab21":
         # 21段目：上岡式の答え合わせ。業種別空売り比率（スタンダード）を日ごとに取り、別のファイル（data/wide_k.pkl）に持つ
         xs = k_xs_load()
@@ -9509,7 +9684,7 @@ def lab14(store: dict, args) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab5", "lab6", "lab7", "lab8", "lab9", "lab10", "lab11", "lab12", "lab13", "lab14", "lab15", "lab16", "lab17", "lab18", "lab19", "lab20", "lab21", "lab22", "lab23", "lab24", "lab25", "lab26", "lab27", "lab28", "lab29", "lab32", "lab33", "lab34", "lab35", "lab36", "lab37", "lab38", "lab39", "lab40", "htrack", "xfetch"], default="lab1")
+    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab5", "lab6", "lab7", "lab8", "lab9", "lab10", "lab11", "lab12", "lab13", "lab14", "lab15", "lab16", "lab17", "lab18", "lab19", "lab20", "lab21", "lab22", "lab23", "lab24", "lab25", "lab26", "lab27", "lab28", "lab29", "lab32", "lab33", "lab34", "lab35", "lab36", "lab37", "lab38", "lab39", "lab40", "lab41", "htrack", "xfetch"], default="lab1")
     ap.add_argument("--combo", default="", help="3回目：1回目で「範囲の中では効く」以上だった型の記号（カンマ区切り）。2つ以上なら SEL として回す")
     ap.add_argument("--only", default="", help="回す型の記号（カンマ区切り。空欄なら全部）。確かめる段階で候補だけを回すとき")
     ap.add_argument("--cfg", default="", help="7段目の確かめる段階で回す組み立て（例: VQM/TOP500/20/Q,NXG/TOP500/20/Q）")
