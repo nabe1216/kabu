@@ -9000,6 +9000,197 @@ def lab39(store: dict) -> int:
     return 0
 
 
+# ───────────────────────── 40段目：相場師朗『一生モノの株のトリセツ』（2017年10月）の相場式シグナル ─────────────────────────
+# 計画は wide_lab_plan40_2026-11-15（結果を見る前に決めたもの）。買いだけ・毎日の売り買い。
+A40_FORMS = (
+    ("A1", "下半身（5日線が横ばいか上向き・20日線が上向き）で買い、逆下半身で売る", "geb", "rgeb"),
+    ("A2", "くちばし（上向きの5日線が上向きの20日線を上に抜ける）で買い、逆くちばしで売る", "kuc", "rkuc"),
+    ("A3", "ものわかれ（20日線の上で下がっていた5日線が交わらずに上向く）で買い、逆下半身で売る", "mon", "rgeb"),
+    ("A4", "下半身で買い、逆下半身か7日続けて上げたら売る", "geb", "rgeb7"),
+)
+
+
+def a40_signals(D: dict) -> dict:
+    CF = D["CF"]
+    df = pd.DataFrame(CF.T)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        m5 = df.rolling(5, min_periods=5).mean().to_numpy().T
+        m20 = df.rolling(20, min_periods=20).mean().to_numpy().T
+
+        def lag(X, k=1):
+            out = np.full_like(X, np.nan)
+            out[:, k:] = X[:, :-k]
+            return out
+        p1, m5p, m20p = lag(CF), lag(m5), lag(m20)
+        m5_up, m20_up = m5 > m5p, m20 > m20p
+        m5_flat = np.abs(m5 / m5p - 1.0) <= 0.001
+        mid = (p1 + CF) / 2.0
+        geb = (m5_up | m5_flat) & m20_up & (p1 <= m5p) & (mid > m5) & (CF > p1)
+        rgeb = (p1 >= m5p) & (mid < m5) & (CF < p1)
+        kuc = m5_up & m20_up & (m5 > m20) & (m5p <= m20p)
+        rkuc = (m5 < m20) & (m5p >= m20p)
+        dn1 = m5p < lag(m5p)
+        dn2 = lag(m5p) < lag(m5p, 2)
+        mon = m20_up & dn1 & dn2 & m5_up & (m5 >= m20) & (m5 <= m20 * 1.02) & (lag(m5) >= lag(m20))
+        up = (CF > p1).astype(np.int16)
+        streak = np.zeros_like(up)
+        for t in range(1, up.shape[1]):
+            streak[:, t] = np.where(up[:, t] == 1, streak[:, t - 1] + 1, 0)
+        rgeb7 = rgeb | (streak >= 7)
+    return {"geb": geb, "rgeb": rgeb, "kuc": kuc, "rkuc": rkuc, "mon": mon, "rgeb7": rgeb7}
+
+
+def a40_sim(cands: dict, SELL: np.ndarray, D: dict, divpay: dict, t0: int, last_t: np.ndarray, slots: int = 10,
+            cap: float = CAP, slip: float = SLIP, tax: float = TAX):
+    C, CF = D["C"], D["CF"]
+    T = C.shape[1]
+    me_set = set(D["me_idx"])
+    cash, loss = float(cap), 0.0
+    pos: dict = {}
+    pend_buy, pend_sell = [], set()
+    vals = []
+    st = {"n_buy": 0, "closed": []}
+
+    def px(i, t):
+        v = CF[i, t]
+        return float(v) if (v == v and v > 0) else 0.0
+
+    def close(i, t, price):
+        nonlocal cash, loss
+        p = pos.pop(i)
+        eff = price * (1.0 - slip)
+        cash += p["sh"] * eff
+        g = p["sh"] * eff - p["cost"]
+        if g > 0:
+            tx = max(0.0, g - loss) * tax
+            loss = max(0.0, loss - g)
+            cash -= tx
+        else:
+            loss += -g
+        st["closed"].append((p["t"], t, p["sh"] * eff / p["cost"] - 1.0))
+
+    for t in range(t0, T):
+        for i in [k for k in pos if last_t[k] < t - 5]:
+            close(i, t, px(i, last_t[i]))
+            pend_sell.discard(i)
+        for i in sorted(pend_sell):
+            v = C[i, t]
+            if i in pos and v == v and v > 0:
+                close(i, t, float(v))
+                pend_sell.discard(i)
+            elif i not in pos:
+                pend_sell.discard(i)
+        if pend_buy:
+            value = cash + sum(p["sh"] * px(k, t) for k, p in pos.items())
+            for i in pend_buy:
+                v = C[i, t]
+                if not (v == v and v > 0) or i in pos or len(pos) >= slots:
+                    continue
+                pb = float(v) * (1.0 + slip)
+                sh = int(min(value / slots, cash) / pb)
+                if sh < 1:
+                    continue
+                cash -= sh * pb
+                pos[i] = {"sh": sh, "cost": sh * pb, "t": t}
+                st["n_buy"] += 1
+            pend_buy = []
+        for i, amt in divpay.get(t, ()):
+            if i in pos:
+                cash += pos[i]["sh"] * amt * (1.0 - tax)
+        if t in me_set:
+            vals.append(cash + sum(p["sh"] * px(k, t) for k, p in pos.items()))
+        if t >= T - 1:
+            break
+        for i in pos:
+            if SELL[i, t] and i not in pend_sell:
+                pend_sell.add(i)
+        for i in cands.get(t, ()):
+            if i not in pos and i not in pend_sell:
+                pend_buy.append(i)
+    liq, gain = cash, 0.0
+    for k, p in pos.items():
+        eff = px(k, T - 1) * (1.0 - slip)
+        liq += p["sh"] * eff
+        gain += p["sh"] * eff - p["cost"]
+    liq -= tax * max(0.0, gain - loss)
+    return np.array(vals), liq, st
+
+
+def lab40(store: dict) -> int:
+    """40段目：相場師朗の相場式シグナル。計画は wide_lab_plan40_2026-11-15。"""
+    log("40段目（相場師朗『一生モノの株のトリセツ』）を回します（指標を作っています）…")
+    D = build(store)
+    dates, UNI, me_idx, MC = D["dates"], D["UNI"], D["me_idx"], D["MCAP"]
+    C = D["C"]
+    S, T = C.shape
+    M = len(me_idx)
+    j0 = next((j for j, t in enumerate(me_idx) if t >= 260), None)
+    t0 = me_idx[j0]
+    ev = dates[j0:]
+    yrs = max((ev[-1] - ev[0]).days / 365.25, 0.5)
+    E = ev_extract(store, D)
+    TXv, TXliq = topix_taxed(D, j0)
+    ST_TX = half_stats(TXv, ev)
+    traded = np.isfinite(C) & (C > 0)
+    last_t = np.array([int(np.nonzero(traded[i])[0][-1]) if traded[i].any() else -1 for i in range(S)])
+    top = topn_mask(D, 500)
+    jm = np.searchsorted(np.array(me_idx), np.arange(T), side="left") - 1
+    SG = a40_signals(D)
+
+    def cg(liq):
+        return ((liq / CAP) ** (1 / yrs) - 1.0) * 100
+
+    print("\n" + "=" * 100)
+    print("【日本株の手法・40段目（相場師朗『一生モノの株のトリセツ』2017年10月の相場式シグナル）（wide_lab）：時価総額の上位500社】")
+    print("  （基準は結果を見る前に決めたもの。計画はプロジェクトの wide_lab_plan40_2026-11-15。9年分はほぼすべて本が出たあと）")
+    print(f"  比べる期間 {ev[0].date()}〜{ev[-1].date()}（{len(ev) - 1}か月）。前半＝〜{(SPLIT - pd.Timedelta(days=1)).date()}・後半＝{SPLIT.date()}〜")
+    print(f"  費用と税 {COST}：株 片道{SLIP * 100:.1f}％・{TAX_TXT}。元本{CAP / 1e4:,.0f}万円・10銘柄・1株単位。合図の次の営業日の終値で売り買い（始値がないので陽線は前の日より高い終値で代える）")
+    print(f"  TOPIX（税あり）：{ST_TX['前半']['ann']:.1f} ／ {ST_TX['後半']['ann']:.1f}（清算後の通し {cg(TXliq):.1f}％）")
+    print("\n  1. 結果（年率％「前半 ／ 後半」・清算後の通し・TOPIX との差 ／ でたらめとの差・上回った回数）")
+    out = {}
+    for key, lab, bk, sk in A40_FORMS:
+        cands, pools = {}, {}
+        for t in range(t0, T - 1):
+            j = jm[t]
+            if j < 0:
+                continue
+            ok = SG[bk][:, t] & top[:, j] & traded[:, t]
+            ids = np.nonzero(ok)[0]
+            if len(ids):
+                cands[t] = [int(i) for i in ids[np.argsort(-MC[ids, j], kind="stable")]]
+                pools[t] = np.nonzero(top[:, j] & traded[:, t])[0]
+        v, liq, s_ = a40_sim(cands, SG[sk], D, E["divpay"], t0, last_t)
+        h = half_stats(v, ev)
+        rr = []
+        for k in range(N_RAND):
+            rg = np.random.default_rng(40000 + k)
+            pl = {t: [int(i) for i in rg.choice(pools[t], size=min(len(cl), len(pools[t])), replace=False)] for t, cl in cands.items()}
+            rv, rl, _r = a40_sim(pl, SG[sk], D, E["divpay"], t0, last_t)
+            rr.append(half_stats(rv, ev))
+        res = {}
+        for hh in ("前半", "後半"):
+            a = h[hh]["ann"]
+            ra = [x[hh]["ann"] for x in rr]
+            res[hh] = (a - ST_TX[hh]["ann"], a - np.mean(ra), sum(1 for x in ra if a > x))
+        cand = all(res[hh][0] >= 2 and res[hh][1] >= 2 and res[hh][2] >= 18 for hh in res)
+        sel = all(res[hh][1] >= 2 and res[hh][2] >= 18 for hh in res)
+        vd = "候補" if cand else ("範囲の中では効く" if sel else "効かない")
+        cl = s_["closed"]
+        win = np.mean([c[2] > 0 for c in cl]) * 100 if cl else float("nan")
+        hold = np.median([c[1] - c[0] for c in cl]) if cl else float("nan")
+        out[key] = vd
+        print(f"\n  {key} {lab}")
+        print(f"     {h['前半']['ann']:6.1f} ／ {h['後半']['ann']:6.1f}（最大下落 {h['通し']['mdd']:.0f}％・清算後の通し {cg(liq):.1f}％）"
+              f"［{res['前半'][0]:+.1f}／{res['前半'][1]:+.1f}・{res['前半'][2]} ｜ {res['後半'][0]:+.1f}／{res['後半'][1]:+.1f}・{res['後半'][2]}］ … {vd}")
+        print(f"     合図 {sum(len(x) for x in cands.values()) / yrs:.0f}回／年・買い {s_['n_buy'] / yrs:.0f}回／年・勝ち {win:.0f}％・持った日数の中央 {hold:.0f}日・"
+              f"でたらめの平均 {np.mean([x['前半']['ann'] for x in rr]):.1f} ／ {np.mean([x['後半']['ann'] for x in rr]):.1f}")
+    print("\n  2. 判定のまとめ")
+    for vv in ("候補", "範囲の中では効く", "効かない"):
+        ks = [k for k, x in out.items() if x == vv]
+        print(f"     {vv} … " + ("・".join(ks) if ks else "なし"))
+    return 0
+
+
 def run_mode(mode: str, store: dict, args) -> int:
     """1つの mode を回す（データはそろっている前提で、足りなければ取る）。14段目の lab14 は、これを続けて呼ぶ。"""
     global LAB_TITLE, LAB_PLAN, LAB_NOTE
@@ -9044,6 +9235,8 @@ def run_mode(mode: str, store: dict, args) -> int:
         return lab38(store)
     if mode == "lab39":
         return lab39(store)
+    if mode == "lab40":
+        return lab40(store)
     if mode == "lab35":
         # 35段目：信用取引の週末残高（スタンダード）を週ごとに取り、21段目と同じ別のファイル（data/wide_k.pkl）に持つ
         xs = k_xs_load()
@@ -9316,7 +9509,7 @@ def lab14(store: dict, args) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab5", "lab6", "lab7", "lab8", "lab9", "lab10", "lab11", "lab12", "lab13", "lab14", "lab15", "lab16", "lab17", "lab18", "lab19", "lab20", "lab21", "lab22", "lab23", "lab24", "lab25", "lab26", "lab27", "lab28", "lab29", "lab32", "lab33", "lab34", "lab35", "lab36", "lab37", "lab38", "lab39", "htrack", "xfetch"], default="lab1")
+    ap.add_argument("--mode", choices=["fetch", "lab1", "lab2", "lab3", "lab4", "lab5", "lab6", "lab7", "lab8", "lab9", "lab10", "lab11", "lab12", "lab13", "lab14", "lab15", "lab16", "lab17", "lab18", "lab19", "lab20", "lab21", "lab22", "lab23", "lab24", "lab25", "lab26", "lab27", "lab28", "lab29", "lab32", "lab33", "lab34", "lab35", "lab36", "lab37", "lab38", "lab39", "lab40", "htrack", "xfetch"], default="lab1")
     ap.add_argument("--combo", default="", help="3回目：1回目で「範囲の中では効く」以上だった型の記号（カンマ区切り）。2つ以上なら SEL として回す")
     ap.add_argument("--only", default="", help="回す型の記号（カンマ区切り。空欄なら全部）。確かめる段階で候補だけを回すとき")
     ap.add_argument("--cfg", default="", help="7段目の確かめる段階で回す組み立て（例: VQM/TOP500/20/Q,NXG/TOP500/20/Q）")
