@@ -10,12 +10,12 @@
       "qty": 500,
       "buy_date": "2026-06-28",
       "buy_price": 1451.5,
-      "current_price": 1623.0,
-      "value": 811500.0,
-      "unrealized_pl": 85750.0,
-      "unrealized_pl_pct": 11.82,
-      "ref_d": "2026-11-13",
-      "ref_c": 1623.0
+      "current_price": 1621.5,
+      "value": 810750.0,
+      "unrealized_pl": 85000.0,
+      "unrealized_pl_pct": 11.71,
+      "ref_d": "2026-11-16",
+      "ref_c": 1621.5
     },
     {
       "code": "6902",
@@ -24,12 +24,12 @@
       "qty": 300,
       "buy_date": "2026-06-28",
       "buy_price": 1879.5,
-      "current_price": 1936.5,
-      "value": 580950.0,
-      "unrealized_pl": 17100.0,
-      "unrealized_pl_pct": 3.03,
-      "ref_d": "2026-11-13",
-      "ref_c": 1936.5
+      "current_price": 1940.0,
+      "value": 582000.0,
+      "unrealized_pl": 18150.0,
+      "unrealized_pl_pct": 3.22,
+      "ref_d": "2026-11-16",
+      "ref_c": 1940.0
     },
     {
       "code": "8439",
@@ -38,12 +38,12 @@
       "qty": 200,
       "buy_date": "2026-06-28",
       "buy_price": 2519.0,
-      "current_price": 2704.0,
-      "value": 540800.0,
-      "unrealized_pl": 37000.0,
-      "unrealized_pl_pct": 7.34,
-      "ref_d": "2026-11-13",
-      "ref_c": 2704.0
+      "current_price": 2718.0,
+      "value": 543600.0,
+      "unrealized_pl": 39800.0,
+      "unrealized_pl_pct": 7.9,
+      "ref_d": "2026-11-16",
+      "ref_c": 2718.0
     },
     {
       "code": "1925",
@@ -52,12 +52,12 @@
       "qty": 300,
       "buy_date": "2026-07-08",
       "buy_price": 2297.0,
-      "current_price": 2380.5,
-      "value": 714150.0,
-      "unrealized_pl": 25050.0,
-      "unrealized_pl_pct": 3.64,
-      "ref_d": "2026-11-13",
-      "ref_c": 2380.5
+      "current_price": 2401.0,
+      "value": 720300.0,
+      "unrealized_pl": 31200.0,
+      "unrealized_pl_pct": 4.53,
+      "ref_d": "2026-11-16",
+      "ref_c": 2401.0
     },
     {
       "code": "4540",
@@ -66,12 +66,12 @@
       "qty": 100,
       "buy_date": "2026-08-23",
       "buy_price": 3745.0,
-      "current_price": 3944.0,
-      "value": 394400.0,
-      "unrealized_pl": 19900.0,
-      "unrealized_pl_pct": 5.31,
-      "ref_d": "2026-11-13",
-      "ref_c": 3944.0
+      "current_price": 3995.0,
+      "value": 399500.0,
+      "unrealized_pl": 25000.0,
+      "unrealized_pl_pct": 6.68,
+      "ref_d": "2026-11-16",
+      "ref_c": 3995.0
     },
     {
       "code": "5970",
@@ -80,12 +80,12 @@
       "qty": 100,
       "buy_date": "2026-09-30",
       "buy_price": 2260.0,
-      "current_price": 2161.0,
-      "value": 216100.0,
-      "unrealized_pl": -9900.0,
-      "unrealized_pl_pct": -4.38,
-      "ref_d": "2026-11-13",
-      "ref_c": 2161.0
+      "current_price": 2171.0,
+      "value": 217100.0,
+      "unrealized_pl": -8900.0,
+      "unrealized_pl_pct": -3.94,
+      "ref_d": "2026-11-16",
+      "ref_c": 2171.0
     },
     {
       "code": "1605",
@@ -94,12 +94,12 @@
       "qty": 200,
       "buy_date": "2026-11-10",
       "buy_price": 3483.0,
-      "current_price": 3630.0,
-      "value": 726000.0,
-      "unrealized_pl": 29400.0,
-      "unrealized_pl_pct": 4.22,
-      "ref_d": "2026-11-13",
-      "ref_c": 3630.0
+      "current_price": 3670.0,
+      "value": 734000.0,
+      "unrealized_pl": 37400.0,
+      "unrealized_pl_pct": 5.37,
+      "ref_d": "2026-11-16",
+      "ref_c": 3670.0
     },
     {
       "code": "8600",
@@ -108,12 +108,12 @@
       "qty": 400,
       "buy_date": "2026-11-10",
       "buy_price": 970.0,
-      "current_price": 1021.0,
-      "value": 408400.0,
-      "unrealized_pl": 20400.0,
-      "unrealized_pl_pct": 5.26,
-      "ref_d": "2026-11-13",
-      "ref_c": 1021.0
+      "current_price": 977.0,
+      "value": 390800.0,
+      "unrealized_pl": 2800.0,
+      "unrealized_pl_pct": 0.72,
+      "ref_d": "2026-11-16",
+      "ref_c": 977.0
     },
     {
       "code": "6209",
@@ -122,12 +122,12 @@
       "qty": 100,
       "buy_date": "2026-11-10",
       "buy_price": 3765.0,
-      "current_price": 3820.0,
-      "value": 382000.0,
-      "unrealized_pl": 5500.0,
-      "unrealized_pl_pct": 1.46,
-      "ref_d": "2026-11-13",
-      "ref_c": 3820.0
+      "current_price": 3730.0,
+      "value": 373000.0,
+      "unrealized_pl": -3500.0,
+      "unrealized_pl_pct": -0.93,
+      "ref_d": "2026-11-16",
+      "ref_c": 3730.0
     },
     {
       "code": "2292",
@@ -136,12 +136,12 @@
       "qty": 100,
       "buy_date": "2026-11-10",
       "buy_price": 2718.0,
-      "current_price": 2780.0,
-      "value": 278000.0,
-      "unrealized_pl": 6200.0,
-      "unrealized_pl_pct": 2.28,
-      "ref_d": "2026-11-13",
-      "ref_c": 2780.0
+      "current_price": 2824.0,
+      "value": 282400.0,
+      "unrealized_pl": 10600.0,
+      "unrealized_pl_pct": 3.9,
+      "ref_d": "2026-11-16",
+      "ref_c": 2824.0
     },
     {
       "code": "2733",
@@ -150,12 +150,12 @@
       "qty": 100,
       "buy_date": "2026-11-10",
       "buy_price": 2639.0,
-      "current_price": 2581.0,
-      "value": 258100.0,
-      "unrealized_pl": -5800.0,
-      "unrealized_pl_pct": -2.2,
-      "ref_d": "2026-11-13",
-      "ref_c": 2581.0
+      "current_price": 2626.0,
+      "value": 262600.0,
+      "unrealized_pl": -1300.0,
+      "unrealized_pl_pct": -0.49,
+      "ref_d": "2026-11-16",
+      "ref_c": 2626.0
     },
     {
       "code": "8253",
@@ -164,12 +164,12 @@
       "qty": 100,
       "buy_date": "2026-11-10",
       "buy_price": 4009.0,
-      "current_price": 4157.0,
-      "value": 415700.0,
-      "unrealized_pl": 14800.0,
-      "unrealized_pl_pct": 3.69,
-      "ref_d": "2026-11-13",
-      "ref_c": 4157.0
+      "current_price": 4857.0,
+      "value": 485700.0,
+      "unrealized_pl": 84800.0,
+      "unrealized_pl_pct": 21.15,
+      "ref_d": "2026-11-16",
+      "ref_c": 4857.0
     },
     {
       "code": "9543",
@@ -178,12 +178,12 @@
       "qty": 300,
       "buy_date": "2026-11-10",
       "buy_price": 1367.0,
-      "current_price": 1404.0,
-      "value": 421200.0,
-      "unrealized_pl": 11100.0,
-      "unrealized_pl_pct": 2.71,
-      "ref_d": "2026-11-13",
-      "ref_c": 1404.0
+      "current_price": 1424.0,
+      "value": 427200.0,
+      "unrealized_pl": 17100.0,
+      "unrealized_pl_pct": 4.17,
+      "ref_d": "2026-11-16",
+      "ref_c": 1424.0
     },
     {
       "code": "4516",
@@ -192,12 +192,12 @@
       "qty": 100,
       "buy_date": "2026-11-10",
       "buy_price": 3375.0,
-      "current_price": 3396.0,
-      "value": 339600.0,
-      "unrealized_pl": 2100.0,
-      "unrealized_pl_pct": 0.62,
-      "ref_d": "2026-11-13",
-      "ref_c": 3396.0
+      "current_price": 3453.0,
+      "value": 345300.0,
+      "unrealized_pl": 7800.0,
+      "unrealized_pl_pct": 2.31,
+      "ref_d": "2026-11-16",
+      "ref_c": 3453.0
     },
     {
       "code": "8336",
@@ -206,12 +206,12 @@
       "qty": 200,
       "buy_date": "2026-11-10",
       "buy_price": 2273.0,
-      "current_price": 2534.0,
-      "value": 506800.0,
-      "unrealized_pl": 52200.0,
-      "unrealized_pl_pct": 11.48,
-      "ref_d": "2026-11-13",
-      "ref_c": 2534.0
+      "current_price": 2474.0,
+      "value": 494800.0,
+      "unrealized_pl": 40200.0,
+      "unrealized_pl_pct": 8.84,
+      "ref_d": "2026-11-16",
+      "ref_c": 2474.0
     },
     {
       "code": "8367",
@@ -220,12 +220,12 @@
       "qty": 200,
       "buy_date": "2026-11-10",
       "buy_price": 1604.0,
-      "current_price": 1782.0,
-      "value": 356400.0,
-      "unrealized_pl": 35600.0,
-      "unrealized_pl_pct": 11.1,
-      "ref_d": "2026-11-13",
-      "ref_c": 1782.0
+      "current_price": 1735.0,
+      "value": 347000.0,
+      "unrealized_pl": 26200.0,
+      "unrealized_pl_pct": 8.17,
+      "ref_d": "2026-11-16",
+      "ref_c": 1735.0
     },
     {
       "code": "4008",
@@ -234,12 +234,12 @@
       "qty": 300,
       "buy_date": "2026-11-10",
       "buy_price": 1382.0,
-      "current_price": 1359.0,
-      "value": 407700.0,
-      "unrealized_pl": -6900.0,
-      "unrealized_pl_pct": -1.66,
-      "ref_d": "2026-11-13",
-      "ref_c": 1359.0
+      "current_price": 1343.0,
+      "value": 402900.0,
+      "unrealized_pl": -11700.0,
+      "unrealized_pl_pct": -2.82,
+      "ref_d": "2026-11-16",
+      "ref_c": 1343.0
     },
     {
       "code": "1928",
@@ -248,12 +248,12 @@
       "qty": 200,
       "buy_date": "2026-11-14",
       "buy_price": 3559.0,
-      "current_price": 3617.0,
-      "value": 723400.0,
-      "unrealized_pl": 11600.0,
-      "unrealized_pl_pct": 1.63,
-      "ref_d": "2026-11-13",
-      "ref_c": 3617.0
+      "current_price": 3637.0,
+      "value": 727400.0,
+      "unrealized_pl": 15600.0,
+      "unrealized_pl_pct": 2.19,
+      "ref_d": "2026-11-16",
+      "ref_c": 3637.0
     },
     {
       "code": "8593",
@@ -262,12 +262,12 @@
       "qty": 700,
       "buy_date": "2026-11-14",
       "buy_price": 1295.0,
-      "current_price": 1312.5,
-      "value": 918750.0,
-      "unrealized_pl": 12250.0,
-      "unrealized_pl_pct": 1.35,
-      "ref_d": "2026-11-13",
-      "ref_c": 1312.5
+      "current_price": 1333.5,
+      "value": 933450.0,
+      "unrealized_pl": 26950.0,
+      "unrealized_pl_pct": 2.97,
+      "ref_d": "2026-11-16",
+      "ref_c": 1333.5
     },
     {
       "code": "8725",
@@ -276,20 +276,20 @@
       "qty": 100,
       "buy_date": "2026-11-14",
       "buy_price": 5298.0,
-      "current_price": 5316.0,
-      "value": 531600.0,
-      "unrealized_pl": 1800.0,
-      "unrealized_pl_pct": 0.34,
-      "ref_d": "2026-11-13",
-      "ref_c": 5316.0
+      "current_price": 5329.0,
+      "value": 532900.0,
+      "unrealized_pl": 3100.0,
+      "unrealized_pl_pct": 0.59,
+      "ref_d": "2026-11-16",
+      "ref_c": 5329.0
     }
   ],
-  "total_value": 10805650.733,
+  "total_value": 10877131.533,
   "total_invested": 18344550.0,
   "realized_pl": 348144.6039999999,
   "dividend_received": 153434,
-  "last_updated": "2026-11-14",
-  "holdings_value": 9931550.0,
+  "last_updated": "2026-11-17",
+  "holdings_value": 10012700.0,
   "tax_paid": 109841,
   "loss_pool": 0.0,
   "year_div_taxed": {
@@ -302,7 +302,7 @@
     "qty": 2102,
     "cost": 410.9105,
     "since": "2026-11-11",
-    "price": 415.5,
-    "value": 873381.0
+    "price": 410.9,
+    "value": 863711.7999999999
   }
 }
