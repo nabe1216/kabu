@@ -1552,6 +1552,18 @@
       "dividend_total": 153434,
       "tax_paid": 109841,
       "holdings_count": 20
+    },
+    {
+      "date": "2026-11-18",
+      "cash": 719.7330000000075,
+      "holdings_value": 9845550.0,
+      "etf_value": 850259.0,
+      "total_value": 10696528.733,
+      "unrealized_pl": 279150.0,
+      "realized_pl": 348144.6039999999,
+      "dividend_total": 153434,
+      "tax_paid": 109841,
+      "holdings_count": 20
     }
   ],
   "dividends": [
