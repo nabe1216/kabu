@@ -1,0 +1,26 @@
+{
+ "series": "v1_20261201",
+ "frozen_on": "2026-11-22",
+ "base_commit": "b422ec3f36c60aaad8194a93dcf02b459ecfd053",
+ "note": "本番の判定（generate.py）と、固定版の売買（engine.py・run.py）の指紋。どれかが違う日は記録を止める。仕様を変えて続けるときは別の系列（v2）を別のファイル（frozen_v2_*）で作り、v1 は上書きしない。",
+ "start": "2026-12-01",
+ "variants": [
+  "PBR",
+  "SAFE",
+  "YIELD",
+  "D1",
+  "YH"
+ ],
+ "rules": {
+  "common": "portfolio_engine b422ec3 の決まり（予算 総資産÷15×Tier重み S2.0/A1.5/B1.0・最大20銘柄・100株・買い増し・12月の損出し・6月と12月の揃え直し1.25倍・余りは1306・浅い減配は持つ・売りは緊急のときだけ）",
+  "timing": "D−1 の判定で決めた売買を D の始値で約定（1306 は D の終値）。評価は D の終値",
+  "dividends": "権利付き最終日（以後で最初の実行日）の株数に権利。額は予想の年間配当の半分（近似）。権利の月から3か月後の月の最初の実行日に入金",
+  "capital": 10000000,
+  "tax": 0.20315
+ },
+ "sha256": {
+  "scripts/generate.py": "d0e2ab84eff0f2a729220d98b4059a75523b2f7179edf18fb04bf86c5dcf6b5b",
+  "scripts/frozen_v1_engine.py": "af67d9810d3fe95b001787e439f26e07659c78be34418bfaa6387b1549a3f6ed",
+  "scripts/frozen_v1_run.py": "eeb18c40fda94cc5e865237122dca91df2f591c3d0f40439146848995af4427a"
+ }
+}

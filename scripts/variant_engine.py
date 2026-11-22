@@ -77,6 +77,18 @@ def _prepare(stocks: list[dict[str, Any]], kind: str) -> list[dict[str, Any]]:
 
 
 def update_variants(stocks: list[dict[str, Any]], etf_px: float | None, etf_ret12: float | None = None) -> None:
+    """2026年11月22日：並走記録は固定版（scripts/frozen_v1_run.py・frozen_v1_engine.py）で動かす。
+    固定したコードと設定だけを使い、夜に決めた売買は翌営業日の始値で約定し、配当は権利付き最終日の株数で権利をつけて3か月後に入金する。
+    記録は data/frozen/v1/ に書く。下の update_variants_legacy（元の形）は使わない（比べるために残す）。
+    並走記録の失敗で毎日の本番の処理を止めないよう、例外は記録して先へ進む。"""
+    try:
+        import frozen_v1_run as frozen_v1
+        frozen_v1.update(stocks, etf_px, etf_ret12)
+    except Exception:
+        log.exception('Frozen v1: 並走記録の更新に失敗しました（本番の処理は続けます）')
+
+
+def update_variants_legacy(stocks: list[dict[str, Any]], etf_px: float | None, etf_ret12: float | None = None) -> None:
     today = datetime.now(timezone(timedelta(hours=9))).date().isoformat()
     if today < START:
         log.info('Variant tracks: 記録は %s から', START)
