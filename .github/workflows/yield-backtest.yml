@@ -253,5 +253,8 @@ jobs:
             data/after_event.csv
             data/explore.csv
             data/blend.csv
+            data/audit_monthly.csv
+            data/audit_trades.csv
+            data/audit_dividends.csv
             run.log
           if-no-files-found: ignore
