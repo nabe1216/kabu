@@ -7389,6 +7389,10 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
                             net = gross * (1 - tax_rate)
                         if _div_lag > 0:
                             _div_q.append((mi + _div_lag, net))
+                            # 2026年11月23日（audit_fix2）：配当の明細（権利の月末・銘柄・株数・税引き前・税引き後・入金の月の番号・額の出どころ）
+                            diag.setdefault("div_q_log", []).append(
+                                (pd.Timestamp(dt), str(code), float(held), float(gross), float(net), int(mi + _div_lag),
+                                 "実績" if (_act is not None and not pd.isna(_act)) else "予想"))
                         else:
                             cash += net
                         diag["dividend"] = diag.get("dividend", 0) + net
@@ -13807,6 +13811,62 @@ def add_next_open(store: dict, panel: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+AU_FULL_PANEL = None      # 2026年11月23日（audit_fix2）：切る前のパネル（直す前の数字と並べるため）
+AU_INFO = {}              # 2026年11月23日（audit_fix2）：株と 1306 の最後の日・株の営業日の暦・切った月末
+
+
+def au_cutoff(store: dict) -> dict:
+    """2026年11月23日（audit_fix2）：株（キャッシュ）と 1306 の最後の日を調べ、観測済みの最後の月末（その次の営業日が両方にある月末）を決める。"""
+    last_by = []
+    cal = set()
+    for code, rows in store.get("quotes", {}).items():
+        if not rows:
+            continue
+        try:
+            tail = [str(r.get("Date"))[:10] for r in rows[-5:] if isinstance(r, dict) and r.get("Date")]
+        except Exception:
+            tail = []
+        if not tail:
+            continue
+        last_by.append(max(tail))
+    # 株の営業日の暦：データのいちばん長い40銘柄の日付を合わせる
+    _long = sorted(((len(v), c) for c, v in store.get("quotes", {}).items() if v), reverse=True)[:40]
+    for _, c in _long:
+        cal.update(str(r.get("Date"))[:10] for r in store["quotes"][c] if isinstance(r, dict) and r.get("Date"))
+    if not last_by:
+        return {}
+    ls = pd.Series(pd.to_datetime(last_by))
+    s_max = ls.max()
+    etf_last = ETF_IDLE_PX.index.max() if (ETF_IDLE_PX is not None and len(ETF_IDLE_PX)) else None
+    common = min(s_max, etf_last) if etf_last is not None else s_max
+    cut = (pd.Timestamp(common) - pd.offsets.MonthEnd(1)).normalize()
+    info = {"stock_last": pd.Timestamp(s_max), "stock_last_share": float((ls == s_max).mean() * 100),
+            "stock_last_n": int(len(ls)), "etf_last": pd.Timestamp(etf_last) if etf_last is not None else None,
+            "cut": cut, "cal": pd.DatetimeIndex(sorted(pd.to_datetime(list(cal))))}
+    log.info("  audit_fix2：株のデータの最後の日 %s（%d銘柄のうち %.0f％がこの日まで）・1306 の最後の日 %s → 観測済みの最後の月末 %s",
+             info["stock_last"].date(), info["stock_last_n"], info["stock_last_share"],
+             info["etf_last"].date() if info["etf_last"] is not None else "-", cut.date())
+    return info
+
+
+def _au_dates(label, cal):
+    """月末のラベルに対して、判定に使った終値の日（ラベル以前の最後の営業日）と、次の営業日（なければ None）。"""
+    lab = pd.Timestamp(label)
+    i = cal.searchsorted(lab, side="right")
+    close_d = cal[i - 1] if i > 0 else None
+    next_d = cal[i] if i < len(cal) else None
+    return close_d, next_d
+
+
+def _au_years(dts, cal, etf_ix):
+    """実際の最初の約定日（最初の月末の次の営業日）から、最後の評価日（最後の月末の次の営業日。なければ最後の終値の日）までの年数。"""
+    _, a = _au_dates(dts[0], cal)
+    c_last, b = _au_dates(dts[-1], cal)
+    a = a if a is not None else pd.Timestamp(dts[0])
+    b = b if b is not None else (c_last if c_last is not None else pd.Timestamp(dts[-1]))
+    return a, b, max((pd.Timestamp(b) - pd.Timestamp(a)).days / 365.25, 0.5)
+
+
 def _au_dd(dts, vals):
     """最大下落と、その山・谷・回復（山の値を初めて上回った月末）。"""
     v = np.asarray(vals, dtype=float)
@@ -13853,15 +13913,171 @@ def _au_topix(dts, capital, tax, slip):
             "cagr": ((vals[-1] / capital) ** (1 / yrs) - 1) * 100}
 
 
+def _au_lump(sub, dts, args, kw, mx, cal, title, label_years=False):
+    """2026年11月23日（audit_fix2）：全期間・一括の4つの形と TOPIX。年率は実際の日数（最初の約定日〜最後の評価日）。
+    label_years=True のときは、直す前と同じ数え方（月末のラベルの間の日数）でも出す。"""
+    print(f"\n  {title}")
+    a_, b_, yrs = _au_years(dts, cal, None)
+    yl = max((pd.Timestamp(dts[-1]) - pd.Timestamp(dts[0])).days / 365.25, 0.5)
+    print(f"    判定 {pd.Timestamp(dts[0]).date()}〜{pd.Timestamp(dts[-1]).date()}（月末 {len(dts)}回）・最初の約定 {pd.Timestamp(a_).date()}・"
+          f"最後の評価 {pd.Timestamp(b_).date()}・年数 {yrs:.3f}年（ラベルで数えると {yl:.3f}年）")
+    cols = "清算後年率   評価額年率" + ("   （ラベルの年数で 清算後・評価額）" if label_years else "")
+    print(f"    {'形':<8}{cols}   最後の評価額     清算後の額  最大下落  山 → 谷 → 回復")
+    runs = {}
+    out = {}
+    for k_, n_ in AU_ROWS:
+        r_ = simulate(sub, VARIANTS[n_], args.capital, mx, **kw)
+        runs[k_] = r_
+        c_ = r_["curve"]
+        v_, lv_ = float(c_["value"].iloc[-1]), float(r_.get("liq_value", float("nan")))
+        cg_ = ((v_ / args.capital) ** (1 / yrs) - 1) * 100
+        cl_ = ((lv_ / args.capital) ** (1 / yrs) - 1) * 100
+        dd_ = _au_dd(list(c_["date"]), list(c_["value"]))
+        rec_ = (f"{dd_['rec'].date()}（谷から{dd_['rec_m']}か月・山から{dd_['under_m']}か月）" if dd_ and dd_["rec"] is not None
+                else "未回復（期間の終わりまでに山の値に戻らず）")
+        lab_ = (f"   （{((lv_ / args.capital) ** (1 / yl) - 1) * 100:.2f}％・{((v_ / args.capital) ** (1 / yl) - 1) * 100:.2f}％）"
+                if label_years else "")
+        out[k_] = {"liq": cl_, "mtm": cg_, "dd": dd_["dd"] if dd_ else None, "v": v_, "lv": lv_}
+        print(f"    {k_:<8}{cl_:>9.2f}％{cg_:>10.2f}％{lab_}{v_:>14,.0f}{lv_:>14,.0f}{dd_['dd'] if dd_ else float('nan'):>8.1f}％  "
+              f"{dd_['peak'].date() if dd_ else '-'} → {dd_['trough'].date() if dd_ else '-'} → {rec_}")
+        if r_["diag"].get("div_receivable_end"):
+            print(f"             （期末に未入金の配当 {r_['diag']['div_receivable_end']:,.0f}円 を受け取る予定として足した）")
+    top = _au_topix(dts, args.capital, args.tax / 100.0, args.slip_bps / 10000.0)
+    if top:
+        dt_ = _au_dd(dts, top["vals"])
+        cg_ = ((top["vals"][-1] / args.capital) ** (1 / yrs) - 1) * 100
+        cl_ = ((top["liq"] / args.capital) ** (1 / yrs) - 1) * 100
+        rec_ = (f"{dt_['rec'].date()}（谷から{dt_['rec_m']}か月・山から{dt_['under_m']}か月）" if dt_["rec"] is not None else "未回復")
+        lab_ = (f"   （{top['cagr_liq']:.2f}％・{top['cagr']:.2f}％）" if label_years else "")
+        out["TOPIX"] = {"liq": cl_, "mtm": cg_, "dd": dt_["dd"], "v": top["vals"][-1], "lv": top["liq"], "vals": top["vals"]}
+        _ex = ETF_IDLE_PX.index
+        _pe = _ex[min(int(_ex.searchsorted(pd.Timestamp(dts[-1]), side="right")), len(_ex) - 1)]
+        print(f"    {'TOPIX':<8}{cl_:>9.2f}％{cg_:>10.2f}％{lab_}{top['vals'][-1]:>14,.0f}{top['liq']:>14,.0f}{dt_['dd']:>8.1f}％  "
+              f"{dt_['peak'].date()} → {dt_['trough'].date()} → {rec_}")
+        print(f"    （TOPIX＝1306。最後の評価は {pd.Timestamp(_pe).date()} の終値。日々の始値がないので次の営業日の終値）")
+    return runs, out
+
+
+def _au_last5(pn_, cal, title):
+    """2026年11月23日（audit_fix2）：最後の5回の月末の、判定・約定・評価の日と、使った値段の種類。値段そのものは出さない（J-Quants の規約）。"""
+    print(f"\n  {title}")
+    print("    月末（ラベル） 判定に使った終値の日  約定・評価の日（次の営業日）  始値が取れた行  1306 の値段の日")
+    _ex = ETF_IDLE_PX.index
+    for d_ in sorted(pn_["date"].unique())[-5:]:
+        c_d, n_d = _au_dates(d_, cal)
+        g_ = pn_[pn_["date"] == d_]
+        sh_ = float(g_["px_next"].notna().mean() * 100) if "px_next" in g_.columns else float("nan")
+        e_ = _ex[min(int(_ex.searchsorted(pd.Timestamp(d_), side="right")), len(_ex) - 1)]
+        how = (f"{n_d.date()} の始値（なければその日の終値）" if n_d is not None
+               else f"次の営業日がない → {c_d.date() if c_d is not None else '-'} の終値で約定・評価")
+        print(f"    {pd.Timestamp(d_).date()}     {c_d.date() if c_d is not None else '-'}            {how}   {sh_:5.1f}％   "
+              f"{pd.Timestamp(e_).date()} の終値" + ("（株の最後の日と違う）" if (n_d is None and c_d is not None and pd.Timestamp(e_) != c_d) else ""))
+
+
+def _au_noopen(runs, pn_, title):
+    """2026年11月23日（audit_fix2）：実際の売買のうち、翌営業日の始値がなく、月末の終値で約定したものの数。"""
+    print(f"\n  {title}")
+    miss = pn_.loc[pn_["px_next"].isna(), ["code", "date"]] if "px_next" in pn_.columns else pd.DataFrame(columns=["code", "date"])
+    mk = {(str(c_), pd.Timestamp(d_)) for c_, d_ in zip(miss["code"], miss["date"])}
+    last_ = pd.Timestamp(sorted(pn_["date"].unique())[-1])
+    for k_ in ("M", "P0", "M_pit"):
+        t_ = runs.get(k_, {}).get("trades") if runs.get(k_) else None
+        if t_ is None or t_.empty:
+            continue
+        f_ = [((str(c_), pd.Timestamp(d_)) in mk, pd.Timestamp(d_) == last_, s_) for c_, d_, s_ in zip(t_["code"], t_["date"], t_["side"])]
+        n_all = len(f_)
+        n_m = sum(1 for a_, _, _ in f_ if a_)
+        n_last = sum(1 for a_, b_, _ in f_ if a_ and b_)
+        n_b = sum(1 for a_, _, s_ in f_ if a_ and s_ == "buy")
+        print(f"    {k_:<6} 売買 {n_all}件のうち 月末の終値で約定 {n_m}件（買い {n_b}・売り {n_m - n_b}。うち最後の月末 {n_last}件）")
+
+
+def _au_recv(runs, n_months, title):
+    """2026年11月23日（audit_fix2）：期末に未入金の配当の内訳（権利の月ごと・額の出どころ）。"""
+    print(f"\n  {title}")
+    for k_ in ("M", "M_pit"):
+        r_ = runs.get(k_)
+        if r_ is None:
+            continue
+        lg_ = [x_ for x_ in r_["diag"].get("div_q_log", []) if x_[5] > n_months - 1]
+        if not lg_:
+            print(f"    {k_}：なし")
+            continue
+        by_ = {}
+        for t_, c_, sh_, g_, n_, m_, src_ in lg_:
+            key_ = (pd.Timestamp(t_).strftime("%Y-%m"), src_)
+            a0, a1, a2 = by_.get(key_, (0, 0.0, 0.0))
+            by_[key_] = (a0 + 1, a1 + g_, a2 + n_)
+        print(f"    {k_}：" + " ／ ".join(f"{m_} {s_} {v_[0]}件 税引き前 {v_[1]:,.0f}円（税引き後 {v_[2]:,.0f}円）"
+                                         for (m_, s_), v_ in sorted(by_.items())))
+
+
+def _au_csv(runs, out, dts, cal, pn_):
+    """2026年11月23日（audit_fix2）：月ごとの資産・売買・配当の記録を CSV に書く。株価（値段）は入れない（J-Quants の規約）。"""
+    try:
+        OUTDIR.mkdir(parents=True, exist_ok=True)
+        rows = []
+        for i_, d_ in enumerate(dts):
+            c_d, n_d = _au_dates(d_, cal)
+            row = {"月末（ラベル）": pd.Timestamp(d_).date(), "判定に使った終値の日": c_d.date() if c_d is not None else "",
+                   "約定・評価の日": n_d.date() if n_d is not None else ""}
+            for k_ in ("M", "M_pit"):
+                r_ = runs.get(k_)
+                if r_ is None:
+                    continue
+                cv_ = r_["curve"]
+                if i_ < len(cv_):
+                    row[f"{k_} 評価額（未入金の配当を含む）"] = round(float(cv_["value"].iloc[i_]))
+                    row[f"{k_} 現金（1306 を含む）"] = round(float(cv_["cash"].iloc[i_]))
+                    row[f"{k_} 銘柄数"] = int(cv_["names"].iloc[i_])
+            if "TOPIX" in out and i_ < len(out["TOPIX"].get("vals", [])):
+                row["TOPIX（1306）評価額"] = round(float(out["TOPIX"]["vals"][i_]))
+            rows.append(row)
+        pd.DataFrame(rows).to_csv(OUTDIR / "audit_monthly.csv", index=False, encoding="utf-8-sig")
+        miss = pn_.loc[pn_["px_next"].isna(), ["code", "date"]] if "px_next" in pn_.columns else pd.DataFrame(columns=["code", "date"])
+        mk = {(str(c_), pd.Timestamp(d_)) for c_, d_ in zip(miss["code"], miss["date"])}
+        tr = []
+        for k_ in ("M", "M_pit"):
+            t_ = runs[k_]["trades"] if runs.get(k_) is not None else pd.DataFrame()
+            for _, x_ in t_.iterrows():
+                c_d, n_d = _au_dates(x_["date"], cal)
+                nopen = (str(x_["code"]), pd.Timestamp(x_["date"])) in mk
+                tr.append({"形": k_, "判定の月末（ラベル）": pd.Timestamp(x_["date"]).date(),
+                           "約定日": (c_d if (nopen or n_d is None) else n_d).date() if (c_d is not None or n_d is not None) else "",
+                           "値段の種類": "月末の終値（始値なし）" if (nopen or n_d is None) else "始値",
+                           "銘柄コード": str(x_["code"]), "売り買い": "買い" if x_["side"] == "buy" else "売り", "株数": int(x_["shares"])})
+        pd.DataFrame(tr).to_csv(OUTDIR / "audit_trades.csv", index=False, encoding="utf-8-sig")
+        dv = []
+        for k_ in ("M", "M_pit"):
+            r_ = runs.get(k_)
+            if r_ is None:
+                continue
+            for t_, c_, sh_, g_, n_, m_, src_ in r_["diag"].get("div_q_log", []):
+                dv.append({"形": k_, "権利の月末": pd.Timestamp(t_).date(), "銘柄コード": c_, "株数": int(sh_),
+                           "税引き前（円）": round(g_), "税引き後（円）": round(n_),
+                           "入金の月末": pd.Timestamp(dts[m_]).date() if m_ < len(dts) else "期間の後（受け取る予定として足した）",
+                           "額の出どころ": src_})
+        pd.DataFrame(dv).to_csv(OUTDIR / "audit_dividends.csv", index=False, encoding="utf-8-sig")
+        print(f"\n  書き出しました：data/audit_monthly.csv（{len(rows)}行）・data/audit_trades.csv（{len(tr)}行）・data/audit_dividends.csv（{len(dv)}行）")
+    except Exception as e_:
+        log.exception("audit_fix2：CSV を書けませんでした: %s", e_)
+
+
 def audit_report(gf: pd.DataFrame, cond_cols: list, pn: pd.DataFrame, wins, args, span) -> dict:
-    """2026年11月22日（audit_fix）：仕様どおりに直した現行ルールの再試算。計画は audit_fix_plan_2026-11-22。"""
-    print("\n【仕様どおりに直した現行ルールの再試算】（計画は audit_fix_plan_2026-11-22。本番のコードは b422ec3）")
+    """2026年11月22日（audit_fix）：仕様どおりに直した現行ルールの再試算。計画は audit_fix_plan_2026-11-22。
+    2026年11月23日（audit_fix2）：観測済みの月だけにした版。計画は audit_fix2_plan_2026-11-23。"""
+    print("\n【仕様どおりに直した現行ルールの再試算・終わりの月を直した版】（計画は audit_fix_plan_2026-11-22・audit_fix2_plan_2026-11-23。本番のコードは b422ec3）")
     print("  共通：利回り3％以上・8条件（免除なし）・Tier 順で同じ Tier は利回りの高い順・1銘柄＝総資産÷15×（重み÷1.5）・最大20銘柄・"
           "100株・毎月の買い増し・12月の損出し・6月と12月の揃え直し（1.25倍）・余りは1306・浅い減配は持つ")
     print(f"  元本 {args.capital:,.0f}円・税 {args.tax}％（損は配当と相殺）・約定のずれ片道 {args.slip_bps}bps・手数料 {args.fee_bps}bps")
     print("  M・P0・M_pit：月末の終値とそれより前の開示で判定 → 翌営業日の始値で約定・評価。配当は実績（V3）で、権利確定の月末から3か月後の月末に入金")
     print("  M_old：月末の終値で約定・配当は権利確定の月末に入金（直す前の処理）")
     res = {}
+    info = AU_INFO or {}
+    cal = info.get("cal") if info.get("cal") is not None and len(info.get("cal")) else ETF_IDLE_PX.index
+    print(f"\n  0. データの最後の日：株（キャッシュ）{info['stock_last'].date() if info.get('stock_last') is not None else '-'}"
+          f"（{info.get('stock_last_n', 0)}銘柄のうち {info.get('stock_last_share', float('nan')):.0f}％がこの日まで。残りは上場廃止など）・"
+          f"1306 {info['etf_last'].date() if info.get('etf_last') is not None else '-'}・観測済みの最後の月末 {info['cut'].date() if info.get('cut') is not None else '-'}")
     d0_, d1_ = span
     sub = pn[(pn["date"] >= d0_) & (pn["date"] <= d1_)]
     dts = sorted(sub["date"].unique())
@@ -13869,36 +14085,27 @@ def audit_report(gf: pd.DataFrame, cond_cols: list, pn: pd.DataFrame, wins, args
     my = float(gf["利回り足切り"].dropna().iloc[0]) if "利回り足切り" in gf.columns and gf["利回り足切り"].notna().any() else None
     kw = dict(tier_budget=args.realistic, dividends=args.realistic, slip_bps=args.slip_bps, fee_bps=args.fee_bps,
               tax_rate=args.tax / 100.0, ramp=0, min_yield_override=my)
-    pxn_first = sub[sub["date"] == dts[0]]["px_next"] if "px_next" in sub.columns else None
-    print(f"\n  計算した期間：判定 {pd.Timestamp(dts[0]).date()} 〜 {pd.Timestamp(dts[-1]).date()}（月末 {len(dts)}回）。"
-          f"最初の約定はその次の営業日、最後の評価は最後の月末の次の営業日の始値（なければ月末の終値）")
-    runs = {}
-    for k_, n_ in AU_ROWS:
-        runs[k_] = simulate(sub, VARIANTS[n_], args.capital, mx, **kw)
-    print(f"\n  1. 全期間・一括（資金投入0か月）")
-    print(f"    {'形':<8}{'清算後年率':>10}{'評価額年率':>10}{'最後の評価額':>14}{'清算後の額':>14}{'最大下落':>9}  山 → 谷 → 回復")
-    top = _au_topix(dts, args.capital, args.tax / 100.0, args.slip_bps / 10000.0)
-    for k_, r_ in runs.items():
-        m_ = metrics(r_)
-        c_ = r_["curve"]
-        dd_ = _au_dd(list(c_["date"]), list(c_["value"]))
-        rec_ = (f"{dd_['rec'].date()}（谷から{dd_['rec_m']}か月・山から{dd_['under_m']}か月）" if dd_ and dd_["rec"] is not None
-                else "未回復（期間の終わりまでに山の値に戻らず）")
-        res[k_] = {"liq": m_.get("清算後年率"), "mtm": m_.get("年率"), "dd": dd_["dd"] if dd_ else None}
-        print(f"    {k_:<8}{m_.get('清算後年率', float('nan')):>9.2f}％{m_.get('年率', float('nan')):>9.2f}％"
-              f"{c_['value'].iloc[-1]:>14,.0f}{r_.get('liq_value', float('nan')):>14,.0f}{dd_['dd'] if dd_ else float('nan'):>8.1f}％  "
-              f"{dd_['peak'].date() if dd_ else '-'} → {dd_['trough'].date() if dd_ else '-'} → {rec_}")
-        d_ = r_["diag"]
-        if d_.get("div_receivable_end"):
-            print(f"             （期末に未入金の配当 {d_['div_receivable_end']:,.0f}円 を受け取る予定として足した）")
-    if top:
-        dt_ = _au_dd(dts, top["vals"])
-        rec_ = (f"{dt_['rec'].date()}（谷から{dt_['rec_m']}か月・山から{dt_['under_m']}か月）" if dt_["rec"] is not None else "未回復")
-        res["TOPIX"] = {"liq": top["cagr_liq"], "mtm": top["cagr"], "dd": dt_["dd"]}
-        print(f"    {'TOPIX':<8}{top['cagr_liq']:>9.2f}％{top['cagr']:>9.2f}％{top['vals'][-1]:>14,.0f}{top['liq']:>14,.0f}{dt_['dd']:>8.1f}％  "
-              f"{dt_['peak'].date()} → {dt_['trough'].date()} → {rec_}")
-        print("    （TOPIX＝1306 を最初の約定日に全額買い、分配金は税引き後に買い増し、最後に売って税を払った後。日々の始値がないので次の営業日の終値）")
-    print("    （最大下落は月末の評価額で測る。月の途中の下げはもっと深いことがある）")
+    full_ = AU_FULL_PANEL if AU_FULL_PANEL is not None else pn
+    if AU_FULL_PANEL is not None:
+        _au_last5(full_, cal, "0-1. 直す前（#221 と同じ期間）の最後の5回の月末")
+    _au_last5(sub, cal, "0-2. 直した後の最後の5回の月末")
+    runs_f = None
+    if AU_FULL_PANEL is not None:
+        sub_f = full_[full_["date"] >= d0_]
+        dts_f = sorted(sub_f["date"].unique())
+        runs_f, out_f = _au_lump(sub_f, dts_f, args, kw, mx, cal,
+                                 "1-0. 直す前の期間（#221 と同じ）・全期間・一括：年率は実際の日数で。かっこ内はラベルの年数（#221 の数え方）", label_years=True)
+        _au_noopen(runs_f, sub_f, "1-0a. 直す前の期間：月末の終値で約定した売買")
+        _au_recv(runs_f, len(dts_f), "1-0b. 直す前の期間：期末に未入金の配当の内訳")
+    runs, out = _au_lump(sub, dts, args, kw, mx, cal, "1. 直した後（観測済みの月だけ）・全期間・一括（資金投入0か月）")
+    for k_ in ("M", "P0", "M_pit", "M_old", "TOPIX"):
+        if k_ in out:
+            res[k_] = {"liq": out[k_]["liq"], "mtm": out[k_]["mtm"], "dd": out[k_]["dd"]}
+    print("    （最大下落は月末の評価額で測る。M・P0・M_pit の評価は翌営業日の始値（なければ月末の終値）、M_old は月末の終値、TOPIX は翌営業日の終値。"
+          "月の途中の下げはもっと深いことがある）")
+    _au_noopen(runs, sub, "1a. 直した後：月末の終値で約定した売買（翌営業日の始値がなかったもの）")
+    _au_recv(runs, len(dts), "1b. 直した後：期末に未入金の配当の内訳")
+    _au_csv(runs, out, dts, cal, sub)
 
     # 2. 年ごとの受け取る配当（税引き前・権利の年）
     print("\n  2. 年ごとの受け取る配当（税引き前・権利確定の年で数える。円）")
@@ -13914,7 +14121,7 @@ def audit_report(gf: pd.DataFrame, cond_cols: list, pn: pd.DataFrame, wins, args
         fx = {}
         alive_last = 0
         icol = "div_int_share_fix" if "div_int_share_fix" in sub.columns else "div_int_share"
-        for t_ in dts:
+        for t_ in dts[1:]:      # 2026年11月23日（audit_fix2）：最初の月末はまだ持っていない（買うのは次の営業日）ので数えない
             day_ = sub[(sub["date"] == t_) & (sub["code"].isin(list(hf)))].set_index("code")
             mth = pd.Timestamp(t_).month
             for code_, sh_ in hf.items():
@@ -19861,6 +20068,14 @@ def main() -> int:
 
         # 窓：4年の窓を1年ずつずらしたもの＋全期間
         wl = args.grid_window
+        if getattr(args, "audit_fix", False):
+            # 2026年11月23日（audit_fix2）：観測済みの月だけにする（次の営業日の値が株と 1306 の両方にある最後の月末まで）
+            global AU_INFO
+            AU_INFO = au_cutoff(store)
+            if AU_INFO.get("cut") is not None:
+                _n0 = panel["date"].nunique()
+                panel = panel[panel["date"] <= AU_INFO["cut"]].reset_index(drop=True)
+                log.info("  audit_fix2：月末 %d回 → %d回（%s まで）", _n0, panel["date"].nunique(), AU_INFO["cut"].date())
         d0_, d1_ = panel["date"].min(), panel["date"].max()
         wins = []
         st_ = d1_ - pd.DateOffset(years=wl)
@@ -19926,6 +20141,15 @@ def main() -> int:
             for lb_ in lbs_:
                 panels[lb_] = add_next_open(store, lab16_add_actual(store, lab16_int_share_fix(
                     store, lab16_with_fix(lambda lb__=lb_: _panel_for(lb__)))))
+            # 2026年11月23日（audit_fix2）：切る前のパネルを残し（直す前の数字と並べるため）、観測済みの月だけに切る
+            global AU_FULL_PANEL
+            AU_FULL_PANEL = panels[lbs_[0]]
+            if AU_INFO.get("cut") is not None:
+                for lb_ in lbs_:
+                    panels[lb_] = panels[lb_][panels[lb_]["date"] <= AU_INFO["cut"]].reset_index(drop=True)
+                _sp = panels[lbs_[0]]
+                if "px_next" in _sp.columns:
+                    log.info("  audit_fix2：切ったあと、翌営業日の始値が取れた行 %.2f％", float(_sp["px_next"].notna().mean() * 100))
 
         # 20年分の追加検証8：月末ごとの「下げ相場」を、総当たりの前に決めておく（下げ相場で切り替えるルールが使う）。
         #   その月末までの TOPIX（1306）の値だけで決める。最後の月末は、日々の株価の取り直しで変わりうるので使わない
