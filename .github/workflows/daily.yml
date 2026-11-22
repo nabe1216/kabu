@@ -74,6 +74,10 @@ jobs:
           for f in data/variant_*_state.json data/variant_*_history.json; do
             if [ -f "$f" ]; then git add "$f"; fi
           done
+          # 2026年11月22日：固定版の並走記録 v1（入力の写し・判定の要点・売買・評価の毎日の記録）
+          if [ -d data/frozen ]; then
+            git add -A data/frozen
+          fi
           # 2026年11月8日：銘柄ごとの履歴は data/history/ に分けた（増えたファイル・消えたファイルも含めて保存）
           if [ -d data/history ]; then
             git add -A data/history
