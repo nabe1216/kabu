@@ -18109,7 +18109,7 @@ def main() -> int:
     if getattr(args, "etf_test", False) or getattr(args, "luck_test", False) or getattr(args, "near_test", False) \
             or getattr(args, "sector_test", False) or getattr(args, "long_any", False) \
             or getattr(args, "rev_lab1", False) or getattr(args, "rev_lab2", False) or getattr(args, "st_lab1", False) \
-            or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False) or getattr(args, "exempt_test", False) or getattr(args, "swing_cond", False) or getattr(args, "rebal_test", False) or getattr(args, "rebal_test2", False) or getattr(args, "yexit_test", False) or getattr(args, "ryexit_test", False):
+            or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False) or (getattr(args, "exempt_test", False) or getattr(args, "audit_fix", False)) or getattr(args, "swing_cond", False) or getattr(args, "rebal_test", False) or getattr(args, "rebal_test2", False) or getattr(args, "yexit_test", False) or getattr(args, "ryexit_test", False):
         _eq = store.setdefault("etf_quotes", {})
         key = os.environ.get("J_QUANTS_API_KEY")
         if key:
@@ -18134,7 +18134,7 @@ def main() -> int:
         if not _etf_px:
             log.warning("19回目：ETFの株価がひとつも取れませんでした。ETFとの比べは出せません")
         if getattr(args, "sell_test", False) or getattr(args, "hold_test", False) \
-                or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False) or getattr(args, "exempt_test", False) or getattr(args, "swing_cond", False) or getattr(args, "rebal_test", False) or getattr(args, "rebal_test2", False) or getattr(args, "yexit_test", False) or getattr(args, "ryexit_test", False) \
+                or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False) or (getattr(args, "exempt_test", False) or getattr(args, "audit_fix", False)) or getattr(args, "swing_cond", False) or getattr(args, "rebal_test", False) or getattr(args, "rebal_test2", False) or getattr(args, "yexit_test", False) or getattr(args, "ryexit_test", False) \
                 or getattr(args, "long_hold", False) or getattr(args, "long_regime", False) or getattr(args, "long_yexit", False) \
                 or getattr(args, "long_trade", False) or getattr(args, "long_yregime", False) or getattr(args, "long_swing", False) \
                 or getattr(args, "audit_fix", False):
@@ -18150,7 +18150,7 @@ def main() -> int:
     _need_scale = (getattr(args, "live_check", False) or getattr(args, "rot_live", False)
                    or getattr(args, "cap_test", False) or getattr(args, "etf_test", False)
                    or getattr(args, "luck_test", False) or getattr(args, "near_test", False)
-                   or getattr(args, "flat_test", False) or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False) or getattr(args, "exempt_test", False) or getattr(args, "swing_cond", False) or getattr(args, "rebal_test", False) or getattr(args, "rebal_test2", False) or getattr(args, "yexit_test", False) or getattr(args, "ryexit_test", False)
+                   or getattr(args, "flat_test", False) or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False) or (getattr(args, "exempt_test", False) or getattr(args, "audit_fix", False)) or getattr(args, "swing_cond", False) or getattr(args, "rebal_test", False) or getattr(args, "rebal_test2", False) or getattr(args, "yexit_test", False) or getattr(args, "ryexit_test", False)
                    or getattr(args, "sector_test", False)
                    or getattr(args, "long_any", False)
                    or getattr(args, "rev_lab1", False) or getattr(args, "rev_lab2", False) or getattr(args, "st_lab1", False))
@@ -20208,7 +20208,7 @@ def main() -> int:
                    or getattr(args, "live_check", False) or getattr(args, "rot_live", False)
                    or getattr(args, "cap_test", False) or getattr(args, "etf_test", False)
                    or getattr(args, "luck_test", False) or getattr(args, "near_test", False)
-                   or getattr(args, "flat_test", False) or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False) or getattr(args, "exempt_test", False) or getattr(args, "swing_cond", False) or getattr(args, "rebal_test", False) or getattr(args, "rebal_test2", False) or getattr(args, "yexit_test", False) or getattr(args, "ryexit_test", False)
+                   or getattr(args, "flat_test", False) or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False) or (getattr(args, "exempt_test", False) or getattr(args, "audit_fix", False)) or getattr(args, "swing_cond", False) or getattr(args, "rebal_test", False) or getattr(args, "rebal_test2", False) or getattr(args, "yexit_test", False) or getattr(args, "ryexit_test", False)
                    or getattr(args, "sector_test", False)
                    or getattr(args, "long_any", False))
         _l10 = bool(getattr(args, "line_test", False))
@@ -20217,7 +20217,7 @@ def main() -> int:
                      or getattr(args, "live_check", False) or getattr(args, "rot_live", False)
                      or getattr(args, "cap_test", False) or getattr(args, "etf_test", False)
                      or getattr(args, "luck_test", False) or getattr(args, "near_test", False)
-                     or getattr(args, "flat_test", False) or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False) or getattr(args, "exempt_test", False) or getattr(args, "swing_cond", False) or getattr(args, "rebal_test", False) or getattr(args, "rebal_test2", False) or getattr(args, "yexit_test", False) or getattr(args, "ryexit_test", False)
+                     or getattr(args, "flat_test", False) or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False) or (getattr(args, "exempt_test", False) or getattr(args, "audit_fix", False)) or getattr(args, "swing_cond", False) or getattr(args, "rebal_test", False) or getattr(args, "rebal_test2", False) or getattr(args, "yexit_test", False) or getattr(args, "ryexit_test", False)
                      or getattr(args, "sector_test", False)
                      or getattr(args, "long_any", False)):
             print("　 年率は「最後の月末に全部売って、約定のずれと税を払った後」（清算後）で出しています。\n")
@@ -20233,7 +20233,7 @@ def main() -> int:
                 or getattr(args, "live_check", False) or getattr(args, "rot_live", False)
                 or getattr(args, "cap_test", False) or getattr(args, "etf_test", False)
                 or getattr(args, "luck_test", False) or getattr(args, "near_test", False)
-                or getattr(args, "flat_test", False) or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False) or getattr(args, "exempt_test", False) or getattr(args, "swing_cond", False) or getattr(args, "rebal_test", False) or getattr(args, "rebal_test2", False) or getattr(args, "yexit_test", False) or getattr(args, "ryexit_test", False)
+                or getattr(args, "flat_test", False) or getattr(args, "sell_test", False) or getattr(args, "hold_test", False) or getattr(args, "hold2_test", False) or getattr(args, "bench_test", False) or (getattr(args, "exempt_test", False) or getattr(args, "audit_fix", False)) or getattr(args, "swing_cond", False) or getattr(args, "rebal_test", False) or getattr(args, "rebal_test2", False) or getattr(args, "yexit_test", False) or getattr(args, "ryexit_test", False)
                 or getattr(args, "sector_test", False)
                 or getattr(args, "long_any", False)):
             # ── 1. 基準に勝った割合 ──
@@ -22096,7 +22096,7 @@ def main() -> int:
             except Exception as e_:
                 log.exception("条件つきのレンジ売買の比べを出せませんでした: %s", e_)
 
-        if getattr(args, "exempt_test", False) and nm and nm[0] == "ex_e1":
+        if (getattr(args, "exempt_test", False) or getattr(args, "audit_fix", False)) and nm and nm[0] == "ex_e1":
             try:
                 exempt_report(gf, cond_cols, panels[lbs_[0]])
             except Exception as e_:
