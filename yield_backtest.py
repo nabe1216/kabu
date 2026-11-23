@@ -3822,6 +3822,31 @@ def _mid_event(ev, int_rec, fy_end) -> bool:
     return bool(((ev_d >= a_) & (ev_d < b_)).any())
 
 
+FORECAST_V52 = False   # 2026年11月23日：本番の予想配当の選び方（v5.2：修正のお知らせ・0円）で計算する（only=audit_fix_v52）
+
+
+def _is_rev_row(s: dict) -> bool:
+    dt = (s.get("DocType") or "").lower()
+    return "revision" in dt or "forecast" in dt
+
+
+def _dps_value_v52(s: dict):
+    """本番 v5.2 にそろえた、その開示の予想配当（なければ実績）。返す値 … (値, 実績か)。値がなければ (None, False)。
+    - 予想の修正の行（DocType に revision か forecast）：型を問わず FDivAnn（年間の予想）。0円も使う
+    - 決算短信：本決算型は来期の欄（NxFDivAnn）、四半期は今期の欄（FDivAnn）。0円も使う（無配の予想）。空欄なら実績（DivAnn）
+    時系列は「その日までに開示された、いちばん新しい値」になるので、本決算の短信で来期の予想が空欄なら、その期の実績に戻る
+    （本番の「実績の出ている期より後の期の予想だけ、なければ直近の実績」に近い）"""
+    if _is_rev_row(s):
+        v = fnum(s.get("FDivAnn"))
+        return (v, False) if (v is not None and v >= 0) else (None, False)
+    per = s.get("CurPerType", "")
+    v = fnum(s.get("NxFDivAnn")) if per in ("FY", "4Q") else fnum(s.get("FDivAnn"))
+    if v is not None and v >= 0:
+        return v, False
+    a = fnum(s.get("DivAnn"))
+    return (a, True) if (a is not None and a > 0) else (None, False)
+
+
 def dps_timeline(stmts: list[dict], px: pd.DataFrame) -> pd.DataFrame:
     """開示日つきの予想DPS系列を作る。
 
@@ -3843,11 +3868,16 @@ def dps_timeline(stmts: list[dict], px: pd.DataFrame) -> pd.DataFrame:
         if d is None:
             continue
         per = s.get("CurPerType", "")
-        v = fnum(s.get("NxFDivAnn")) if per in ("FY", "4Q") else fnum(s.get("FDivAnn"))
-        if v is None or v <= 0:
-            v = fnum(s.get("DivAnn"))
-        if v is None or v <= 0:
-            continue
+        if FORECAST_V52:
+            v, _res = _dps_value_v52(s)
+            if v is None:
+                continue
+        else:
+            v = fnum(s.get("NxFDivAnn")) if per in ("FY", "4Q") else fnum(s.get("FDivAnn"))
+            if v is None or v <= 0:
+                v = fnum(s.get("DivAnn"))
+            if v is None or v <= 0:
+                continue
         ts = pd.Timestamp(d)
         # 開示日以降の分割ぶんだけ調整
         idx = cum_after.index.searchsorted(ts)
@@ -18165,6 +18195,12 @@ def main() -> int:
         args.exempt_test, args.liq_metric, args.grid = True, True, True
         args.only = "ex_e1,bm_live,ex_e2,ex_e3"
     args.audit_fix = False
+    if (args.only or "").strip() == "audit_fix_v52":
+        # 2026年11月23日：#222 と同じ計算を、本番 v5.2 の予想配当の選び方で（修正のお知らせ・0円）。計画は audit_v52_plan_2026-11-23
+        global FORECAST_V52
+        FORECAST_V52 = True
+        args.only = "audit_fix"
+        log.info("予想配当の選び方：本番 v5.2（修正のお知らせも使う・0円は無配の予想）")
     if (args.only or "").strip() == "audit_fix":
         # 2026年11月22日：仕様どおりに直した現行ルールの再試算（計画は audit_fix_plan_2026-11-22）
         args.audit_fix, args.liq_metric, args.grid = True, True, True
