@@ -3904,13 +3904,19 @@ def _dps_timeline_fixed(stmts: list[dict], px: pd.DataFrame) -> pd.DataFrame:
         if d is None:
             continue
         per = s.get("CurPerType", "")
-        v = fnum(s.get("NxFDivAnn")) if per in ("FY", "4Q") else fnum(s.get("FDivAnn"))
-        is_res = False
-        if v is None or v <= 0:
-            v = fnum(s.get("DivAnn"))
-            is_res = True
-        if v is None or v <= 0:
-            continue
+        if FORECAST_V52:
+            # 2026年11月23日（only=audit_fix_v52）：本番 v5.2 の選び方（修正のお知らせも使う・0円は無配の予想）
+            v, is_res = _dps_value_v52(s)
+            if v is None:
+                continue
+        else:
+            v = fnum(s.get("NxFDivAnn")) if per in ("FY", "4Q") else fnum(s.get("FDivAnn"))
+            is_res = False
+            if v is None or v <= 0:
+                v = fnum(s.get("DivAnn"))
+                is_res = True
+            if v is None or v <= 0:
+                continue
         ts = pd.Timestamp(d)
         if is_res:
             # 実績の年間配当：期末の7日前以降の分割・併合で直す（期の途中で分割・併合した期は使わない）
@@ -3926,13 +3932,14 @@ def _dps_timeline_fixed(stmts: list[dict], px: pd.DataFrame) -> pd.DataFrame:
             factor = float(cum_after.iloc[idx]) if idx < len(cum_after) else 1.0
             val = v * factor
             j_ = int(np.searchsorted(ev_d, int(ts.value), side="right"))
-            if (prev is not None and prev > 0 and j_ < len(ev_d) and ev_d[j_] - int(ts.value) <= LAB16_EV_DAYS * 86_400_000_000_000
+            if (val > 0 and prev is not None and prev > 0 and j_ < len(ev_d) and ev_d[j_] - int(ts.value) <= LAB16_EV_DAYS * 86_400_000_000_000
                     and (ev_f[j_] >= LAB16_EV_MIN or ev_f[j_] <= 1.0 / LAB16_EV_MIN)):
                 alt = val / float(ev_f[j_])          # すでに分割・併合のあとの基準で出ていた、と読んだ値
                 if abs(np.log(alt / prev)) < abs(np.log(val / prev)):
                     val = alt
         recs.append({"date": ts, "dps": val})
-        prev = val
+        if val > 0 or not FORECAST_V52:
+            prev = val       # 0円（無配の予想）は、分割・併合の基準の読み分けに使わない（直前の正の値を残す）
     if not recs:
         return pd.DataFrame()
     df = pd.DataFrame(recs).sort_values("date", kind="stable")
