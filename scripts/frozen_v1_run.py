@@ -160,6 +160,17 @@ def update(stocks: list[dict[str, Any]], etf_px: float | None, etf_ret12: float 
         rec['late_judgment'] = prev.get('saved_at')
         rec['decided_from'] = None
         log.warning('Frozen %s: 前の判定（%s）の保存が %s の始値より後なので、今日は売買しない', SERIES, prev.get('price_date'), pdate)
+    # 11月24日：判定は約定予定日（次の営業日の寄付き）の1回だけに使う。実行が抜けて過ぎた判定は失効（後日へ持ち越さない）
+    if prev is not None and not late:
+        from market_calendar import is_business_day
+        nx = date.fromisoformat(prev['price_date']) + timedelta(days=1)
+        while not is_business_day(nx):
+            nx += timedelta(days=1)
+        if nx.isoformat() != pdate:
+            late = True
+            rec['expired_judgment'] = {'price_date': prev.get('price_date'), 'planned_exec': nx.isoformat()}
+            rec['decided_from'] = None
+            log.warning('Frozen %s: 前の判定（%s）の約定予定日 %s を過ぎたので、今日は売買しない', SERIES, prev.get('price_date'), nx)
     if prev is None:
         log.info('Frozen %s: 最初の日（%s）。判定を残しただけで、売買は翌営業日の始値から', SERIES, pdate)
     else:

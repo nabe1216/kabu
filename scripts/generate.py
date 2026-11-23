@@ -458,6 +458,7 @@ class JQuantsClient:
 # 実行時間がほぼ半分になる。決算の反映はその日数ぶん遅れる。
 STMTS_CACHE_DAYS = 7
 MIN_COVERAGE_FOR_PAPER = 0.98   # 2026年11月：取得の失敗が0でも、処理できた銘柄がこれより少ない日は進めない（念のための線）
+_SKIP_REASON: dict[str, str] = {}   # 2026年11月24日：process_stock が None を返した理由（results.json の unprocessed）
 # 2026年11月8日：92MB まで大きくなり GitHub の上限（100MB）に近づいたので、圧縮して保存する（約6MB）。
 # 古い圧縮なしのファイルがあれば読み、圧縮して保存したあとに消す（daily.yml がその削除も保存する）。
 _STMTS_CACHE_PATH = OUTPUT_DIR / 'stmts_cache.json.gz'
@@ -1844,12 +1845,14 @@ def process_stock(
 
     if not quotes_all:
         log.debug('no quotes for %s', code)
+        _SKIP_REASON[code] = '株価が0件（取得は成功。上場廃止・売買停止など）'
         return None
 
     quotes_all.sort(key=lambda q: q.get('Date', ''))
     quotes = [q for q in quotes_all if (parse_date(q.get('Date')) or date.min) >= short_from]
     if not quotes:
         log.debug('no recent quotes for %s', code)
+        _SKIP_REASON[code] = '最近の株価がない（取得は成功）'
         return None
     # 株価の記録が9年分の範囲の始まり（＋14日）までに始まっていれば、それより前が見えないのは取った範囲の都合
     # （J-Quants が黙って範囲を縮めて返したときも同じ）。その日より前の分割・併合は読めないので、古い期を減配の比べから外す。
@@ -1859,6 +1862,7 @@ def process_stock(
     last_quote = quotes[-1]
     price = safe_float(last_quote.get('Close'))
     if price is None or price <= 0:
+        _SKIP_REASON[code] = f"最後の日（{last_quote.get('Date')}）の終値がない（売買のない日など。判定できない）"
         return None
 
     time.sleep(API_SLEEP_SEC)
@@ -2286,7 +2290,7 @@ def main() -> int:
             if result is not None:
                 stocks.append(result)
             else:
-                unprocessed.append({'code': code, 'reason': 'データが足りない（株価か財務がない・売買のない会社など）'})
+                unprocessed.append({'code': code, 'reason': _SKIP_REASON.get(code, '理由不明（process_stock が None）')})
         except Exception as e:
             log.warning('Failed %s: %s', code, e)
             failures += 1
@@ -2454,6 +2458,9 @@ def main() -> int:
     except Exception:
         pass
     _held_skipped = [x['code'] for x in unprocessed if x['code'] in _held]
+    # 理由の分からない未処理は、持ち株でなくても止める（候補の順番に響きうるため）。株価が0件・最近の株価がない・
+    # その日の終値がない会社は、その日に値段を付けられないので、本番でも買えない（持ち株なら上で止める）
+    _held_skipped += [x['code'] for x in unprocessed if x['reason'].startswith('理由不明') and x['code'] not in _held_skipped]
     if failures or _FETCH_ERRORS['n'] or _FORECAST_CONFLICTS or _held_skipped \
             or (n_total and len(stocks) < n_total * MIN_COVERAGE_FOR_PAPER):
         log.error('Portfolio: 止めました（取得の失敗 %d 社・例外 %d 社・予想の競合 %d 件・処理できなかった持ち株 %s・処理できた銘柄 %d / %d）。'

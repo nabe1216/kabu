@@ -12,7 +12,8 @@
 - 判定の保存のあとで運用の更新が失敗したら、processed.json は進まないので、再実行で同じ日をやり直せる
   （取り落としなし）。更新が成功して processed.json を書く前に止まった場合も、再実行では engine の
   「同じ日付は処理済み」の確認（state['last_updated']）で売買が二重にならない
-- 前の判定は「今日より前で、いちばん新しい judged/ のファイル」。実行が抜けた日があれば、その前の判定を使う
+- 前の判定は「今日より前で、いちばん新しい judged/ のファイル」。ただし、その判定の約定予定日（次の営業日）が今日でなければ
+  失効させる（2026年11月24日。実行が抜けた日の判定を、後日の寄付きへ持ち越さない）
 - 先読みの防止（2026年11月23日・GPT のレビュー）：判定には保存した時刻（saved_at・日本時間）を残す。
   今日の始値（今日 9:00）より後に保存した判定は、今日の約定に使わない（合図なしにする）。
   また、株価の日付 D の判定は、翌営業日の 9:00 を過ぎたら上書きしない（取引が始まったあとの開示を混ぜない）
@@ -126,6 +127,12 @@ def lagged_stocks(stocks: list[dict[str, Any]], folder: Path) -> tuple[list[dict
         if not sa or datetime.fromisoformat(sa) >= open_of(pdate):
             info['late'] = f"{prev.get('price_date')} の判定の保存（{sa}）が今日の始値より後なので、今日は売買しない"
             prev = None
+    # 2026年11月24日（GPT のレビュー）：判定は「次の営業日の寄付き」の1回だけに使う（約定予定日）。
+    # 実行が抜けて約定予定日を過ぎた判定は失効させ、後日の寄付きへ持ち越さない（その日は売買しない）
+    if prev is not None and next_open_after(prev['price_date']).date().isoformat() != pdate:
+        info['expired'] = (f"{prev.get('price_date')} の判定の約定予定日は "
+                           f"{next_open_after(prev['price_date']).date().isoformat()}。過ぎたので今日は売買しない")
+        prev = None
     info['decided_from'] = prev.get('price_date') if prev else None
     merged = []
     for s in stocks:

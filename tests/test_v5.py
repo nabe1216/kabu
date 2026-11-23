@@ -456,6 +456,17 @@ def test_lookahead_guard():
     r4 = s2.run('2026-12-03', {})
     check('先読み2：翌営業日の取引が始まったあとは、前日の判定を上書きしない（夜に保存した判定で約定）',
           r4['buy'] == ['H001'], f"buy={r4['buy']} info={r4['info']}")
+    s3 = Sim(['E001'])
+    s3.run('2026-12-01', {'E001': {'buy': True}})                                  # 12/1 の判定（約定予定 12/2）
+    r5 = s3.run('2026-12-03', {})                                                   # 12/2 の実行が抜けた
+    check('失効1：約定予定日（12/2）を過ぎた判定は、12/3 の寄付きに持ち越さない', r5['n'] == 0 and 'expired' in r5['info'],
+          f"n={r5['n']} info={r5['info']}")
+    s4 = Sim(['E002'])
+    s4.run('2026-11-20', {'E002': {'buy': True}}, at='2026-11-24T00:13:00+09:00')  # 休日をはさむ（11/23 は祝日）
+    r6 = s4.run('2026-11-24', {})
+    check('失効2：休日をはさんでも、次の営業日（11/24）の判定は使う', r6['buy'] == ['E002'] and 'expired' not in r6['info'],
+          f"buy={r6['buy']} info={r6['info']}")
+    s3.close(); s4.close()
     s.close(); s2.close()
 
 
@@ -479,6 +490,11 @@ def test_frozen_lookahead():
     tr = r2['variants']['YIELD']['trades']
     check('固定10：始値より後に保存した判定では約定しない（評価だけ進む）', not tr and r2.get('late_judgment') and r2['decided_from'] is None,
           f"trades={tr} late={r2.get('late_judgment')}")
+    r3 = run('2026-12-03', {'J001': 'buy'})
+    r4 = run('2026-12-07', {})                                                      # 12/4 の実行が抜けた（12/5・6 は土日）
+    tr4 = r4['variants']['YIELD']['trades']
+    check('固定11：約定予定日（12/4）を過ぎた判定は失効（12/7 に持ち越さない）', not tr4 and r4.get('expired_judgment') and r4['decided_from'] is None,
+          f"trades={tr4} expired={r4.get('expired_judgment')}")
     shutil.rmtree(d, ignore_errors=True)
 
 
