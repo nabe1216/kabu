@@ -3823,6 +3823,7 @@ def _mid_event(ev, int_rec, fy_end) -> bool:
 
 
 FORECAST_V52 = False   # 2026年11月23日：本番の予想配当の選び方（v5.2：修正のお知らせ・0円）で計算する（only=audit_fix_v52）
+FORECAST_V52_POSONLY = False   # 同じ日（B の結果を見たあとの切り分け用）：v5.2 の値で、正の配当が一度もない銘柄は外す（A と同じ銘柄の範囲。only=audit_fix_v52c）
 
 
 def _is_rev_row(s: dict) -> bool:
@@ -3883,6 +3884,8 @@ def dps_timeline(stmts: list[dict], px: pd.DataFrame) -> pd.DataFrame:
         idx = cum_after.index.searchsorted(ts)
         factor = float(cum_after.iloc[idx]) if idx < len(cum_after) else 1.0
         recs.append({"date": ts, "dps": v * factor})
+    if FORECAST_V52 and FORECAST_V52_POSONLY and not any(r_["dps"] > 0 for r_ in recs):
+        return pd.DataFrame()
     if not recs:
         return pd.DataFrame()
     df = pd.DataFrame(recs).sort_values("date")
@@ -3940,6 +3943,8 @@ def _dps_timeline_fixed(stmts: list[dict], px: pd.DataFrame) -> pd.DataFrame:
         recs.append({"date": ts, "dps": val})
         if val > 0 or not FORECAST_V52:
             prev = val       # 0円（無配の予想）は、分割・併合の基準の読み分けに使わない（直前の正の値を残す）
+    if FORECAST_V52 and FORECAST_V52_POSONLY and not any(r_["dps"] > 0 for r_ in recs):
+        return pd.DataFrame()
     if not recs:
         return pd.DataFrame()
     df = pd.DataFrame(recs).sort_values("date", kind="stable")
@@ -18202,6 +18207,12 @@ def main() -> int:
         args.exempt_test, args.liq_metric, args.grid = True, True, True
         args.only = "ex_e1,bm_live,ex_e2,ex_e3"
     args.audit_fix = False
+    if (args.only or "").strip() == "audit_fix_v52c":
+        # 2026年11月23日（B の結果を見たあとに足した切り分け）：v5.2 の値で、銘柄の範囲は A と同じ（正の配当が一度もない銘柄は外す）
+        global FORECAST_V52_POSONLY
+        FORECAST_V52_POSONLY = True
+        args.only = "audit_fix_v52"
+        log.info("銘柄の範囲：古い選び方と同じ（正の配当が一度もない銘柄は外す）")
     if (args.only or "").strip() == "audit_fix_v52":
         # 2026年11月23日：#222 と同じ計算を、本番 v5.2 の予想配当の選び方で（修正のお知らせ・0円）。計画は audit_v52_plan_2026-11-23
         global FORECAST_V52
