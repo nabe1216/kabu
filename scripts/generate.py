@@ -459,6 +459,27 @@ class JQuantsClient:
 STMTS_CACHE_DAYS = 7
 MIN_COVERAGE_FOR_PAPER = 0.98   # 2026年11月：取得の失敗が0でも、処理できた銘柄がこれより少ない日は進めない（念のための線）
 _SKIP_REASON: dict[str, str] = {}   # 2026年11月24日：process_stock が None を返した理由（results.json の unprocessed）
+
+
+def drop_stale_price_rows(stocks: list, unprocessed: list) -> tuple:
+    """2026年11月24日：その日の株価の行が来ていない会社を、古い終値で判定しないように外す。
+
+    J-Quants は取引のない日も値段が空の行を返す（その会社は process_stock で「最後の日の終値がない」として外れる）。
+    それとは別に、行そのものが全体の最新日まで来ていない会社（データが届いていない・長い売買停止など）は、
+    これまで最後の行の終値をその日の値段として判定に入れていた。全体の最新日と比べて、古ければ unprocessed に移す。
+    持ち株なら、そのあとの止める条件（処理できなかった持ち株）で検証運用を止める。
+    戻り値：(残した stocks, 全体の最新日, 外した会社のコード)
+    """
+    last = {x['code']: ((x.get('price_history') or [{}])[-1].get('d') or '') for x in stocks}
+    latest = max((d for d in last.values() if d), default=None)
+    if not latest:
+        return stocks, None, []
+    stale = [c for c, d in last.items() if d < latest]
+    for c in stale:
+        unprocessed.append({'code': c, 'reason': f"その日（{latest}）の株価の行がない（最後の行は{last[c] or 'なし'}。"
+                                                 f"データが届いていない・売買停止など。古い終値で判定しない）"})
+    keep = [x for x in stocks if x['code'] not in set(stale)]
+    return keep, latest, stale
 # 2026年11月8日：92MB まで大きくなり GitHub の上限（100MB）に近づいたので、圧縮して保存する（約6MB）。
 # 古い圧縮なしのファイルがあれば読み、圧縮して保存したあとに消す（daily.yml がその削除も保存する）。
 _STMTS_CACHE_PATH = OUTPUT_DIR / 'stmts_cache.json.gz'
@@ -1862,7 +1883,7 @@ def process_stock(
     last_quote = quotes[-1]
     price = safe_float(last_quote.get('Close'))
     if price is None or price <= 0:
-        _SKIP_REASON[code] = f"最後の日（{last_quote.get('Date')}）の終値がない（売買のない日など。判定できない）"
+        _SKIP_REASON[code] = f"最後の日（{last_quote.get('Date')}）の終値がない（値段が空の行。その日に売買がない・売買停止など。判定できない）"
         return None
 
     time.sleep(API_SLEEP_SEC)
@@ -2299,6 +2320,12 @@ def main() -> int:
         if i % 50 == 0:
             log.info('Progress: %d/%d (failures=%d)', i, n_total, failures)
 
+    # 2026年11月24日：その日の株価の行が来ていない会社は、古い終値で判定しない（unprocessed に理由を残す）
+    stocks, _latest_row_date, _stale_codes = drop_stale_price_rows(stocks, unprocessed)
+    if _stale_codes:
+        log.warning('その日（%s）の株価の行がない会社 %d 社を外した：%s', _latest_row_date, len(_stale_codes),
+                    ','.join(_stale_codes[:20]))
+
     # ── 低PBR順（BUY_MODE == 'pbr'）──
     # 全銘柄の中で PBR が安い側 PBR_TOP_PCT% に入る銘柄だけを BUY に残し、
     # 同じ Tier の中では PBR の低い順に買えるよう buy_sort を付ける。
@@ -2459,7 +2486,8 @@ def main() -> int:
         pass
     _held_skipped = [x['code'] for x in unprocessed if x['code'] in _held]
     # 理由の分からない未処理は、持ち株でなくても止める（候補の順番に響きうるため）。株価が0件・最近の株価がない・
-    # その日の終値がない会社は、その日に値段を付けられないので、本番でも買えない（持ち株なら上で止める）
+    # その日の終値がない（値段が空の行）・その日の株価の行がない会社は、その日に値段を付けられないので、本番でも買えない
+    # （持ち株なら上で止める）
     _held_skipped += [x['code'] for x in unprocessed if x['reason'].startswith('理由不明') and x['code'] not in _held_skipped]
     if failures or _FETCH_ERRORS['n'] or _FORECAST_CONFLICTS or _held_skipped \
             or (n_total and len(stocks) < n_total * MIN_COVERAGE_FOR_PAPER):

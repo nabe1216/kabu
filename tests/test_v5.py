@@ -498,6 +498,23 @@ def test_frozen_lookahead():
     shutil.rmtree(d, ignore_errors=True)
 
 
+
+def test_stale_price_rows():
+    import generate as g
+    ph = lambda d: [{'d': '2026-11-18', 'c': 1}, {'d': d, 'c': 1}]
+    st = [{'code': 'A001', 'price_history': ph('2026-11-20')}, {'code': 'B001', 'price_history': ph('2026-11-20')},
+          {'code': 'C001', 'price_history': ph('2026-11-17')}]
+    un = []
+    keep, latest, stale = g.drop_stale_price_rows(st, un)
+    check('行なし1：最後の行が全体の最新日より古い会社は外す（古い終値で判定しない）',
+          [x['code'] for x in keep] == ['A001', 'B001'] and stale == ['C001'] and latest == '2026-11-20', f'{stale} {latest}')
+    check('行なし2：外した理由を unprocessed に残す（理由不明ではない）',
+          len(un) == 1 and un[0]['code'] == 'C001' and '株価の行がない' in un[0]['reason'] and '2026-11-17' in un[0]['reason'], str(un))
+    un2 = []
+    keep2, _, stale2 = g.drop_stale_price_rows(st[:2], un2)
+    check('行なし3：全社の最後の行がそろっていれば何も外さない', len(keep2) == 2 and not stale2 and not un2)
+
+
 if __name__ == '__main__':
     test_calendar()
     test_connection_and_recovery()
@@ -511,6 +528,7 @@ if __name__ == '__main__':
     test_health_check_price_basis()
     test_lookahead_guard()
     test_frozen_lookahead()
+    test_stale_price_rows()
     ok = sum(1 for r in RESULTS if r[1])
     print(f'\n{ok}/{len(RESULTS)} PASS')
     json.dump([{'name': n, 'ok': o, 'detail': d} for n, o, d in RESULTS],
