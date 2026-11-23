@@ -74,6 +74,10 @@ jobs:
           for f in data/variant_*_state.json data/variant_*_history.json; do
             if [ -f "$f" ]; then git add "$f"; fi
           done
+          # 2026年11月（engine v5.1）：検証運用に渡す前日の判定と、処理済みの株価の日付
+          if [ -d data/paper_inputs ]; then
+            git add -A data/paper_inputs
+          fi
           # 2026年11月22日：固定版の並走記録 v1（入力の写し・判定の要点・売買・評価の毎日の記録）
           if [ -d data/frozen ]; then
             git add -A data/frozen

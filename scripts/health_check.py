@@ -182,8 +182,10 @@ def run(prev_path: str | None = None, today: date | None = None) -> dict[str, An
                                'last_updated': st.get('last_updated'), 'engine_version': st.get('engine_version')}
         if abs(tv - (cash + hv)) > 1:
             warn('pf_total_mismatch', f'検証運用の評価総額（{tv:,.0f}円）が、現金＋持ち株（{cash + hv:,.0f}円）と合わない')
-        if st.get('last_updated') != today.isoformat():
-            warn('pf_not_updated', f'検証運用が今日更新されていない（最後は {st.get("last_updated")}）')
+        # 2026年11月（engine v5.1）：last_updated は株価の日付になった。results.json の最新の株価の日付と比べる
+        expect = lpd if (st.get('date_basis') == 'price_date' and lpd) else today.isoformat()
+        if st.get('last_updated') != expect:
+            warn('pf_not_updated', f'検証運用が最新の株価の日付（{expect}）で更新されていない（最後は {st.get("last_updated")}）')
         if tv > 0:
             avg_w = sum(TIER_WEIGHT.values()) / len(TIER_WEIGHT)
             over = []

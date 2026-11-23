@@ -457,19 +457,25 @@ class JQuantsClient:
 # 株価と財務で1銘柄あたり2回APIを呼ぶため、財務を毎日取らなければ
 # 実行時間がほぼ半分になる。決算の反映はその日数ぶん遅れる。
 STMTS_CACHE_DAYS = 7
+MIN_COVERAGE_FOR_PAPER = 0.98   # 2026年11月：取得の失敗が0でも、処理できた銘柄がこれより少ない日は進めない（念のための線）
 # 2026年11月8日：92MB まで大きくなり GitHub の上限（100MB）に近づいたので、圧縮して保存する（約6MB）。
 # 古い圧縮なしのファイルがあれば読み、圧縮して保存したあとに消す（daily.yml がその削除も保存する）。
 _STMTS_CACHE_PATH = OUTPUT_DIR / 'stmts_cache.json.gz'
 _STMTS_CACHE_LEGACY = OUTPUT_DIR / 'stmts_cache.json'
+_FETCH_ERRORS: dict[str, Any] = {'n': 0, 'codes': []}   # 2026年11月：株価・財務の取得に失敗した会社（例外。正当な0件は数えない）
 _stmts_cache = None
+_stmts_loaded_saved_at = ''     # 期限内のキャッシュを読んだときの取得日（読んでいなければ空）
+# 2026年11月：キャッシュの形の版。版が違うキャッシュは捨てて取り直す。取得日を今日で上書きしていた版（版なし）の
+# キャッシュは、取得日が新しく見えても中身は9月末のままなので、直したあとの最初の実行で必ず取り直すために上げた
+_STMTS_SCHEMA = 2
 
 
 def _load_stmts_cache():
     """財務データのキャッシュを読む。壊れていれば空で始める。"""
-    global _stmts_cache
+    global _stmts_cache, _stmts_loaded_saved_at
     if _stmts_cache is not None:
         return _stmts_cache
-    _stmts_cache = {'saved_at': '', 'data': {}}
+    _stmts_cache = {'saved_at': '', 'schema': _STMTS_SCHEMA, 'started_at': date.today().isoformat(), 'data': {}}
     src = _STMTS_CACHE_PATH if _STMTS_CACHE_PATH.exists() else _STMTS_CACHE_LEGACY
     if STMTS_CACHE_DAYS > 0 and src.exists():
         try:
@@ -478,9 +484,12 @@ def _load_stmts_cache():
             with opener(src, 'rt', encoding='utf-8') as f:
                 c = json.load(f)
             saved = parse_date(c.get('saved_at'))
-            if saved is not None:
+            if c.get('schema') != _STMTS_SCHEMA:
+                log.info('財務データのキャッシュの版が古い（%s）ので、空から取り直します', c.get('schema'))
+            elif saved is not None:
                 age = (date.today() - saved).days
                 if age < STMTS_CACHE_DAYS:
+                    _stmts_loaded_saved_at = c.get('saved_at')     # 2026年11月：保存のときに取得日を引き継ぐ
                     _stmts_cache = c
                     log.info('財務データのキャッシュを使います（%d日前・%d銘柄）',
                              age, len(c.get('data', {})))
@@ -502,7 +511,16 @@ def _save_stmts_cache(force=True):
     if not _stmts_cache.get('data'):
         return
     try:
-        _stmts_cache['saved_at'] = date.today().isoformat() if force else ''
+        # 2026年11月：saved_at は「取り直した日」。キャッシュを読んだだけの日に今日の日付で上書きすると、
+        # 期限（STMTS_CACHE_DAYS）が来ないまま9月末から取り直されていなかった（10月以降の決算短信が入っていなかった）
+        if _stmts_loaded_saved_at:
+            _stmts_cache['saved_at'] = _stmts_loaded_saved_at      # 読んだキャッシュに足しただけ：取得日は元のまま
+        elif force:
+            # 取り直しが終わった：取得日は「取り直しを始めた日」。途中で止めて別の日に続けても、先に取った分を若返らせない
+            _stmts_cache['saved_at'] = _stmts_cache.get('started_at') or date.today().isoformat()
+        else:
+            _stmts_cache['saved_at'] = ''                           # 作りかけ（次の回で続きを取る）
+        _stmts_cache['schema'] = _STMTS_SCHEMA
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         import gzip
         tmp = _STMTS_CACHE_PATH.with_suffix('.tmp')
@@ -1156,21 +1174,17 @@ def compute_industry_leaders(stocks: list[dict[str, Any]]) -> set[str]:
     """
     全銘柄プロセス後に呼ぶ。「業界首位級」銘柄コードのセットを返す。
 
-    定義:
+    定義（2026年11月 D0 で確定）:
       - 同じ33業種コード内で、時価総額 TOP3
-      - または TOPIX Core30 銘柄 (bucket='TOPIX Core30' から判定)
+      （これまで「または TOPIX Core30」と書いていたが、bucket に Core30 の値は入らず、実際には働いていなかった。
+        検証（#222）も上位3社だけで計算しているので、決まりを上位3社にそろえて、働いていない部分を消した）
 
     引数:
-      stocks: process_stock の戻り値リスト (market_cap_oku, sector33_code, bucket を含む)
+      stocks: process_stock の戻り値リスト (market_cap_oku, sector33_code を含む)
     """
     leaders: set[str] = set()
 
-    # 1. TOPIX Core30 銘柄を全部追加
-    for s in stocks:
-        if s.get('bucket') == 'TOPIX Core30':
-            leaders.add(s['code'])
-
-    # 2. 同業種33コード内で時価総額 TOP3
+    # 同業種33コード内で時価総額 TOP3
     sector_groups: dict[str, list[tuple[str, float]]] = {}
     for s in stocks:
         sector33 = s.get('sector33_code', '')
@@ -1528,35 +1542,136 @@ def get_latest_full_year_metric_with_date(
 
 
 
+def _is_forecast_revision(s: dict[str, Any]) -> bool:
+    """「配当予想の修正」「業績予想の修正」のお知らせの行か（DocType に revision か forecast を含む。#222 と同じ決め方）。"""
+    dt = (s.get('DocType') or '').lower()
+    return 'revision' in dt or 'forecast' in dt
+
+
+def _disc_key(s: dict[str, Any]) -> tuple[date, str, str]:
+    """開示の順番（日付 → 時刻 → 開示番号）。時刻は '15:00' と '15:00:00' の両方があるので秒までそろえる。"""
+    t = (s.get('DiscTime') or '').strip()
+    if len(t) == 5:
+        t += ':00'
+    return (parse_date(s.get('DiscDate')) or date.min, t, str(s.get('DiscNo') or ''))
+
+
+def _forecast_target_fy(s: dict[str, Any]) -> tuple[date | None, date | None]:
+    """その行の配当予想が対象にする期（始まり, 終わり）。本決算型の短信は来期（NxtFYSt・NxtFYEn）、
+    それ以外（四半期の短信・予想の修正）は今期（CurFYSt・CurFYEn）。J-Quants の説明どおり、始まりと終わりの両方で対応させる。"""
+    if s.get('CurPerType', '') in ('FY', '4Q') and not _is_forecast_revision(s):
+        fe = parse_date(s.get('CurFYEn'))
+        nx = parse_date(s.get('NxtFYEn'))
+        if nx is None and fe is not None:
+            import calendar
+            nx = date(fe.year + 1, fe.month, calendar.monthrange(fe.year + 1, fe.month)[1])
+        return parse_date(s.get('NxtFYSt')), nx
+    return parse_date(s.get('CurFYSt')), parse_date(s.get('CurFYEn'))
+
+
+def _same_fy(a: tuple[date | None, date | None], b: tuple[date | None, date | None]) -> bool:
+    """同じ期か。終わりが同じで、始まりが両方あれば始まりも同じ（決算期の変更で期の長さが違う場合を分ける）。"""
+    if a[1] is None or a[1] != b[1]:
+        return False
+    return a[0] is None or b[0] is None or a[0] == b[0]
+
+
+def _latest_actual_fy_end(statements: list[dict[str, Any]]) -> date | None:
+    """いちばん新しい本決算の短信の期末（実績が出ている期）。予想は、これより後の期を対象にしたものだけを使う。"""
+    ends = [parse_date(s.get('CurFYEn')) for s in statements
+            if s.get('CurPerType', '') in ('FY', '4Q') and not _is_forecast_revision(s)]
+    ends = [e for e in ends if e is not None]
+    return max(ends) if ends else None
+
+
+def _is_future_target(s: dict[str, Any], key: str, latest_fy: date | None) -> bool:
+    """その欄（FDivAnn か NxFDivAnn）の予想が、実績の出ている期より後の期を対象にしているか。
+    2026年11月：これまでは、予想の欄が空の短信をどこまでもさかのぼり、1〜4年前の予想（日産の2024年の25円、
+    電通Gの2025年の139.5円など）を使っていた。実績の出ている期より前の予想は使わず、なければ直近の実績にする。"""
+    if latest_fy is None:
+        return True
+    if key == 'NxFDivAnn':
+        tgt = _forecast_target_fy(s)[1] if (s.get('CurPerType', '') in ('FY', '4Q') and not _is_forecast_revision(s)) else None
+        if tgt is None:
+            fe = parse_date(s.get('CurFYEn'))
+            tgt = date(fe.year + 1, fe.month, 28) if fe else None
+    else:
+        tgt = parse_date(s.get('CurFYEn'))
+    return tgt is not None and tgt > latest_fy
+
+
+def _pass1_order_key(s: dict[str, Any]) -> tuple:
+    """1回目の探索の並び：期末の新しい順。同じ期末なら、後から出た開示（訂正など）を先に。入力の並び順に左右されない。"""
+    return (parse_date(s.get('CurPerEn')) or parse_date(s.get('DiscDate')) or date.min, _disc_key(s))
+
+
+_FORECAST_CONFLICTS: list[dict[str, Any]] = []   # 同じ日時に違う値の予想の修正（記録して確認に回す）
+
+
+def newer_dividend_revision(statements: list[dict[str, Any]], i: int) -> int | None:
+    """D1（2026年11月）：位置 i の短信の配当予想より後に出た、同じ期についての「予想の修正」のお知らせの位置。なければ None。
+    - 対象：DocType に revision か forecast を含む行（配当予想の修正・業績予想の修正）。CurPerType は問わない
+      （2Q 型の業績修正の行にも年間配当の予想が入ることがある。FDivAnn は年間の予想なので、型で分けない）
+    - 期：短信の予想が対象にする期と、始まり・終わりが同じ（_same_fy）
+    - 値：年間配当の予想（FDivAnn）が書かれているもの。0円も有効（無配の予想）。空欄（書かれていない）は使わない
+    - いちばん新しく出たもの（日付 → 時刻）。まったく同じ日時に違う値が2つあれば「競合」として _FORECAST_CONFLICTS に
+      記録し、ひとまず小さい方を使う（正しい方を決める根拠ではなく、利回りを高く読まないための置き方。2026年11月の
+      キャッシュでは0件。開示番号は開示の順を保証しないので、順番には使わない）
+    これまでは修正の行を1回目の探索で使わず、次の短信まで古い予想を使っていた。"""
+    tgt = _forecast_target_fy(statements[i])
+    if tgt[1] is None:
+        return None
+    base = _disc_key(statements[i])
+    best: tuple | None = None
+    for j, r in enumerate(statements):
+        if j == i or not _is_forecast_revision(r):
+            continue
+        v = safe_float(r.get('FDivAnn'))
+        if v is None or v < 0 or not _same_fy(_forecast_target_fy(r), tgt):
+            continue
+        k = _disc_key(r)[:2]
+        if k <= base[:2]:
+            continue
+        if best is not None and k == best[0][0] and v != -best[0][1]:
+            cf = {'code': str(r.get('Code') or statements[i].get('Code') or ''),
+                  'disc': f'{k[0]} {k[1]}', 'values': sorted({v, -best[0][1]})}
+            if cf not in _FORECAST_CONFLICTS:
+                _FORECAST_CONFLICTS.append(cf)
+        if best is None or (k, -v) > best[0]:
+            best = ((k, -v), j)
+    return best[1] if best else None
+
+
 def get_forecast_dps_with_date(
     statements: list[dict[str, Any]],
 ) -> tuple[float | None, date | None]:
     """
     今期予想 DPS と、その値を取得した disclosure_date のタプルを返す。
     分割調整に必要なため disclosure_date を一緒に返す。
+    2026年11月（D1）：1回目の探索は決算短信だけで期を決め、そのあとに同じ期の予想の修正が出ていれば、修正の値を使う。
     """
-    sorted_stmts = sorted(
-        statements,
-        key=lambda s: (
-            parse_date(s.get('CurPerEn'))
-            or parse_date(s.get('DiscDate'))
-            or date.min
-        ),
-        reverse=True,
-    )
-    # Pass 1: 種類に応じて NxFDivAnn / FDivAnn を選ぶ
+    sorted_stmts = sorted(statements, key=_pass1_order_key, reverse=True)
+    latest_fy = _latest_actual_fy_end(statements)
+    # Pass 1: 種類に応じて NxFDivAnn / FDivAnn を選ぶ（決算短信だけ。修正は D1 で足す。実績の出ている期より後の期の予想だけ）
     for s in sorted_stmts:
+        if _is_forecast_revision(s):
+            continue
         per_type = s.get('CurPerType', '')
-        if per_type in ('FY', '4Q'):
-            f = safe_float(s.get('NxFDivAnn'))
-        else:
-            f = safe_float(s.get('FDivAnn'))
-        if f is not None and f > 0:
+        key = 'NxFDivAnn' if per_type in ('FY', '4Q') else 'FDivAnn'
+        if not _is_future_target(s, key, latest_fy):
+            continue
+        f = safe_float(s.get(key))
+        if f is not None and f >= 0:      # 2026年11月：0円は無配の予想として使う（空欄だけが「予想なし」）
+            j = newer_dividend_revision(statements, next(k for k, x in enumerate(statements) if x is s))
+            if j is not None:
+                s, f = statements[j], safe_float(statements[j].get('FDivAnn'))
             d = parse_date(s.get('DiscDate')) or parse_date(s.get('CurPerEn'))
             return f, d
-    # Pass 2: 何でもいいので FDivAnn / NxFDivAnn から拾う
+    # Pass 2: 何でもいいので FDivAnn / NxFDivAnn から拾う（実績の出ている期より後の期の予想だけ）
     for s in sorted_stmts:
         for key in ('FDivAnn', 'NxFDivAnn'):
+            if not _is_future_target(s, key, latest_fy):
+                continue
             f = safe_float(s.get(key))
             if f is not None and f > 0:
                 d = parse_date(s.get('DiscDate')) or parse_date(s.get('CurPerEn'))
@@ -1568,21 +1683,27 @@ def get_forecast_dps_with_date(
 
 def forecast_dps_v3(statements: list[dict[str, Any]], events: list[tuple[date, float]]) -> float | None:
     """いまの予想配当を、分割・併合の基準の取り違えを直して返す（2026年11月6日。V3）。
-    どの開示の値を使うかは get_forecast_dps_with_date と同じ（新しい期の予想 → なければ何でも → なければ直近の実績）。"""
+    どの開示の値を使うかは get_forecast_dps_with_date と同じ（新しい期の予想 → なければ何でも → なければ直近の実績）。
+    D1 で修正の値を使うときは、分割の直しも修正の開示日で行う（timeline の修正の行の値）。修正の0円はそのまま0。"""
     tl = forecast_dps_timeline(statements, events)
-    order = sorted(
-        range(len(statements)),
-        key=lambda i: (parse_date(statements[i].get('CurPerEn')) or parse_date(statements[i].get('DiscDate')) or date.min),
-        reverse=True,
-    )
-    for i in order:                      # Pass 1：種類に応じて NxFDivAnn / FDivAnn
+    order = sorted(range(len(statements)), key=lambda i: _pass1_order_key(statements[i]), reverse=True)
+    latest_fy = _latest_actual_fy_end(statements)
+    for i in order:                      # Pass 1：種類に応じて NxFDivAnn / FDivAnn（決算短信だけ・実績の出ている期より後の期）
         s = statements[i]
-        f = safe_float(s.get('NxFDivAnn')) if s.get('CurPerType', '') in ('FY', '4Q') else safe_float(s.get('FDivAnn'))
-        if f is not None and f > 0:
-            return tl.get(i)
-    for i in order:                      # Pass 2：FDivAnn / NxFDivAnn のどちらか
+        if _is_forecast_revision(s):
+            continue
+        key = 'NxFDivAnn' if s.get('CurPerType', '') in ('FY', '4Q') else 'FDivAnn'
+        if not _is_future_target(s, key, latest_fy):
+            continue
+        f = safe_float(s.get(key))
+        if f is not None and f >= 0:      # 2026年11月：短信の0円も無配の予想として使う（東証の記載：未定は「－」、無配は「0円00銭」）
+            j = newer_dividend_revision(statements, i)        # D1：あとから出た同じ期の予想の修正
+            if j is not None:
+                return 0.0 if safe_float(statements[j].get('FDivAnn')) == 0 else tl.get(j)
+            return 0.0 if f == 0 else tl.get(i)
+    for i in order:                      # Pass 2：FDivAnn / NxFDivAnn のどちらか（実績の出ている期より後の期）
         s = statements[i]
-        if any((safe_float(s.get(k)) or 0) > 0 for k in ('FDivAnn', 'NxFDivAnn')):
+        if any((safe_float(s.get(k)) or 0) > 0 and _is_future_target(s, k, latest_fy) for k in ('FDivAnn', 'NxFDivAnn')):
             return tl.get(i)
     for s in _sorted_fy_statements(statements):   # Pass 3：直近の実績
         if safe_float(s.get('DivAnn')) is not None:
@@ -1708,6 +1829,8 @@ def process_stock(
             quotes_all = client.get_daily_quotes(code, short_from.strftime('%Y-%m-%d'), to_date)
         except Exception as e:
             log.warning('quotes fail %s: %s', code, e)
+            _FETCH_ERRORS['n'] += 1
+            _FETCH_ERRORS['codes'].append(code)
             return None
 
     if not quotes_all:
@@ -1736,6 +1859,8 @@ def process_stock(
         statements = client.get_statements(code)
     except Exception as e:
         log.warning('statements fail %s: %s', code, e)
+        _FETCH_ERRORS['n'] += 1
+        _FETCH_ERRORS['codes'].append(code)
         return None
 
     # --- 株価データを日付昇順ソート (分割調整係数の計算で使う) ---
@@ -1783,6 +1908,8 @@ def process_stock(
         forecast_dps = forecast_dps_raw * cumulative_adj_factor_after(quotes_sorted, forecast_dps_date)
     forecast_dps_adj = (forecast_dps / forecast_dps_raw) if (forecast_dps is not None and forecast_dps_raw) else 1.0
     current_yield = (forecast_dps / price * 100.0) if (forecast_dps and forecast_dps > 0) else None
+    if forecast_dps == 0:
+        current_yield = 0.0      # 2026年11月（D1）：無配の予想（修正の0円）は利回り0（条件8は×、買いの合図なし）
 
     # 異常検知ログ
     if current_yield is not None and current_yield > 15.0:
@@ -1837,7 +1964,9 @@ def process_stock(
         'net_profit': check_stability(np_history),
         'payout': check_payout_ratio(payout),
         'equity': check_equity_ratio(equity_ratio, sector33),
-        'valuation': check_valuation(per, pbr),
+        # 2026年11月：条件7は仕様どおり、1株利益か1株純資産が0以下なら不合格（これまでは割高の指標が出ず「データなし」で通過していた）
+        'valuation': (False if ((eps is not None and eps <= 0) or (bps is not None and bps <= 0))
+                      else check_valuation(per, pbr)),
         'min_yield': check_min_yield(current_yield, code),
     }
     # None（免除/データなし）は通過扱い
@@ -2265,6 +2394,9 @@ def main() -> int:
         'universe_count': len(universe),
         'processed_count': len(stocks),
         'failure_count': failures,
+        'fetch_error_count': _FETCH_ERRORS['n'],          # 2026年11月：取得の失敗（この数が0でない日は検証運用を進めない）
+        'fetch_error_codes': _FETCH_ERRORS['codes'][:50],
+        'forecast_conflicts': _FORECAST_CONFLICTS[:50],     # 同じ日時に違う値の配当予想の修正（確認に回す）
         'thresholds': {
             'min_yield': MIN_YIELD_THRESHOLD, 'buy_mode': BUY_MODE, 'emergency_hold_rule': {'name': 'K1 浅い減配（−30％未満）は持つ', 'rule': EMERGENCY_HOLD},
             'dividend_policy_checked': DIVIDEND_POLICY_CHECKED, 'edinet_policy_checked': EDINET_POLICY.get('checked_at'),
@@ -2293,10 +2425,31 @@ def main() -> int:
              len(sizes) - 1, sum(sizes.values()) / 1e6)
 
     # === ポートフォリオ自動売買シミュレーション ===
+    # 2026年11月：取得に失敗した会社が1社でもある日は、検証運用・並走記録を進めない（GPT のレビュー）。
+    # 取れなかった会社が持ち株や買う順番の上位にいると、売る合図の見落としや別の会社の買いにつながるため。
+    # 取得は成功して正当に0件だった会社（売買のない会社など）は失敗に数えない。判定の保存（judged/）もしない。
+    # 失敗がなくても、処理できた銘柄が対象の98％未満なら、何かがおかしいので止める（念のための線）
+    if failures or _FETCH_ERRORS['n'] or (n_total and len(stocks) < n_total * MIN_COVERAGE_FOR_PAPER):
+        log.error('Portfolio: 止めました（取得の失敗 %d 社・例外 %d 社・処理できた銘柄 %d / %d）。検証運用と並走記録は進めない',
+                  _FETCH_ERRORS['n'], failures, len(stocks), n_total)
+        return 0
     try:
+        import portfolio_engine as _pe
         from portfolio_engine import update_portfolio
+        from judge_lag import lagged_stocks, mark_processed
         log.info('Updating portfolio (forward test)...')
-        portfolio_state = update_portfolio(stocks, etf_px)
+        # 2026年11月（engine v5）：前の営業日の判定を、今日の始値で約定する（判定より前の値段で売買しない）
+        _inputs = Path(__file__).parent.parent / 'data' / 'paper_inputs'
+        _paper, _lag = lagged_stocks(stocks, _inputs)
+        if _paper is None:
+            # 処理済みの株価の日付（同じ日の再実行など）：運用の更新は呼ばず、保存済みの状態をそのまま使う
+            log.info('Portfolio: skip（%s）', _lag.get('skip'))
+            portfolio_state = _pe.load_json(_pe.STATE_PATH, _pe.init_state())
+        else:
+            _pe.TODAY_OVERRIDE = date.fromisoformat(_lag['price_date'])
+            log.info('Portfolio: 判定 %s → 約定 %s', _lag.get('decided_from'), _lag.get('price_date'))
+            portfolio_state = update_portfolio(_paper, etf_px)
+            mark_processed(_inputs, _lag)      # 更新が最後まで終わったときだけ、処理済みにする
         try:      # 2026年11月10日：買う順番の並走記録（12月1日から。本番の売買には影響しない）
             from variant_engine import update_variants
             update_variants(stocks, etf_px, etf_ret12)

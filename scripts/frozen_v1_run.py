@@ -1,6 +1,7 @@
 """並走記録 v1（2026年12月1日から）の実行。計画は variant_forward_plan_2026-11-10・rebal_live_plan_2026-11-15、固定の決まりは audit_fix_plan_2026-11-22。
 
-この記録は、固定したコード（scripts/frozen_v1_engine.py と、この scripts/frozen_v1_run.py の VARIANTS・EXTRA）だけで動く。
+この記録は、固定したコード（scripts/frozen_v1_engine.py と、この scripts/frozen_v1_run.py の VARIANTS・EXTRA。
+2026年11月23日の固定のし直しから、権利付き最終日の暦 scripts/market_calendar.py も）だけで動く。
 本番の検証運用（scripts/portfolio_engine.py）や並走記録の入口（scripts/variant_engine.py）を変えても、この記録の動きは変わらない。
 
 毎日の流れ（株価の日付 D の実行）：
@@ -123,9 +124,14 @@ def _status(obj: dict) -> None:
     (OUT / 'status.json').write_text(json.dumps(obj, ensure_ascii=False, indent=1), encoding='utf-8')
 
 
+def _now() -> datetime:
+    """いまの日本時間（テストで差し替える）。"""
+    return datetime.now(timezone(timedelta(hours=9)))
+
+
 def update(stocks: list[dict[str, Any]], etf_px: float | None, etf_ret12: float | None = None) -> dict | None:
     pdate = price_date_of(stocks)
-    run_at = datetime.now(timezone(timedelta(hours=9))).isoformat(timespec='seconds')
+    run_at = _now().isoformat(timespec='seconds')
     if not pdate or pdate < START:
         log.info('Frozen %s: 記録は %s から（株価の日付 %s）', SERIES, START, pdate)
         return None
@@ -147,12 +153,19 @@ def update(stocks: list[dict[str, Any]], etf_px: float | None, etf_ret12: float 
            'candidates': sorted(c for c, s in today_snap['stocks'].items()
                                 if s.get('screening_pass') and s.get('signal') == 'BUY' and not s.get('emergency_exit')),
            'variants': {}}
+    # 11月23日：先読みの防止。前の判定を保存した時刻が今日の始値（9:00）より後なら、今日の約定に使わない（合図なしで評価だけ）
+    late = prev is not None and (not prev.get('saved_at') or
+                                 datetime.fromisoformat(prev['saved_at']) >= datetime.fromisoformat(f'{pdate}T09:00:00+09:00'))
+    if late:
+        rec['late_judgment'] = prev.get('saved_at')
+        rec['decided_from'] = None
+        log.warning('Frozen %s: 前の判定（%s）の保存が %s の始値より後なので、今日は売買しない', SERIES, prev.get('price_date'), pdate)
     if prev is None:
         log.info('Frozen %s: 最初の日（%s）。判定を残しただけで、売買は翌営業日の始値から', SERIES, pdate)
     else:
         merged = []
         for s in stocks:
-            j = prev['stocks'].get(str(s['code']))
+            j = None if late else prev['stocks'].get(str(s['code']))
             if j is None:
                 # 前の営業日に判定がない銘柄は、合図なし・印なしとして値段だけ使う（持ち株の評価のため）
                 j = {k: v for k, v in _judge_part(s).items()}

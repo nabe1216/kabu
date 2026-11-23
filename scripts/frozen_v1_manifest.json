@@ -1,6 +1,6 @@
 {
  "series": "v1_20261201",
- "frozen_on": "2026-11-22",
+ "frozen_on": "2026-11-23",
  "base_commit": "b422ec3f36c60aaad8194a93dcf02b459ecfd053",
  "note": "本番の判定（generate.py）と、固定版の売買（engine.py・run.py）の指紋。どれかが違う日は記録を止める。仕様を変えて続けるときは別の系列（v2）を別のファイル（frozen_v2_*）で作り、v1 は上書きしない。",
  "start": "2026-12-01",
@@ -14,13 +14,86 @@
  "rules": {
   "common": "portfolio_engine b422ec3 の決まり（予算 総資産÷15×Tier重み S2.0/A1.5/B1.0・最大20銘柄・100株・買い増し・12月の損出し・6月と12月の揃え直し1.25倍・余りは1306・浅い減配は持つ・売りは緊急のときだけ）",
   "timing": "D−1 の判定で決めた売買を D の始値で約定（1306 は D の終値）。評価は D の終値",
-  "dividends": "権利付き最終日（以後で最初の実行日）の株数に権利。額は予想の年間配当の半分（近似）。権利の月から3か月後の月の最初の実行日に入金",
+  "dividends": "権利付き最終日（東証の休業日で数える。2026年12月は28日）の大引けの株数に権利（権利付き最終日より後の最初の実行日に、その日の売買の前の株数でつける）。額は予想の年間配当の半分（近似）。権利の月から3か月後の月末以後の最初の実行日に入金",
   "capital": 10000000,
-  "tax": 0.20315
+  "tax": 0.20315,
+  "judgment": "scripts/generate.py の判定（2026年11月23日の版：条件7〈EPS か BPS が0以下なら×〉・D1〈短信より後に出た同じ期の配当予想の修正を使う〉・D0〈業界トップは33業種の時価総額上位3社〉・財務キャッシュの取り直しの修正を含む）"
  },
  "sha256": {
-  "scripts/generate.py": "d0e2ab84eff0f2a729220d98b4059a75523b2f7179edf18fb04bf86c5dcf6b5b",
-  "scripts/frozen_v1_engine.py": "af67d9810d3fe95b001787e439f26e07659c78be34418bfaa6387b1549a3f6ed",
-  "scripts/frozen_v1_run.py": "eeb18c40fda94cc5e865237122dca91df2f591c3d0f40439146848995af4427a"
- }
+  "scripts/generate.py": "69fa7286c8ecc79b9644c3c1d522626dcd5eb041d78632e6a7923c9e9ded75bf",
+  "scripts/frozen_v1_engine.py": "af1549fff7c0cf1ac4ace301f09b4e69f930713bcf385c20df78926aa8b67c56",
+  "scripts/frozen_v1_run.py": "1235cc4ab2df3078f0dfcba7588654804bea5c7dcd6f1c62eab02b675ced1eed",
+  "scripts/market_calendar.py": "a7ddbf308e2c53602b982defc7b6dce314928940a0815cf979bfdf6ffa4bb7fc"
+ },
+ "base_commit_note": "base_commit は最初に固定したときのコミット。11月23日の固定のし直しは refrozen を見る（親コミット 86f8f7a に当てた変更）",
+ "refrozen": [
+  {
+   "on": "2026-11-23",
+   "reason": "記録の開始前の固定のし直し（2026-11-23）：GPT のレビュー 2-4 を受けて固定版の配当を本番 v5.1 と同じにした（12月の権利付き最終日・権利の株数・入金日）。generate.py は 条件7・D1・D0 の後片づけ・判定を1日ずらす本番の運用の接続・財務キャッシュの取得日の修正（9月末から取り直されていなかった）",
+   "changed": [
+    "scripts/generate.py",
+    "scripts/frozen_v1_engine.py",
+    "scripts/frozen_v1_run.py",
+    "scripts/market_calendar.py"
+   ],
+   "previous_sha256": {
+    "scripts/generate.py": "d0e2ab84eff0f2a729220d98b4059a75523b2f7179edf18fb04bf86c5dcf6b5b",
+    "scripts/frozen_v1_engine.py": "af67d9810d3fe95b001787e439f26e07659c78be34418bfaa6387b1549a3f6ed",
+    "scripts/frozen_v1_run.py": "eeb18c40fda94cc5e865237122dca91df2f591c3d0f40439146848995af4427a"
+   }
+  },
+  {
+   "on": "2026-11-23",
+   "reason": "財務キャッシュの版を足した（直す前のキャッシュを最初の実行で捨てる。GPT の指摘）",
+   "changed": [
+    "scripts/generate.py"
+   ],
+   "previous_sha256": {
+    "scripts/generate.py": "4cd0eb4f0c2eb240b002e7b99376ae78c5c5be5ea1a3e7325958e2e5061b0522",
+    "scripts/frozen_v1_engine.py": "af1549fff7c0cf1ac4ace301f09b4e69f930713bcf385c20df78926aa8b67c56",
+    "scripts/frozen_v1_run.py": "10d9bc72b2da8c0f091f058f66875468eba4fd4e073a07a62387c245df995690",
+    "scripts/market_calendar.py": "a7ddbf308e2c53602b982defc7b6dce314928940a0815cf979bfdf6ffa4bb7fc"
+   }
+  },
+  {
+   "on": "2026-11-23",
+   "reason": "D1 を型で分けない一貫した決まりに直した・修正の0円を使う・判定の保存時刻で先読みを防ぐ・取得が欠けた日は進めない（GPT のレビュー）",
+   "changed": [
+    "scripts/generate.py",
+    "scripts/frozen_v1_run.py"
+   ],
+   "previous_sha256": {
+    "scripts/generate.py": "60383ee0cb4af1a0f9ffbaef4b0bdf35d12f407d8d15367b5846aafdceefcfe5",
+    "scripts/frozen_v1_engine.py": "af1549fff7c0cf1ac4ace301f09b4e69f930713bcf385c20df78926aa8b67c56",
+    "scripts/frozen_v1_run.py": "10d9bc72b2da8c0f091f058f66875468eba4fd4e073a07a62387c245df995690",
+    "scripts/market_calendar.py": "a7ddbf308e2c53602b982defc7b6dce314928940a0815cf979bfdf6ffa4bb7fc"
+   }
+  },
+  {
+   "on": "2026-11-23",
+   "reason": "短信の0円を無配の予想として使う・取得の失敗が1社でもあれば進めない・取り直しの取得日は始めた日・同じ日時の違う値の修正は競合として記録（GPT のレビュー）",
+   "changed": [
+    "scripts/generate.py"
+   ],
+   "previous_sha256": {
+    "scripts/generate.py": "dc2bffb75c8c03c0b43d0cad3f2e5fddaa3bcf6cd751c530b27bae372b104cee",
+    "scripts/frozen_v1_engine.py": "af1549fff7c0cf1ac4ace301f09b4e69f930713bcf385c20df78926aa8b67c56",
+    "scripts/frozen_v1_run.py": "1235cc4ab2df3078f0dfcba7588654804bea5c7dcd6f1c62eab02b675ced1eed",
+    "scripts/market_calendar.py": "a7ddbf308e2c53602b982defc7b6dce314928940a0815cf979bfdf6ffa4bb7fc"
+   }
+  },
+  {
+   "on": "2026-11-23",
+   "reason": "予想は実績の出ている期より後の期のものだけを使う（何年も前の予想にさかのぼっていた）",
+   "changed": [
+    "scripts/generate.py"
+   ],
+   "previous_sha256": {
+    "scripts/generate.py": "f3369d1d2284324852292078d2458325fe85d8eca57a3aaa75b63046a9ede556",
+    "scripts/frozen_v1_engine.py": "af1549fff7c0cf1ac4ace301f09b4e69f930713bcf385c20df78926aa8b67c56",
+    "scripts/frozen_v1_run.py": "1235cc4ab2df3078f0dfcba7588654804bea5c7dcd6f1c62eab02b675ced1eed",
+    "scripts/market_calendar.py": "a7ddbf308e2c53602b982defc7b6dce314928940a0815cf979bfdf6ffa4bb7fc"
+   }
+  }
+ ]
 }

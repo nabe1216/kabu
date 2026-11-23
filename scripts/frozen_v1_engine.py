@@ -4,6 +4,10 @@
 #   ② 約定 … 呼び出し側（run.py）が、前の営業日の判定に今日の株価を重ねて渡す。始値で約定するので、
 #            夜に決めた売買を翌営業日の始値で約定する形になる
 #   ③ 配当 … 権利付き最終日に持っていた株数に権利をつけ、権利の月から3か月後の月に入金する（未入金の配当は再投資しない）
+#   2026年11月23日の固定のし直し（記録の開始前）：③を本番 v5.1 と同じ決まりにした（GPT のレビュー 2-4）。
+#     権利付き最終日を東証の休業日で数える（market_calendar。2026年12月は28日。これまでの近似は29日）・
+#     権利は権利付き最終日の大引けの株数（権利付き最終日より後の最初の実行日に、その日の売買の前の株数）・
+#     入金は権利の月から3か月後の月末以後の最初の実行日（これまでは3か月後の月の初め）
 """
 portfolio_engine.py — DIVIDEND HEIST フォワードテストエンジン
 
@@ -379,16 +383,20 @@ def update_valuations(state: dict[str, Any], stocks_by_code: dict[str, dict]) ->
 
 
 def _cum_date(y: int, m: int) -> date:
-    """固定版：権利付き最終日（その月の最後の平日から2営業日前。祝日は数えない近似）。"""
-    d = date(y + (m // 12), m % 12 + 1, 1) - timedelta(days=1)
-    while d.weekday() >= 5:
-        d -= timedelta(days=1)
-    n = 0
-    while n < 2:
-        d -= timedelta(days=1)
-        if d.weekday() < 5:
-            n += 1
-    return d
+    """固定版（11月23日に直した）：権利付き最終日。東証の休業日を数える（market_calendar。2026年12月は28日）。"""
+    from market_calendar import cum_date
+    return cum_date(y, m)
+
+
+def _months_back(today: date, k: int) -> tuple[int, int]:
+    n = today.year * 12 + (today.month - 1) - k
+    return n // 12, n % 12 + 1
+
+
+def _pay_from(y: int, m: int) -> date:
+    """固定版：権利の月から DIV_PAY_LAG_MONTHS か月後の月末。その日以後の最初の実行日に入金する。"""
+    n = y * 12 + (m - 1) + DIV_PAY_LAG_MONTHS + 1
+    return date(n // 12, n % 12 + 1, 1) - timedelta(days=1)
 
 
 def process_dividends(
@@ -397,11 +405,17 @@ def process_dividends(
     today: date,
     stocks_by_code: dict[str, dict],
 ) -> int:
-    """固定版の配当：① 権利の月に、権利付き最終日（以後で最初の実行日）に持っている株数で権利をつける
-    （額は予想の年間配当の半分。元のエンジンと同じ近似）② 権利の月から DIV_PAY_LAG_MONTHS か月後の月の最初の実行日に入金する。
-    入金するまで現金に入れないので、未入金の配当で買うことはない。"""
+    """固定版の配当（11月23日に本番 v5.1 と同じ決まりにした）
+    ① 権利：権利付き最終日の大引けに持っている株数につける。売買は実行日の中でしか起きないので、
+       「権利付き最終日より後の最初の実行日に、その日の売買の前に持っている株数」＝権利付き最終日の大引けの株数。
+       今日が権利付き最終日より後で、前回の実行（state['last_price_date']）が権利付き最終日以前なら、
+       今日の売買の前（この関数は売買の前に呼ばれる）の株数で権利をつける。実行が止まって月をまたいでも、
+       直近3か月の権利の月を見直す。額は予想の年間配当の半分（元のエンジンと同じ近似）。
+    ② 入金：権利の月から DIV_PAY_LAG_MONTHS か月後の月末以後の、最初の実行日。入金までは現金に入れない。"""
     ents = state.setdefault('div_entitled', [])
     have = {e['key'] for e in ents}
+    prev_run = state.get('last_price_date')
+    prev_d = date.fromisoformat(prev_run) if prev_run else None
     for holding in state['holdings']:
         code = holding['code']
         stock = stocks_by_code.get(code)
@@ -410,19 +424,26 @@ def process_dividends(
         annual_dps = stock.get('forecast_dps') or stock.get('dps')
         if not annual_dps or annual_dps <= 0:
             continue
-        for div_month, label in [(stock.get('fiscal_month'), 'final'), (stock.get('interim_month'), 'interim')]:
-            if not div_month or div_month != today.month:
+        months = {stock.get('fiscal_month'): 'final', stock.get('interim_month'): 'interim'}
+        for k in range(0, 3):
+            y, m = _months_back(today, k)
+            label = months.get(m)
+            if not label:
                 continue
-            if today < _cum_date(today.year, today.month):
+            cum = _cum_date(y, m)
+            if not (today > cum):
                 continue
-            key = f"{code}_{today.strftime('%Y-%m')}"
+            if prev_d is not None and prev_d > cum:
+                continue          # 前回の実行が権利付き最終日より後 → そのとき処理済みのはず
+            if prev_d is None and (today - cum).days > 31:
+                continue          # 記録の始まりは、直近の権利だけを見る
+            key = f"{code}_{y:04d}-{m:02d}"
             if key in have:
                 continue
-            pm = today.month + DIV_PAY_LAG_MONTHS
-            pay = date(today.year + (pm - 1) // 12, (pm - 1) % 12 + 1, 1)
             ents.append({'key': key, 'code': code, 'name': stock.get('name', ''), 'type': label,
-                         'record': today.strftime('%Y-%m'), 'entitled_on': today.isoformat(),
-                         'shares': holding['qty'], 'dps': annual_dps * 0.5, 'pay_from': pay.isoformat(), 'paid': False})
+                         'record': f"{y:04d}-{m:02d}", 'cum_date': cum.isoformat(), 'entitled_on': today.isoformat(),
+                         'shares': holding['qty'], 'dps': annual_dps * 0.5, 'pay_from': _pay_from(y, m).isoformat(),
+                         'paid': False})
             have.add(key)
     received_count = 0
     for e in ents:
@@ -1210,6 +1231,7 @@ def update_portfolio(stocks: list[dict[str, Any]], etf_px: float | None = None,
 
     # ステップ6: 完了
     state['last_updated'] = today_jst.isoformat()
+    state['last_price_date'] = today_jst.isoformat()   # 11月23日：配当の権利の判定に使う（前回の実行の株価の日付）
 
     save_json(STATE_PATH, state)
     save_json(HISTORY_PATH, history)
