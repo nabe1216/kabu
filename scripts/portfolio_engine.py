@@ -1234,6 +1234,9 @@ def update_portfolio(stocks: list[dict[str, Any]], etf_px: float | None = None,
         s for s in history['daily_snapshots'] if s['date'] != today_jst.isoformat()
     ]
     history['daily_snapshots'].append(snapshot)
+    # 2026年11月24日：日付の順に並べる（v5.1 で日付が「実行した日」から「株価の日付」に変わり、
+    # 切り替えの日に、実行した日の記録（翌朝の日付）のあとに株価の日付の記録が並んだため）
+    history['daily_snapshots'].sort(key=lambda s: s['date'])
 
     # ステップ6: 完了
     state['last_updated'] = today_jst.isoformat()
