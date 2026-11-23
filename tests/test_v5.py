@@ -335,6 +335,19 @@ def test_d1_revision():
     q3_prev['CurPerEn'] = '2025-12-31'
     v, _ = g.get_forecast_dps_with_date([q3_prev, fy_prev, q1_now])
     check('D1-16：来期の予想が未定なら、前の期の予想（116円）ではなく、その期の実績（137円）', v == 137.0, str(v))
+    # 2026年11月24日（GPT のレビュー）：本決算の短信で来期の予想が空欄でも、そのあとに出た来期の修正は使う
+    fy_bl = _st('FYFinancialStatements_Consolidated_JP', 'FY', '2026-05-14', '2026-03-31', nxt_fy='2027-03-31')
+    fy_bl['DivAnn'] = '50.0'
+    rv60 = _st('DividendForecastRevision', 'FY', '2026-06-20', '2027-03-31', f=60)
+    rv0 = _st('DividendForecastRevision', 'FY', '2026-06-20', '2027-03-31', f=0)
+    v, d_ = g.get_forecast_dps_with_date([fy_bl, rv60])
+    check('D1-17：来期の予想が空欄の短信のあとに出た来期の修正（60円）を使う', v == 60.0 and d_ == date(2026, 6, 20), f'{v} {d_}')
+    check('D1-17b：分割を直す版（v3）も60円', g.forecast_dps_v3([fy_bl, rv60], []) == 60.0, str(g.forecast_dps_v3([fy_bl, rv60], [])))
+    v, _ = g.get_forecast_dps_with_date([fy_bl, rv0])
+    check('D1-18：その修正が0円なら0円（実績の50円に戻らない）', v == 0.0, str(v))
+    check('D1-18b：分割を直す版（v3）も0円', g.forecast_dps_v3([fy_bl, rv0], []) == 0.0, str(g.forecast_dps_v3([fy_bl, rv0], [])))
+    v, _ = g.get_forecast_dps_with_date([fy_bl])
+    check('D1-18c：修正がなければ、これまでどおり実績（50円）', v == 50.0, str(v))
     v, _ = g.get_forecast_dps_with_date([fy, rev])
     check('D1-5：本決算の来期予想のあとに出た修正も使う', v == 112.0, str(v))
     rev_blank = _st('DividendForecastRevision', 'FY', '2026-10-29', '2027-03-31', f=None)

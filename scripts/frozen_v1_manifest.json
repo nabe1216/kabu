@@ -1,6 +1,6 @@
 {
  "series": "v1_20261201",
- "frozen_on": "2026-11-23",
+ "frozen_on": "2026-11-24",
  "base_commit": "b422ec3f36c60aaad8194a93dcf02b459ecfd053",
  "note": "本番の判定（generate.py）と、固定版の売買（engine.py・run.py）の指紋。どれかが違う日は記録を止める。仕様を変えて続けるときは別の系列（v2）を別のファイル（frozen_v2_*）で作り、v1 は上書きしない。",
  "start": "2026-12-01",
@@ -20,7 +20,7 @@
   "judgment": "scripts/generate.py の判定（2026年11月23日の版：条件7〈EPS か BPS が0以下なら×〉・D1〈短信より後に出た同じ期の配当予想の修正を使う〉・D0〈業界トップは33業種の時価総額上位3社〉・財務キャッシュの取り直しの修正を含む）"
  },
  "sha256": {
-  "scripts/generate.py": "69fa7286c8ecc79b9644c3c1d522626dcd5eb041d78632e6a7923c9e9ded75bf",
+  "scripts/generate.py": "294fbf33dd950e7bdd9e8f024014373c11637698d1bc1f1cdf68063b82d7a136",
   "scripts/frozen_v1_engine.py": "af1549fff7c0cf1ac4ace301f09b4e69f930713bcf385c20df78926aa8b67c56",
   "scripts/frozen_v1_run.py": "1235cc4ab2df3078f0dfcba7588654804bea5c7dcd6f1c62eab02b675ced1eed",
   "scripts/market_calendar.py": "a7ddbf308e2c53602b982defc7b6dce314928940a0815cf979bfdf6ffa4bb7fc"
@@ -90,6 +90,19 @@
    ],
    "previous_sha256": {
     "scripts/generate.py": "f3369d1d2284324852292078d2458325fe85d8eca57a3aaa75b63046a9ede556",
+    "scripts/frozen_v1_engine.py": "af1549fff7c0cf1ac4ace301f09b4e69f930713bcf385c20df78926aa8b67c56",
+    "scripts/frozen_v1_run.py": "1235cc4ab2df3078f0dfcba7588654804bea5c7dcd6f1c62eab02b675ced1eed",
+    "scripts/market_calendar.py": "a7ddbf308e2c53602b982defc7b6dce314928940a0815cf979bfdf6ffa4bb7fc"
+   }
+  },
+  {
+   "on": "2026-11-24",
+   "reason": "GPT のレビュー（11/24）：予想が空欄の短信のあとに出た同じ期の修正を使う・予想の競合と処理できなかった持ち株で検証運用を止める",
+   "changed": [
+    "scripts/generate.py"
+   ],
+   "previous_sha256": {
+    "scripts/generate.py": "69fa7286c8ecc79b9644c3c1d522626dcd5eb041d78632e6a7923c9e9ded75bf",
     "scripts/frozen_v1_engine.py": "af1549fff7c0cf1ac4ace301f09b4e69f930713bcf385c20df78926aa8b67c56",
     "scripts/frozen_v1_run.py": "1235cc4ab2df3078f0dfcba7588654804bea5c7dcd6f1c62eab02b675ced1eed",
     "scripts/market_calendar.py": "a7ddbf308e2c53602b982defc7b6dce314928940a0815cf979bfdf6ffa4bb7fc"

@@ -1667,6 +1667,11 @@ def get_forecast_dps_with_date(
                 s, f = statements[j], safe_float(statements[j].get('FDivAnn'))
             d = parse_date(s.get('DiscDate')) or parse_date(s.get('CurPerEn'))
             return f, d
+        if f is None:                     # 2026年11月24日：短信の予想が空欄（未定）でも、そのあとに出た同じ期の修正は使う（0円も）
+            j = newer_dividend_revision(statements, next(k for k, x in enumerate(statements) if x is s))
+            if j is not None:
+                r = statements[j]
+                return safe_float(r.get('FDivAnn')), parse_date(r.get('DiscDate')) or parse_date(r.get('CurPerEn'))
     # Pass 2: 何でもいいので FDivAnn / NxFDivAnn から拾う（実績の出ている期より後の期の予想だけ）
     for s in sorted_stmts:
         for key in ('FDivAnn', 'NxFDivAnn'):
@@ -1701,6 +1706,10 @@ def forecast_dps_v3(statements: list[dict[str, Any]], events: list[tuple[date, f
             if j is not None:
                 return 0.0 if safe_float(statements[j].get('FDivAnn')) == 0 else tl.get(j)
             return 0.0 if f == 0 else tl.get(i)
+        if f is None:                     # 2026年11月24日（GPT のレビュー）：短信の予想が空欄（未定）でも、そのあとに出た
+            j = newer_dividend_revision(statements, i)        # 同じ期の予想の修正があれば使う（0円も）。なければ前の短信へ進む
+            if j is not None:
+                return 0.0 if safe_float(statements[j].get('FDivAnn')) == 0 else tl.get(j)
     for i in order:                      # Pass 2：FDivAnn / NxFDivAnn のどちらか（実績の出ている期より後の期）
         s = statements[i]
         if any((safe_float(s.get(k)) or 0) > 0 and _is_future_target(s, k, latest_fy) for k in ('FDivAnn', 'NxFDivAnn')):
@@ -2260,6 +2269,7 @@ def main() -> int:
     stocks: list[dict[str, Any]] = []
     failures = 0
     n_total = len(universe)
+    unprocessed: list[dict[str, str]] = []   # 2026年11月24日：処理できなかった会社と理由（results.json に残す）
     for i, u in enumerate(universe, 1):
         code = u['code']
         try:
@@ -2275,9 +2285,12 @@ def main() -> int:
             )
             if result is not None:
                 stocks.append(result)
+            else:
+                unprocessed.append({'code': code, 'reason': 'データが足りない（株価か財務がない・売買のない会社など）'})
         except Exception as e:
             log.warning('Failed %s: %s', code, e)
             failures += 1
+            unprocessed.append({'code': code, 'reason': f'例外：{type(e).__name__}'})
 
         if i % 50 == 0:
             log.info('Progress: %d/%d (failures=%d)', i, n_total, failures)
@@ -2396,7 +2409,8 @@ def main() -> int:
         'failure_count': failures,
         'fetch_error_count': _FETCH_ERRORS['n'],          # 2026年11月：取得の失敗（この数が0でない日は検証運用を進めない）
         'fetch_error_codes': _FETCH_ERRORS['codes'][:50],
-        'forecast_conflicts': _FORECAST_CONFLICTS[:50],     # 同じ日時に違う値の配当予想の修正（確認に回す）
+        'forecast_conflicts': _FORECAST_CONFLICTS[:50],     # 同じ日時に違う値の配当予想の修正（1件でもあれば検証運用を進めない）
+        'unprocessed': unprocessed[:100],                   # 2026年11月24日：処理できなかった会社と理由
         'thresholds': {
             'min_yield': MIN_YIELD_THRESHOLD, 'buy_mode': BUY_MODE, 'emergency_hold_rule': {'name': 'K1 浅い減配（−30％未満）は持つ', 'rule': EMERGENCY_HOLD},
             'dividend_policy_checked': DIVIDEND_POLICY_CHECKED, 'edinet_policy_checked': EDINET_POLICY.get('checked_at'),
@@ -2429,9 +2443,22 @@ def main() -> int:
     # 取れなかった会社が持ち株や買う順番の上位にいると、売る合図の見落としや別の会社の買いにつながるため。
     # 取得は成功して正当に0件だった会社（売買のない会社など）は失敗に数えない。判定の保存（judged/）もしない。
     # 失敗がなくても、処理できた銘柄が対象の98％未満なら、何かがおかしいので止める（念のための線）
-    if failures or _FETCH_ERRORS['n'] or (n_total and len(stocks) < n_total * MIN_COVERAGE_FOR_PAPER):
-        log.error('Portfolio: 止めました（取得の失敗 %d 社・例外 %d 社・処理できた銘柄 %d / %d）。検証運用と並走記録は進めない',
-                  _FETCH_ERRORS['n'], failures, len(stocks), n_total)
+    # 2026年11月24日（GPT のレビュー）：
+    #   - 同じ日時に違う値の配当予想の修正（_FORECAST_CONFLICTS）が1件でもあれば進めない。小さい方は仮の値で、
+    #     利回り・順番・株数に流すと、根拠の決まっていない数字で売買することになるため
+    #   - 処理できなかった会社が検証運用の持ち株にあれば進めない（売る合図を見落とすため）。理由は results.json の unprocessed
+    _held: set[str] = set()
+    try:
+        _st = json.loads((OUTPUT_PATH.parent / 'portfolio_state.json').read_text(encoding='utf-8'))
+        _held = {str(h.get('code')) for h in _st.get('holdings', [])}
+    except Exception:
+        pass
+    _held_skipped = [x['code'] for x in unprocessed if x['code'] in _held]
+    if failures or _FETCH_ERRORS['n'] or _FORECAST_CONFLICTS or _held_skipped \
+            or (n_total and len(stocks) < n_total * MIN_COVERAGE_FOR_PAPER):
+        log.error('Portfolio: 止めました（取得の失敗 %d 社・例外 %d 社・予想の競合 %d 件・処理できなかった持ち株 %s・処理できた銘柄 %d / %d）。'
+                  '検証運用と並走記録は進めない', _FETCH_ERRORS['n'], failures, len(_FORECAST_CONFLICTS),
+                  ','.join(_held_skipped) or 'なし', len(stocks), n_total)
         return 0
     try:
         import portfolio_engine as _pe
