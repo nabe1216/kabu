@@ -288,7 +288,7 @@
   "total_invested": 18344550.0,
   "realized_pl": 348144.6039999999,
   "dividend_received": 153434,
-  "last_updated": "2026-11-21",
+  "last_updated": "2026-11-20",
   "holdings_value": 9495400.0,
   "tax_paid": 109841,
   "loss_pool": 0.0,
@@ -304,5 +304,9 @@
     "since": "2026-11-11",
     "price": 386.2,
     "value": 811792.4
-  }
+  },
+  "legacy_last_updated": "2026-11-21",
+  "date_basis": "price_date",
+  "div_entitled": [],
+  "last_price_date": "2026-11-20"
 }

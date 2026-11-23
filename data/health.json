@@ -1,6 +1,6 @@
 {
- "generated_at": "2026-11-21T04:50:23+09:00",
- "date": "2026-11-21",
+ "generated_at": "2026-11-24T00:13:03+09:00",
+ "date": "2026-11-24",
  "ok": false,
  "warnings": [
   {
@@ -10,8 +10,8 @@
  ],
  "checks": {
   "counts": {
-   "pass": 100,
-   "buy": 440,
+   "pass": 105,
+   "buy": 480,
    "emergency": 116,
    "cut": 39
   },
@@ -24,8 +24,8 @@
   "dividend_policy_checked": "2026-11-13",
   "edinet_policy_checked": null,
   "prev_counts": {
-   "pass": 91,
-   "buy": 406,
+   "pass": 100,
+   "buy": 440,
    "emergency": 116,
    "cut": 39
   },
@@ -36,11 +36,11 @@
    "total_value": 10307912.133,
    "cash": 719.7330000000075,
    "holdings": 20,
-   "last_updated": "2026-11-21",
+   "last_updated": "2026-11-20",
    "engine_version": 4
   },
   "overweight": [],
-  "run_minutes": 67.9,
+  "run_minutes": 64.3,
   "big_files": []
  }
 }
