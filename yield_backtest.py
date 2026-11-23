@@ -14089,6 +14089,15 @@ def _au_csv(runs, out, dts, cal, pn_):
                            "値段の種類": "月末の終値（始値なし）" if (nopen or n_d is None) else "始値",
                            "銘柄コード": str(x_["code"]), "売り買い": "買い" if x_["side"] == "buy" else "売り", "株数": int(x_["shares"])})
         pd.DataFrame(tr).to_csv(OUTDIR / "audit_trades.csv", index=False, encoding="utf-8-sig")
+        # 2026年11月24日（GPT のレビュー）：成果物を取り出せない環境でも A・B の売買を比べられるよう、売買をログに出す
+        # （値段は出さない。判定の月末・約定日・コード・売り買い・株数だけ）。形ごとの要約（件数とハッシュ）も出す
+        import hashlib as _hl
+        for k_ in ("M", "M_pit"):
+            lines_ = [f"{x['判定の月末（ラベル）']} {x['約定日']} {x['銘柄コード']} {x['売り買い']} {x['株数']}" for x in tr if x["形"] == k_]
+            print(f"\n  売買の一覧（{k_}・全期間・一括）：{len(lines_)}件・ハッシュ {_hl.sha256(chr(10).join(lines_).encode()).hexdigest()[:16]}")
+            if k_ == "M_pit":
+                for l_ in lines_:
+                    print(f"    TR {l_}")
         dv = []
         for k_ in ("M", "M_pit"):
             r_ = runs.get(k_)
@@ -18221,6 +18230,17 @@ def main() -> int:
         log.info("予想配当の選び方：本番 v5.2（修正のお知らせも使う・0円は無配の予想）")
     if (args.only or "").strip() == "audit_fix":
         # 2026年11月22日：仕様どおりに直した現行ルールの再試算（計画は audit_fix_plan_2026-11-22）
+        # 2026年11月24日：入力が同じかを確かめるため、読み込む保存データのハッシュをログに出す
+        try:
+            import hashlib as _hl
+            if CACHE.exists():
+                _h = _hl.sha256()
+                with open(CACHE, "rb") as _f:
+                    for _b in iter(lambda: _f.read(1 << 20), b""):
+                        _h.update(_b)
+                log.info("audit_fix：保存データ %s のハッシュ %s（%d バイト）", CACHE.name, _h.hexdigest()[:16], CACHE.stat().st_size)
+        except Exception as _e:
+            log.warning("audit_fix：保存データのハッシュを出せませんでした: %s", _e)
         args.audit_fix, args.liq_metric, args.grid = True, True, True
         args.only = "au_m,au_p0,au_mpit,au_mold"
     args.near_test = False
