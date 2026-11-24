@@ -1,6 +1,6 @@
 {
- "generated_at": "2026-11-24T08:19:52+09:00",
- "date": "2026-11-24",
+ "generated_at": "2026-11-25T02:16:46+09:00",
+ "date": "2026-11-25",
  "ok": false,
  "warnings": [
   {
@@ -10,8 +10,8 @@
  ],
  "checks": {
   "counts": {
-   "pass": 105,
-   "buy": 480,
+   "pass": 102,
+   "buy": 468,
    "emergency": 116,
    "cut": 39
   },
@@ -20,7 +20,7 @@
    "processed": 970,
    "failures": 0
   },
-  "latest_price_date": "2026-11-20",
+  "latest_price_date": "2026-11-24",
   "dividend_policy_checked": "2026-11-13",
   "edinet_policy_checked": null,
   "prev_counts": {
@@ -33,14 +33,14 @@
    "5445 東京鐵鋼（分割・併合 2026-03-30）"
   ],
   "portfolio": {
-   "total_value": 10307912.133,
+   "total_value": 10316751.533,
    "cash": 719.7330000000075,
    "holdings": 20,
-   "last_updated": "2026-11-20",
+   "last_updated": "2026-11-24",
    "engine_version": 4
   },
   "overweight": [],
-  "run_minutes": 70.8,
+  "run_minutes": 69.9,
   "big_files": []
  }
 }
