@@ -1000,6 +1000,11 @@ function renderFwd(){
       hovertemplate:'%{x}<br>¥%{y:,.0f}<extra></extra>'}],
       {...plyLayout(),height:260,shapes:[{type:'line',xref:'paper',x0:0,x1:1,y0:st.initial_cash,y1:st.initial_cash,line:{color:'#9AA1AD',width:1,dash:'dot'}}]},plyCfg());
   }
+  // 2026年11月24日（GPT のレビュー 4通目）：旧期間の注記を、お知らせ（最新5件）とは別に、グラフの下にいつも出す
+  if(snaps.some(x=>x.date<='2026-11-19')){
+    const cv=$('fxCurve');
+    if(cv&&!document.getElementById('fxCurveNote'))cv.insertAdjacentHTML('afterend','<div id="fxCurveNote" class="al-note" style="margin-top:8px;font-size:12px">※2026年11月19日までの記録は、日付が実行した日（多くは株価の日付の1営業日あと）で、株価の日付の記録と混ざっています。11月19日の株価による評価など、欠けている点があります。この期間は、日ごとの変化を厳密には比べられません。詳しくは履歴の注記（portfolio_history.json の notes）にあります。</div>');
+  }
   const nts=(hi?.notes||[]).slice(-5).reverse();
   const ne=$('fxNotes');
   if(ne)ne.innerHTML=nts.length?`<div class="al-note" style="margin-top:10px">${nts.map(n=>`・${esc(n.date)} ${n.name?`<b>${esc(n.name)}</b> `:''}${esc(n.note)}`).join('<br>')}</div>`:'';

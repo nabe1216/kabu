@@ -536,6 +536,21 @@ def test_quote_kinds_and_leaders():
     withx = g.compute_industry_leaders(st, extra={'X1': ('3200', 850)})
     check('業界1：約定のなかった会社も業界トップの母集団に入る（4位以下が繰り上がらない）',
           base == {'P1', 'P2', 'P3'} and withx == {'P1', 'X1', 'P2'}, f'{sorted(base)} {sorted(withx)}')
+    # 業界2：最後に値段が付いた日のあとに 1株→2株の分割があっても、時価総額を2倍にしない
+    class _C:
+        def get_statements(self, code):
+            return [{'CurPerType': 'FY', 'CurPerEn': '2026-03-31', 'DiscDate': '2026-05-10', 'ShOutFY': '1000000'}]
+    qs = [{'Date': '2026-11-18', 'Close': 1000.0, 'Open': 1000.0, 'High': 1000.0, 'Low': 1000.0, 'Volume': 100, 'TurnoverValue': 1e5, 'AdjustmentFactor': 1.0},
+          {'Date': '2026-11-19', 'Close': None, 'Open': None, 'High': None, 'Low': None, 'Volume': None, 'TurnoverValue': None, 'AdjustmentFactor': 0.5},
+          {'Date': '2026-11-20', 'Close': None, 'Open': None, 'High': None, 'Low': None, 'Volume': None, 'TurnoverValue': None, 'AdjustmentFactor': 1.0}]
+    g.API_SLEEP_SEC = 0
+    g._LEADER_EXTRA.clear(); g._LEADER_EXTRA_INFO.clear()
+    g._add_leader_extra(_C(), 'Z001', '3200', qs)
+    mc = g._LEADER_EXTRA.get('Z001', (None, 0))[1]
+    info = g._LEADER_EXTRA_INFO.get('Z001', {})
+    check('業界2：最後の値段のあとに分割があっても、古い値段×分割後の株数にしない（500円×200万株＝10億円）',
+          abs(mc - 10.0) < 1e-6 and info.get('price_date') == '2026-11-18' and info.get('adj_after') == 0.5, f'{mc} {info}')
+    g._LEADER_EXTRA.clear(); g._LEADER_EXTRA_INFO.clear()
 
 
 if __name__ == '__main__':

@@ -469,6 +469,8 @@ _SKIP_DATE: dict[str, str] = {}   # その会社の最後の行の日付（約�
 # 業界トップ（業種内の時価総額上位3社）の母集団に、その日に約定のなかった会社も入れる（note の定義は「対象にある上位3社」）。
 # code -> (33業種コード, 最後に値段が付いた日の終値で計算した時価総額・億円)
 _LEADER_EXTRA: dict[str, tuple[str, float]] = {}
+# 業界トップの補完に使った値段の日付と、そのあとの分割の係数（results.json の leader_extra に残す。値段そのものは残さない）
+_LEADER_EXTRA_INFO: dict[str, dict[str, Any]] = {}
 STOP_KINDS = ('no_data', 'partial', 'unknown')
 
 
@@ -1877,10 +1879,15 @@ def _add_leader_extra(client: 'JQuantsClient', code: str, sector33: str, quotes_
     """その日に約定のなかった会社を、業界トップの母集団にだけ入れる（最後に値段が付いた日の終値で時価総額を出す）。
     財務が取れなければ取得の失敗に数える（母集団が欠けたまま業界トップを決めないため）。"""
     qs = sorted(quotes_all, key=lambda q: q.get('Date', ''))
-    last_c = next((safe_float(q.get('Close')) for q in reversed(qs)
-                   if (safe_float(q.get('Close')) or 0) > 0), None)
-    if not last_c:
+    last_q = next((q for q in reversed(qs) if (safe_float(q.get('Close')) or 0) > 0), None)
+    if last_q is None:
         return
+    last_c = safe_float(last_q.get('Close'))
+    last_d = parse_date(last_q.get('Date'))
+    # 最後に値段が付いた日より後に分割・併合があれば、その値段を今の株数の基準に直す（GPT のレビュー 4通目：
+    # 古い値段に分割後の株数を掛けて時価総額を大きくしない）。1株を2株なら 1,000円 → 500円
+    adj_after = cumulative_adj_factor_after(qs, last_d)
+    price_now = last_c * adj_after
     time.sleep(API_SLEEP_SEC)
     try:
         statements = client.get_statements(code)
@@ -1889,9 +1896,11 @@ def _add_leader_extra(client: 'JQuantsClient', code: str, sector33: str, quotes_
         _FETCH_ERRORS['n'] += 1
         _FETCH_ERRORS['codes'].append(code)
         return
-    mcap = estimate_market_cap_oku(statements, qs, last_c)
+    mcap = estimate_market_cap_oku(statements, qs, price_now)
     if mcap > 0:
         _LEADER_EXTRA[code] = (sector33, mcap)
+        _LEADER_EXTRA_INFO[code] = {'code': code, 'price_date': str(last_d) if last_d else None,
+                                    'adj_after': round(adj_after, 6), 'use': '業界トップの母集団だけ（判定・利回り・約定には使わない）'}
 
 
 # ============================================================================
@@ -2512,6 +2521,7 @@ def main() -> int:
         'fetch_error_codes': _FETCH_ERRORS['codes'][:50],
         'forecast_conflicts': _FORECAST_CONFLICTS[:50],     # 同じ日時に違う値の配当予想の修正（1件でもあれば検証運用を進めない）
         'unprocessed': unprocessed[:100],                   # 2026年11月24日：処理できなかった会社と理由
+        'leader_extra': [v for k, v in _LEADER_EXTRA_INFO.items() if k in _LEADER_EXTRA][:100],  # 業界トップの母集団に入れた約定なしの会社
         'thresholds': {
             'min_yield': MIN_YIELD_THRESHOLD, 'buy_mode': BUY_MODE, 'emergency_hold_rule': {'name': 'K1 浅い減配（−30％未満）は持つ', 'rule': EMERGENCY_HOLD},
             'dividend_policy_checked': DIVIDEND_POLICY_CHECKED, 'edinet_policy_checked': EDINET_POLICY.get('checked_at'),
