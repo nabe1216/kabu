@@ -7172,6 +7172,9 @@ def simulate(panel: pd.DataFrame, cfg: dict, capital: float = 3_000_000,
         if mi == len(dates) - 1:
             # 16回目：最後の月の買う順番（ツールの買う順番と突き合わせるため）
             diag["cands_last"] = [(c_, t_, float(p_)) for p_, c_, _, _, t_ in cands]
+        if mi == 0:
+            # 2026年11月24日（GPT のレビュー 3通目）：最初の月の買う順番（A・B の最初の入れ替えの理由を確かめるため）
+            diag["cands_first"] = [(c_, t_) for _, c_, _, _, t_ in cands]
         # でたらめに並べる（運の幅を測るため）。
         #   all  … 候補の中から完全にでたらめに選ぶ
         #   tier … Tier順（S→A→B）は守り、同じTierの中だけでたらめ
@@ -14114,6 +14117,96 @@ def _au_csv(runs, out, dts, cal, pn_):
         log.exception("audit_fix2：CSV を書けませんでした: %s", e_)
 
 
+AU_STORE = None   # 2026年11月24日：audit_report の説明（AU_EXPLAIN）で、開示の行を読むため
+
+
+def _au_explain(sub: pd.DataFrame, runs: dict) -> None:
+    """2026年11月24日（GPT のレビュー 3通目）：環境変数 AU_EXPLAIN="2018-09-30:3244,5208" のとき、その月末の M_pit で
+    その銘柄が買われた・買われなかった理由を出す。J-Quants の値（株価・配当の額・時価総額）は出さず、
+    合否・順位・Tier・コード・開示の日付と種類・A と B の値の大小だけを出す（公開リポジトリのログのため）。"""
+    global FORECAST_V52, FORECAST_V52_POSONLY
+    spec = os.environ.get("AU_EXPLAIN", "").strip()
+    if not spec or ":" not in spec:
+        return
+    d_s, codes_s = spec.split(":", 1)
+    d_ = pd.Timestamp(d_s)
+    codes = [c.strip() for c in codes_s.split(",") if c.strip()]
+    print(f"\n  E. 説明：{d_.date()} の月末の M_pit（予想配当の選び方：{'B（本番 v5.2）' if FORECAST_V52 else 'A（古い選び方）'}"
+          f"{'・正の配当がない銘柄を除く' if FORECAST_V52_POSONLY else ''}）。値は出さない")
+    day = sub[sub["date"] == d_].set_index("code")
+    print(f"    この月末のパネルの銘柄数 {len(day)}・範囲（in_uni_live）{int(day['in_uni_live'].astype(bool).sum()) if 'in_uni_live' in day else '-'}")
+    r_ = runs.get("M_pit") or {}
+    cf = r_.get("diag", {}).get("cands_first", [])
+    pos_ = {c_: i_ + 1 for i_, (c_, _) in enumerate(cf)}
+    tr = r_.get("trades")
+    first_tr = []
+    if tr is not None and not tr.empty:
+        _t0 = sorted(pd.to_datetime(tr["date"]).unique())[0]
+        first_tr = [(str(c_), str(sd_), int(sh_)) for c_, sd_, sh_, dt_ in zip(tr["code"], tr["side"], tr["shares"], pd.to_datetime(tr["date"]))
+                    if dt_ == _t0]
+    bought = {c_ for c_, sd_, _ in first_tr if sd_ == "buy"}
+    print(f"    最初の約定の買い {len(bought)}社（買う順番の候補 {len(cf)}社）")
+    print("    買う順番の上から：" + " ".join(f"{i_ + 1}:{c_}({t_}){'買' if c_ in bought else '-'}" for i_, (c_, t_) in enumerate(cf[:40])))
+    mc = None
+    if {"price", "sh"} <= set(day.columns):
+        mc = (pd.to_numeric(day["price"], errors="coerce") * pd.to_numeric(day["sh"], errors="coerce"))
+        mc = mc.where((mc > 0) & day["in_uni_live"].astype(bool))
+    for c_ in codes:
+        if c_ not in day.index:
+            print(f"    {c_}：この月末のパネルにない（予想配当の系列が空など）")
+            continue
+        row = day.loc[c_]
+        sec = str(row.get("sector", ""))
+        y3 = bool(float(row.get("yield", 0) or 0) >= 3.0)
+        rk = None
+        top = []
+        if mc is not None and sec:
+            m_ = mc[day["sector"].astype(str) == sec].dropna().sort_values(ascending=False)
+            top = list(m_.index[:5])
+            rk = (top.index(c_) + 1) if c_ in top else (int((m_ > mc.get(c_, np.nan)).sum()) + 1 if c_ in m_.index else None)
+        print(f"    {c_}：範囲 {bool(row.get('in_uni_live', False))}・8条件 {bool(row.get('screen_pass_np', False))}・利回り3％以上 {y3}・"
+              f"Tier {row.get('tier_live_np', '-')}・業種 {sec} の時価総額の順位 {rk}・順番 {pos_.get(c_, '候補にない')}・"
+              f"最初の約定 {[(sd_, sh_) for cc_, sd_, sh_ in first_tr if cc_ == c_] or 'なし'}")
+        print(f"      業種 {sec} の時価総額の上位5社（範囲の中）：{top}")
+        # 予想配当の出どころ：A と B の両方の選び方で、この月末までの最後の開示を見る
+        st_all = (AU_STORE or {}).get("stmts", {}).get(c_, []) if AU_STORE else []
+        qrows = (AU_STORE or {}).get("quotes", {}).get(c_, []) if AU_STORE else []
+        if not st_all or not qrows:
+            print("      （開示の行を読めない）")
+            continue
+        px = quotes_to_df(qrows)
+        keep = (FORECAST_V52, FORECAST_V52_POSONLY)
+        vals = {}
+        try:
+            for lab_, v52_ in (("A", False), ("B", True)):
+                FORECAST_V52, FORECAST_V52_POSONLY = v52_, False
+                tl = dps_timeline(st_all, px)
+                tl = tl[tl["date"] <= d_] if not tl.empty else tl
+                vals[lab_] = (float(tl["dps"].iloc[-1]), pd.Timestamp(tl["date"].iloc[-1]).date()) if not tl.empty else (None, None)
+        finally:
+            FORECAST_V52, FORECAST_V52_POSONLY = keep
+        va, vb = vals["A"][0], vals["B"][0]
+        cmp_ = ("同じ" if (va is not None and vb is not None and abs(va - vb) < 1e-9) else
+                "A なし" if va is None else "B なし" if vb is None else ("B が大きい" if vb > va else "B が小さい"))
+        pxm = float(row.get("price", 0) or 0)
+        y3a = (va is not None and pxm > 0 and va / pxm * 100 >= 3.0)
+        y3b = (vb is not None and pxm > 0 and vb / pxm * 100 >= 3.0)
+        print(f"      予想配当：A の値の日付 {vals['A'][1]}・B の値の日付 {vals['B'][1]}・A と B は {cmp_}・利回り3％以上 A {y3a}／B {y3b}")
+        rows_ = []
+        for s_ in st_all:
+            dd_ = pdate(s_.get("DiscDate")) or pdate(s_.get("CurPerEn"))
+            if dd_ is None or pd.Timestamp(dd_) > d_ or pd.Timestamp(dd_) < d_ - pd.DateOffset(months=15):
+                continue
+            kind = ("修正" if _is_rev_row(s_) else ("本決算の短信" if s_.get("CurPerType", "") in ("FY", "4Q") else f"{s_.get('CurPerType', '')}の短信"))
+            ua = (fnum(s_.get("NxFDivAnn")) if s_.get("CurPerType", "") in ("FY", "4Q") else fnum(s_.get("FDivAnn")))
+            a_has = bool((ua is not None and ua > 0) or ((fnum(s_.get("DivAnn")) or 0) > 0))
+            vb_, rb_ = _dps_value_v52(s_)
+            rows_.append(f"{pd.Timestamp(dd_).date()} {kind}（期末 {s_.get('CurFYEn') or s_.get('CurPerEn')}）"
+                         f" A{'使う' if a_has else '飛ばす'}・B{'使う' if vb_ is not None else '飛ばす'}"
+                         f"{'（実績）' if rb_ else ''}{'（0円）' if (vb_ is not None and vb_ == 0) else ''}")
+        print("      その月末までの15か月の開示：" + (" ／ ".join(rows_) if rows_ else "なし"))
+
+
 def audit_report(gf: pd.DataFrame, cond_cols: list, pn: pd.DataFrame, wins, args, span) -> dict:
     """2026年11月22日（audit_fix）：仕様どおりに直した現行ルールの再試算。計画は audit_fix_plan_2026-11-22。
     2026年11月23日（audit_fix2）：観測済みの月だけにした版。計画は audit_fix2_plan_2026-11-23。"""
@@ -14157,6 +14250,10 @@ def audit_report(gf: pd.DataFrame, cond_cols: list, pn: pd.DataFrame, wins, args
     _au_noopen(runs, sub, "1a. 直した後：月末の終値で約定した売買（翌営業日の始値がなかったもの）")
     _au_recv(runs, len(dts), "1b. 直した後：期末に未入金の配当の内訳")
     _au_csv(runs, out, dts, cal, sub)
+    try:
+        _au_explain(sub, runs)
+    except Exception as e_:
+        log.exception("説明（AU_EXPLAIN）を出せませんでした: %s", e_)
 
     # 2. 年ごとの受け取る配当（税引き前・権利の年）
     print("\n  2. 年ごとの受け取る配当（税引き前・権利確定の年で数える。円）")
@@ -18216,6 +18313,11 @@ def main() -> int:
         args.exempt_test, args.liq_metric, args.grid = True, True, True
         args.only = "ex_e1,bm_live,ex_e2,ex_e3"
     args.audit_fix = False
+    # 2026年11月24日：only の後ろに「@月末:コード,コード」を付けると、その月末の M_pit の買いの理由を出す（AU_EXPLAIN。入力欄が上限の25個のため）
+    if "@" in (args.only or ""):
+        args.only, _ex = args.only.split("@", 1)
+        os.environ["AU_EXPLAIN"] = _ex.strip()
+        log.info("説明：%s", _ex.strip())
     if (args.only or "").strip() == "audit_fix_v52c":
         # 2026年11月23日（B の結果を見たあとに足した切り分け）：v5.2 の値で、銘柄の範囲は A と同じ（正の配当が一度もない銘柄は外す）
         global FORECAST_V52_POSONLY
@@ -22305,6 +22407,7 @@ def main() -> int:
 
         if getattr(args, "audit_fix", False) and nm and nm[0] == "au_m":
             try:
+                globals()["AU_STORE"] = store
                 audit_report(gf, cond_cols, panels[lbs_[0]], wins, args, (d0_, d1_))
             except Exception as e_:
                 log.exception("仕様どおりに直した現行ルールの再試算を出せませんでした: %s", e_)
