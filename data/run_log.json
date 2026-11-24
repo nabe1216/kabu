@@ -3,7 +3,7 @@
   "run_id": "45433268344",
   "event": "workflow_dispatch",
   "started_at": "2026-11-25T01:06:51+09:00",
-  "basis": "確報後",
+  "basis": "確報予定時刻後",
   "generated_at": "2026-11-25T02:16:43.117467+09:00",
   "price_date": "2026-11-24",
   "judged_saved_at": "2026-11-25T02:16:46+09:00",
