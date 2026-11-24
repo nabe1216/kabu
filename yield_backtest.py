@@ -3902,7 +3902,7 @@ def _dps_timeline_fixed(stmts: list[dict], px: pd.DataFrame) -> pd.DataFrame:
     ev_d, ev_f = ev[0], ev[1]
     order = sorted(range(len(stmts)), key=lambda i_: (str((pdate(stmts[i_].get("DiscDate")) or pdate(stmts[i_].get("CurPerEn")) or "")), i_))
     recs, prev = [], None
-    pend = []   # DIV_BASIS_PIT：分割・併合の日に「あとの基準」へ切り替える予定（日付・値・開示日）
+    pit = []    # DIV_BASIS_PIT：(開示日, 選んだ値, 前の基準の値 または None, 切り替えの日 または None)
     for i_ in order:
         s = stmts[i_]
         d = pdate(s.get("DiscDate")) or pdate(s.get("CurPerEn"))
@@ -3923,6 +3923,7 @@ def _dps_timeline_fixed(stmts: list[dict], px: pd.DataFrame) -> pd.DataFrame:
             if v is None or v <= 0:
                 continue
         ts = pd.Timestamp(d)
+        pre_, sw_ = None, None
         if is_res:
             # 実績の年間配当：期末の7日前以降の分割・併合で直す（期の途中で分割・併合した期は使わない）
             fe_ = pdate(s.get("CurFYEn")) or pdate(s.get("CurPerEn"))
@@ -3941,19 +3942,24 @@ def _dps_timeline_fixed(stmts: list[dict], px: pd.DataFrame) -> pd.DataFrame:
                     and (ev_f[j_] >= LAB16_EV_MIN or ev_f[j_] <= 1.0 / LAB16_EV_MIN)):
                 alt = val / float(ev_f[j_])          # すでに分割・併合のあとの基準で出ていた、と読んだ値
                 if abs(np.log(alt / prev)) < abs(np.log(val / prev)):
-                    if DIV_BASIS_PIT and int(ts.value) < int(ev_d[j_]):
-                        # その分割・併合の日までは「前の基準」のまま（あとから分かる分割・併合を使わない）。その日に切り替える
-                        pend.append((pd.Timestamp(int(ev_d[j_])), alt, ts))
-                    else:
-                        val = alt
+                    if int(ts.value) < int(ev_d[j_]):
+                        pre_, sw_ = val, pd.Timestamp(int(ev_d[j_]))
+                    val = alt
         recs.append({"date": ts, "dps": val})
+        pit.append((ts, val, pre_, sw_))
         if val > 0 or not FORECAST_V52:
             prev = val       # 0円（無配の予想）は、分割・併合の基準の読み分けに使わない（直前の正の値を残す）
-    if pend:
-        # 切り替えの日までに、ほかの開示が出ていなければ、その日から「あとの基準」の値にする
-        for ed_, alt_, ts_ in pend:
-            if not any(ts_ < r_["date"] <= ed_ for r_ in recs):
-                recs.append({"date": ed_, "dps": alt_})
+    if DIV_BASIS_PIT and any(p_[2] is not None for p_ in pit):
+        # 2026年11月24日（直し）：読み分けの選び方（直前の値との比べ）は B と同じにしたうえで、「あとの基準」と読んだ開示の値は、
+        # その分割・併合の日までは「前の基準」で、その日から「あとの基準」で使う。どの日も「その日までのいちばん新しい開示」の値を使う。
+        # 1回目（e0c2bd1）は、切り替えの前にほかの開示が出ると切り替えを捨て、前の基準の値が直前の値として次の開示の読み分けに
+        # 引き継がれていた（併合では配当を大きく読み、分割・併合の日を過ぎても直らない）。実行 45331393168 の 1822 で見つけた
+        pts_ = sorted({p_[0] for p_ in pit} | {p_[3] for p_ in pit if p_[3] is not None})
+        recs = []
+        for t_ in pts_:
+            last_ = [p_ for p_ in pit if p_[0] <= t_][-1]
+            v_ = last_[2] if (last_[2] is not None and t_ < last_[3]) else last_[1]
+            recs.append({"date": t_, "dps": v_})
     if FORECAST_V52 and FORECAST_V52_POSONLY and not any(r_["dps"] > 0 for r_ in recs):
         return pd.DataFrame()
     if not recs:
