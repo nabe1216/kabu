@@ -1,6 +1,9 @@
 name: Generate Dividend Signals
 
-# 平日 19:30 JST = 10:30 UTC に自動実行
+# 2026年11月25日から：本番の起動は、Claude の定期タスクが火〜土の 1:05（日本時間）に GitHub の API で動かす（workflow_dispatch）。
+#   J-Quants の財務の確報（24時30分ごろ）のあとを狙った取得にするため。定時の実行（cron）は、届くのが8〜12時間遅れるので予備として残す。
+#   定時の実行が遅れずに確報の前（15:00〜翌1:00）に始まったときは、速報だけで判定を保存しないよう、何もしないで終える（下の「guard」）
+# 平日 19:30 JST = 10:30 UTC に自動実行（予備）
 # 土日は市場が閉まっていてデータが変わらないので動かさない。
 # （毎日動かすと GitHub Actions の無料枠 月2,000分 を超えるため）
 # 手動実行も可能（workflow_dispatch）
@@ -29,14 +32,31 @@ jobs:
     timeout-minutes: 120
 
     steps:
+      # 2026年11月24日（GPT のレビュー）：確報の前に始まった定時の実行は飛ばす（1:05 の起動が本番）
+      - name: Skip a scheduled run that starts before the final data
+        id: guard
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          hm=$((10#$(TZ=Asia/Tokyo date +%H%M)))
+          if [ "$EVENT" = "schedule" ] && { [ "$hm" -ge 1500 ] || [ "$hm" -lt 100 ]; }; then
+            echo "skip=1" >> "$GITHUB_OUTPUT"
+            echo "::notice::定時の実行が確報の前（日本時間 $(TZ=Asia/Tokyo date +%H:%M)）に始まったので飛ばします。1:05 の起動が本番です"
+          else
+            echo "skip=0" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout
+        if: steps.guard.outputs.skip != '1'
         uses: actions/checkout@v4
 
       # 毎日の自動点検（health_check.py）が、実行時間を見るために使う
       - name: Record start time
+        if: steps.guard.outputs.skip != '1'
         run: echo "RUN_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
 
       - name: Set up Python
+        if: steps.guard.outputs.skip != '1'
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -44,11 +64,13 @@ jobs:
           cache-dependency-path: scripts/requirements.txt
 
       - name: Install dependencies
+        if: steps.guard.outputs.skip != '1'
         run: |
           python -m pip install --upgrade pip
           pip install -r scripts/requirements.txt
 
       - name: Run generate.py
+        if: steps.guard.outputs.skip != '1'
         env:
           J_QUANTS_API_KEY: ${{ secrets.J_QUANTS_API_KEY }}
           LINE_CHANNEL_TOKEN: ${{ secrets.LINE_CHANNEL_TOKEN }}
@@ -59,13 +81,25 @@ jobs:
       # 2026年11月8日：毎日の自動点検。結果は data/health.json（ダッシュボードが警告を出す）。
       # 点検が失敗しても、判定の保存は止めない。
       - name: Health check
+        if: steps.guard.outputs.skip != '1'
         continue-on-error: true
         env:
           TZ: Asia/Tokyo
         run: |
           python scripts/health_check.py
 
+      # 2026年11月24日（GPT のレビュー）：起動のしかたと時刻を残す（確報後の取得かどうかを後から確かめるため。時刻と日付だけ）
+      - name: Record run times
+        if: steps.guard.outputs.skip != '1'
+        continue-on-error: true
+        env:
+          EVENT: ${{ github.event_name }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          python scripts/run_log.py
+
       - name: Commit and push results
+        if: steps.guard.outputs.skip != '1'
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
@@ -89,6 +123,9 @@ jobs:
           if [ -f data/health.json ]; then
             git add data/health.json
           fi
+          if [ -f data/run_log.json ]; then
+            git add data/run_log.json
+          fi
           # 財務データのキャッシュ（2026年11月8日から圧縮。古い圧縮なしのファイルは消したことも保存する）
           if [ -f data/stmts_cache.json.gz ]; then
             git add data/stmts_cache.json.gz
@@ -109,7 +146,7 @@ jobs:
           fi
 
       - name: Upload results as artifact (backup)
-        if: always()
+        if: always() && steps.guard.outputs.skip != '1'
         uses: actions/upload-artifact@v4
         with:
           name: results-${{ github.run_id }}
