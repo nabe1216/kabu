@@ -3823,6 +3823,7 @@ def _mid_event(ev, int_rec, fy_end) -> bool:
 
 
 FORECAST_V52 = False   # 2026年11月23日：本番の予想配当の選び方（v5.2：修正のお知らせ・0円）で計算する（only=audit_fix_v52）
+DIV_BASIS_PIT = False   # 2026年11月24日（GPT のレビュー 5通目）：270日の読み分けで「あとの基準」を採るのを、その分割・併合の日からにする（それより前の月末は、あとから分かる分割・併合を使わず「前の基準」で読む）。only=audit_fix_v52p
 FORECAST_V52_POSONLY = False   # 同じ日（B の結果を見たあとの切り分け用）：v5.2 の値で、正の配当が一度もない銘柄は外す（A と同じ銘柄の範囲。only=audit_fix_v52c）
 
 
@@ -3901,6 +3902,7 @@ def _dps_timeline_fixed(stmts: list[dict], px: pd.DataFrame) -> pd.DataFrame:
     ev_d, ev_f = ev[0], ev[1]
     order = sorted(range(len(stmts)), key=lambda i_: (str((pdate(stmts[i_].get("DiscDate")) or pdate(stmts[i_].get("CurPerEn")) or "")), i_))
     recs, prev = [], None
+    pend = []   # DIV_BASIS_PIT：分割・併合の日に「あとの基準」へ切り替える予定（日付・値・開示日）
     for i_ in order:
         s = stmts[i_]
         d = pdate(s.get("DiscDate")) or pdate(s.get("CurPerEn"))
@@ -3939,10 +3941,19 @@ def _dps_timeline_fixed(stmts: list[dict], px: pd.DataFrame) -> pd.DataFrame:
                     and (ev_f[j_] >= LAB16_EV_MIN or ev_f[j_] <= 1.0 / LAB16_EV_MIN)):
                 alt = val / float(ev_f[j_])          # すでに分割・併合のあとの基準で出ていた、と読んだ値
                 if abs(np.log(alt / prev)) < abs(np.log(val / prev)):
-                    val = alt
+                    if DIV_BASIS_PIT and int(ts.value) < int(ev_d[j_]):
+                        # その分割・併合の日までは「前の基準」のまま（あとから分かる分割・併合を使わない）。その日に切り替える
+                        pend.append((pd.Timestamp(int(ev_d[j_])), alt, ts))
+                    else:
+                        val = alt
         recs.append({"date": ts, "dps": val})
         if val > 0 or not FORECAST_V52:
             prev = val       # 0円（無配の予想）は、分割・併合の基準の読み分けに使わない（直前の正の値を残す）
+    if pend:
+        # 切り替えの日までに、ほかの開示が出ていなければ、その日から「あとの基準」の値にする
+        for ed_, alt_, ts_ in pend:
+            if not any(ts_ < r_["date"] <= ed_ for r_ in recs):
+                recs.append({"date": ed_, "dps": alt_})
     if FORECAST_V52 and FORECAST_V52_POSONLY and not any(r_["dps"] > 0 for r_ in recs):
         return pd.DataFrame()
     if not recs:
@@ -18349,6 +18360,12 @@ def main() -> int:
         args.only, _ex = args.only.split("@", 1)
         os.environ["AU_EXPLAIN"] = _ex.strip()
         log.info("説明：%s", _ex.strip())
+    if (args.only or "").strip() == "audit_fix_v52p":
+        # 2026年11月24日（GPT のレビュー 5通目）：B と同じで、270日の読み分けを分割・併合の日から使う（先読みの影響の上限を測る）
+        global DIV_BASIS_PIT
+        DIV_BASIS_PIT = True
+        args.only = "audit_fix_v52"
+        log.info("270日の読み分け：分割・併合の日から使う（それより前は前の基準）")
     if (args.only or "").strip() == "audit_fix_v52c":
         # 2026年11月23日（B の結果を見たあとに足した切り分け）：v5.2 の値で、銘柄の範囲は A と同じ（正の配当が一度もない銘柄は外す）
         global FORECAST_V52_POSONLY
