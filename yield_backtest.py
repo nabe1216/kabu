@@ -14164,7 +14164,7 @@ def _au_explain(sub: pd.DataFrame, runs: dict) -> None:
             m_ = mc[day["sector"].astype(str) == sec].dropna().sort_values(ascending=False)
             top = list(m_.index[:5])
             rk = (top.index(c_) + 1) if c_ in top else (int((m_ > mc.get(c_, np.nan)).sum()) + 1 if c_ in m_.index else None)
-        print(f"    {c_}：範囲 {bool(row.get('in_uni_live', False))}・8条件 {bool(row.get('screen_pass_np', False))}・利回り3％以上 {y3}・"
+        print(f"    {c_}：範囲 {bool(row.get('in_uni_live', False))}・利回り以外の7条件 {bool(row.get('screen_pass_np', False))}・利回り3％以上 {y3}・"
               f"Tier {row.get('tier_live_np', '-')}・業種 {sec} の時価総額の順位 {rk}・順番 {pos_.get(c_, '候補にない')}・"
               f"最初の約定 {[(sd_, sh_) for cc_, sd_, sh_ in first_tr if cc_ == c_] or 'なし'}")
         print(f"      業種 {sec} の時価総額の上位5社（範囲の中）：{top}")
