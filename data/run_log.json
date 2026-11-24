@@ -11,5 +11,18 @@
    "price_date": "2026-11-24",
    "decided_from": "2026-11-20"
   }
+ },
+ {
+  "run_id": "45483952573",
+  "event": "schedule",
+  "started_at": "2026-11-25T05:44:54+09:00",
+  "basis": "確報予定時刻後",
+  "generated_at": "2026-11-25T06:48:37.963849+09:00",
+  "price_date": "2026-11-24",
+  "judged_saved_at": "2026-11-25T06:48:40+09:00",
+  "processed": {
+   "price_date": "2026-11-24",
+   "decided_from": "2026-11-20"
+  }
  }
 ]
