@@ -46,9 +46,14 @@ jobs:
             echo "skip=0" >> "$GITHUB_OUTPUT"
           fi
 
+      # 2026年11月24日（GPT のレビュー 6通目）：ref を付けないと、起動のときのコミットを取り出す。
+      # 前の実行が終わるのを待っていた実行は、前の実行が保存した processed.json・portfolio_state.json を読まずに
+      # 同じ日を処理しうる。待ったあとで main のいちばん新しい状態を取り出す
       - name: Checkout
         if: steps.guard.outputs.skip != '1'
         uses: actions/checkout@v4
+        with:
+          ref: main
 
       # 毎日の自動点検（health_check.py）が、実行時間を見るために使う
       - name: Record start time
