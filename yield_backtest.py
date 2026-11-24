@@ -14177,14 +14177,45 @@ def _au_explain(sub: pd.DataFrame, runs: dict) -> None:
         px = quotes_to_df(qrows)
         keep = (FORECAST_V52, FORECAST_V52_POSONLY)
         vals = {}
+        tls = {}
         try:
             for lab_, v52_ in (("A", False), ("B", True)):
                 FORECAST_V52, FORECAST_V52_POSONLY = v52_, False
-                tl = dps_timeline(st_all, px)
+                # 2026年11月24日（GPT 4通目）：パネルは DIV_BASIS_FIX=True（lab16_with_fix）で作るので、手の計算も同じにする。
+                # 1回目の説明は DIV_BASIS_FIX=False のまま計算していて、パネルと食い違った
+                tl = lab16_with_fix(lambda: dps_timeline(st_all, px))
+                tls[lab_] = tl
                 tl = tl[tl["date"] <= d_] if not tl.empty else tl
                 vals[lab_] = (float(tl["dps"].iloc[-1]), pd.Timestamp(tl["date"].iloc[-1]).date()) if not tl.empty else (None, None)
+            FORECAST_V52, FORECAST_V52_POSONLY = True, False
+            tl_nofix = dps_timeline(st_all, px)   # 比べるため：基準のずれを直さない計算（1回目の説明と同じ）
         finally:
             FORECAST_V52, FORECAST_V52_POSONLY = keep
+        # 分割・併合など（株価の調整係数が1でない日）：2018年〜2019年
+        # 公開リポジトリのログなので、J-Quants の値（係数・配当・株価）は出さず、日付・向き・比だけを出す
+        evs = [f"{pd.Timestamp(dd).date()}（{'株数が増える向き' if float(aa) < 1 else '株数が減る向き'}・"
+               f"{'1.25倍以上' if (1 / float(aa) >= LAB16_EV_MIN or float(aa) >= LAB16_EV_MIN) else '1.25倍未満'}）"
+               for dd, aa in zip(px["date"], px["adj"])
+               if abs(float(aa) - 1.0) > 1e-12 and pd.Timestamp("2018-01-01") <= pd.Timestamp(dd) <= pd.Timestamp("2019-12-31")]
+        print(f"      株価の調整係数が1でない日（2018〜2019）：{evs or 'なし'}")
+        pdps = float(row.get("dps", np.nan)) if "dps" in row else np.nan
+        for lab_, tl_ in (("A（直す）", tls.get("A")), ("B（直す）", tls.get("B")), ("B（直さない）", tl_nofix)):
+            if tl_ is None or tl_.empty:
+                continue
+            w_ = tl_[(tl_["date"] > d_ - pd.DateOffset(months=4)) & (tl_["date"] <= d_)]
+            base_ = float(w_["dps"].iloc[0]) if len(w_) and float(w_["dps"].iloc[0]) else None
+            print(f"      {lab_} の予想配当の系列（6〜9月。最初の値を1とした比）："
+                  + " ／ ".join(f"{pd.Timestamp(a_).date()} {float(b_) / base_:.3f}" if base_ else f"{pd.Timestamp(a_).date()} -"
+                                for a_, b_ in zip(w_["date"], w_["dps"])))
+        if tls.get("B") is not None and not tls["B"].empty and not tl_nofix.empty:
+            b1 = tls["B"][tls["B"]["date"] <= d_]; b0 = tl_nofix[tl_nofix["date"] <= d_]
+            if len(b1) and len(b0) and float(b0["dps"].iloc[-1]):
+                print(f"      その月末の B の値：直す計算 ÷ 直さない計算 ＝ {float(b1['dps'].iloc[-1]) / float(b0['dps'].iloc[-1]):.4f}")
+        if vals["B"][0] is not None and pdps == pdps:
+            print(f"      パネルの予想配当と、手の計算（B・直す）の比：{vals['B'][0] / pdps:.4f}（1なら同じ）")
+        pxm_c = px[px["date"] <= d_]["close"]
+        if len(pxm_c) and float(row.get("price", 0) or 0) > 0:
+            print(f"      パネルの値段と、株価の列（調整後の終値）の月末の値の比：{float(row.get('price')) / float(pxm_c.iloc[-1]):.4f}（1なら同じ列）")
         va, vb = vals["A"][0], vals["B"][0]
         cmp_ = ("同じ" if (va is not None and vb is not None and abs(va - vb) < 1e-9) else
                 "A なし" if va is None else "B なし" if vb is None else ("B が大きい" if vb > va else "B が小さい"))
