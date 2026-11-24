@@ -20,7 +20,7 @@
   "judgment": "scripts/generate.py の判定（2026年11月23日の版：条件7〈EPS か BPS が0以下なら×〉・D1〈短信より後に出た同じ期の配当予想の修正を使う〉・D0〈業界トップは33業種の時価総額上位3社〉・財務キャッシュの取り直しの修正を含む）"
  },
  "sha256": {
-  "scripts/generate.py": "04092f636c0e9b09a3064356c7330b666865fcd083d9d66188ccfcda903ee144",
+  "scripts/generate.py": "17799ec0b4ff0ed5c2eb901212e270f8c9246381acde83488cfbd83642039042",
   "scripts/frozen_v1_engine.py": "af1549fff7c0cf1ac4ace301f09b4e69f930713bcf385c20df78926aa8b67c56",
   "scripts/frozen_v1_run.py": "71d46584a0cc3a5c763c9482c2f20489403606876584963d5787508b62454b39",
   "scripts/market_calendar.py": "a7ddbf308e2c53602b982defc7b6dce314928940a0815cf979bfdf6ffa4bb7fc"
@@ -124,12 +124,25 @@
   },
   {
    "on": "2026-11-24",
-   "reason": "",
+   "reason": "その日の株価の行が来ていない会社を古い終値で判定しない（ed57ea2）",
    "changed": [
     "scripts/generate.py"
    ],
    "previous_sha256": {
     "scripts/generate.py": "2278041d9fcb9f171a587b5104682a8e97b2f266c33ae5b080d3a52ecda7d60d",
+    "scripts/frozen_v1_engine.py": "af1549fff7c0cf1ac4ace301f09b4e69f930713bcf385c20df78926aa8b67c56",
+    "scripts/frozen_v1_run.py": "71d46584a0cc3a5c763c9482c2f20489403606876584963d5787508b62454b39",
+    "scripts/market_calendar.py": "a7ddbf308e2c53602b982defc7b6dce314928940a0815cf979bfdf6ffa4bb7fc"
+   }
+  },
+  {
+   "on": "2026-11-24",
+   "reason": "GPT のレビュー 3通目：未処理を種類で分ける（約定なし・データを確かめられない・不整合）・約定のなかった会社も業界トップの母集団に入れる",
+   "changed": [
+    "scripts/generate.py"
+   ],
+   "previous_sha256": {
+    "scripts/generate.py": "04092f636c0e9b09a3064356c7330b666865fcd083d9d66188ccfcda903ee144",
     "scripts/frozen_v1_engine.py": "af1549fff7c0cf1ac4ace301f09b4e69f930713bcf385c20df78926aa8b67c56",
     "scripts/frozen_v1_run.py": "71d46584a0cc3a5c763c9482c2f20489403606876584963d5787508b62454b39",
     "scripts/market_calendar.py": "a7ddbf308e2c53602b982defc7b6dce314928940a0815cf979bfdf6ffa4bb7fc"

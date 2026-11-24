@@ -513,6 +513,29 @@ def test_stale_price_rows():
     un2 = []
     keep2, _, stale2 = g.drop_stale_price_rows(st[:2], un2)
     check('行なし3：全社の最後の行がそろっていれば何も外さない', len(keep2) == 2 and not stale2 and not un2)
+    un3 = [{'code': 'D001', 'kind': 'no_trade', 'date': '2026-11-19', 'reason': 'x'},
+           {'code': 'E001', 'kind': 'no_trade', 'date': '2026-11-20', 'reason': 'y'}]
+    g.drop_stale_price_rows(st[:2], un3)
+    check('行なし4：約定なしの行が全体の最新日より前なら、その日の行がない（止める種類）に直す',
+          un3[0]['kind'] == 'no_data' and un3[1]['kind'] == 'no_trade', str(un3))
+
+
+def test_quote_kinds_and_leaders():
+    import generate as g
+    ok = {'Date': '2026-11-20', 'Open': 100, 'High': 101, 'Low': 99, 'Close': 100, 'Volume': 1000, 'TurnoverValue': 100000}
+    nt = {'Date': '2026-11-20', 'Open': None, 'High': None, 'Low': None, 'Close': None, 'Volume': None, 'TurnoverValue': None}
+    pa = {'Date': '2026-11-20', 'Open': 100, 'High': None, 'Low': None, 'Close': None, 'Volume': 10, 'TurnoverValue': 1000}
+    check('種類1：終値があれば ok・四本値と出来高・売買代金がすべて空なら約定なし・一部だけ欠けは不整合',
+          g.quote_row_kind(ok) == 'ok' and g.quote_row_kind(nt) == 'no_trade' and g.quote_row_kind(pa) == 'partial',
+          f"{g.quote_row_kind(ok)} {g.quote_row_kind(nt)} {g.quote_row_kind(pa)}")
+    check('種類2：止める種類は、データを確かめられない・不整合・理由不明（約定なしは止めない）',
+          set(g.STOP_KINDS) == {'no_data', 'partial', 'unknown'})
+    st = [{'code': c, 'sector33_code': '3200', 'market_cap_oku': m} for c, m in
+          (('P1', 900), ('P2', 800), ('P3', 700), ('P4', 600))]
+    base = g.compute_industry_leaders(st)
+    withx = g.compute_industry_leaders(st, extra={'X1': ('3200', 850)})
+    check('業界1：約定のなかった会社も業界トップの母集団に入る（4位以下が繰り上がらない）',
+          base == {'P1', 'P2', 'P3'} and withx == {'P1', 'X1', 'P2'}, f'{sorted(base)} {sorted(withx)}')
 
 
 if __name__ == '__main__':
@@ -529,6 +552,7 @@ if __name__ == '__main__':
     test_lookahead_guard()
     test_frozen_lookahead()
     test_stale_price_rows()
+    test_quote_kinds_and_leaders()
     ok = sum(1 for r in RESULTS if r[1])
     print(f'\n{ok}/{len(RESULTS)} PASS')
     json.dump([{'name': n, 'ok': o, 'detail': d} for n, o, d in RESULTS],

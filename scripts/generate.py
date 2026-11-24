@@ -459,6 +459,29 @@ class JQuantsClient:
 STMTS_CACHE_DAYS = 7
 MIN_COVERAGE_FOR_PAPER = 0.98   # 2026年11月：取得の失敗が0でも、処理できた銘柄がこれより少ない日は進めない（念のための線）
 _SKIP_REASON: dict[str, str] = {}   # 2026年11月24日：process_stock が None を返した理由（results.json の unprocessed）
+# 2026年11月24日（GPT のレビュー 3通目）：未処理の種類。止めるかどうかを、理由の文ではなく種類で決める
+#   no_trade … その日の行はあり、四本値・出来高・売買代金がすべて空（J-Quants の無約定・終日売買停止の形）。
+#              市場で値段が付かなかったので、持ち株でなければ外して続ける
+#   no_data  … 行が0件・最近の行がない・その日の行がない。こちらがデータを確かめられないので止める
+#   partial  … 値段の一部だけが欠けている（無約定の形と違う）。不整合なので止める
+_SKIP_KIND: dict[str, str] = {}
+_SKIP_DATE: dict[str, str] = {}   # その会社の最後の行の日付（約定なしの行がその日のものかを、全体の最新日と比べる）
+# 業界トップ（業種内の時価総額上位3社）の母集団に、その日に約定のなかった会社も入れる（note の定義は「対象にある上位3社」）。
+# code -> (33業種コード, 最後に値段が付いた日の終値で計算した時価総額・億円)
+_LEADER_EXTRA: dict[str, tuple[str, float]] = {}
+STOP_KINDS = ('no_data', 'partial', 'unknown')
+
+
+def quote_row_kind(q: dict) -> str:
+    """その日の行の形：'ok'（終値あり）・'no_trade'（四本値・出来高・売買代金がすべて空）・'partial'（一部だけ欠け・0以下）。"""
+    c = safe_float(q.get('Close'))
+    if c is not None and c > 0:
+        return 'ok'
+    ohlc = [q.get(k) for k in ('Open', 'High', 'Low', 'Close')]
+    vol = [q.get(k) for k in ('Volume', 'TurnoverValue')]
+    if all(v is None for v in ohlc) and all(v in (None, 0, 0.0) for v in vol):
+        return 'no_trade'
+    return 'partial'
 
 
 def drop_stale_price_rows(stocks: list, unprocessed: list) -> tuple:
@@ -476,8 +499,15 @@ def drop_stale_price_rows(stocks: list, unprocessed: list) -> tuple:
         return stocks, None, []
     stale = [c for c, d in last.items() if d < latest]
     for c in stale:
-        unprocessed.append({'code': c, 'reason': f"その日（{latest}）の株価の行がない（最後の行は{last[c] or 'なし'}。"
-                                                 f"データが届いていない・売買停止など。古い終値で判定しない）"})
+        unprocessed.append({'code': c, 'kind': 'no_data',
+                            'reason': f"その日（{latest}）の株価の行がない（最後の行は{last[c] or 'なし'}。"
+                                      f"データを確かめられない。古い終値で判定しない）"})
+    # 約定なしの行が、全体の最新日より前の日付なら、その日の行は来ていない（データを確かめられない）
+    for x in unprocessed:
+        if x.get('kind') == 'no_trade' and x.get('date') and x['date'] < latest:
+            x['kind'] = 'no_data'
+            x['reason'] = f"その日（{latest}）の株価の行がない（最後の行は{x['date']}で、それも約定なし。データを確かめられない）"
+            _LEADER_EXTRA.pop(x['code'], None)
     keep = [x for x in stocks if x['code'] not in set(stale)]
     return keep, latest, stale
 # 2026年11月8日：92MB まで大きくなり GitHub の上限（100MB）に近づいたので、圧縮して保存する（約6MB）。
@@ -1192,7 +1222,8 @@ def is_progressive_or_doe(code: str) -> bool:
     return code in PROGRESSIVE_DIVIDEND_LIST or code in DOE_LIST
 
 
-def compute_industry_leaders(stocks: list[dict[str, Any]]) -> set[str]:
+def compute_industry_leaders(stocks: list[dict[str, Any]],
+                             extra: dict[str, tuple[str, float]] | None = None) -> set[str]:
     """
     全銘柄プロセス後に呼ぶ。「業界首位級」銘柄コードのセットを返す。
 
@@ -1214,6 +1245,10 @@ def compute_industry_leaders(stocks: list[dict[str, Any]]) -> set[str]:
         if not sector33 or mcap <= 0:
             continue
         sector_groups.setdefault(sector33, []).append((s['code'], mcap))
+    # 2026年11月24日：その日に約定のなかった会社（処理はしない）も、母集団には入れる（note の「対象にある上位3社」と同じ）
+    for code, (sector33, mcap) in (extra or {}).items():
+        if sector33 and mcap and mcap > 0:
+            sector_groups.setdefault(sector33, []).append((code, mcap))
 
     for sector33, members in sector_groups.items():
         members.sort(key=lambda x: -x[1])
@@ -1817,6 +1852,48 @@ def get_shares_outstanding(statements: list[dict[str, Any]], np_value: float | N
     return None
 
 
+def estimate_market_cap_oku(statements: list[dict[str, Any]], quotes_sorted: list[dict[str, Any]], price: float) -> float:
+    """時価総額（億円）＝ 値段 × 発行済株式数（分割を直す）。分からなければ 0。process_stock と同じ計算。"""
+    latest_np_for_shares = get_latest_full_year_metric(statements, 'NP')
+    shares_raw, shares_date = (None, None)
+    for s in _sorted_fy_statements(statements):
+        v = safe_float(s.get('ShOutFY'))
+        if v is not None and v > 0:
+            shares_raw = v
+            shares_date = parse_date(s.get('DiscDate')) or parse_date(s.get('CurPerEn'))
+            break
+    if shares_raw is None:
+        # NP / EPS から逆算（結果は分割調整済みと等価。shares_date=None で係数1）
+        shares_raw = get_shares_outstanding(statements, latest_np_for_shares)
+        shares_date = None
+    if shares_raw is not None and shares_raw > 0:
+        adj_shares = cumulative_adj_factor_after(quotes_sorted, shares_date)
+        shares = shares_raw / adj_shares if adj_shares > 0 else shares_raw
+        return (price * shares) / 1e8
+    return 0.0
+
+
+def _add_leader_extra(client: 'JQuantsClient', code: str, sector33: str, quotes_all: list[dict[str, Any]]) -> None:
+    """その日に約定のなかった会社を、業界トップの母集団にだけ入れる（最後に値段が付いた日の終値で時価総額を出す）。
+    財務が取れなければ取得の失敗に数える（母集団が欠けたまま業界トップを決めないため）。"""
+    qs = sorted(quotes_all, key=lambda q: q.get('Date', ''))
+    last_c = next((safe_float(q.get('Close')) for q in reversed(qs)
+                   if (safe_float(q.get('Close')) or 0) > 0), None)
+    if not last_c:
+        return
+    time.sleep(API_SLEEP_SEC)
+    try:
+        statements = client.get_statements(code)
+    except Exception as e:
+        log.warning('statements fail (no_trade) %s: %s', code, e)
+        _FETCH_ERRORS['n'] += 1
+        _FETCH_ERRORS['codes'].append(code)
+        return
+    mcap = estimate_market_cap_oku(statements, qs, last_c)
+    if mcap > 0:
+        _LEADER_EXTRA[code] = (sector33, mcap)
+
+
 # ============================================================================
 # (14) 個別銘柄の処理
 # ============================================================================
@@ -1866,14 +1943,16 @@ def process_stock(
 
     if not quotes_all:
         log.debug('no quotes for %s', code)
-        _SKIP_REASON[code] = '株価が0件（取得は成功。上場廃止・売買停止など）'
+        _SKIP_REASON[code] = '株価の行が0件（取得は成功。データを確かめられない：取得の日付・条件を確かめる）'
+        _SKIP_KIND[code] = 'no_data'
         return None
 
     quotes_all.sort(key=lambda q: q.get('Date', ''))
     quotes = [q for q in quotes_all if (parse_date(q.get('Date')) or date.min) >= short_from]
     if not quotes:
         log.debug('no recent quotes for %s', code)
-        _SKIP_REASON[code] = '最近の株価がない（取得は成功）'
+        _SKIP_REASON[code] = '最近の株価の行がない（取得は成功。データを確かめられない）'
+        _SKIP_KIND[code] = 'no_data'
         return None
     # 株価の記録が9年分の範囲の始まり（＋14日）までに始まっていれば、それより前が見えないのは取った範囲の都合
     # （J-Quants が黙って範囲を縮めて返したときも同じ）。その日より前の分割・併合は読めないので、古い期を減配の比べから外す。
@@ -1883,7 +1962,16 @@ def process_stock(
     last_quote = quotes[-1]
     price = safe_float(last_quote.get('Close'))
     if price is None or price <= 0:
-        _SKIP_REASON[code] = f"最後の日（{last_quote.get('Date')}）の終値がない（値段が空の行。その日に売買がない・売買停止など。判定できない）"
+        kind = quote_row_kind(last_quote)
+        if kind == 'no_trade':
+            _SKIP_REASON[code] = (f"その日（{last_quote.get('Date')}）は約定なし（四本値・出来高・売買代金がすべて空の行。"
+                                  f"売買停止・取引なし。値段が付かないので判定しない）")
+            _SKIP_KIND[code] = 'no_trade'
+            _SKIP_DATE[code] = str(last_quote.get('Date') or '')
+            _add_leader_extra(client, code, sector33, quotes_all)
+        else:
+            _SKIP_REASON[code] = f"その日（{last_quote.get('Date')}）の値段の一部だけが欠けている（無約定の形と違う。確かめる）"
+            _SKIP_KIND[code] = 'partial'
         return None
 
     time.sleep(API_SLEEP_SEC)
@@ -1903,28 +1991,8 @@ def process_stock(
 
     # --- 時価総額の計算 (V2の listed_info には含まれないため、価格 × 発行株数で算出) ---
     if market_cap_oku <= 0:
-        # 株式数は分割調整が必要 (1:5分割なら、過去FYの shares × 5 = 現在の shares)
-        latest_np_for_shares = get_latest_full_year_metric(statements, 'NP')
-        shares_raw, shares_date = (None, None)
-        for s in _sorted_fy_statements(statements):
-            v = safe_float(s.get('ShOutFY'))
-            if v is not None and v > 0:
-                shares_raw = v
-                shares_date = parse_date(s.get('DiscDate')) or parse_date(s.get('CurPerEn'))
-                break
-        if shares_raw is None:
-            # NP / EPS から逆算 (EPS は分割調整が必要)
-            shares_raw = get_shares_outstanding(statements, latest_np_for_shares)
-            # この場合 shares_date は EPS の disclosure 日、ただし既に NP/EPS で打ち消し合うため
-            # 結果は分割調整済みと等価。以下では shares_date=None として扱う (係数=1)
-            shares_date = None
-        if shares_raw is not None and shares_raw > 0:
-            # 分割があれば総株式数は増える (1:5分割なら × 5、つまり factor で割る)
-            adj_shares = cumulative_adj_factor_after(quotes_sorted, shares_date)
-            shares = shares_raw / adj_shares if adj_shares > 0 else shares_raw
-            market_cap_oku = (price * shares) / 1e8
-        else:
-            market_cap_oku = 0.0  # 不明扱い
+        # 株式数は分割調整が必要 (1:5分割なら、過去FYの shares × 5 = 現在の shares)。計算は estimate_market_cap_oku に移した
+        market_cap_oku = estimate_market_cap_oku(statements, quotes_sorted, price)
 
     # --- 指標抽出 (extract系は分割調整済) ---
     div_annual = extract_annual_dividends(statements, quotes_sorted=quotes_sorted,
@@ -2311,11 +2379,13 @@ def main() -> int:
             if result is not None:
                 stocks.append(result)
             else:
-                unprocessed.append({'code': code, 'reason': _SKIP_REASON.get(code, '理由不明（process_stock が None）')})
+                unprocessed.append({'code': code, 'kind': _SKIP_KIND.get(code, 'unknown'),
+                                    'reason': _SKIP_REASON.get(code, '理由不明（process_stock が None）'),
+                                    **({'date': _SKIP_DATE[code]} if code in _SKIP_DATE else {})})
         except Exception as e:
             log.warning('Failed %s: %s', code, e)
             failures += 1
-            unprocessed.append({'code': code, 'reason': f'例外：{type(e).__name__}'})
+            unprocessed.append({'code': code, 'kind': 'error', 'reason': f'例外：{type(e).__name__}'})
 
         if i % 50 == 0:
             log.info('Progress: %d/%d (failures=%d)', i, n_total, failures)
@@ -2354,8 +2424,8 @@ def main() -> int:
 
     # --- Tier 判定 (全銘柄プロセス後に一括計算) ---
     log.info('Computing industry leaders...')
-    industry_leaders = compute_industry_leaders(stocks)
-    log.info('Industry leaders: %d stocks', len(industry_leaders))
+    industry_leaders = compute_industry_leaders(stocks, extra=_LEADER_EXTRA)
+    log.info('Industry leaders: %d stocks（約定のなかった会社 %d 社を母集団に含む）', len(industry_leaders), len(_LEADER_EXTRA))
 
     tier_counts: dict[str, int] = defaultdict(int)
     for s in stocks:
@@ -2485,13 +2555,15 @@ def main() -> int:
     except Exception:
         pass
     _held_skipped = [x['code'] for x in unprocessed if x['code'] in _held]
-    # 理由の分からない未処理は、持ち株でなくても止める（候補の順番に響きうるため）。株価が0件・最近の株価がない・
-    # その日の終値がない（値段が空の行）・その日の株価の行がない会社は、その日に値段を付けられないので、本番でも買えない
-    # （持ち株なら上で止める）
-    _held_skipped += [x['code'] for x in unprocessed if x['reason'].startswith('理由不明') and x['code'] not in _held_skipped]
+    # 2026年11月24日（GPT のレビュー 3通目）：止めるかどうかは未処理の種類で決める。
+    #   no_trade（その日の行があり、値段がすべて空＝市場で約定なし）は、持ち株でなければ外して続ける（本番でも買えない）
+    #   no_data（行が0件・その日の行がない）・partial（一部だけ欠け）・unknown（理由不明）は、こちらがデータを
+    #   確かめられていないので、持ち株でなくても止める（候補の順番や業界トップに響きうるため）
+    _data_skipped = [x['code'] for x in unprocessed if x.get('kind', 'unknown') in STOP_KINDS and x['code'] not in _held_skipped]
+    _held_skipped += _data_skipped
     if failures or _FETCH_ERRORS['n'] or _FORECAST_CONFLICTS or _held_skipped \
             or (n_total and len(stocks) < n_total * MIN_COVERAGE_FOR_PAPER):
-        log.error('Portfolio: 止めました（取得の失敗 %d 社・例外 %d 社・予想の競合 %d 件・処理できなかった持ち株 %s・処理できた銘柄 %d / %d）。'
+        log.error('Portfolio: 止めました（取得の失敗 %d 社・例外 %d 社・予想の競合 %d 件・止める未処理（持ち株・データを確かめられない会社） %s・処理できた銘柄 %d / %d）。'
                   '検証運用と並走記録は進めない', _FETCH_ERRORS['n'], failures, len(_FORECAST_CONFLICTS),
                   ','.join(_held_skipped) or 'なし', len(stocks), n_total)
         return 0
