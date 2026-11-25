@@ -14255,6 +14255,248 @@ def _au_explain(sub: pd.DataFrame, runs: dict) -> None:
         print("      その月末までの15か月の開示：" + (" ／ ".join(rows_) if rows_ else "なし"))
 
 
+AU_STRICT = False   # 2026年11月25日（GPT のレビュー 7通目の1）：only=audit_fix_v52s。判定の月末ごとに、その月末までの株価・開示・分割・併合だけで作り直して比べる
+
+
+def _au_strict(sub: pd.DataFrame, runs: dict, args, kw: dict, mx: int, cal) -> None:
+    """2026年11月25日（B-STRICT。計画は audit_v52_plan_2026-11-23 の 11/25 の追記）：
+    判定の月末 D ごとに、株価を D まで・開示を D までに切って予想配当の系列を一から作り直し（読み分けも直前の値の引き継ぎも
+    D までの分割・併合だけで決まる）、その値に置き換えたパネルで M_pit と M を回して B と比べる。
+    D より後の分割・併合の係数は、値段（調整後の終値）と同じ基準にそろえるためだけに掛ける（判断には使わない）。
+    対象は「D の後270日以内に、株価の調整係数が1でない日がある」月末だけ。それ以外の月末では、D より後の分割・併合は
+    どの開示の読み分けにも、係数の掛け方にも効かないので、作り直しても B と同じになる（300件で確かめる）。
+    ログには件数・コード・日付・向き・大きさの区分・ハッシュ・成績だけを出す（J-Quants の値は出さない）。"""
+    global DIV_BASIS_PIT, FORECAST_V52_POSONLY
+    import hashlib as _hl
+    print("\n  S. 判定の時点で使えた情報だけで作り直した計算（B-STRICT。計画は audit_v52_plan_2026-11-23 の 11/25 の追記）。値は出さない")
+    store = AU_STORE or {}
+    stq, sts = store.get("quotes", {}), store.get("stmts", {})
+    if not stq:
+        print("    株価と開示の行を読めないので、確かめられません")
+        return
+    W_ns = int(pd.Timedelta(days=LAB16_EV_DAYS).value)
+    one_d = pd.Timedelta(days=1)
+    dates_by_code = sub.groupby("code")["date"].apply(lambda s_: sorted(pd.Timestamp(x_) for x_ in s_.unique()))
+    keep = (DIV_BASIS_PIT, FORECAST_V52_POSONLY)
+
+    def _disc(s_):
+        dd_ = pdate(s_.get("DiscDate")) or pdate(s_.get("CurPerEn"))
+        return pd.Timestamp(dd_) if dd_ is not None else None
+
+    def _strict_at(d_, px, ev_full, st_all):
+        """その月末 D までの情報だけで作り直した (予想配当, 利回り, 減配の印, 2年の増配率)。今の基準にそろえた値。"""
+        pxD = px[px["date"] <= d_]
+        if pxD.empty:
+            return None
+        stD = [s_ for s_ in st_all if (_disc(s_) is not None and _disc(s_) <= d_)]
+        tl = lab16_with_fix(lambda: dps_timeline(stD, pxD))
+        if tl is None or tl.empty:
+            return None
+        fa = _fac_from(ev_full, d_ + one_d)
+        m_ = pxD.set_index("date")["close"].resample("ME").last().dropna()
+        if d_ not in m_.index:
+            return None
+        dser = tl.set_index("date")["dps"].reindex(m_.index, method="ffill") * fa
+        dv, mv = dser.loc[d_], float(m_.loc[d_])
+        if dv != dv:
+            return None
+        y_ = float(dv) / mv * 100.0 if mv else float("nan")
+        pmax = dser.rolling(12, min_periods=2).max().shift(1).loc[d_]
+        cut_ = bool(pmax == pmax and float(dv) < float(pmax) * 0.999)
+        gr_ = float(dser.pct_change(24).loc[d_] * 100.0 / 2.0) if len(dser) > 24 else float("nan")
+        return float(dv), y_, cut_, gr_
+
+    tgt, oth = [], []
+    n_ev_codes = 0
+    pxs, evs = {}, {}
+    for c_, ds_ in dates_by_code.items():
+        q_ = stq.get(c_)
+        if not q_:
+            continue
+        px = quotes_to_df(q_)
+        if px.empty:
+            continue
+        ev_full = _div_events(px)
+        evd = ev_full[0]
+        if len(evd):
+            n_ev_codes += 1
+        pxs[c_], evs[c_] = px, ev_full
+        for d_ in ds_:
+            dn = int(d_.value)
+            j_ = int(np.searchsorted(evd, dn, side="right"))
+            if j_ < len(evd) and int(evd[j_]) - dn <= W_ns:
+                tgt.append((c_, d_))
+            else:
+                oth.append((c_, d_))
+    print(f"    パネルの銘柄×月末 {len(tgt) + len(oth)}件・株価の調整係数が1でない日がある銘柄 {n_ev_codes}社・"
+          f"対象（D の後270日以内に調整の日がある月末）{len(tgt)}件")
+
+    bidx = {(str(c_), pd.Timestamp(d_)): i_ for i_, c_, d_ in zip(sub.index, sub["code"], sub["date"])}
+    res = {}
+    t0_ = time.time()
+    try:
+        DIV_BASIS_PIT, FORECAST_V52_POSONLY = False, False
+        # 確かめの確かめ：対象でない月末から300件
+        rng_ = np.random.default_rng(20261125)
+        pick = [oth[i_] for i_ in sorted(rng_.choice(len(oth), size=min(300, len(oth)), replace=False))] if oth else []
+        n_ok = n_bad = n_none = 0
+        bad_ = []
+        for c_, d_ in pick:
+            r_ = _strict_at(d_, pxs[c_], evs[c_], sts.get(c_, []))
+            row = sub.loc[bidx[(str(c_), d_)]]
+            if r_ is None:
+                n_none += 1
+                continue
+            same = (abs(r_[0] - float(row["dps"])) <= 1e-9 * max(1.0, abs(float(row["dps"])))
+                    and abs(r_[1] - float(row["yield"])) <= 1e-9 * max(1.0, abs(float(row["yield"]))))
+            if same:
+                n_ok += 1
+            else:
+                n_bad += 1
+                bad_.append(f"{c_}@{d_.date()}")
+        print(f"    確かめの確かめ（対象でない月末から {len(pick)}件）：一致 {n_ok}・不一致 {n_bad}・作り直せない {n_none}"
+              + (f"（不一致：{' '.join(bad_[:20])}）" if bad_ else ""))
+        if n_bad:
+            print("    → 作り直しの方法が B の計算と合っていないので、この確認の結果は使わない（計画どおり、直してから回し直す）")
+        # 対象の月末
+        for c_, d_ in tgt:
+            r_ = _strict_at(d_, pxs[c_], evs[c_], sts.get(c_, []))
+            if r_ is not None:
+                res[(c_, d_)] = r_
+        # B-PIT2（直した 8299f90 の形）の値：銘柄ごとに全期間の系列を1回作り、月末の値を引く
+        pit2 = {}
+        DIV_BASIS_PIT = True
+        for c_ in sorted({c_ for c_, _ in tgt}):
+            px = pxs[c_]
+            tl2 = lab16_with_fix(lambda: dps_timeline(sts.get(c_, []), px))
+            if tl2 is None or tl2.empty:
+                continue
+            m_ = px.set_index("date")["close"].resample("ME").last().dropna()
+            pit2[c_] = tl2.set_index("date")["dps"].reindex(m_.index, method="ffill")
+        DIV_BASIS_PIT = False
+    finally:
+        DIV_BASIS_PIT, FORECAST_V52_POSONLY = keep
+    print(f"    作り直しにかかった時間 {time.time() - t0_:.0f}秒")
+
+    # 比べる（件数だけ）
+    def _rel(a_, b_):
+        return abs(a_ - b_) / max(abs(b_), 1e-12)
+    n_cmp = n_dB = n_dP = n_up = n_dn = 0
+    buck = {"1％未満": 0, "1〜10％": 0, "10〜50％": 0, "50％以上": 0}
+    flips, cutf, chg = [], 0, {}
+    for (c_, d_), (dv, y_, cut_, gr_) in res.items():
+        i_ = bidx.get((str(c_), d_))
+        if i_ is None:
+            continue
+        row = sub.loc[i_]
+        bd, by = float(row["dps"]), float(row["yield"])
+        n_cmp += 1
+        p2 = pit2.get(c_)
+        if p2 is not None and d_ in p2.index and p2.loc[d_] == p2.loc[d_]:
+            if _rel(dv, float(p2.loc[d_])) > 1e-9:
+                n_dP += 1
+        bcut = bool(row.get("dps_cut", False))
+        if _rel(dv, bd) > 1e-9 or cut_ != bcut:
+            chg[i_] = (dv, y_, cut_, gr_)
+        if _rel(dv, bd) > 1e-9:
+            n_dB += 1
+            n_up += int(dv > bd)
+            n_dn += int(dv < bd)
+            r_ = _rel(dv, bd)
+            buck["1％未満" if r_ < 0.01 else "1〜10％" if r_ < 0.10 else "10〜50％" if r_ < 0.50 else "50％以上"] += 1
+            if (by >= 3.0) != (y_ >= 3.0):
+                flips.append(f"{c_}@{d_.date()}({'3％以上→未満' if by >= 3.0 else '3％未満→以上'})")
+        if cut_ != bcut:
+            cutf += 1
+    print(f"    対象のうち作り直せた {n_cmp}件：予想配当が B と違う {n_dB}件（大きい {n_up}・小さい {n_dn}）・"
+          f"B-PIT2 と違う {n_dP}件・減配の印が変わる {cutf}件")
+    print("    違いの大きさ：" + " ／ ".join(f"{k_} {v_}件" for k_, v_ in buck.items()))
+    print(f"    利回り3％の足切りが変わる {len(flips)}件" + (f"：{' '.join(flips[:40])}" if flips else ""))
+
+    # 置き換えたパネル
+    sub_s = sub.copy()
+    pay_redo = pay_flip = scr_flip = 0
+    for i_, (dv, y_, cut_, gr_) in chg.items():
+        sub_s.at[i_, "dps"] = dv
+        sub_s.at[i_, "yield"] = y_
+        sub_s.at[i_, "dps_cut"] = cut_
+        if "dps_growth" in sub_s.columns:
+            sub_s.at[i_, "dps_growth"] = gr_
+        # 配当性向が空の行は「予想配当 ÷ 1株利益」で判定している → 条件と合否を計算し直す
+        if "payout" in sub_s.columns and pd.isna(sub_s.at[i_, "payout"]) and "screen_pass_np" in sub_s.columns:
+            pay_redo += 1
+            e_ = pd.to_numeric(pd.Series([sub_s.at[i_, "eps"]]), errors="coerce").iloc[0] if "eps" in sub_s.columns else np.nan
+            if e_ == e_ and e_ > 0:
+                pv = dv / e_
+                pv = pv if pv >= 3 else pv * 100
+                p_ok = bool(pv <= 50.0)
+            else:
+                p_ok = True
+            old_p = bool(sub_s.at[i_, "scr_pay"]) if "scr_pay" in sub_s.columns else True
+            if p_ok != old_p:
+                pay_flip += 1
+            od = sub_s.at[i_, "ok_div"] if "ok_div" in sub_s.columns else None
+            d_ok = True if (od is None or pd.isna(od)) else bool(od)
+            others_ok = all(bool(sub_s.at[i_, "scr_" + k_]) for k_ in ("sales", "op", "np", "eq", "val") if ("scr_" + k_) in sub_s.columns)
+            new_np = bool(d_ok and p_ok and others_ok)
+            if new_np != bool(sub_s.at[i_, "screen_pass_np"]):
+                scr_flip += 1
+            sub_s.at[i_, "screen_pass_np"] = new_np
+            if "scr_pay" in sub_s.columns:
+                sub_s.at[i_, "scr_pay"] = p_ok
+    ch_dates = sorted({pd.Timestamp(sub.at[i_, "date"]) for i_ in chg})
+    if ch_dates and "pct_cross" in sub_s.columns:
+        m_ = sub_s["date"].isin(ch_dates)
+        sub_s.loc[m_, "pct_cross"] = sub_s.loc[m_].groupby("date")["yield"].rank(pct=True) * 100.0
+    print(f"    置き換えた行 {len(chg)}件（月末 {len(ch_dates)}回）・配当性向を予想配当から計算し直した行 {pay_redo}件"
+          f"（配当性向の条件が変わる {pay_flip}件・8条件の合否が変わる {scr_flip}件）")
+
+    # 買う順番の候補（範囲・8条件・3％以上。Tier 順、同じ Tier は利回りの高い順）が変わる月末
+    def _cands(df_):
+        ok_ = df_[df_["in_uni_live"].astype(bool) & df_["screen_pass_np"].astype(bool) & (pd.to_numeric(df_["yield"], errors="coerce") >= 3.0)]
+        tr_ = ok_["tier_live_np"].map({"S": 0, "A": 1, "B": 2}).fillna(3)
+        ok_ = ok_.assign(_t=tr_).sort_values(["_t", "yield"], ascending=[True, False], kind="stable")
+        return list(ok_["code"].astype(str))
+    n_set = n_top = 0
+    top_d = []
+    for d_ in ch_dates:
+        a_ = _cands(sub[sub["date"] == d_])
+        b_ = _cands(sub_s[sub_s["date"] == d_])
+        if set(a_) != set(b_):
+            n_set += 1
+        if a_[:20] != b_[:20]:
+            n_top += 1
+            top_d.append(str(d_.date()))
+    print(f"    候補の顔ぶれが変わる月末 {n_set}回・上位20社の並びが変わる月末 {n_top}回" + (f"（{' '.join(top_d[:30])}）" if top_d else ""))
+
+    # 置き換えたパネルで M_pit と M を回す
+    def _tl(r_):
+        t_ = r_["trades"] if r_ is not None else pd.DataFrame()
+        if t_ is None or t_.empty:
+            return []
+        return [f"{pd.Timestamp(a_).date()} {c_} {s_} {int(h_)}" for a_, c_, s_, h_ in zip(t_["date"], t_["code"], t_["side"], t_["shares"])]
+    _, _, yrs_ = _au_years(sorted(sub["date"].unique()), cal, None)
+    for k_, n_ in AU_ROWS:
+        if k_ not in ("M_pit", "M"):
+            continue
+        rb = runs.get(k_)
+        rs = simulate(sub_s, VARIANTS[n_], args.capital, mx, **kw)
+        la, lb = _tl(rb), _tl(rs)
+        ha = _hl.sha256("\n".join(la).encode()).hexdigest()[:16]
+        hb = _hl.sha256("\n".join(lb).encode()).hexdigest()[:16]
+        va, vb = float(rb["curve"]["value"].iloc[-1]), float(rs["curve"]["value"].iloc[-1])
+        lva, lvb = float(rb.get("liq_value", float("nan"))), float(rs.get("liq_value", float("nan")))
+        sa_, sb_ = set(la), set(lb)
+        print(f"    {k_}：売買 B {len(la)}件（{ha}）／ B-STRICT {len(lb)}件（{hb}）・{'同じ' if la == lb else '違う'}"
+              f"・B だけ {len(sa_ - sb_)}件・B-STRICT だけ {len(sb_ - sa_)}件")
+        print(f"      清算後年率 B {((lva / args.capital) ** (1 / yrs_) - 1) * 100:.2f}％ ／ B-STRICT {((lvb / args.capital) ** (1 / yrs_) - 1) * 100:.2f}％・"
+              f"評価額年率 B {((va / args.capital) ** (1 / yrs_) - 1) * 100:.2f}％ ／ B-STRICT {((vb / args.capital) ** (1 / yrs_) - 1) * 100:.2f}％（年数 {yrs_:.3f}年）")
+        for x_ in sorted(sa_ - sb_)[:15]:
+            print(f"      B だけ：{x_}")
+        for x_ in sorted(sb_ - sa_)[:15]:
+            print(f"      B-STRICT だけ：{x_}")
+
+
 def audit_report(gf: pd.DataFrame, cond_cols: list, pn: pd.DataFrame, wins, args, span) -> dict:
     """2026年11月22日（audit_fix）：仕様どおりに直した現行ルールの再試算。計画は audit_fix_plan_2026-11-22。
     2026年11月23日（audit_fix2）：観測済みの月だけにした版。計画は audit_fix2_plan_2026-11-23。"""
@@ -14302,6 +14544,11 @@ def audit_report(gf: pd.DataFrame, cond_cols: list, pn: pd.DataFrame, wins, args
         _au_explain(sub, runs)
     except Exception as e_:
         log.exception("説明（AU_EXPLAIN）を出せませんでした: %s", e_)
+    if AU_STRICT:
+        try:
+            _au_strict(sub, runs, args, kw, mx, cal)
+        except Exception as e_:
+            log.exception("判定の時点の情報だけで作り直した計算（B-STRICT）を出せませんでした: %s", e_)
 
     # 2. 年ごとの受け取る配当（税引き前・権利の年）
     print("\n  2. 年ごとの受け取る配当（税引き前・権利確定の年で数える。円）")
@@ -18366,6 +18613,12 @@ def main() -> int:
         args.only, _ex = args.only.split("@", 1)
         os.environ["AU_EXPLAIN"] = _ex.strip()
         log.info("説明：%s", _ex.strip())
+    if (args.only or "").strip() == "audit_fix_v52s":
+        # 2026年11月25日（GPT のレビュー 7通目の1）：B と同じパネル・売買のあとで、判定の月末ごとにその月末までの情報だけで作り直して比べる
+        global AU_STRICT
+        AU_STRICT = True
+        args.only = "audit_fix_v52"
+        log.info("判定の時点の情報だけで作り直した計算（B-STRICT）も出す")
     if (args.only or "").strip() == "audit_fix_v52p":
         # 2026年11月24日（GPT のレビュー 5通目）：B と同じで、270日の読み分けを分割・併合の日から使う（先読みの影響の上限を測る）
         global DIV_BASIS_PIT
