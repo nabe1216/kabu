@@ -1,5 +1,5 @@
 {
- "generated_at": "2026-11-26T02:11:51+09:00",
+ "generated_at": "2026-11-26T06:01:24+09:00",
  "date": "2026-11-26",
  "ok": false,
  "warnings": [
@@ -24,8 +24,8 @@
   "dividend_policy_checked": "2026-11-13",
   "edinet_policy_checked": null,
   "prev_counts": {
-   "pass": 102,
-   "buy": 468,
+   "pass": 100,
+   "buy": 462,
    "emergency": 116,
    "cut": 39
   },
@@ -40,7 +40,7 @@
    "engine_version": 4
   },
   "overweight": [],
-  "run_minutes": 65.1,
+  "run_minutes": 59.7,
   "big_files": []
  }
 }
