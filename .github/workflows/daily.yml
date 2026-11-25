@@ -150,6 +150,30 @@ jobs:
             git push
           fi
 
+      # 2026年11月25日：J-Quants の利用条件のため、このリポジトリは非公開にする。ダッシュボードは、画面と暗号化したデータだけを
+      #   別の公開リポジトリ（GitHub Pages）に置き、合言葉（secrets の DASH_PASS）で復号して見る。公開リポジトリへの書き込みは
+      #   PAGES_TOKEN（その公開リポジトリだけに書ける鍵）で行う。どちらかが未登録なら何もしない。履歴は残さない（毎回1つのコミットで上書き）
+      - name: Publish the encrypted dashboard
+        if: steps.guard.outputs.skip != '1'
+        continue-on-error: true
+        env:
+          DASH_PASS: ${{ secrets.DASH_PASS }}
+          PAGES_TOKEN: ${{ secrets.PAGES_TOKEN }}
+          PAGES_REPO: ${{ vars.PAGES_REPO || 'nabe1216/board' }}
+        run: |
+          if [ -z "$DASH_PASS" ] || [ -z "$PAGES_TOKEN" ]; then
+            echo "::notice::合言葉（DASH_PASS）か公開用の鍵（PAGES_TOKEN）が未登録なので、ダッシュボードは更新しません"
+            exit 0
+          fi
+          pip install -q cryptography
+          python scripts/build_site.py site
+          cd site
+          git init -q -b main
+          git add -A
+          git -c user.name="dashboard-bot" -c user.email="dashboard-bot@users.noreply.github.com" commit -q -m "update"
+          git push -q -f "https://x-access-token:${PAGES_TOKEN}@github.com/${PAGES_REPO}.git" main
+          echo "ダッシュボードを更新しました（${PAGES_REPO}）"
+
       - name: Upload results as artifact (backup)
         if: always() && steps.guard.outputs.skip != '1'
         uses: actions/upload-artifact@v4
