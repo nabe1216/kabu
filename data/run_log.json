@@ -50,5 +50,18 @@
    "price_date": "2026-11-25",
    "decided_from": "2026-11-24"
   }
+ },
+ {
+  "run_id": "45855535245",
+  "event": "workflow_dispatch",
+  "started_at": "2026-11-27T01:06:13+09:00",
+  "basis": "確報予定時刻後",
+  "generated_at": "2026-11-27T02:03:42.258086+09:00",
+  "price_date": "2026-11-26",
+  "judged_saved_at": "2026-11-27T02:03:44+09:00",
+  "processed": {
+   "price_date": "2026-11-26",
+   "decided_from": "2026-11-25"
+  }
  }
 ]
